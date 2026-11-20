@@ -444,6 +444,37 @@ test("App reuses its own running app and never drives a port someone else took",
   }
 })
 
+// Started directly, a macOS app is attributed to the process that started
+// it (magpie) in TCC, so the app sees its 辅助功能 grant as missing. It is
+// started through LaunchServices instead, which makes it its own subject.
+test("App starts a macOS bundle through LaunchServices, with the profile and port as its arguments", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dw-"))
+  try {
+    const bin = path.join(dir, "Doubao.app", "Contents", "MacOS", "Doubao")
+    fs.mkdirSync(path.dirname(bin), { recursive: true })
+    fs.writeFileSync(bin, "")
+    const spawned = []
+    const app = new App({
+      binary: bin,
+      dataDir: dir,
+      owns,
+      platform: "darwin",
+      others: () => [],
+      spawn: (...a) => { spawned.push(a); return { unref() {} } },
+      fetchImpl: async () => Response.json([{ type: "page", url: "doubao://doubao-chat/chat" }]),
+    })
+    const port = await app.start({ timeout: 2000 })
+    expect(spawned[0][0]).toBe("/usr/bin/open")
+    expect(spawned[0][1]).toEqual([
+      "-n", "-a", path.join(dir, "Doubao.app"),
+      "--args", `--remote-debugging-port=${port}`, `--user-data-dir=${path.join(dir, "profile")}`,
+    ])
+    expect(fs.readFileSync(path.join(dir, "port"), "utf8")).toBe(String(port))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("App says at once that a copy the user opened keeps it from starting", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dw-"))
   try {

@@ -39,6 +39,15 @@ same, works too:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
+   On macOS the app is started through LaunchServices (`open -n -a`), not by
+   running its executable directly. macOS attributes an app's permission
+   checks (辅助功能) to the process that started it, so a directly started
+   copy is judged by the plugin host's grants and reports 辅助功能 as not
+   enabled even when the app itself has it. Started by LaunchServices, the
+   app is its own subject and its own grant applies. A copy the plugin
+   started before this change keeps the old attribution until it is quit
+   and started again.
+
 Models: the plugin reads the 工作任务 model list from Doubao itself (the
 `brief_list` request the app's own page makes, through the app's page), so
 whatever 工作任务 offers is what magpie lists. Before 0.1.10 it read the menu

@@ -76,6 +76,13 @@ export function copies(binary, platform = process.platform, run = execFileSync) 
   return String(out).split("\n").map((l) => l.trim()).filter((l) => l === binary || l.startsWith(binary + " "))
 }
 
+// bundleOf gives the .app folder a macOS binary lives in, or "" when it is
+// not inside one (the innermost one, when bundles nest).
+export function bundleOf(binary) {
+  const i = String(binary).lastIndexOf(".app/")
+  return i < 0 ? "" : String(binary).slice(0, i + 4)
+}
+
 // portIn is the --remote-debugging-port a command line names, else 0
 export function portIn(line) {
   const m = /--remote-debugging-port=(\d+)/.exec(line)
@@ -157,12 +164,26 @@ export class App {
       throw Object.assign(Error(`${path.basename(this.binary)} is already running from another profile`), { code: "app_busy" })
     fs.mkdirSync(this.profile, { recursive: true })
     const port = await freePort()
-    const child = this.spawn(this.binary, [`--remote-debugging-port=${port}`, `--user-data-dir=${this.profile}`, ...this.args], {
+    const args = [`--remote-debugging-port=${port}`, `--user-data-dir=${this.profile}`, ...this.args]
+    const [command, argv] = this.launch(args)
+    const child = this.spawn(command, argv, {
       detached: true,
       stdio: "ignore",
     })
     child.unref?.()
     return this.waitOn(port, until, signal)
+  }
+
+  // launch gives the command and arguments that start the app. On macOS the
+  // executable is started through LaunchServices (`open -n -a <bundle>
+  // --args …`). Started directly, the app's responsible process is this one
+  // (magpie), so macOS attributes its TCC checks (辅助功能) to magpie: the
+  // app reports the permission as off even after the user granted it to
+  // the app itself. LaunchServices starts it as its own responsible
+  // process, and the grant applies.
+  launch(args) {
+    const bundle = this.platform === "darwin" ? bundleOf(this.binary) : ""
+    return bundle ? ["/usr/bin/open", ["-n", "-a", bundle, "--args", ...args]] : [this.binary, args]
   }
 }
 
