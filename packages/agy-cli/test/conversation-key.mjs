@@ -876,9 +876,127 @@ test("#1369 isEphemeralSideSample matches prompt-suggestion side samples only", 
   ]
   assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, []), true)
   assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: [{ type: "text", text: "[SUGGESTION MODE: Predict the next input.]" }] }] }, []), true)
+  // Mid-conversation developer updates (e.g. refreshed <skills_instructions>) wrapped in <system-reminder>
+  // or Codex <environment_context> injected ahead of the prediction prompt.
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>\n## Skills\n</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "<system-reminder>\n<skills_instructions>list</skills_instructions>\n</system-reminder>" },
+        { type: "text", text: "<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>" },
+        { type: "text", text: CODEX_PREDICTION_PROMPT },
+      ],
+    }],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: `<system-reminder source="codex">\n<skills_instructions>mentions <system-reminder> and </system-reminder></skills_instructions>\n</system-reminder>\n${CODEX_PREDICTION_PROMPT}` }],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>literal </system-reminder> text</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>literal <system-reminder> text</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "developer", content: "<skills_instructions>...</skills_instructions>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+
+  // Negative cases: fresh turns, tool results, real user text, attachments, assistant prefill.
   assert.equal(isEphemeralSideSample({ history: [], messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, []), false)
   assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, [{ type: "tool_result", tool_use_id: "t1", content: "ok" }]), false)
   assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: "continue with the fix" }] }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: "<system-reminder>A</system-reminder>\nreal user prompt\n<system-reminder>B</system-reminder>" }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+        { type: "text", text: CODEX_PREDICTION_PROMPT },
+      ],
+    }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }, { role: "assistant", content: "prefill" }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: "real user prompt" }, { role: "user", content: CODEX_PREDICTION_PROMPT }],
+  }, []), false)
+})
+
+test("#1369 Codex/T3 prompt prediction preceded by system-reminder and environment_context keeps the main ACP session", async () => {
+  await withKit({}, async (kit) => {
+    const headers = { "x-magpie-session": "sess-codex-predict-envelopes" }
+    kit.defaultPrompt = async (agent) => {
+      const text = agent.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+      if (text.includes("Predict the next message")) {
+        await agent.text("ship it")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("main reply")
+      return { stopReason: "end_turn" }
+    }
+
+    const turn1 = baseBody({
+      metadata: { user_id: "user-predict-env" },
+      messages: [{ role: "user", content: "start the task" }],
+    })
+    const res1 = await readSse(await kit.request(turn1, { headers }))
+    assert.equal(res1.stopReason, "end_turn")
+
+    const history = [...turn1.messages, { role: "assistant", content: res1.content }]
+    const prediction = {
+      ...turn1,
+      messages: [
+        ...history,
+        { role: "user", content: "<system-reminder>\n<skills_instructions>\n## Skills\n</skills_instructions>\n</system-reminder>" },
+        { role: "user", content: "<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>" },
+        { role: "user", content: CODEX_PREDICTION_PROMPT },
+      ],
+    }
+    const predRes = await readSse(await kit.request(prediction, { headers }))
+    assert.equal(predRes.stopReason, "end_turn")
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    const turn2 = {
+      ...turn1,
+      messages: [...history, { role: "user", content: "actual next step" }],
+    }
+    const res2 = await readSse(await kit.request(turn2, { headers }))
+    assert.equal(res2.stopReason, "end_turn")
+    const prompts = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(prompts.length, 3)
+    assert.notEqual(prompts[1].params.sessionId, prompts[0].params.sessionId)
+    assert.equal(prompts[2].params.sessionId, prompts[0].params.sessionId)
+    const followUpPrompt = prompts[2].params.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+    assert.ok(!followUpPrompt.includes("<conversation_history>"), "main follow-up must not cold-replay")
+  })
 })
 
 test("#1369 Codex/T3 prompt prediction preserves the main ACP session on completion and cancellation", async () => {

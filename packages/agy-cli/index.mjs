@@ -7527,11 +7527,110 @@ const EPHEMERAL_SIDE_SAMPLE_RES = [
   /^\[SUGGESTION MODE:/,
 ]
 
+function stripClosedTag(text, tagName) {
+  const s = String(text ?? "")
+  if (!s) return ""
+  const open = `<${tagName}`
+  const close = `</${tagName}>`
+  const lower = asciiLower(s)
+  const trimmed = s.trim()
+  const trimmedLower = asciiLower(trimmed)
+  // Fast whole-block envelope check: if the entire block opens with <tag...>
+  // and ends with </tag> and contains no second <tag opener, treat the whole
+  // block as one envelope even if its body mentions </tag> literally.
+  if (trimmedLower.startsWith(open) && trimmedLower.endsWith(close)) {
+    const afterOpen = open.length
+    if (afterOpen < trimmed.length && !/[A-Za-z0-9_]/.test(trimmed[afterOpen])) {
+      const gt = trimmed.indexOf(">", afterOpen)
+      if (gt !== -1 && gt < trimmed.length - close.length && trimmedLower.indexOf(open, gt + 1) === -1) {
+        return ""
+      }
+    }
+  }
+  let out = ""
+  let i = 0
+  while (i < s.length) {
+    const start = lower.indexOf(open, i)
+    if (start === -1) {
+      out += s.slice(i)
+      break
+    }
+    const afterName = start + open.length
+    if (afterName < s.length && /[A-Za-z0-9_]/.test(s[afterName])) {
+      out += s.slice(i, afterName)
+      i = afterName
+      continue
+    }
+    const gt = s.indexOf(">", afterName)
+    if (gt === -1) {
+      out += s.slice(i)
+      break
+    }
+    // Depth-aware search so nested <tag>...</tag> pairs do not close early.
+    // If an inner opener lacked a closer, fall back to the last seen closer.
+    let depth = 1
+    let cursor = gt + 1
+    let closeEnd = -1
+    let lastCloseEnd = -1
+    while (depth > 0) {
+      const nextClose = lower.indexOf(close, cursor)
+      if (nextClose === -1) break
+      let nextOpen = lower.indexOf(open, cursor)
+      while (nextOpen !== -1 && nextOpen < nextClose) {
+        const afterNext = nextOpen + open.length
+        if (afterNext < s.length && !/[A-Za-z0-9_]/.test(s[afterNext])) {
+          const nextGt = s.indexOf(">", afterNext)
+          if (nextGt !== -1 && nextGt < nextClose) {
+            depth++
+            cursor = nextGt + 1
+            nextOpen = lower.indexOf(open, cursor)
+            continue
+          }
+        }
+        nextOpen = lower.indexOf(open, afterNext)
+      }
+      depth--
+      cursor = nextClose + close.length
+      lastCloseEnd = cursor
+      if (depth === 0) closeEnd = cursor
+    }
+    const end = closeEnd !== -1 ? closeEnd : lastCloseEnd
+    if (end === -1) {
+      out += s.slice(i)
+      break
+    }
+    out += s.slice(i, start)
+    i = end
+  }
+  return out
+}
+
+function stripSideSampleEnvelopes(text) {
+  let out = stripClosedTag(text, "system-reminder")
+  out = stripClosedTag(out, "environment_context")
+  return out.trim()
+}
+
 function isEphemeralSideSample(trailing, resultBlocks) {
   if (!trailing?.history?.length || resultBlocks?.length) return false
-  const userMessages = (trailing.messages || []).filter((message) => message?.role === "user")
-  if (userMessages.length !== 1) return false
-  const text = contentText(userMessages[0].content).trim()
-  return !!text && EPHEMERAL_SIDE_SAMPLE_RES.some((re) => re.test(text))
+  const messages = trailing.messages || []
+  if (messages.some((message) => message?.role === "assistant")) return false
+  const userMessages = messages.filter((message) => message?.role === "user")
+  if (!userMessages.length) return false
+  const stripped = []
+  for (const message of userMessages) {
+    const blocks = Array.isArray(message.content) ? message.content : [message.content]
+    const parts = []
+    for (const block of blocks) {
+      if (block == null) continue
+      if (typeof block !== "string" && block.type !== "text") return false
+      const piece = stripSideSampleEnvelopes(typeof block === "string" ? block : block.text || "")
+      if (piece) parts.push(piece)
+    }
+    const text = parts.join("\n").trim()
+    if (text) stripped.push(text)
+  }
+  if (stripped.length !== 1) return false
+  return EPHEMERAL_SIDE_SAMPLE_RES.some((re) => re.test(stripped[0]))
 }
 
