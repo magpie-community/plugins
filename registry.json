@@ -64,6 +64,8 @@
       "summary": { "en": "Trae CN (trae.cn) and Trae international (trae.ai) models with your own account, free tier included — Trae's own browser sign-in. Experimental.", "zh": "用 Trae CN（trae.cn）与 Trae 国际版（trae.ai）账号使用各自的模型，含免费版，使用 Trae 自己的浏览器登录。实验性。" } },
     { "package": "@magpie-community/opencode-opendesign-auth", "name": "Open Design", "providers": ["opendesign"], "community": true,
       "summary": { "en": "Open Design Cloud's Design Plan (open-design.ai): the account's device sign-in, the models the plan entitles it to, and the plan's 5-hour and 7-day allowance and wallet balance.", "zh": "Open Design Cloud 的 Design Plan（open-design.ai）：账号设备登录、套餐可用的模型，以及 5 小时与 7 天额度、钱包余额。" } },
+    { "package": "@magpie-community/opencode-packycode-balance-auth", "name": "PackyAPI balance", "providers": ["packycode-balance"], "community": true,
+      "summary": { "en": "Magpie-only: read PackyAPI's account balance from /api/user/self with a system access token and user ID. Usage-only; separate from model API accounts.", "zh": "仅适用于 Magpie：使用系统访问令牌和用户 ID 查询 PackyAPI /api/user/self 账户余额；仅额度查询，与模型 API 账号分开显示。" } },
     { "package": "@magpie-community/opencode-catpaw-auth", "name": "CatPaw", "providers": ["catpaw"], "community": true,
       "summary": { "en": "Meituan's 妙手 CatPaw (ai.catpaw.meituan.com): a browser web sign-in or the desktop client's saved credentials, chat through its round/event/turn conversation protocol, models and credit balance.",
                    "zh": "美团妙手 CatPaw（ai.catpaw.meituan.com）：浏览器网页登录或妙手桌面端已保存的登录态，经其 round/event/turn 会话协议对话，含模型与积分余额。" } },
