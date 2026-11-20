@@ -184,6 +184,37 @@ function shouldRoute(model, options = {}) {
 // id, no `:<effort>` (Magpie would read `m:default` as a model of that whole name) and no effort field.
 const ONE_CONFIGURATION = "default";
 
+// Magpie logs at most 60 lines a minute of one middleware and drops the rest unseen (`internal/middleware/middleware.go` `say`,
+// `linesAMinute`, v0.1.4603), so a line that would repeat on every turn of a session (a hold rebuilt from the history, a typed
+// listing not sent) is logged once per runtime for that session, as a catalog name warning is once per runtime; the decision
+// carries it on every turn it is true of. The least recently logged goes first.
+const MAX_SESSION_LINES = 1024;
+const loggedSessionLines = new Map();
+
+/** Log a line about a session the first time this runtime meets it for that session. */
+function logOncePerSession(sessionKey, line) {
+  const key = JSON.stringify([sessionKey || null, line]);
+  if (loggedSessionLines.delete(key)) {
+    loggedSessionLines.set(key, true);
+    return;
+  }
+  loggedSessionLines.set(key, true);
+  if (loggedSessionLines.size > MAX_SESSION_LINES) loggedSessionLines.delete(loggedSessionLines.keys().next().value);
+  console.warn(`agentcompass: ${line}`);
+}
+
+/**
+ * Log a decision's warnings: those it marks as about its session (`sessionNotices`) once per runtime for the session, the rest
+ * as `logRouteWarnings` does, and the notice of a hold rebuilt from the history once per runtime for the session.
+ */
+function logDecision(decision) {
+  const sessionKey = decision?.continuation?.sessionKey;
+  const notices = decision?.sessionNotices || [];
+  logRouteWarnings((decision?.warnings || []).filter((warning) => !notices.some((notice) => notice === warning)));
+  for (const notice of notices) logOncePerSession(sessionKey, notice);
+  if (decision?.continuation?.held && decision.continuation.stateFrom === "history") logOncePerSession(sessionKey, decision.continuation.notice);
+}
+
 // What a hold on a state rebuilt from the message history says (`replayedState`), in the decision and Magpie's log.
 const REBUILT_HOLD_NOTICE =
   "held on a state rebuilt from the message history: this runtime did not serve the session's earlier turns, so it decided them " +
@@ -371,12 +402,14 @@ export function heldTurn(cont, sessionState, facts, { pins, candidateModels, opt
 /**
  * `pinKeepsHold` for one request (contract R3). Every turn the request decides again (`replayedState`) asks it with the same pool,
  * quotas, time and pins, and a held route is judged by ranking that pool, so each held route is judged once per request, not once per
- * replayed turn. Nothing outlives the request: the next one is judged on its own options.
+ * replayed turn. Nothing outlives the request: the next one is judged on its own options. A session with no pinned bundle is one
+ * held route whether it says so with `null`, `""` or not at all (`pinKeepsHold` compares it only with a bundle the pins name), so
+ * those are one key: a typed listing judged from a new route and again from a held turn was ranked twice.
  */
 export function holdJudge(options, candidateModels, liveQuotas, now) {
   const judged = new Map();
   return (pins, session) => {
-    const held = { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle, profile: sessionProfile(session) };
+    const held = { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle || null, profile: sessionProfile(session) };
     const key = JSON.stringify([pins, held]);
     if (!judged.has(key)) judged.set(key, pinKeepsHold(pins, held, { ...options, candidateModels, quotas: liveQuotas, now }));
     return judged.get(key);
@@ -449,7 +482,8 @@ function typedListingWarning(pin, refused, target) {
  * `operating_point`) is routed by the engine at an effort the data times only because its one reading is copied to every effort;
  * the model takes none, and Magpie passes an effort on to a model that lists no levels as asked (`catalog.NearestEffort` keeps
  * `want` when the levels are none). Such a route is its one configuration (`ONE_CONFIGURATION`): the bare model with no effort, as a
- * converter row listed with no levels is. It is only what is sent (`decision.sentEffort`): the decision and the session's record keep
+ * converter row listed with no levels is. It is only what is sent (`decision.sentEffort`, set by `withSentEffort` where a decision
+ * reaches the body, whoever made it: `onRequest`'s own, the hooks' route, `onProvider`'s): the decision and the session's record keep
  * the engine's effort, which a hold is judged at (`pinKeepsHold` ranks at the engine's efforts).
  */
 function sentEffort(target, effort, pool, catalog, pins) {
@@ -465,6 +499,13 @@ function sentEffort(target, effort, pool, catalog, pins) {
   if (carriesEffort) return effort;
   const names = catalogTables(catalog);
   return modelSpec(target, names.models, names.aliases, names.families, names.providerNames).operating_point ? ONE_CONFIGURATION : effort;
+}
+
+/** The decision with the effort it is sent at on this pool (`sentEffort`), where that differs from the engine's. */
+function withSentEffort(decision, pool, catalog) {
+  const sent = sentEffort(decision.targetModel, decision.targetEffort, pool, catalog, decision.pins);
+  decision.sentEffort = sent !== decision.targetEffort ? sent : undefined;
+  return decision;
 }
 
 function routeClaimed(body, ctx, env, depth = 0) {
@@ -515,13 +556,13 @@ function routeClaimed(body, ctx, env, depth = 0) {
         judgeHold(pins, { ...sessionState, target: name, model: name, effort: heldEffort, pinnedBundle: null }));
       const target = typed?.target || turn.target;
       const bundle = typed?.target ? typed.bundle : pool ? heldBundle(pool, target, heldEffort, options.catalog, pins) : null;
-      const sent = sentEffort(target, heldEffort, candidateModels, options.catalog, pins);
       const fromHistory = Boolean(sessionState?.replayed);
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
+      const typedWarning = typed?.refused ? typedListingWarning(pins.constraintModel, typed.refused, target) : null;
       const stepWarnings = [
         ...(turn.effort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${turn.effort}`]),
-        ...(typed?.refused ? [typedListingWarning(pins.constraintModel, typed.refused, target)] : []),
+        ...(typedWarning ? [typedWarning] : []),
       ];
       return {
         facts,
@@ -533,7 +574,6 @@ function routeClaimed(body, ctx, env, depth = 0) {
           canonicalModel: catalogCanonical(cont.model, options.catalog),
           targetEffort: heldEffort,
           modelWithEffort: `${target}:${heldEffort}`,
-          ...(sent !== heldEffort ? { sentEffort: sent } : {}),
           bundle: bundle ? { ...bundle, effort: heldEffort } : null,
           canRewriteModel,
           hasExplicitCandidates,
@@ -544,6 +584,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
           profile: sessionState?.profile || null,
           pins,
           warnings: [...stepWarnings, ...heldWarnings],
+          ...(typedWarning ? { sessionNotices: [typedWarning] } : {}),
           continuation: {
             held: true,
             why: cont.why,
@@ -672,12 +713,12 @@ function routeClaimed(body, ctx, env, depth = 0) {
     decision.targetModel = typed.target;
     decision.bundle = typed.bundle;
   } else if (typed?.refused) {
-    decision.warnings = [...(decision.warnings || []), typedListingWarning(pins.constraintModel, typed.refused, decision.targetModel)];
+    const typedWarning = typedListingWarning(pins.constraintModel, typed.refused, decision.targetModel);
+    decision.warnings = [...(decision.warnings || []), typedWarning];
+    decision.sessionNotices = [typedWarning];
   }
   decision.targetEffort = finalEffort;
   decision.modelWithEffort = `${decision.targetModel}:${finalEffort}`;
-  const sent = sentEffort(decision.targetModel, finalEffort, candidateModels, options.catalog, pins);
-  if (sent !== finalEffort) decision.sentEffort = sent;
 
   return {
     facts,
@@ -831,9 +872,8 @@ export function onRequest(body, ctx = {}) {
         decide: routeDecider({ options, candidateModels, liveQuotas, now }),
       });
       decision = routed.decision;
-      if (decision?.continuation?.held && decision.continuation.stateFrom === "history") console.warn(`agentcompass: ${decision.continuation.notice}`);
       // Magpie's log is where a gateway operator sees that a pinned model is too slow for a live loop
-      logRouteWarnings(decision?.warnings);
+      logDecision(decision);
       for (const warning of decision?.warnings || []) {
         if (typeof ctx?.warn === "function") {
           ctx.warn(warning);
@@ -871,6 +911,7 @@ export function onRequest(body, ctx = {}) {
       return dropRouterFields(body) || changed ? body : undefined;
     }
 
+    withSentEffort(decision, candidateModels, options.catalog);
     ctx.state = ctx.state || {};
     ctx.state.agentcompass = decision;
     ctx.state.route = decision;
@@ -1022,11 +1063,10 @@ export function onProvider(body, ctx = {}) {
         const targetModel = typed?.target || routed.targetModel;
         const bundle = typed?.target ? typed.bundle : routed.bundle;
         const targetEffort = routedEffort;
-        const sent = sentEffort(targetModel, routedEffort, providerPool, options.catalog, pins);
-        if (typed?.refused) {
-          const warning = typedListingWarning(pins.constraintModel, typed.refused, targetModel);
-          routed.warnings = [...(routed.warnings || []), warning];
-          logRouteWarnings([warning]);
+        const typedWarning = typed?.refused ? typedListingWarning(pins.constraintModel, typed.refused, targetModel) : null;
+        if (typedWarning) {
+          routed.warnings = [...(routed.warnings || []), typedWarning];
+          logOncePerSession(prevDecision.continuation?.sessionKey, typedWarning);
         }
         const updated = {
           ...prevDecision,
@@ -1036,7 +1076,6 @@ export function onProvider(body, ctx = {}) {
           canonicalModel: routed.canonicalModel,
           targetEffort,
           modelWithEffort: `${targetModel}:${targetEffort}`,
-          sentEffort: sent !== targetEffort ? sent : undefined,
           bundle,
           profile: routed.profile,
           selectedAccount: routed.selectedAccount ?? prevDecision.selectedAccount ?? null,
@@ -1046,6 +1085,7 @@ export function onProvider(body, ctx = {}) {
           warnings: [...(prevDecision.warnings || []), ...(routed.warnings || [])],
           ...(routed.accounts ? { accounts: routed.accounts } : {}),
         };
+        withSentEffort(updated, providerPool, options.catalog);
         if (ctx.state && typeof ctx.state === "object") {
           ctx.state.agentcompass = updated;
           ctx.state.route = updated;
