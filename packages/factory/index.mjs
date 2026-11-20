@@ -537,8 +537,25 @@ const DROID_LINE = "You are Droid, an AI software engineering agent built by Fac
 // developer prompt, changes; the rest of pi's prompt goes on as it is.
 const PI_OPENING = /(^|\n)You are an expert coding assistant operating inside pi, a coding agent harness\./
 const PI_COMPAT = "You are an expert coding assistant."
+// dsh (@deepseek-ai/dsh, DeepSeek Harness) opens its system prompt with its
+// own identity line, "You are an AI agent powered by DeepSeek Harness."
+// (dsh-system-prompt's harness:identity section), then its preset's "You are
+// a coding agent powered by the <model> model." On Factory's Opus 5.5 every
+// first turn of a fresh dsh session was content_policy_rejected, tools
+// renamed in full or not (@a1pha1nthefog on X, 11-20, factory 0.1.52): an
+// identity sentence naming another agent's harness, the class of pi's and
+// omp's openings. The identity line goes as "You are an AI agent." and the
+// model line as the plain "Current model: <model>." droid's adapters use for
+// Claude Code's; both only at the start of a line of a system or developer
+// prompt, the rest of dsh's prompt as dsh wrote it.
+const DSH_OPENING = /(^|\n)You are an AI agent powered by DeepSeek (?:Harness|Runtime)\./
+const DSH_COMPAT = "You are an AI agent."
+const DSH_MODEL_LINE = /(^|\n)You are a coding agent powered by the ([^\n]+?) model\.(?=\n|$)/
 function clientOpening(text) {
-  return typeof text === "string" ? text.replace(PI_OPENING, (_, at) => at + PI_COMPAT) : text
+  if (typeof text !== "string") return text
+  return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT)
+    .replace(DSH_OPENING, (_, at) => at + DSH_COMPAT)
+    .replace(DSH_MODEL_LINE, (_, at, model) => at + "Current model: " + model + ".")
 }
 
 // pi turns a compaction, and a branch it came back from, into a user
