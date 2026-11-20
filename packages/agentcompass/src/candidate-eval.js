@@ -192,12 +192,20 @@ function readPin(text, items, fleet) {
   if (items.length === 0 || isAutoId(text)) return [text, items.filter((b) => idsOf(b).includes(text)), null];
   const spelled = splitEffortSuffix(text).name;
   if (!spelled.includes("/")) return [text, items.filter((b) => pinMatchesIdentity(text, b, fleet)), null];
-  // The prefix is the longest leading part that is an id of a bundle in the pool: a seat's `<provider>/<seat>` before its provider.
+  // The prefix is the longest leading part that is an id of a bundle in the pool and names a bundle with the rest (a seat's
+  // `<provider>/<seat>` before its provider), then the shorter ones; a prefix that is an id but names no bundle with the rest is
+  // obeyed (named nothing) only when no shorter one names a bundle: `claude/work/custom-m` is the preset `claude`'s `work/custom-m`
+  // when the seat `claude/work` has no `custom-m`.
   const segments = spelled.split("/");
+  let unmatched = null;
   for (let k = segments.length - 1; k >= 1; k--) {
     const prefix = segments.slice(0, k).join("/").toLowerCase();
-    if (items.some((b) => bundleHasPrefix(b, prefix))) return [text, items.filter((b) => prefixedBundleMatches(text, spelled, prefix, b, fleet)), prefix];
+    if (!items.some((b) => bundleHasPrefix(b, prefix))) continue;
+    const named = items.filter((b) => prefixedBundleMatches(text, spelled, prefix, b, fleet));
+    if (named.length > 0) return [text, named, prefix];
+    if (unmatched === null) unmatched = [text, named, prefix];
   }
+  if (unmatched !== null) return unmatched;
   const named = items.filter((b) => prefixedBundleMatches(text, spelled, segments[0].toLowerCase(), b, fleet));
   if (named.length > 0) return [text, named, null];
   return unrecognizedPrefixMatches(text, items, fleet);

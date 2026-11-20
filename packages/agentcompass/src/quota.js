@@ -1247,11 +1247,6 @@ export function shouldSkipQuotaAccount(acct, ctx, quotaAccounts) {
   return false;
 }
 
-/** The snapshot's accounts a Magpie account (`onAccount`'s, or `ctx`'s) is: by its full key, else by its name on its provider. */
-export function quotaAccountsMatching(acct, ctx, quotaAccounts) {
-  return Array.isArray(quotaAccounts) ? matchQuotaAccount(acct, ctx, quotaAccounts).exactMatches : [];
-}
-
 function matchQuotaAccount(acct, ctx, quotaAccounts) {
   const rawProv =
     acct.provider ||
@@ -1264,20 +1259,18 @@ function matchQuotaAccount(acct, ctx, quotaAccounts) {
     [
       typeof acct.key === "string" && acct.key.includes("/") ? acct.key : "",
       typeof acct.ref === "string" && acct.ref.includes("/") ? acct.ref : "",
-      acct.provider && acct.name ? `${acct.provider}/${acct.name}` : "",
       acct.provider && acct.account ? `${acct.provider}/${acct.account}` : "",
-      acctProv && acct.name ? `${acctProv}/${acct.name}` : "",
       acctProv && acct.account ? `${acctProv}/${acct.account}` : "",
     ]
       .filter((v) => typeof v === "string" && v.trim())
       .map((v) => v.trim())
   );
+  // Magpie's account (`internal/middleware/account.go`) names no seat: `name` is the provider's name, the same for every seat of it,
+  // and `ref` a hash keyed on this machine (`accountRef`), never a quotas key. Only an `account` or a `key` names a seat.
   const bareNames = new Set(
     [
-      acct.name,
       acct.account,
       typeof acct.key === "string" && !acct.key.includes("/") ? acct.key : "",
-      typeof acct.ref === "string" && !acct.ref.includes("/") ? acct.ref : "",
     ]
       .filter((v) => typeof v === "string" && v.trim())
       .map((v) => v.trim())

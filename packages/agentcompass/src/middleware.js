@@ -33,7 +33,6 @@ import {
   extractModelList,
   mergePinOptions,
   pinOptionsOf,
-  heldPinnedAccounts,
   pinKeepsHold,
   pinsFixEffort,
   sessionProfile,
@@ -69,7 +68,6 @@ import {
   listQuotaAccounts,
   orderSeatsByQuotaEconomics,
   quotaAccountWarnings,
-  quotaAccountsMatching,
   shouldSkipQuotaAccount,
 } from "./quota.js";
 import { loadLiveQuotas } from "./quota-loader.js";
@@ -339,8 +337,8 @@ function routeClaimed(body, ctx, env, depth = 0) {
   let cont = evaluateProviderContinuation(facts, sessionState, {
     now,
     pins,
-    // A pin keeps the hold only on a bundle it names in this pool (contract R3); a malformed one never does.
-    pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle }, { ...options, candidateModels: candidateModels, quotas: liveQuotas, now }),
+    // A pin keeps the hold only on a bundle it names in this pool that can run (contract R3); a malformed one never does.
+    pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle, profile: sessionProfile(session) }, { ...options, candidateModels: candidateModels, quotas: liveQuotas, now }),
     affinityMode,
     availableModels: candidateModels,
     unhealthyModels: options.unhealthyModels,
@@ -377,7 +375,6 @@ function routeClaimed(body, ctx, env, depth = 0) {
       };
     } else {
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
-      const heldSeats = heldPinnedAccounts(pins, { ...options, candidateModels, quotas: liveQuotas, now });
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
       const stepWarnings = heldEffort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${heldEffort}`];
       return {
@@ -404,7 +401,6 @@ function routeClaimed(body, ctx, env, depth = 0) {
           canRewriteModel,
           hasExplicitCandidates,
           ...(heldAccounts ? { accounts: heldAccounts } : {}),
-          ...(heldSeats ? { pinnedAccounts: heldSeats } : {}),
           workKind: sessionState?.workKind || "other_or_mixed",
           difficulty: sessionState?.difficulty || "routine",
           axisDemand: sessionState?.profile?.axis_demand || null,
@@ -876,7 +872,6 @@ export function onProvider(body, ctx = {}) {
           bundle: routed.bundle,
           profile: routed.profile,
           selectedAccount: routed.selectedAccount ?? prevDecision.selectedAccount ?? null,
-          pinnedAccounts: routed.pinnedAccounts || null,
           quota: routed.quota ?? prevDecision.quota ?? null,
           canRewriteModel: true,
           hasExplicitCandidates: true,
@@ -1010,13 +1005,9 @@ export function onAccount(accountOrBody, ctx = {}) {
     return { skip: true };
   }
 
-  // A pin whose prefix names quota seats (`claude/work/...`, `work/...`) is served by those seats only: another known seat is
-  // passed over. An account the snapshot does not know is not skipped (Magpie fails open, and so does this check).
-  if (Array.isArray(decision?.pinnedAccounts) && decision.pinnedAccounts.length > 0 && Array.isArray(quotaAccounts)) {
-    const known = quotaAccountsMatching(acct, ctx, quotaAccounts);
-    if (known.length > 0 && !known.some((a) => decision.pinnedAccounts.includes(a.key))) return { skip: true };
-  }
-
+  // No skip for a seat a pin names: Magpie's account carries no seat this plugin can read (its `name` is the provider's, its `ref`
+  // a keyed hash of the login), and a skip of every seat is a 404 (`internal/gateway/gateway.go`, no fail-open). A seat prefix
+  // decides the plugin's choice and refusal; which seat of the provider Magpie then uses is Magpie's.
   if (!decision) return undefined;
 
   const allowedByKind = options.accountsByWorkKind?.[decision.workKind];

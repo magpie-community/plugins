@@ -22,7 +22,7 @@ Magpie's own rules see a model name and pool state, not the task. This plugin re
 
 - **It routes on a profile, never on the words of a task.** The profile comes from the caller (`body.profile`) or from a classifier, a small model you configure. **With neither, a request is not routed**: it goes on with the model the client named, and the reply and Magpie's log say so.
 - **Two modes.** Mode A is gateway middleware, on by default: synchronous, no network, so it routes a request that carries its own `body.profile`. Mode B is a decision provider for Magpie's Routing Groups, opt-in: it can call your classifier.
-- **You choose the candidates.** Routing picks only from `candidateModels`. Naming a model (a pin) is honored or refused with a code; no other model is substituted. A preset's own `modelsByProvider` list cannot refuse one: Magpie lets `onProvider` neither reject nor skip ([pins](docs/reference.md#candidates-pins-and-refusals)).
+- **You choose the candidates.** Routing picks only from `candidateModels`. Naming a model (a pin) is honored or refused with a code; no other model is substituted. A preset's own `modelsByProvider` list cannot refuse one: Magpie lets `onProvider` neither reject nor skip. A seat prefix (`claude/work/<model>`) decides the plugin's choice and refusal, not which seat Magpie uses ([pins](docs/reference.md#candidates-pins-and-refusals)).
 - **Quota needs a plan.** An account whose `plan` is not reported has unknown capacity and is left out of automatic routing until it is.
 - **Sessions are held.** A tool loop, or a warm prompt cache, keeps the model it started on, so caches and reasoning signatures are not thrown away (`affinityMode`).
 
@@ -86,7 +86,7 @@ Magpie 自带的规则只看到模型名和号池状态，看不到任务。本�
 
 - **只依据画像路由，绝不根据任务文字。** 画像来自调用方（`body.profile`）或分类模型（你自己配置的小模型）。**两者都没有时请求不会被路由**：按客户端指定的模型原样转发，响应和 Magpie 日志会写明。
 - **两种模式。** 模式 A 是网关中间件，默认开启：同步运行、没有网络，所以只路由自带 `body.profile` 的请求。模式 B 是供 Magpie 路由组使用的决策 Provider，按需开启：它可以调用你的分类模型。
-- **候选由你决定。** 路由只在 `candidateModels` 中选择。点名模型（pin）要么照办，要么带错误码拒绝，不会换成别的模型。只靠某个 preset 自己的 `modelsByProvider` 列表时无法拒绝：Magpie 的 `onProvider` 既不能拒绝也不能跳过（[点名](docs/reference.md#candidates-pins-and-refusals)）。
+- **候选由你决定。** 路由只在 `candidateModels` 中选择。点名模型（pin）要么照办，要么带错误码拒绝，不会换成别的模型。只靠某个 preset 自己的 `modelsByProvider` 列表时无法拒绝：Magpie 的 `onProvider` 既不能拒绝也不能跳过。座位前缀（`claude/work/<model>`）决定插件选谁、拒谁，但不能决定 Magpie 实际用哪个座位（[点名](docs/reference.md#candidates-pins-and-refusals)）。
 - **配额需要 plan。** 没有上报 `plan` 的账号容量未知，在上报之前不进入自动路由。
 - **会话会被保持。** 工具循环或提示缓存温热时沿用会话起初的模型，不白白丢掉缓存和推理签名（`affinityMode`）。
 

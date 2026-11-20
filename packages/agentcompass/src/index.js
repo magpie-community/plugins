@@ -23,6 +23,7 @@ import {
   logRouteWarnings,
   mergePinOptions,
   pinKeepsHold,
+  sessionProfile,
   pinOptionsOf,
   pinsFixEffort,
   refusalSummary,
@@ -241,8 +242,8 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
       ? evaluateProviderContinuation(chatFacts, chatSessionState, {
           now,
           pins,
-          // A pin keeps the hold only on a bundle it names in this pool (contract R3); a malformed one never does.
-          pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle }, { ...pluginOptions, candidateModels: explicitCandidateModels(pluginOptions) || undefined, quotas: liveQuotas, now }),
+          // A pin keeps the hold only on a bundle it names in this pool that can run (contract R3); a malformed one never does.
+          pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle, profile: sessionProfile(session) }, { ...pluginOptions, candidateModels: explicitCandidateModels(pluginOptions) || undefined, quotas: liveQuotas, now }),
           affinityMode: pluginOptions.affinityMode || pluginOptions.affinity || "cache",
           availableModels: candidateModels,
           unhealthyModels: pluginOptions.unhealthyModels,

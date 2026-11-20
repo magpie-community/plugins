@@ -13,7 +13,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { candidateOffers, rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { candidateOffers, mergePinOptions, pinsFixEffort, rankCandidates, selectBestRoute } from "../src/allocator.js";
 import { readingEffort, scoredModels } from "../src/axis-scores.js";
 import { FAMILIES, MODELS, MODEL_ALIASES, NO_PROVIDER_NAMES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, checkModelPin, expandHostProviders, healthKey, magpieOptions, modelLeaf, modelPinProblem, pinGiven, providerNamesOf, pyStrip, resolveListed, resolveModel, rowKey, servedModel, slashSuffixes } from "../src/catalog.js";
 import { effectivePin, lookupNames, pinMatchesIdentity, pinMatchingBundles, pinNamesBundle } from "../src/candidate-eval.js";
@@ -742,21 +742,131 @@ test("R5-F2: a seat's full id or its name as the prefix names that seat; the pro
   for (const pin of ["claude-sonnet-5-5", "claude/claude-sonnet-5-5"]) {
     const r = run(pin, exhausted);
     assert.equal(r.selectedAccount, "claude/personal", `${pin}: every seat is named, the one that can run serves`);
-    assert.equal(r.pinnedAccounts, undefined, `${pin}: no seat is singled out`);
-  }
-  for (const pin of ["personal/claude-sonnet-5-5", "claude/personal/claude-sonnet-5-5"]) {
-    assert.deepEqual(run(pin, exhausted).pinnedAccounts, ["claude/personal"], pin);
   }
   // the longest id that matches is the prefix: a seat beats its provider
   const ample = { "claude/work": seat(90), "claude/personal": seat(90) };
-  const onWork = run("claude/work/claude-sonnet-5-5", ample);
-  assert.deepEqual([onWork.selectedAccount, onWork.pinnedAccounts], ["claude/work", ["claude/work"]]);
-  // onAccount passes over the other known seats, and never an account the snapshot does not know
-  const decide = (decision, account) => middlewareOnAccount(account, { state: { route: decision, agentcompass: decision }, options: { quotas: ample, now: T0_071 } });
-  assert.deepEqual(decide(onWork, { provider: "claude", name: "personal", kind: "claude" }), { skip: true });
-  assert.equal(decide(onWork, { provider: "claude", name: "work", kind: "claude" }), undefined);
-  assert.equal(decide(onWork, { provider: "claude", name: "elsewhere", kind: "claude" }), undefined);
-  assert.equal(decide(run("claude-sonnet-5-5", ample), { provider: "claude", name: "personal", kind: "claude" }), undefined, "a bare name skips no seat");
+  assert.equal(run("claude/work/claude-sonnet-5-5", ample).selectedAccount, "claude/work");
+});
+
+// Magpie's onAccount payload (`internal/middleware/account.go` 25-31, 58): `ref` a keyed hash of the login, `provider` the provider's
+// id, `name` the provider's name (the same for every seat of it), `kind`, `model`. The quotas key a seat by its login.
+const magpieAccount = (ref, name = "Claude") => ({ ref, provider: "claude", name, kind: "claude", model: "claude-sonnet-5-5" });
+const REF_A = "0123456789abcdef0123456789abcdef";
+const REF_B = "fedcba9876543210fedcba9876543210";
+
+test("R6-F1: onAccount reads no seat from Magpie's account: a seat pin skips no account, and the provider's name is never a seat", () => {
+  const win = (name, remaining, resetHours) => ({ name, remaining, used: 100 - remaining, resetHours });
+  const seat = (sevenDay, extra = {}) => ({ kind: "subscription", plan: "max", quota: { windows: [win("5 hours", 90, 3), win("7 days", sevenDay, 100)] }, ...extra });
+  const candidateModels = [{ model: "claude-sonnet-5-5", efforts: ["high"] }];
+  const ample = { "claude/work": seat(90), "claude/personal": seat(90) };
+  const decide = (quotas, pin, account) => {
+    const decision = selectBestRoute(PROFILE, { now: T0_071, candidateModels, quotas, constraintModel: pin });
+    assert.equal("pinnedAccounts" in decision, false, `${pin}: the decision names no seat for onAccount`);
+    return middlewareOnAccount(account, { state: { route: decision, agentcompass: decision }, account, options: { quotas, now: T0_071 } });
+  };
+  for (const pin of ["claude/work/claude-sonnet-5-5", "work/claude-sonnet-5-5", "personal/claude-sonnet-5-5", "claude-sonnet-5-5"]) {
+    for (const account of [magpieAccount(REF_A), magpieAccount(REF_B), magpieAccount(REF_A, "claude")]) {
+      assert.equal(decide(ample, pin, account), undefined, `${pin} on ${account.ref}: no seat is skipped`);
+    }
+  }
+  // a seat whose key is the provider's name: Magpie's name is not that seat, so that seat being out (disabled) skips no other seat
+  const named = { "claude/claude": seat(90, { disabled: true }), "claude/work": seat(90) };
+  for (const name of ["claude", "Claude"]) {
+    assert.equal(decide(named, "claude/claude-sonnet-5-5", magpieAccount(REF_A, name)), undefined, `name ${name}`);
+    assert.equal(decide(named, "claude-sonnet-5-5", magpieAccount(REF_B, name)), undefined, `name ${name}, bare pin`);
+  }
+});
+
+test("R6-F2: a warm session keeps its hold under a pin only when the held route is named and can run: warm and cold answer the same", async () => {
+  const win = (name, remaining, resetHours) => ({ name, remaining, used: 100 - remaining, resetHours });
+  const seat = (sevenDay, extra = {}) => ({ kind: "subscription", plan: "max", quota: { windows: [win("5 hours", 90, 3), win("7 days", sevenDay, 100)] }, ...extra });
+  const candidateModels = [{ model: "claude-sonnet-5-5", efforts: ["high"] }];
+  const warm = async (quotas, pin) => {
+    const base = { affinityMode: "session", candidateModels, quotas, now: T0_071 };
+    const out = {};
+    // middleware
+    const store = new SessionContinuityStore();
+    middlewareOnRequest({ model: "agentcompass/auto", user: "f2", profile: PROFILE, messages: r6Messages("") }, { state: {}, options: { ...base, continuityStore: store } });
+    let rejected = null;
+    const ctx = { state: {}, reject: (status, message) => { rejected = `${status} ${message}`; }, options: { ...base, continuityStore: store, now: T0_071 + 1000 } };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "f2", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, ctx);
+    out.middleware = rejected ? rejected.split(": ")[1] : ctx.state.route.continuation?.held ? "held" : "routed";
+    // hooks
+    const hStore = new SessionContinuityStore();
+    await hooksOnRequest({ model: "agentcompass/auto", user: "f2", profile: PROFILE, messages: r6Messages("") }, { state: {}, options: { ...base, continuityStore: hStore } });
+    const hctx = { state: {}, options: { ...base, continuityStore: hStore, now: T0_071 + 1000 } };
+    await hooksOnRequest({ model: "agentcompass/auto", user: "f2", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, hctx);
+    out.hooks = hctx.state.routeBlocked ? hctx.state.routeBlocked.refusal.split(":")[0] : hctx.state.route.continuation?.held ? "held" : "routed";
+    // Mode B
+    const bStore = new SessionContinuityStore();
+    const ask = (state, now, messages) => handleSystemOneRequest({ user: "f2b", messages, state: { profile: PROFILE, ...state }, questions: { effort: { type: "scale" } } }, { ...base, continuityStore: bStore, now: T0_071 + now });
+    await ask({}, 0, r6Messages(""));
+    const b = (await ask({ pinned_model: pin }, 1000, r6Messages("turn 2"))).agentcompass;
+    out.modeB = b.blocked ? b.error : "served";
+    // cold
+    const cold = selectBestRoute(PROFILE, { candidateModels, quotas, now: T0_071, constraintModel: pin });
+    out.cold = cold.ok ? "served" : cold.refusal.split(":")[0];
+    return out;
+  };
+  const refusedEverywhere = { middleware: "pin_unavailable", hooks: "pin_unavailable", modeB: "pin_unavailable", cold: "pin_unavailable" };
+  for (const quotas of [{ "claude/work": seat(90), "claude/personal": seat(0) }, { "claude/work": seat(90), "claude/personal": seat(90, { disabled: true }) }]) {
+    assert.deepEqual(await warm(quotas, "claude/personal/claude-sonnet-5-5"), refusedEverywhere, "a named seat that cannot run is refused warm as cold");
+    assert.deepEqual(await warm(quotas, "personal/claude-sonnet-5-5"), refusedEverywhere);
+    const kept = await warm(quotas, "claude/work/claude-sonnet-5-5");
+    assert.deepEqual([kept.middleware, kept.hooks, kept.cold], ["held", "held", "served"], "a named seat that can run keeps the hold");
+  }
+  // an effort pin on a held row: kept where the cold request serves it, refused where it refuses it
+  const family = ["acme-b/claude-opus-9", { model: "acme-a/gpt-6.1-sol", efforts: ["high"] }];
+  const onFamily = (pin) => {
+    const store = new SessionContinuityStore();
+    const options = { continuityStore: store, affinityMode: "session", candidateModels: family, now: T0_071 };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "fam", profile: PROFILE, pinned_model: "acme-b/claude-opus-9", messages: r6Messages("") }, { state: {}, options });
+    let rejected = null;
+    const ctx = { state: {}, reject: (status, message) => { rejected = `${status} ${message}`; }, options: { ...options, now: T0_071 + 1000 } };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "fam", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, ctx);
+    const cold = selectBestRoute(PROFILE, { candidateModels: family, now: T0_071, constraintModel: pin });
+    return [rejected ? rejected.split(": ")[1] : ctx.state.route.continuation?.held ? "held" : "routed", cold.ok ? "served" : cold.refusal.split(":")[0]];
+  };
+  for (const pin of ["acme-b/claude-opus-9:high", "acme-b/claude-opus-9:low"]) {
+    const [warmAnswer, coldAnswer] = onFamily(pin);
+    assert.equal(warmAnswer === "held" || warmAnswer === "routed", coldAnswer === "served", `${pin}: warm ${warmAnswer}, cold ${coldAnswer}`);
+    if (coldAnswer !== "served") assert.equal(warmAnswer, coldAnswer, pin);
+  }
+});
+
+test("R6-F4: an unchecked effort applies to the preset it was written on, not to the presets serving the same catalog", () => {
+  for (const [a, b] of [["qwen", "qwen-cn"], ["qwen-cn", "qwencloud"], ["zai", "zhipu"], ["zhipu", "zai"], ["moonshot", "moonshot-cn"]]) {
+    const pair = magpieOptions({ candidateModels: [{ model: `${a}/gpt-6.1-sol`, efforts: ["high"] }, { model: `${b}/gpt-6.1-sol`, effort: "high", disabled: true }] });
+    assert.equal(selectBestRoute(PROFILE, pair).targetModel, `${a}/gpt-6.1-sol`, `unchecked on ${b}, offered on ${a}`);
+    const own = magpieOptions({ candidateModels: [{ model: `${a}/gpt-6.1-sol`, efforts: ["high"] }, { model: `${a}/gpt-6.1-sol`, effort: "high", disabled: true }] });
+    assert.equal(selectBestRoute(PROFILE, own).ok, false, `unchecked on ${a} itself`);
+  }
+});
+
+test("R6-F5: the prefix is the longest leading part that names a bundle with the rest, then the shorter ones, then the drop", () => {
+  const win = (name, remaining, resetHours) => ({ name, remaining, used: 100 - remaining, resetHours });
+  const seat = { kind: "subscription", plan: "max", quota: { windows: [win("5 hours", 90, 3), win("7 days", 90, 100)] } };
+  const candidateModels = [{ model: "work/custom-m", presets: ["claude"], provider: "gateway", efforts: ["high"] }, { model: "claude-sonnet-5-5", efforts: ["high"] }];
+  const run = (pin) => selectBestRoute(PROFILE, { now: T0_071, candidateModels, quotas: { "claude/work": seat }, constraintModel: pin });
+  assert.equal(run("claude/work/custom-m").targetModel, "work/custom-m", "the seat claude/work names no custom-m: the preset claude does");
+  assert.equal(run("claude/work/claude-sonnet-5-5").selectedAccount, "claude/work", "the seat names its own row");
+  assert.match(String(run("claude/work/gpt-6.1-sol").refusal), /^pin_not_in_pool/, "named by a prefix with no such row: refused, not dropped");
+});
+
+test("R6-F6: the engine's strip around `:effort`, and a list or object pin quoted as Python's repr", () => {
+  // `\ufeff` is not space to Python: `\ufeff:medium` is a model `\ufeff` at medium, which replaces an earlier effort
+  assert.equal(pinsFixEffort({ constraintModel: "\ufeff:medium" }), true);
+  assert.deepEqual(mergePinOptions({ constraintEffort: "high" }, { constraintModel: "\ufeff:medium" }), { constraintModel: "\ufeff:medium" });
+  assert.deepEqual(mergePinOptions({ constraintEffort: "high" }, { constraintModel: "gpt-6.1-sol:\x1cmedium\x85" }), { constraintModel: "gpt-6.1-sol:\x1cmedium\x85" });
+  const circular = [1];
+  circular.push(circular);
+  const shown = [
+    [["gpt-6.1-sol"], "['gpt-6.1-sol']"],
+    [{ model: "gpt-6.1-sol" }, "{'model': 'gpt-6.1-sol'}"],
+    [[1, true, null, "a'b", { k: [] }], `[1, True, None, "a'b", {'k': []}]`],
+    [circular, "[1, [...]]"],
+  ];
+  for (const [value, repr] of shown) assert.equal(modelPinProblem(value), `invalid_model_pin: model ${repr} must be a non-empty model name.`);
 });
 
 test("R5-F3: an unchecked row listed on a preset turns its effort off on that preset only; a bare unchecked row on every row of the account", () => {

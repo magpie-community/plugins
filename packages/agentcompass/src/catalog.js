@@ -1227,22 +1227,29 @@ export function pyRepr(text) {
 }
 
 /**
- * A value as the engine's message shows it (`{raw!r}`): a string, a boolean, `null` and a number of a JSON request as Python's
- * `repr()` of the value Python decodes; anything else without throwing (a bigint, a circular or prototype-less object).
+ * A value as the engine's message shows it (`{raw!r}`): Python's `repr()` of the value Python decodes from a JSON request, a list
+ * (`['a', 1]`) and an object (`{'k': True}`) item by item, a list or an object inside itself as Python shows it (`[...]`, `{...}`);
+ * anything else without throwing (a bigint, a prototype-less or exotic object by its type).
  */
-function shownValue(raw) {
+function shownValue(raw, seen = new Set()) {
   if (raw === undefined || raw === null) return "None";
   if (typeof raw === "string") return pyRepr(raw);
   if (typeof raw === "boolean") return raw ? "True" : "False";
   if (typeof raw === "bigint") return `${raw}`;
   if (typeof raw === "number") return Number.isNaN(raw) ? "nan" : Number.isFinite(raw) ? `${raw}` : raw > 0 ? "inf" : "-inf";
-  if (Array.isArray(raw) && raw.length === 0) return "[]";
-  try {
-    if (Object.getPrototypeOf(raw) === Object.prototype && Object.keys(raw).length === 0) return "{}";
-    const text = JSON.stringify(raw);
-    if (typeof text === "string") return text;
-  } catch {
-    // shown by its type below
+  if (Array.isArray(raw)) {
+    if (seen.has(raw)) return "[...]";
+    seen.add(raw);
+    const text = `[${raw.map((item) => shownValue(item, seen)).join(", ")}]`;
+    seen.delete(raw);
+    return text;
+  }
+  if (typeof raw === "object" && Object.getPrototypeOf(raw) === Object.prototype) {
+    if (seen.has(raw)) return "{...}";
+    seen.add(raw);
+    const text = `{${Object.entries(raw).map(([key, value]) => `${pyRepr(key)}: ${shownValue(value, seen)}`).join(", ")}}`;
+    seen.delete(raw);
+    return text;
   }
   return Object.prototype.toString.call(raw);
 }

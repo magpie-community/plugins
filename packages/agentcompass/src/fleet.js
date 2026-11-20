@@ -222,11 +222,13 @@ export function expandBundles(poolEntries, fleet, entries) {
 }
 
 /**
- * Where a row is offered: the Magpie presets it is listed under and the catalogs it serves, else the part of its name before the
- * first `/` (`<preset>/<model>`), lowercase; empty for a bare name.
+ * Where a row is offered: the Magpie presets it is listed under; a row listed under none, the catalogs it serves, else the part of
+ * its name before the first `/` (`<preset>/<model>`), lowercase; empty for a bare name. Presets that serve one catalog (`qwen` and
+ * `qwen-cn`, `zai` and `zhipu`) are distinct places: an effort unchecked on one is not unchecked on the other.
  */
 function offeredOn(row) {
-  const ids = [...bundlePresets(row), ...bundleProviders(row)];
+  const presets = bundlePresets(row);
+  const ids = presets.length > 0 ? presets : [...bundleProviders(row)];
   if (ids.length === 0 && String(row.model || "").includes("/")) ids.push(String(row.model).slice(0, String(row.model).indexOf("/")));
   return new Set(ids.map((id) => id.toLowerCase()));
 }
