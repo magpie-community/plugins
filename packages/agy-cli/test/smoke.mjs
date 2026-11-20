@@ -405,8 +405,24 @@ async function prompt(params) {
     const known = new Set(tools.map(tool => tool.name))
     if (!text.includes("<conversation_history>")) {
       const result = await invoke("ToolSearch", { query: "select:loaded_tool" })
+      if (activePromptScope?.cancelled) {
+        session.pendingLoadedTool = true
+        return finish("cancelled after tool search")
+      }
       if (result?.isError) return finish("ToolSearch failed")
     }
+    if (!known.has("loaded_tool")) {
+      log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
+      chunk('Encountered error in tool validation: unknown tool: "loaded_tool" — check spelling\n')
+      return finish("unknown tool")
+    }
+    await invoke("loaded_tool", { text: "grown" })
+    chunk("After loaded tool.\n")
+    return finish("After loaded tool.\n")
+  }
+  if (session.pendingLoadedTool) {
+    session.pendingLoadedTool = false
+    const known = new Set(tools.map(tool => tool.name))
     if (!known.has("loaded_tool")) {
       log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
       chunk('Encountered error in tool validation: unknown tool: "loaded_tool" — check spelling\n')
@@ -2256,11 +2272,14 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const secondRes = await callFetch(second)
   const secondEvents = (await readSSE(secondRes)).events
   const replay = lastOf("user")
-  check("a tool loaded mid-turn starts a new session/prompt",
-    secondRes.status === 200 && inits().length === before + 1 && replay.convId !== old.convId, `got ${secondRes.status}`)
-  check("the new prompt replays the ToolSearch round and sends the user's turn once",
-    replay.text.includes("<conversation_history>") && replay.text.includes("Loaded tool: loaded_tool") &&
-    replay.text.split(ask).length === 2, replay.text)
+  check("a tool loaded mid-turn keeps the live agy session and starts a new session/prompt (#1371)",
+    secondRes.status === 200 && inits().length === before && replay.convId === old.convId,
+    `got ${secondRes.status} inits=${inits().length} before=${before} conv=${replay.convId} old=${old.convId}`)
+  check("ToolSearch result was committed over MCP and list_changed refreshed the grown catalog",
+    mcpResultText(old.convId).includes("Loaded tool: loaded_tool") &&
+    logs().some(event => event.type === "toolsList" && event.reason === "list_changed" && event.convId === old.convId && event.tools.includes("loaded_tool")) &&
+    !replay.text.includes("<conversation_history>"),
+    replay.text)
   check("no call to the loaded tool reaches agy's validator in the old prompt",
     !logs().some(event => event.type === "unknownTool"))
   const calls = toolCalls(secondEvents)
@@ -2271,7 +2290,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const final = (await readSSE(thirdRes)).events
   const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === replay.convId).at(-1)
   check("the loaded tool's result continues the new session with no second replay",
-    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before + 1 &&
+    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
     lastOf("user").convId === replay.convId && delivered?.name === "loaded_tool" &&
     delivered?.result?.content?.[0]?.text === "loaded-tool-result")
 }

@@ -4039,7 +4039,7 @@ function replayHistoryProblem(body, resultBlocks) {
 // the client's history, ready for its next message. False when the session
 // can't take it as it is; the caller then replays, as for a fork.
 async function keepDroppedTurn(proc, turn, opts) {
-  if (proc.toolsGrew(opts.tools) || proc.workDir !== opts.workDir ||
+  if (proc.workDir !== opts.workDir ||
     !sameInstructions(proc.instructions, opts.instructions)) return false
   const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => ({
     block: { tool_use_id: call.id },
@@ -6996,6 +6996,9 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
+    if (answered?.size && !baseParts.length) {
+      baseParts = [{ type: "text", text: "The tool result above has been delivered and the newly loaded tools are now available. Continue." }]
+    }
   } else {
     const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
@@ -7359,10 +7362,11 @@ export const AntigravityBridgePlugin = async () => {
                   const historyMatches = directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
                     : proc.matchesHistory(trailingMessages(body).history)
+                  const toolsGrew = proc.toolsGrew(tools)
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
-                  // cancelled, and the steer goes in as the next prompt.
-                  if ((interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                  // cancelled, and the next prompt runs with the refreshed tool list.
+                  if ((interrupted || imageResult || toolsGrew) && historyMatches && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
@@ -7371,7 +7375,7 @@ export const AntigravityBridgePlugin = async () => {
                         .filter((item) => !item.call.deferred || item.call.lateDelivered)
                         .map((item) => item.block.tool_use_id),
                     )
-                  } else if (interrupted || imageResult || !historyMatches || proc.toolsGrew(tools) ||
+                  } else if (interrupted || imageResult || !historyMatches || toolsGrew ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
@@ -7379,7 +7383,7 @@ export const AntigravityBridgePlugin = async () => {
                     const dropReason = interrupted ? "interrupted"
                       : imageResult ? "image_result"
                       : !historyMatches ? "history_mismatch"
-                      : proc.toolsGrew(tools) ? "tools_grew"
+                      : toolsGrew ? "tools_grew"
                       : proc.workDir !== workDir ? "work_dir"
                       : "instructions"
                     logBridgeEvent(proc, turn, "drop_live", dropReason, acquireOpts, {
@@ -7387,7 +7391,7 @@ export const AntigravityBridgePlugin = async () => {
                       expected_history: Array.isArray(proc.expectedMessages) ? proc.expectedMessages.length : null,
                       // an interrupted turn is dropped when its history differs too
                       history_matches: historyMatches,
-                      tools_grew: !!proc.toolsGrew(tools),
+                      tools_grew: !!toolsGrew,
                       work_dir_changed: proc.workDir !== workDir,
                       instructions_changed: !sameInstructions(proc.instructions, instructions),
                     })
