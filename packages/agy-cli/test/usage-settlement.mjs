@@ -677,13 +677,14 @@ test("单步校准系数与缓存占比只在同一 Proc 内沿用，不同 Proc
   })
 })
 
-test("校准系数被夹在 [0.5, 1.5]", async () => {
+test("校准系数被夹在 [0.5, 1.5]；工具步以实测窗口为准，系数只换算之后新增的部分", async () => {
   for (const [factor, clamped] of [[3, 1.5], [0.1, 0.5]]) {
     await withKit({}, async (kit) => {
       const base = await padBodyToTokens(kit, baseBody({ messages: [{ role: "user", content: `clamp ${factor}` }] }), 4000)
+      const measured = Math.round(4000 * factor)
       kit.prompts.push(async (agent) => {
         await agent.text("first")
-        return { stopReason: "end_turn", usage: { inputTokens: Math.round(4000 * factor), outputTokens: 1 } }
+        return { stopReason: "end_turn", usage: { inputTokens: measured, outputTokens: 1 } }
       })
       const first = await runTurn(kit, base)
       kit.prompts.push(async (agent) => {
@@ -697,9 +698,46 @@ test("校准系数被夹在 [0.5, 1.5]", async () => {
       }
       const second = await runTurn(kit, followUp)
       const total = usageTotal(second.responses[0].usage)
-      assert.ok(Math.abs(total - second.estimates[0] * clamped) <= 2, `系数 ${factor} 应夹到 ${clamped}，实际 ${total / second.estimates[0]}`)
+      const expected = measured + (second.estimates[0] - first.estimates[0]) * clamped
+      assert.ok(Math.abs(total - expected) <= 2, `系数 ${factor}：工具步 ${total}，期望约 ${expected}`)
     })
   }
+})
+
+// agy 自己压缩上下文后，实测窗口远小于客户端历史的估算：按估算乘系数（最低 0.5）
+// 仍会把 agy 已经丢掉的大半报成占用。
+test("agy 压缩过的会话，工具步沿用实测窗口，不按客户端整段历史估算", async () => {
+  await withKit({}, async (kit) => {
+    const base = await padBodyToTokens(kit, baseBody({ messages: [{ role: "user", content: "long conversation" }] }), 40_000)
+    kit.prompts.push(async (agent) => {
+      await agent.text("first")
+      return { stopReason: "end_turn", usage: { inputTokens: 40_000, outputTokens: 1 } }
+    })
+    const first = await runTurn(kit, base)
+    // agy compacted: the next lone call's window is a fraction of the client's history
+    kit.prompts.push(async (agent) => {
+      await agent.text("after agy compacted")
+      return { stopReason: "end_turn", usage: { inputTokens: 6_000, outputTokens: 1 } }
+    })
+    const compactedBody = {
+      ...base,
+      messages: [...base.messages, { role: "assistant", content: plain(first.responses[0].content) }, { role: "user", content: "go on" }],
+    }
+    const compacted = await runTurn(kit, compactedBody)
+    assert.equal(usageTotal(compacted.responses[0].usage), 6_000)
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/d" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+    })
+    const next = await runTurn(kit, {
+      ...compactedBody,
+      messages: [...compactedBody.messages, { role: "assistant", content: plain(compacted.responses[0].content) }, { role: "user", content: "read d" }],
+    })
+    assert.equal(kit.acpSpawns.length, 1)
+    const toolStep = usageTotal(next.responses[0].usage)
+    assert.ok(toolStep < 6_000 + 1_000, `工具步 ${toolStep} 仍按客户端整段历史（约 ${next.estimates[0]}）估算`)
+  })
 })
 
 // ------------------------------------------------------------ SSE 与 JSON 一致性
