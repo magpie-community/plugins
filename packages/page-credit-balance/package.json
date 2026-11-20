@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/page-credit-balance",
+  "version": "1.1.1",
+  "description": "Track provider credit spend, compare peak and off-peak token estimates, and convert balances to a reference provider's credits in Magpie.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib", "page", "ui", "test", "README.md", "README.zh-CN.md", "LICENSE"],
+  "engines": { "magpie": ">=0.1.4402" },
+  "keywords": ["magpie", "magpie-page", "magpie-plugin", "credits", "quota", "tokens"],
+  "license": "MIT",
+  "scripts": { "test": "node --test" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-credit-balance"
+  },
+  "homepage": "https://github.com/crbj621/plugins",
+  "magpie": {
+    "name": "Credit Balance & Tokens",
+    "summary": {
+      "en": "Match model names across providers, compare peak and off-peak token estimates, convert balances to one provider's credits, and review 24-hour, 7-day and 30-day spend by provider and model.",
+      "zh": "自选跨供应商型号映射，对比高峰和低峰可用 Token，把余额折算为同一家积分，并按供应商和型号查看 24 小时、7 日和 30 日消耗。"
+    },
+    "page": {
+      "title": "积分与 Token 余量",
+      "titles": { "en": "Credit Balance & Tokens", "zh": "积分与 Token 余量" },
+      "file": "page/index.html",
+      "icon": "page/icon.png",
+      "service": { "port": 3498, "option": "port" }
+    },
+    "options": { "port": 3498 },
+    "permissions": []
+  }
+}
