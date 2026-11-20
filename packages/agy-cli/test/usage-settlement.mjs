@@ -1326,8 +1326,10 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
     assert.ok(secondToolElapsedMs < 500, `同次生成续接工具耗时 ${secondToolElapsedMs.toFixed(0)}ms，不应空转等待 1000ms`)
     assert.deepEqual(plain(responses.map((r) => r.usage)), [
       { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 1255, output_tokens_details: { thinking_tokens: 850 } },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      // 同次生成的续接响应：无新输入/输出，但上下文仍是该生成的整窗（读自缓存），
+      // 全零会让 dsh 等客户端的上下文占用跳成 0%（@seven_7cx）
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
       { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 509, output_tokens_details: { thinking_tokens: 171 } },
       { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 640, output_tokens_details: { thinking_tokens: 283 } },
     ])
@@ -1679,7 +1681,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
       assert.equal(responses.length, 3)
       assert.deepEqual(plain(responses.map((r) => r.usage)), [
         { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 32, output_tokens_details: { thinking_tokens: 8 } },
-        { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+        { input_tokens: 0, cache_read_input_tokens: 1800 + 18_200, cache_creation_input_tokens: 0, output_tokens: 0 },
         { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 553, output_tokens_details: { thinking_tokens: 15 } },
       ])
     } finally {
