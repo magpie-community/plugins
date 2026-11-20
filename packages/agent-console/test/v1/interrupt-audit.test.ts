@@ -1,20 +1,20 @@
-// Transport matrix: which of the 8 catalog agents share ACP session/cancel vs a custom interrupt path.
+// Transport matrix: which of the 9 catalog agents share ACP session/cancel vs a custom interrupt path.
 import { describe, expect, it } from "vitest";
 import { PROVIDER_CATALOG } from "../../daemon/src/providers/catalog.js";
 import { isAcpCatalogId, acpConfigForEntry } from "../../daemon/src/providers/acp/specs.js";
 
 describe("interrupt transport audit", () => {
-  it("catalog has the 8 supported agents", () => {
+  it("catalog has the 9 supported agents", () => {
     expect(PROVIDER_CATALOG.map((e) => e.id)).toEqual([
-      "claude", "codex", "cursor", "copilot", "opencode", "pi", "devin", "dsh",
+      "claude", "codex", "cursor", "copilot", "opencode", "pi", "devin", "dsh", "trae",
     ]);
   });
 
-  it("Claude and Codex are custom; the other six share ACP AcpSession", () => {
+  it("Claude and Codex are custom; the other seven share ACP AcpSession", () => {
     const byId = Object.fromEntries(PROVIDER_CATALOG.map((e) => [e.id, e]));
     expect(isAcpCatalogId("claude")).toBe(false);
     expect(isAcpCatalogId("codex")).toBe(false);
-    for (const id of ["cursor", "copilot", "opencode", "pi", "devin", "dsh"]) {
+    for (const id of ["cursor", "copilot", "opencode", "pi", "devin", "dsh", "trae"]) {
       expect(isAcpCatalogId(id)).toBe(true);
       expect(acpConfigForEntry(byId[id], "test")).not.toBeNull();
     }

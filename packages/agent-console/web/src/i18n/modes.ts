@@ -4,7 +4,7 @@ import { t } from "./index.js";
 /** auto: 全部自动同意 (bypassPermissions), drawn with the shield-check in the warning colour (#727 review 1) */
 export type PermissionModeOption = { id: Mode; label: string; desc: string; danger?: boolean; auto?: boolean };
 
-const AUTO_DESC_IDS = new Set(["claude", "codex", "copilot", "devin", "cursor", "opencode", "pi"]);
+const AUTO_DESC_IDS = new Set(["claude", "codex", "copilot", "devin", "cursor", "opencode", "pi", "trae"]);
 const PER_REQUEST_AUTO_IDS = new Set(["cursor", "opencode", "dsh"]);
 
 /** What 全部自动同意 really does for this Agent: sandbox off / skips all permission checks / the console answers allow-once */

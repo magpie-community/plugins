@@ -26,6 +26,9 @@ describe("composerModeOptions", () => {
     expect(m.find((x) => x.id === "default")?.label).toBe("只读");
     const claude = composerModeOptions("claude", ["plan", "default", "acceptEdits", "bypassPermissions"]).find((x) => x.auto)!;
     expect(claude.desc).toContain("跳过所有权限检查");
+    // Trae CLI has its own bypass_permissions mode: say so instead of the per-request fallback
+    const trae = composerModeOptions("trae", ["plan", "default", "bypassPermissions"]).find((x) => x.auto)!;
+    expect(trae.desc).toContain("bypass_permissions");
     for (const p of ["cursor", "opencode", "dsh", "mock"]) {
       expect(composerModeOptions(p, ["default", "bypassPermissions"]).find((x) => x.auto)!.desc).toContain("允许一次");
     }
@@ -46,7 +49,7 @@ describe("composerModeOptions", () => {
     for (const p of ["cursor", "opencode", "dsh", undefined, "mock"]) {
       expect(autoApproveBannerDesc(p), p).toContain(phrase);
     }
-    for (const p of ["codex", "claude", "pi", "copilot", "devin"]) {
+    for (const p of ["codex", "claude", "pi", "copilot", "devin", "trae"]) {
       expect(autoApproveBannerDesc(p), p).not.toContain(phrase);
     }
   });

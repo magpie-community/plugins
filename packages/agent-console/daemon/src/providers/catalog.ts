@@ -1,7 +1,8 @@
 import { tr } from "../util/i18n.js";
-/** Provider catalog (fixed, 8 entries).
+/** Provider catalog (fixed, 9 entries).
  *  status: verified=accepted on a real machine | experimental=usable but not guaranteed | planned=integration not confirmed
- *  All 8 are currently verified; default toggle: verified ones are on by default (see enabled.ts). */
+ *  8 are currently verified; trae is experimental (ACP handshake verified, a model run needs a signed-in traecli).
+ *  default toggle: verified ones are on by default (see enabled.ts). */
 export type ProviderStatus = "verified" | "experimental" | "planned";
 
 export type ProviderCatalogEntry = {
@@ -21,6 +22,8 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   { id: "pi", name: "Pi", bins: ["pi-acp", "pi", "pi-coding-agent"], installHint: "npm i -g pi-acp", status: "verified" },
   { id: "devin", name: "Devin CLI", bins: ["devin"], installHint: "https://docs.devin.ai/cli", status: "verified" },
   { id: "dsh", name: "dsh", bins: ["dsh"], installHint: "npm i -g @deepseek-ai/dsh", status: "verified" },
+  // Trae CLI: ACP over `traecli acp serve`; experimental until a signed-in run is confirmed on a real machine
+  { id: "trae", name: "Trae CLI", bins: ["traecli", "trae-cli", "trae-agent"], installHint: "https://docs.trae.ai/ide/cli", status: "experimental" },
 ];
 
 export function catalogById(id: string): ProviderCatalogEntry | undefined {
