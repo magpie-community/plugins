@@ -130,6 +130,20 @@ test("A6: findAgy searches again when PATH changes instead of keeping the first 
   })
 })
 
+test("A6b: an agy removed after it was found is not found again", async () => {
+  // magpie's sign-in asks whether agy is there and installs it when not;
+  // a cached path to a removed agy answered yes and the sign-in failed
+  // with ENOENT spawning it (magpie's container, 11-15)
+  await withKit({ agyPath: null }, async (kit) => {
+    const findAgy = kit.module.__agyTestFindAgy
+    const agy = kit.makeFakeAgy("gone")
+    kit.env.PATH = path.dirname(agy)
+    assert.equal(findAgy(), agy)
+    fs.rmSync(agy)
+    assert.equal(findAgy(), null, "the removed agy's cached path was handed out")
+  })
+})
+
 // ------------------------------------------------ A7 no-progress repeat limit
 
 async function pendingToolTurn(kit, body) {
@@ -171,6 +185,49 @@ test("A7: the third unmatched repeat against a quiet turn replays the request's 
   })
 })
 
+// A routing group served the held call's result on another provider, whose
+// own tool round then failed back to agy-cli (#1051).
+function movedOnRound(body, first, foreignId) {
+  const use = first.content.find((block) => block.type === "tool_use")
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content: [use] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: use.id, content: "answered elsewhere" }] },
+      { role: "assistant", content: [{ type: "text", text: "another provider's step" },
+        { type: "tool_use", id: foreignId, name: "Read", input: { path: "/other" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: foreignId, content: "FOREIGN RESULT" }] },
+    ],
+  }
+}
+
+test("A7: a turn the conversation went on without is replayed at the first unmatched request (#1051)", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "FOREIGN RESULT": "replayed after the group came back" })
+    const body = baseBody({ metadata: { user_id: "moved-on" }, messages: [{ role: "user", content: "TOOL start" }] })
+    const first = await pendingToolTurn(kit, body)
+    const response = await kit.request(movedOnRound(body, first, "toolu_01AbCdEfGhIjKlMnOpQrStUv"))
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const parsed = await readSse(response)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(parsed.content.find((block) => block.type === "text")?.text, "replayed after the group came back")
+    assert.equal(kit.acpSpawns.length, 2, "the replay runs on a fresh process")
+  })
+})
+
+test("A7: a later round with the bridge's own id shape is not taken as the conversation moving on (#1051)", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const body = baseBody({ metadata: { user_id: "moved-on-own-shape" }, messages: [{ role: "user", content: "TOOL start" }] })
+    const first = await pendingToolTurn(kit, body)
+    const response = await kit.request(movedOnRound(body, first, "toolu_0123456789abcdef01234567"))
+    assert.equal(response.status, 409)
+    await response.text()
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
 test("A7: a third repeat that cannot be replayed ends in a terminal 400 with attempts and turn_id", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)
@@ -208,6 +265,67 @@ test("A9: tool calls agy issues across adjacent event-loop turns leave in one re
     const first = await readSse(await kit.request(body))
     assert.equal(first.stopReason, "tool_use")
     assert.deepEqual(first.content.filter((block) => block.type === "tool_use").map((block) => block.input.path), ["/a", "/b", "/c"])
+    const final = await readSse(await kit.request(continueWithToolResults(body, first)))
+    assert.equal(final.stopReason, "end_turn")
+  })
+})
+
+// ------------------------------------- A9b a batching call split by the client
+
+const BATCH_TOOL = {
+  name: "tool_call",
+  description: "Run several tools in one call.",
+  input_schema: { type: "object", properties: { calls: { type: "array", items: { type: "object" } } }, required: ["calls"] },
+}
+
+// Hermes Agent runs tool_call({calls: [a, b, c]}) and writes it into its
+// history as three tool_calls of one entry each, the first under the bridge's
+// id and the others under ids of its own, each with a result (plugins#1150).
+function splitByClient(body, first, results) {
+  const use = first.content.find((block) => block.type === "tool_use")
+  const ids = [use.id, "call_0a1b2c3d4e5f", "call_6a7b8c9d0e1f"]
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content: use.input.calls.map((entry, index) => ({ type: "tool_use", id: ids[index], name: use.name, input: { calls: [entry] } })) },
+      { role: "user", content: ids.map((id, index) => ({ type: "tool_result", tool_use_id: id, content: results[index] })) },
+    ],
+  }
+}
+
+test("A9b: a batching call the client split into one call per entry is one result for agy (#1150)", async () => {
+  await withKit({}, async (kit) => {
+    let reply
+    const calls = [{ name: "web_search", arguments: { q: "a" } }, { name: "web_search", arguments: { q: "b" } }, { name: "terminal", arguments: { cmd: "c" } }]
+    kit.prompts.push(async (agent) => {
+      reply = await agent.tool("tool_call", { calls })
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    })
+    const body = baseBody({ metadata: { user_id: "split" }, tools: [BATCH_TOOL] })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.stopReason, "tool_use")
+    const response = await kit.request(splitByClient(body, first, ["result a", "result b", "result c"]))
+    const status = response.status
+    const final = status === 200 ? await readSse(response) : await response.text()
+    assert.equal(status, 200, typeof final === "string" ? final : "")
+    assert.equal(final.stopReason, "end_turn")
+    const text = (reply?.result?.content ?? reply?.content ?? []).map((part) => part.text).join("\n")
+    assert.match(text, /result a[\s\S]*result b[\s\S]*result c/)
+  })
+})
+
+test("A9b: separate calls the bridge made are never folded into one (#1150)", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tools([["tool_call", { calls: [{ name: "x" }] }], ["tool_call", { calls: [{ name: "y" }] }]])
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    })
+    const body = baseBody({ metadata: { user_id: "apart" }, tools: [BATCH_TOOL] })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.content.filter((block) => block.type === "tool_use").length, 2)
     const final = await readSse(await kit.request(continueWithToolResults(body, first)))
     assert.equal(final.stopReason, "end_turn")
   })
@@ -405,6 +523,7 @@ test("A16: a replay of more than 128 KiB of history stays within 112 KiB and kee
     assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
     assert.ok(prompt.includes("NEWEST assistant reply"), "the newest history is kept")
     assert.ok(prompt.includes("[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"))
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"), "non-loop replay adds no loop handoff note")
     assert.ok(prompt.includes("bytes of this history block omitted"), "oversized history blocks keep only head and tail")
     assert.ok(prompt.includes('Never output "[tool call ...]" text'))
   })
@@ -470,10 +589,147 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
     assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
     const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
-    assert.equal(prompt.split(note).length - 1, 2, "one note before the pinned prompt, one after it")
+    // the turn before the loop (ANCHOR reply) takes room the steps left, so
+    // the one gap is between the loop's prompt and its newest steps (plugins#1401)
+    assert.ok(prompt.includes("ANCHOR reply"), "the turn before the loop is kept")
+    assert.equal(prompt.split(note).length - 1, 1, "one note, after the loop's prompt")
     assert.ok(prompt.indexOf("ANCHOR opening request") < prompt.indexOf("TASK START") &&
       prompt.indexOf("TASK START") < prompt.indexOf("step-15 tail"), "the kept history stays in order")
   })
+})
+
+test("A16: a trimmed replay keeps the task a nudge in a later turn refers back to (plugins#1401)", async () => {
+  // dsh, a long investigation: the assistant answered "still checking" and the
+  // user pushed on with "快点" twice, so the loop that runs now opened on a
+  // nudge, and the real task sits in an earlier, completed turn.
+  for (const lastIsResult of [true, false]) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+      const messages = [
+        { role: "user", content: "ANCHOR an older test message" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "REAL TASK: 调查 magpie 路由组配置，给出配置方案" },
+      ]
+      let step = 0
+      const steps = (count) => {
+        for (let index = 0; index < count; index++, step++) {
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${step}`, name: "Read", input: { path: `/repo/${step}.txt` } }] })
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${step}`, content: big(`step-${step}`) }] })
+        }
+      }
+      steps(6)
+      messages.push({ role: "assistant", content: "还在查，马上给结果" })
+      messages.push({ role: "user", content: "快点" })
+      steps(6)
+      messages.push({ role: "assistant", content: "继续检查上下文" })
+      messages.push({ role: "user", content: "NUDGE 别查了，直接给方案" })
+      steps(10)
+      if (lastIsResult) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
+      } else {
+        messages.push({ role: "assistant", content: "还差一点" })
+        messages.push({ role: "user", content: "LAST 继续" })
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `budget-nudge-${lastIsResult}` }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("REAL TASK: 调查 magpie 路由组配置"), "the task the nudges refer back to is kept")
+      assert.ok(prompt.includes(`step-${step - 1} tail`), "the newest steps are kept")
+      assert.ok(prompt.includes(lastIsResult ? "LAST RESULT" : "LAST 继续"))
+      assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf("NUDGE") || !prompt.includes("NUDGE"), "kept history stays in order")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf(`step-${step - 1} tail`), "kept history stays in order")
+    })
+  }
+})
+
+// plugins#1401, sevenqcx (DSH, Gemini 4 Neon): turn 1 pasted a narration
+// and asked to list a folder, pull three sounds out, stop, and write the
+// revised narration (ending "青瓦晨雾") only after "继续". Turn 2 was "继续"
+// alone, on a new session (session_new reason=history). The replay clipped the
+// middle out of the user's own long message, as it does a tool result's, and
+// pinned an older task at 4 KiB, so the requirements in the middle were gone.
+function narrationConversation({ narrationRepeats, toolSteps }) {
+  const narration = "江南的清晨，雨声落在青石板上，橹声从河心传来，远处有鸟鸣。".repeat(narrationRepeats)
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  const messages = [
+    { role: "user", content: "ANCHOR 写一段江南旁白" },
+    { role: "assistant", content: "ANCHOR 好的" },
+    { role: "user", content: [
+      { type: "text", text: `请先列出 /Users/x/audio 目录。之前的旁白：\n${narration}\nREQ-NARRATION 修改要求：语气更舒缓，保留三个声音，最后一句以“青瓦晨雾”结尾。\n${narration}\n先提取三个声音，然后停下，等我说“继续”再交付修改后的旁白。` },
+      { type: "text", text: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nworkspace: /Users/x" },
+    ] },
+  ]
+  for (let step = 0; step < toolSteps; step++) {
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_n${step}`, name: "Bash", input: { command: `ls /Users/x/audio/${step}` } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_n${step}`, content: big(`step-${step}`) }] })
+  }
+  messages.push({ role: "assistant", content: "SOUNDS 三个声音：雨声、橹声、鸟鸣。我先停下，等你说继续。" })
+  messages.push({ role: "user", content: "继续" })
+  return messages
+}
+
+test("A16: a replay after \"继续\" keeps the requirements in the middle of the user's long request (plugins#1401)", async () => {
+  // 150 repeats: a ~26 KB request inside the kept tail; 60 with 14 steps: a
+  // ~10 KB request that only a pin keeps.
+  for (const shape of [{ narrationRepeats: 150, toolSteps: 8 }, { narrationRepeats: 60, toolSteps: 14 }]) {
+    const stderr = captureStderr()
+    let prompt
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const messages = narrationConversation(shape)
+        const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `narration-${shape.toolSteps}` }, messages })))
+        assert.equal(parsed.stopReason, "end_turn")
+        prompt = prompts(kit).at(-1)
+      })
+    } finally {
+      stderr.restore()
+    }
+    const label = JSON.stringify(shape)
+    assert.ok(bytes(prompt) <= 112 * 1024, `${label}: initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("REQ-NARRATION 修改要求"), `${label}: the requirements are in the replay`)
+    assert.ok(prompt.includes("SOUNDS 三个声音"), `${label}: the newest reply is kept`)
+    assert.ok(!prompt.includes("step-0 head") || shape.toolSteps < 10, `${label}: tool output gave way first`)
+    const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+    assert.ok(replay, `${label}: a replay row is logged`)
+    assert.equal(replay.messages_before, shape.toolSteps * 2 + 4)
+    assert.equal(replay.user_before, 2)
+    assert.equal(replay.last_user_index[0], 2)
+    assert.deepEqual(replay.last_user_kept.slice(0, 1), [true])
+    assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
+    assert.ok(replay.bytes_after <= replay.bytes_before && replay.messages_after <= replay.messages_before)
+    const row = JSON.stringify(replay)
+    for (const secret of ["江南", "REQ-NARRATION", "ANCHOR", "继续", "/Users/x"]) {
+      assert.ok(!row.includes(secret), `${label}: the replay row carries no content (${secret})`)
+    }
+  }
+})
+
+test("A16: a replay into a new session after the history changed logs its counts under that reason (plugins#1401)", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const first = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages: [{ role: "user", content: "ANCHOR 写一段江南旁白" }] })))
+      assert.equal(first.stopReason, "end_turn")
+      const messages = narrationConversation({ narrationRepeats: 150, toolSteps: 8 })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.ok(prompts(kit).at(-1).includes("REQ-NARRATION 修改要求"))
+    })
+  } finally {
+    stderr.restore()
+  }
+  const sessionNew = stderr.lines.filter((row) => row.action === "session_new").at(-1)
+  const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+  assert.equal(sessionNew.reason, "history")
+  assert.equal(replay.reason, "history")
+  assert.equal(replay.conv, sessionNew.conv)
+  assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
 })
 
 test("A16: a replay that fits the budget keeps every big history block whole (#1055)", async () => {
@@ -518,7 +774,7 @@ test("A16: mid tool loop, the pinned prompt is the user's task, not a Claude Cod
       for (let index = 0; index < 16; index++) {
         messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
         messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${index}`, content: big(`step-${index}`) }] })
-        if (index === 3) messages.push({ role: "user", content: meta })
+        if (index === 1) messages.push({ role: "user", content: meta })
       }
       messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
       messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
@@ -527,7 +783,287 @@ test("A16: mid tool loop, the pinned prompt is the user's task, not a Claude Cod
       const prompt = prompts(kit).at(-1)
       assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
       assert.ok(prompt.includes("TASK START: rename parseConfig to loadConfig everywhere"), `the loop's prompt is kept past ${JSON.stringify(meta).slice(0, 40)}`)
+      const noteText = typeof meta === "string" ? meta : meta[0].text
+      assert.ok(!prompt.includes(noteText), "the note is not pinned as the loop's task")
       assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
+    })
+  }
+})
+
+test("A16: mid tool loop, DeepSeek Harness runtime metadata after a tool result does not displace the user's task", async () => {
+  const metaSamples = [
+    "Time sampled while preparing turn 19, step 1: 2026-11-13T15:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: 12m 17s.",
+    "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00+08:00[Asia/Shanghai]\nElapsed since the preceding step context: 10m 2s.",
+    "Time sampled while preparing turn 1, step 1: 2026-11-13T08:00:00Z",
+    "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\ncwd: /repo\nmode: default",
+    "Current runtime context: none. Earlier runtime-context snapshots no longer apply.",
+    "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.",
+    "Repeated tool call detected:\n- tool: Read\n- consecutive_calls: 5\n- arguments: {\"path\":\"a\"}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+    "The user switched this session to plan mode.",
+    "The user switched this session back to the default mode.",
+  ]
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  for (const meta of metaSamples) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const messages = [
+        { role: "user", content: "ANCHOR opening request" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "TASK START: rename parseConfig to loadConfig everywhere" },
+      ]
+      for (let index = 0; index < 16; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_dsh_meta_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_dsh_meta_${index}`, content: big(`step-${index}`) }] })
+        if (index === 1) messages.push({ role: "user", content: meta })
+      }
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_dsh_meta_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_dsh_meta_last", content: "LAST RESULT" }] })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "dsh-meta" }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("TASK START: rename parseConfig to loadConfig everywhere"), `kept past ${meta.slice(0, 40)}`)
+      assert.ok(!prompt.includes(meta), "the note is not pinned as the loop's task")
+      assert.ok(prompt.includes("LAST RESULT"))
+    })
+  }
+})
+
+test("A16: mid tool loop with an opening handoff note and DeepSeek Harness companions keeps the whole user turn and marks the opening turn done", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const handoff = "[Handoff · part 5]\n" + "Morning summary line. ".repeat(700) +
+      "\n## Progress\n### In progress\n- Earlier task: draft the release summary\n\nYou were in the middle of a turn. Go on with it now from where you stopped."
+    const realPrompt = "REAL TASK: fix the race condition in the session router and summarize what changed"
+    const skillCompanion = '<skill_content name="router">\n# Router conventions\nKeep existing exports.\n</skill_content>'
+    const timeCompanion = "Time sampled while preparing turn 19, step 1: 2026-11-13T15:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: 12m 17s."
+    const messages = [
+      { role: "user", content: handoff },
+      { role: "assistant", content: "Turn 1 reply: release summary drafted." },
+      { role: "user", content: "Follow-up question from midday" },
+      { role: "assistant", content: "Turn 2 reply: midday question answered." },
+      { role: "user", content: realPrompt },
+      { role: "user", content: skillCompanion },
+      { role: "user", content: timeCompanion },
+    ]
+    const midLoopMeta = [
+      "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00+08:00[Asia/Shanghai]\nElapsed since the preceding step context: 10m 2s.",
+      "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\ncwd: /repo",
+      "The user switched this session back to the default mode.",
+      "Repeated tool call detected:\n- tool: Read\n- consecutive_calls: 5\n- arguments: {\"path\":\"/repo/a.txt\"}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_dsh_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_dsh_${index}`, content: big(`step-${index}`) }] })
+      if (index < midLoopMeta.length) messages.push({ role: "user", content: midLoopMeta[index] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_dsh_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_dsh_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "dsh-handoff" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("[Handoff · part 5]"), "opening anchor stays present")
+    assert.ok(prompt.includes(`Human: ${realPrompt}`), "real Turn 19 user prompt stays pinned")
+    assert.ok(prompt.includes("Router conventions"), "skill companion in the same turn stays attached")
+    const between = prompt.slice(prompt.indexOf(realPrompt), prompt.indexOf("Router conventions"))
+    assert.ok(!between.includes("omitted"), "no omission note is inserted inside a kept user turn")
+    assert.ok(prompt.includes("The opening message above, and any resume note in it, belongs to an earlier turn that is already done."),
+      "omitted history disambiguates prior handoff note from active loop")
+    assert.ok(prompt.includes("LAST RESULT"), "current turn result stays intact")
+  })
+})
+
+test("A16: mid tool loop keeps a multi-message user turn whole without an omission marker inside it", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "USER PART 1: inspect group handler" },
+      { role: "user", content: "Time sampled while preparing turn 2, step 1: 2026-11-13T15:24:33Z" },
+      { role: "user", content: "USER PART 2: fix the null check and report back" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_multi_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_multi_${index}`, content: big(`multi-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_multi_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_multi_last", content: "LAST RESULT" }] })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "multi-user" }, messages })))
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: USER PART 1: inspect group handler"))
+    assert.ok(prompt.includes("Human: USER PART 2: fix the null check and report back"))
+    const between = prompt.slice(prompt.indexOf("USER PART 1"), prompt.indexOf("USER PART 2"))
+    assert.ok(between.includes("Time sampled while preparing turn 2, step 1"))
+    assert.ok(!between.includes("omitted"), "meta message between user parts leaves the run contiguous")
+  })
+})
+
+test("A16: mid tool loop keeps both the loop-opening prompt and a mid-loop user steer", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+    ]
+    for (let index = 0; index < 4; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_steer_a_${index}`, name: "Read", input: { path: `/repo/a${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_steer_a_${index}`, content: big(`sa-${index}`) }] })
+    }
+    messages.push({ role: "user", content: "MID LOOP STEER: keep backward-compatible exports" })
+    messages.push({ role: "user", content: "Time sampled while preparing turn 2, step 5: 2026-11-13T15:35:00Z" })
+    for (let index = 0; index < 14; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_steer_b_${index}`, name: "Read", input: { path: `/repo/b${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_steer_b_${index}`, content: big(`sb-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_steer_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_steer_last", content: "LAST RESULT" }] })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "loop-steer" }, messages })))
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), "mid-loop steer is kept")
+    assert.ok(prompt.indexOf("LOOP OPENER") < prompt.indexOf("MID LOOP STEER"))
+  })
+})
+
+test("A16: turn-1 oversized tool loop does not mark its own opening handoff as already done", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      {
+        role: "user",
+        content: "[Handoff · part 5]\nCarry on this task.\n\nYou were in the middle of a turn. Go on with it now from where you stopped.",
+      },
+      { role: "user", content: "Time sampled while preparing turn 1, step 1: 2026-11-13T08:19:00Z" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_t1_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_t1_${index}`, content: big(`t1-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_t1_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_t1_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "turn1-handoff" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("[Handoff · part 5]"), "opening handoff stays pinned")
+    assert.ok(prompt.includes("LAST RESULT"), "current result stays present")
+    assert.ok(!prompt.includes("already done"), "must not tell the model turn-1 opening handoff is already done")
+  })
+})
+
+test("A16: a tool loop opened by a meta-only notification neither pins a prior turn's prompt nor marks an active Human request", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "OLD TASK 2 (already done)" },
+      { role: "assistant", content: "done 2" },
+      { role: "user", content: "<task-notification><status>completed</status><summary>worker finished</summary></task-notification>" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_meta_loop_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_meta_loop_${index}`, content: big(`ml-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_meta_loop_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_meta_loop_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "meta-opened-loop" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(!prompt.includes("OLD TASK 2 (already done)"), "must not pin an already-completed earlier turn")
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"),
+      "must not emit opening-done note when no active-loop user task is pinned")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+test("A16: when a tight budget cannot fit the loop-opening prompt, the opening-done note is omitted", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(8 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const hugeOpener = "HUGE OPENER " + "x".repeat(8 * 1024)
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: hugeOpener },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_tight_0", name: "Read", input: { path: "/repo/0.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_tight_0", content: "step 0 output" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_tight_last", name: "Read", input: { path: "/repo/last.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_tight_last", content: "y".repeat(4 * 1024) + " LAST RESULT" }] },
+    ]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "tight-opener" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 8 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("ANCHOR opening request"), "anchor fits tight room")
+    assert.ok(!prompt.includes("HUGE OPENER"), "oversized opener did not fit")
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"),
+      "must not emit opening-done note when opener did not fit")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+test("A16: under a tight budget, a mid-loop user steer beats an opening meta companion", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(8 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const bigReminder = "<system-reminder>" + "r".repeat(4200) + "</system-reminder>"
+    const steer = "MID LOOP STEER: keep backward-compatible exports " + "s".repeat(900)
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+      { role: "user", content: bigReminder },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_ts_0", name: "Read", input: { path: "/repo/0.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ts_0", content: "z".repeat(4000) }] },
+      { role: "user", content: steer },
+      { role: "user", content: "Time sampled while preparing turn 2, step 2: 2026-11-13T15:35:00Z" },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_ts_last", name: "Read", input: { path: "/repo/last.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ts_last", content: "y".repeat(3000) + " LAST RESULT" }] },
+    ]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "tight-steer" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 8 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), "mid-loop steer beats opening reminder")
+    assert.ok(!prompt.includes(bigReminder), "oversized opening reminder gave way to fit the steer")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+// #896: agy reports the run to its vendor unless it is told not to; the flag
+// is passed only to an agy whose own acp --help lists it.
+const TELEMETRY_HELP = "Usage of acp:\n  --disable-telemetry\n    \tdisable telemetry (default false)\n"
+
+test("#896: an agy whose acp --help lists --disable-telemetry starts with telemetry off", async () => {
+  await withKit({ acpHelp: TELEMETRY_HELP }, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-listed" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
+  })
+})
+
+test("#896: an agy without the flag is never given it, and AGY_BRIDGE_TELEMETRY=1 keeps agy's own default", async () => {
+  for (const options of [{}, { acpHelp: TELEMETRY_HELP, env: { AGY_BRIDGE_TELEMETRY: "1" } }]) {
+    await withKit(options, async (kit) => {
+      scriptedAgent(kit)
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-unlisted" },
+        messages: [{ role: "user", content: "hello" }] })))
+      assert.equal(reply.stopReason, "end_turn")
+      assert.ok(!kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
     })
   }
 })
@@ -543,6 +1079,11 @@ function markerAgent(kit, chunks) {
 
 function replyText(parsed) {
   return parsed.content.filter((block) => block.type === "text").map((block) => block.text).join("")
+}
+
+function sseError(text) {
+  const line = text.split("\n").findLast((item) => item.startsWith("data:"))
+  return JSON.parse(line.slice(5)).error
 }
 
 test("#1052: the model quoting agy's error marker mid-reply does not end a healthy turn", async () => {
@@ -578,3 +1119,1221 @@ test("#1052: agy's own marker at the end of the prompt still fails the turn", as
     })
   }
 })
+
+test("#1124: agy's retry banner after an empty first call never reaches the client", async () => {
+  // The reporter's turn: thinking, agy's banner, thinking again, then the retry's text.
+  const banner = "\n⚠ Model produced invalid output."
+  for (const [steps, want] of [
+    [[["thought", "stay quiet"], ["text", banner], ["thought", "suggest one"], ["text", "梳理一下事件完整时间线"]], "梳理一下事件完整时间线"],
+    [[["text", banner + "\n"], ["text", "the retry's answer"]], "the retry's answer"],
+    [[["text", "\n⚠ Model produced "], ["text", "invalid output."], ["text", "\nretry"]], "retry"],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        for (const [kind, text] of steps) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "retry-banner" },
+        messages: [{ role: "user", content: "suggest" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), want)
+    })
+  }
+})
+
+// fnckerpoi on X (DSH 0.2.2-rc.3 through billion-context, agy-cli 0.1.91):
+// agy's empty-output retry came back empty too, agy ended the turn on
+// end_turn with only thinking, and billion-context's continuation nudge got
+// the same, "the turn degenerated again after the continuation nudge".
+const EMPTY_BANNER = "\n⚠ Model produced invalid output."
+
+function sessionsOpened(kit) {
+  return kit.acpLog.filter((entry) => entry.method === "session/new" || entry.method === "session/load").length
+}
+
+test("an empty ending is asked again in the same session, and its answer is the reply", async () => {
+  for (const empty of [
+    [["thought", "the next step is to read the file"]],
+    [["thought", "stay quiet"], ["text", EMPTY_BANNER], ["thought", "still nothing"]],
+    [["text", EMPTY_BANNER]],
+    [["thought", "thinking"], ["text", "  \n"]],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        if (promptText({ prompt: agent.prompt }).includes("Your last reply was empty")) {
+          await agent.text("the answer after asking again")
+          return { stopReason: "end_turn" }
+        }
+        for (const [kind, text] of empty) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "empty-ending" },
+        messages: [{ role: "user", content: "fix the bug" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed).trim(), "the answer after asking again")
+      const sent = prompts(kit)
+      assert.equal(sent.length, 2, "asked once more")
+      assert.ok(!/magpie|agy|antigravity|gemini/i.test(sent[1]), "the words sent upstream name nobody")
+      assert.equal(sessionsOpened(kit), 1, "in the same session, not a replay")
+    })
+  }
+})
+
+test("an ending still empty after asking again is an error, and the session is kept", async () => {
+  await withKit({}, async (kit) => {
+    let empty = true
+    kit.defaultPrompt = async (agent) => {
+      if (!empty) {
+        await agent.text("answered on the client's retry")
+        return { stopReason: "end_turn" }
+      }
+      await agent.thought("hmm")
+      await agent.text(EMPTY_BANNER)
+      await agent.thought("hmm again")
+      return { stopReason: "end_turn" }
+    }
+    // a conversation under way: a first message sent again opens a new session anyway
+    const body = baseBody({ metadata: { user_id: "empty-twice" }, messages: [
+      { role: "user", content: "look at the bug" },
+      { role: "assistant", content: [{ type: "text", text: "it is in parse()" }] },
+      { role: "user", content: "fix the bug" },
+    ] })
+    const parsed = await readSse(await kit.request(body))
+    assert.ok(parsed.error, "an error, not a finished reply that said nothing")
+    assert.match(parsed.error.message, /no text and no tool call/)
+    assert.match(parsed.error.message, /Model produced invalid output/)
+    assert.notEqual(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 2, "asked once more, not again and again")
+    empty = false
+    const again = await readSse(await kit.request(body))
+    assert.equal(again.error, null)
+    assert.equal(replyText(again), "answered on the client's retry")
+    assert.equal(sessionsOpened(kit), 1, "the client's retry continues in the kept session")
+  })
+})
+
+test("a bare empty ending, with no thinking, is a reply and is not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async () => ({ stopReason: "end_turn" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "bare-empty" },
+      messages: [{ role: "user", content: "say nothing" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 1)
+  })
+})
+
+test("a max_tokens ending with only thinking is passed through, not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.thought("a long thought")
+      return { stopReason: "max_tokens" }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "max-tokens-thought" },
+      messages: [{ role: "user", content: "think hard" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "max_tokens")
+    assert.equal(prompts(kit).length, 1)
+  })
+})
+
+test("#1124: the model quoting the retry banner mid-line keeps it", async () => {
+  const chunks = ["agy printed `⚠ Model produced invalid output.` and", " then retried."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "retry-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// #892: agy's output cap, as it reaches the reply: agy's three-line notice and
+// then the model's answer, still in the same turn.
+const CAP_HEAD = "\n⚠ Your previous response was cut off because it exceeded the output token limit\n"
+const CAP_TAIL = "Please continue from where you left off, keeping your response shorter\n"
+const CAP_RETRIES = "Retries remaining: 3\n"
+const CAP_NOTICE = CAP_HEAD + CAP_TAIL + CAP_RETRIES
+
+test("#892: agy's output-cap notice never reaches the client", async () => {
+  const answer = "the rest of the answer"
+  for (const [chunks, want] of [
+    [[CAP_NOTICE + answer], answer],
+    [[CAP_NOTICE, answer], answer],
+    [[CAP_HEAD.slice(0, 20), CAP_HEAD.slice(20) + CAP_TAIL, CAP_RETRIES, answer], answer],
+    [[CAP_NOTICE.slice(0, 150), CAP_NOTICE.slice(150) + answer], answer],
+    [[CAP_HEAD, answer], answer],
+    [[CAP_NOTICE], ""],
+    [[CAP_HEAD + answer], answer],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-notice" },
+        messages: [{ role: "user", content: "write the long answer" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), want)
+    })
+  }
+})
+
+test("#892: the model quoting the output-cap notice mid-line keeps it", async () => {
+  const chunks = ["agy prints `⚠ Your previous response was cut off because it exceeded the output token limit`", " when it retries."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// #1136: agy 1.5.8's own words, byte for byte from the reporter's Codex rollout.
+const EOF_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF`
+const NETWORK = "\n⚠ There was a network issue connecting to the server, please try again.\n"
+
+test("#1136: agy's attempt banners before a retry that works never reach the client", async () => {
+  const three = EOF_ATTEMPT(1) + "\n" + EOF_ATTEMPT(2) + "\n" + EOF_ATTEMPT(3)
+  const answer = "已拿到两张 `3420×1966` 全窗口无损截图"
+  for (const steps of [
+    // The reporter's turn A: the last banner has no newline before the thought.
+    [["text", three], ["thought", "look again"], ["text", "\n" + answer]],
+    [["text", EOF_ATTEMPT(1).slice(0, 30)], ["text", EOF_ATTEMPT(1).slice(30)], ["text", "\n" + answer]],
+    [["text", "\n⚠ API err"], ["text", "or (attempt 2): EOF\n"], ["text", answer]],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        for (const [kind, text] of steps) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "attempt-banner" },
+        messages: [{ role: "user", content: "screenshot" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), answer)
+    })
+  }
+})
+
+test("#1136, #1151: agy's network, credit and 429 endings fail the turn", async () => {
+  for (const [chunks, want, kind] of [
+    // Turn B: one attempt, then agy gives up. The attempt's detail names why.
+    [[EOF_ATTEMPT(1) + "\n" + NETWORK], /EOF/, "api_error"],
+    // Turn C: the ending alone, split mid-marker.
+    [[NETWORK.slice(0, 20), NETWORK.slice(20)], /network issue connecting/, "api_error"],
+    [["partial\n⚠ Your AI credits ", "balance is too low to continue.\n"], /credits balance is too low/, "rate_limit_error"],
+    // #1151: agy 1.5.9's ending after every retry got 429, split mid-marker.
+    [["partial\n⚠ RESOURCE_EXHAU", "STED (code 429): Resource has been exhausted (e.g. check quota).\n"], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\)/, "rate_limit_error"],
+    [["\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"], /quota or rate limit reached/, "rate_limit_error"],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "network-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      assert.match(text, want)
+      assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+    })
+  }
+})
+
+// #1201: agy 1.5.9 passes a banned account's Google 403 through as the reply.
+const BANNED = "\n⚠ PERMISSION_DENIED (code 403): This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n"
+
+test("#1201: agy's banned-account ending fails the stream as no-retry permission error", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 63), BANNED.slice(63)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-end" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get("x-should-retry"), null)
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("#1201: agy's banned-account ending fails a non-stream request as a no-retry HTTP 403", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 63), BANNED.slice(63)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+    assert.match(body.error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!JSON.stringify(body).includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("#1201: the model quoting the banned-account ending with more text after keeps it", async () => {
+  const chunks = [BANNED.slice(0, 40), BANNED.slice(40) + "That line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "banned-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// kidgpt on X (11-16, Windows 11, Claude Code in VS Code, gemini-3.8-flash):
+// Google's 403 VALIDATION_REQUIRED on a model call reaches agy 1.5.9 as
+// "Verification Required" (CustomUserErrorMessageFromHTTPError), which it
+// ends the reply with, and the client got that bare line as the answer.
+const VERIFY = "\n⚠ Verification Required\n"
+
+function agyLogOf(kit) {
+  const args = kit.acpSpawns.at(-1).args
+  return args[args.indexOf("--log-file") + 1]
+}
+
+test("agy's Verification Required ending fails the stream as a no-retry 403 that says how to verify", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [VERIFY.slice(0, 9), VERIFY.slice(9)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-end" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /this Google account needs to be verified: open the Antigravity app, or run `agy` in a terminal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("agy's Verification Required ending carries the link agy logged, as a non-stream HTTP 403", async () => {
+  const link = "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=AKgnsbv"
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      fs.appendFileSync(agyLogOf(kit), `E1116 21:03:11.120000 6120 errorreport.go:224] agent executor error: generating and executing: PERMISSION_DENIED (code 403): Verify your account to continue. validation_url: ${link.replace(/&/g, "\\u0026")}\n`)
+      await agent.text(VERIFY)
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+    assert.ok(body.error.message.includes(`this Google account needs to be verified: open ${link} in a browser`), body.error.message)
+  })
+})
+
+test("the model quoting the Verification Required ending with more text after keeps it", async () => {
+  const chunks = ["agy said\n⚠ Verification", " Required\nThat line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "verify-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// @Airan_FS on X (11-17): an account out of its own quota got agy's
+// ending as the whole reply, and magpie never asked the next account. The
+// line is Google's words with the time until the quota is back.
+const QUOTA_LINE = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."
+const QUOTA = "\n" + QUOTA_LINE + "\n"
+
+test("agy's Individual quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [QUOTA],
+    [QUOTA.slice(0, 12), QUOTA.slice(12, 40), QUOTA.slice(40)],
+    [QUOTA_LINE],
+    ["\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6d2h."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "quota-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "rate_limit_error")
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + chunks.join("").trim().replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's Individual quota reached ending after words the model wrote keeps them and fails the turn", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", QUOTA.slice(0, 30), QUOTA.slice(30)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-partial" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const parsed = await readSse(new Response(text))
+    assert.equal(replyText(parsed), "Let me look")
+    assert.equal(sseError(text).type, "rate_limit_error")
+    assert.match(sseError(text).message, /Resets in 1h18m40s\.$/)
+  })
+})
+
+test("agy's Individual quota reached ending fails a non-stream request as an HTTP 429", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [QUOTA])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.equal(body.error.type, "rate_limit_error")
+    assert.match(body.error.message, /Individual quota reached\. .*Resets in 1h18m40s\./)
+  })
+})
+
+test("the model quoting the Individual quota reached ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Individual quota", " reached. Please upgrade. Resets in 1h.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Individual quota reached. Resets in 1h.` when it is out."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "quota-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
+// ifccod (opencode-agy-cli-auth FORK.md, 11-18): when every retry met
+// Google's "no capacity" 503, agy ended the reply with this notice, and the
+// client got it as the whole answer, a 200 nothing behind magpie retried.
+const BUSY_LINE = "⚠ Our servers are experiencing high traffic right now, please try again in a minute. (UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server)"
+const BUSY = "\n" + BUSY_LINE + "\n"
+
+test("agy's high-traffic ending fails the turn as an overloaded 503, not a rate limit", async () => {
+  for (const chunks of [
+    [BUSY],
+    [BUSY.slice(0, 9), BUSY.slice(9, 47), BUSY.slice(47)],
+    [BUSY_LINE],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "busy-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "overloaded_error")
+      assert.equal(error.status, 503)
+      assert.notEqual(error.noRetry, true)
+      assert.equal(error.message, "agy bridge: Antigravity has no capacity for this model now: " + BUSY_LINE.replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's high-traffic ending fails a non-stream request as an HTTP 503", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", BUSY.slice(0, 30), BUSY.slice(30)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "busy-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 503)
+    assert.equal(response.headers.get("x-should-retry"), null)
+    assert.equal(body.error.type, "overloaded_error")
+    assert.match(body.error.message, /No capacity available for model gemini-3\.8-flash-high/)
+  })
+})
+
+test("the model quoting the high-traffic ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Our servers are experiencing", " high traffic right now, please try again.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Our servers are experiencing high traffic right now` when Google is full."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "busy-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
+// agy 1.5.10, a banned account (seen on a real one, 11-18): Google's
+// sentence without the "PERMISSION_DENIED (code 403):" 1.5.9 put before it,
+// and the whole reply was that line, a 200.
+const BANNED_1510 = "\n⚠ This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n"
+
+test("agy 1.5.10's banned-account ending fails the turn as a no-retry 403, streamed or not", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED_1510.slice(0, 20), BANNED_1510.slice(20)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-1510" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED_1510.trim()])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-1510-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+  })
+})
+
+test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
+  const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "exhausted-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+test("#1136: the model quoting an attempt banner or the network ending mid-line keeps it", async () => {
+  const chunks = ["agy printed `⚠ API error (attempt 1): EOF` and later", " `⚠ There was a network issue connecting to the server, please try again.` too."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "attempt-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// Lmohn39 on X (11-14): pi through agy-cli never answered. Antigravity gave
+// every try the bare 429 it answers a turned-away system prompt with, and
+// agy retried it in the same turn, a banner each time, before its 429
+// ending. The first such banner ends the turn, with the same error.
+const REFUSED_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).`
+
+test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after agy's retries", async () => {
+  const PI = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code."
+  // HadStash on X (11-17): Claude Code through agy-cli got "answered 429 to
+  // this system prompt", a 400 it never retries, though its prompt goes
+  // reworded in the first user turn, where Antigravity answers it
+  const CLAUDE_CODE = "You are Claude Code, Anthropic's official CLI for Claude.\n\nHelp the user."
+  const APPEND = { appendable: true, env: { AGY_BRIDGE_SYSTEM_APPEND: "1" } }
+  for (const [options, system, chunks, want, kind] of [
+    // in the session instructions the cloak isn't enough: a prompt rejection
+    // the banner's line still open while agy waits to try again
+    [APPEND, PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
+    [APPEND, PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
+    [APPEND, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt/, "invalid_request_error"],
+    // reworded in the first user turn (the default): a rate limit
+    [{}, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+    [{}, PI, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\)/, "rate_limit_error"],
+    [{}, "You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+  ]) {
+    await withKit(options, async (kit) => {
+      let tries = 0
+      kit.defaultPrompt = async (agent) => {
+        tries++
+        for (const chunk of chunks) await agent.text(chunk)
+        // agy waits, then tries again: never, here
+        await new Promise(() => {})
+      }
+      const reply = kit.request(baseBody({ metadata: { user_id: "refused-attempt" }, system,
+        messages: [{ role: "user", content: "hello" }] })).then((response) => response.text())
+      const text = await Promise.race([reply, sleep(5_000).then(() => "still waiting after 5s")])
+      assert.equal(tries, 1)
+      assert.match(text, want)
+      assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("answered 429 to this system prompt") || kind === "invalid_request_error", text.slice(-400))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      // where the instructions went
+      assert.equal(prompts(kit).join("").includes("<external_system_instructions>"), !options.appendable)
+    })
+  }
+})
+
+test("Lmohn39: a try that fails another way still waits for agy's next one", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("\n⚠ API error (attempt 1): UNAVAILABLE (code 503): try again.")
+      await agent.text("\nanswer")
+      return { stopReason: "end_turn" }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "other-attempt" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), "answer")
+  })
+})
+
+// ---------------------------------------------------------------- one opening, several models at once
+
+// magpie's "Test models" sends every model the same smallest request, four at a
+// time: {"model":…,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}.
+// Those share one conversation key, so all but the first were turned away with
+// "this conversation still has an unfinished response" (swang20201 on X: one ✓,
+// three ✗). Each is a conversation of its own and gets an agy of its own.
+test("the same opening sent to several models at once is answered for each", async () => {
+  const ids = ["claude-opus-5-5", "gemini-4-argon", "claude-sonnet-5-5", "gemini-3.8-flash"]
+  await withKit({ offeredModels: [
+    ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"],
+    ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"],
+  ] }, async (kit) => {
+    let arrived = 0
+    let release
+    const allIn = new Promise((resolve) => { release = resolve })
+    kit.defaultPrompt = async (agent) => {
+      // every prompt is held until the last one is in: they overlap, as on a real agy
+      if (++arrived === ids.length) release()
+      await Promise.race([allIn, sleep(2_000)])
+      await agent.text(`answer ${agent.index}`)
+      return { stopReason: "end_turn" }
+    }
+    const responses = await Promise.all(ids.map((model) =>
+      kit.request({ model, max_tokens: 16, messages: [{ role: "user", content: "hi" }] })))
+    const results = await Promise.all(responses.map(async (response) =>
+      response.status === 200 ? readSse(response) : { status: response.status, text: await response.text() }))
+    for (const [i, result] of results.entries()) {
+      assert.equal(result.status, undefined, `${ids[i]}: ${result.text}`)
+      assert.equal(result.stopReason, "end_turn", ids[i])
+    }
+    assert.equal(arrived, ids.length)
+  })
+})
+
+// ------------------------------------------- #1166 machine customizations
+
+test("#1166: an agy whose acp --help lists the flag starts without the machine's own skills, asked once", async () => {
+  await withKit({ acpHelp: "Usage of acp:\n  --include-default-customizations\n    \tload the default customizations (default true)\n" }, async (kit) => {
+    scriptedAgent(kit)
+    for (const user of ["custom-a", "custom-b"]) {
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: user }, messages: [{ role: "user", content: "hello " + user } ] })))
+      assert.equal(reply.stopReason, "end_turn")
+    }
+    assert.equal(kit.acpSpawns.length, 2, "two conversations, two processes")
+    for (const spawn of kit.acpSpawns) assert.ok(spawn.args.includes("--include-default-customizations=false"), spawn.args.join(" "))
+    assert.equal(kit.helpSpawns.length, 1, "acp --help is asked once per agy binary")
+  })
+})
+
+test("#1166: an agy without the flag is never given it, so it still starts", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "custom-old" }, messages: [{ role: "user", content: "hello old" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(!kit.acpSpawns[0].args.some((arg) => arg.startsWith("--include-default-customizations") || arg === "--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+  })
+})
+
+const GEMINI_DIR_HELP = "Usage of acp:\n  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n  --include-default-customizations\n    \tInclude default customizations (default true)\n"
+
+test("#1166: an agy whose acp --help lists --gemini-dir runs in the bridge's own folder, kept across conversations", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    scriptedAgent(kit)
+    for (const user of ["home-a", "home-b"]) {
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: user }, messages: [{ role: "user", content: "hello " + user }] })))
+      assert.equal(reply.stopReason, "end_turn")
+    }
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+    assert.equal(kit.acpSpawns.length, 2)
+    for (const spawn of kit.acpSpawns) {
+      const at = spawn.args.indexOf("--gemini-dir")
+      assert.ok(at >= 0 && spawn.args[at + 1] === own, spawn.args.join(" "))
+    }
+    assert.ok(fs.statSync(own).isDirectory(), "the folder is made before agy starts")
+    assert.equal(kit.helpSpawns.length, 1, "acp --help is asked once for both flags")
+  })
+})
+
+test("#1165: with agy's sign-in in a file under ~/.gemini (no keyring, Docker), agy stays on that folder", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const token = path.join(kit.env.HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}", { mode: 0o600 })
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+    assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
+  })
+})
+
+test("assistant tail with thinking+text blocks is accepted while thinking+tool_use is still rejected", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const accepted = await kit.request(baseBody({
+      metadata: { user_id: "thinking-tail-ok" },
+      messages: [
+        { role: "user", content: "summarize" },
+        { role: "assistant", content: [
+          { type: "thinking", thinking: "internal reasoning" },
+          { type: "text", text: "partial reply" },
+        ] },
+      ],
+    }))
+    assert.equal(accepted.status, 200, await accepted.clone().text())
+    const parsed = await readSse(accepted)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.ok(prompts(kit).at(-1).includes("partial reply"))
+
+    const rejected = await errorOf(await kit.request(baseBody({
+      metadata: { user_id: "thinking-tail-tool" },
+      messages: [
+        { role: "user", content: "read file" },
+        { role: "assistant", content: [
+          { type: "thinking", thinking: "need Read" },
+          { type: "tool_use", id: "toolu_tail", name: "Read", input: { path: "/a" } },
+        ] },
+      ],
+    })))
+    assert.equal(rejected.status, 400)
+    assert.match(rejected.body.error.message, /not from the user or a tool-result/)
+  })
+})
+
+test("live tool-turn drop logs drop_live and carries exact reason into session_new", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const body1 = baseBody({ metadata: { user_id: "drop-reason" }, messages: [{ role: "user", content: "TOOL read" }] })
+      const first = await readSse(await kit.request(body1))
+      assert.equal(first.stopReason, "tool_use")
+      const call = first.content.find((block) => block.type === "tool_use")
+      const tampered = baseBody({
+        metadata: { user_id: "drop-reason" },
+        messages: [
+          { role: "user", content: "ALTERED opening" },
+          { role: "assistant", content: [call] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "ok" }] },
+        ],
+      })
+      const second = await readSse(await kit.request(tampered))
+      assert.equal(second.stopReason, "end_turn")
+    })
+  } finally {
+    stderr.restore()
+  }
+  const drops = stderr.lines.filter((row) => row.action === "drop_live")
+  assert.equal(drops.length, 1)
+  assert.equal(drops[0].reason, "history_mismatch")
+  const sessionNews = stderr.lines.filter((row) => row.action === "session_new")
+  assert.equal(sessionNews.at(-1)?.reason, "history_mismatch")
+})
+
+// seven_7cx on X (DSH + agy-cli): a multi-step tool task dropped its live
+// session at nearly every step (drop_live "interrupted"), so the cache read
+// fell to 0 and the whole history was replayed. DSH adds user-role notes of
+// its own before a step (time-context's clock, tmux-context's reading, a
+// finished job's notice, a model-change note); none is the user steering.
+const DSH_STEP_NOTES = [
+  "Time sampled while preparing turn 3, step 2: 2026-11-18T10:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding step context: 12s.",
+  "Time sampled while preparing turn 3, step 3: 2026-11-18T10:24:45Z",
+  "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\nsession: main",
+  "Current runtime context: none. Earlier runtime-context snapshots no longer apply.",
+  "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.",
+  "The user switched this session to plan mode.",
+  "tmux location (turn 3):\nsession dev, window 1 \"main\", pane 0 %4\nwindow active=1, pane active=1, layout b25d,200x50,0,0,2",
+  "background job job_7 (bash: npm test) finished exit 0. Read its output with job_output.",
+  "[model changed: assistant turns above this point were generated by deepseek-v4; the session continues with agy-cli/gemini]",
+]
+
+for (const shape of ["same message", "own message"]) {
+  test(`a multi-step tool turn with DSH's own notes (${shape}) keeps its live session`, async () => {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        kit.defaultPrompt = async (agent) => {
+          for (let step = 0; step < DSH_STEP_NOTES.length; step++) await agent.tool("Read", { path: `/repo/${step}.txt` })
+          await agent.text("done")
+          return { stopReason: "end_turn" }
+        }
+        const meta = { user_id: `dsh-live-${shape}` }
+        let body = baseBody({ metadata: meta, messages: [{ role: "user", content: "TOOL read everything" }] })
+        let parsed = await readSse(await kit.request(body))
+        for (const note of DSH_STEP_NOTES) {
+          assert.equal(parsed.stopReason, "tool_use", JSON.stringify(parsed))
+          const call = parsed.content.find((block) => block.type === "tool_use")
+          const result = { type: "tool_result", tool_use_id: call.id, content: `ok ${call.id}` }
+          body = baseBody({ metadata: meta, messages: [
+            ...body.messages,
+            { role: "assistant", content: [call] },
+            ...(shape === "same message"
+              ? [{ role: "user", content: [result, { type: "text", text: note }] }]
+              : [{ role: "user", content: [result] }, { role: "user", content: [{ type: "text", text: note }] }]),
+          ] })
+          parsed = await readSse(await kit.request(body))
+        }
+        assert.equal(parsed.stopReason, "end_turn", JSON.stringify(parsed))
+        assert.equal(sessionsOpened(kit), 1, "one live session for the whole turn")
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.deepEqual(stderr.lines.filter((row) => row.action === "drop_live"), [])
+  })
+}
+
+test("A16: oversized history[0] cannot evict the newest history reply before <current_turn>", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(16 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const hugeOpening = Array.from({ length: 4 }, (_, i) => ({
+      type: "text",
+      text: `ANCHOR-${i} ` + "a".repeat(3 * 1024),
+    }))
+    const messages = [{ role: "user", content: hugeOpening }]
+    for (let i = 0; i < 6; i++) {
+      messages.push({ role: "assistant", content: `mid reply ${i} ` + "m".repeat(512) })
+      messages.push({ role: "user", content: `mid user ${i}` })
+    }
+    messages.push({
+      role: "assistant",
+      content: [
+        { type: "text", text: "NEWEST HEAD " + "n".repeat(2 * 1024) },
+        { type: "text", text: "t".repeat(4 * 1024) + " NEWEST TAIL" },
+      ],
+    })
+    messages.push({ role: "user", content: "CURRENT QUESTION" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "anchor-vs-tail" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 16 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("ANCHOR-0"), "opening anchor head is kept")
+    assert.ok(prompt.includes("NEWEST HEAD") && prompt.includes("NEWEST TAIL"), "newest history turn keeps head and tail")
+    assert.ok(prompt.includes("<current_turn>\nCURRENT QUESTION\n</current_turn>"))
+  })
+})
+
+test("#1165: a folder AGY_BRIDGE_GEMINI_DIR names is used even with a file sign-in", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const named = path.join(kit.env.HOME, "named-agy")
+    kit.env.AGY_BRIDGE_GEMINI_DIR = named
+    const token = path.join(kit.env.HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}")
+    scriptedAgent(kit)
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token-named" }, messages: [{ role: "user", content: "hello" }] })))
+    const args = kit.acpSpawns[0].args
+    assert.equal(args[args.indexOf("--gemini-dir") + 1], named, args.join(" "))
+  })
+})
+
+test("#1166: AGY_BRIDGE_GEMINI_DIR=default leaves agy on the machine's own folder", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP, env: { AGY_BRIDGE_GEMINI_DIR: "default" } }, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "home-default" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+    assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
+  })
+})
+
+test("forked session or subagent carrying an ancestor tool_use does not hit conflicting duplicate result or hijack parent", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("Side conversation boundary")) {
+        await agent.text("side answer")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("TWOSTEP")) {
+        await agent.tool("Read", { path: "/a" })
+        await agent.tool("Read", { path: "/b" })
+        await agent.text("parent done")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("fallback")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-1" }
+    const sideHeaders = { "x-magpie-session": "codex:side-1" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "TWOSTEP fork" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const step2Body = continueWithToolResults(opening, turn1, () => "real-step-1")
+    const turn2 = await readSse(await kit.request(step2Body, { headers: parentHeaders }))
+    assert.equal(turn2.stopReason, "tool_use")
+
+    const sideBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "Side conversation boundary. Answer this." },
+          ],
+        },
+      ],
+    }
+    const sideRes = await kit.request(sideBody, { headers: sideHeaders })
+    assert.equal(sideRes.status, 200, "forked side session must not return 409 conflicting duplicate result")
+    const sideParsed = await readSse(sideRes)
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.ok(sideParsed.content.some((block) => block.text?.includes("side answer")))
+
+    const parentFinal = await readSse(await kit.request(continueWithToolResults(step2Body, turn2, () => "real-step-2"), { headers: parentHeaders }))
+    assert.equal(parentFinal.stopReason, "end_turn")
+    assert.ok(parentFinal.content.some((block) => block.text?.includes("parent done")))
+  })
+})
+
+test("forked subagent arriving before parent answers its pending tool call leaves parent's call intact", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("NEW_TASK")) {
+        await agent.text("child done")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("WAIT_TOOL")) {
+        const result = await agent.tool("Read", { path: "/shared" })
+        await agent.text(`parent got:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-2" }
+    const childHeaders = { "x-magpie-session": "codex:child-2", "x-magpie-subagent": "sub-2" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "WAIT_TOOL start" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const childBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "NEW_TASK child prompt" },
+          ],
+        },
+      ],
+    }
+    const childRes = await kit.request(childBody, { headers: childHeaders })
+    assert.equal(childRes.status, 200)
+    const childParsed = await readSse(childRes)
+    assert.equal(childParsed.stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-real-output"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent got:parent-real-output")))
+  })
+})
+
+test("forked session without trailing tool_result does not supersede parent's active tool turn via lineage_fork", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "side question": "side reply" })
+    const parentHeaders = { "x-magpie-session": "codex:parent-3" }
+    const sideHeaders = { "x-magpie-session": "codex:side-3" }
+    const first = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const done1 = await readSse(await kit.request(first, { headers: parentHeaders }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const parentTurn2 = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "TOOL second" }],
+    }
+    const pending = await readSse(await kit.request(parentTurn2, { headers: parentHeaders }))
+    assert.equal(pending.stopReason, "tool_use")
+
+    const sideBody = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "side question" }],
+    }
+    const sideParsed = await readSse(await kit.request(sideBody, { headers: sideHeaders }))
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "side session starts its own process without killing parent")
+
+    const parentRes = await kit.request(continueWithToolResults(parentTurn2, pending, () => "ok"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    assert.equal((await readSse(parentRes)).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "parent finishes on its original process without replay")
+  })
+})
+
+test("synthetic magpie-<24hex> session id is ignored for flattened continuation while subagent scope still isolates", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, {
+      "first turn": "first reply",
+      "second turn": "second reply",
+      "child turn": "child reply",
+    })
+    const opening = "shared opening context\nfirst turn"
+    const turn1 = baseBody({ system: "shared system", messages: [{ role: "user", content: opening }] })
+    const done1 = await readSse(await kit.request(turn1, { headers: { "x-magpie-session": "magpie-0123456789abcdef01234567" } }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const flattenedTurn2 = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: `${opening}\n\nassistant: first reply\n\nsecond turn` }],
+    })
+    const done2 = await readSse(await kit.request(flattenedTurn2, { headers: { "x-magpie-session": "magpie-fedcba9876543210fedcba98" } }))
+    assert.equal(done2.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1, "synthetic magpie session hashes must not prevent continuing live proc")
+
+    const subagentTurn = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: "child turn" }],
+    })
+    const doneSub = await readSse(await kit.request(subagentTurn, {
+      headers: { "x-magpie-session": "magpie-0123456789abcdef01234567", "x-magpie-subagent": "collab_spawn" },
+    }))
+    assert.equal(doneSub.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "x-magpie-subagent still isolates even when x-magpie-session is synthetic")
+  })
+})
+
+test("unscoped parent and scoped subagent do not collide on shared ancestor tool_use_id", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("SUBAGENT_ASK")) {
+        await agent.text("subagent ok")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("UNSCOPED_WAIT")) {
+        const result = await agent.tool("Read", { path: "/unscoped" })
+        await agent.text(`parent:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "UNSCOPED_WAIT start" }] })
+    const turn1 = await readSse(await kit.request(opening))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const subRes = await kit.request({
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "SUBAGENT_ASK run" },
+          ],
+        },
+      ],
+    }, { headers: { "x-magpie-session": "codex:sub-only", "x-magpie-subagent": "collab_spawn" } })
+    assert.equal(subRes.status, 200)
+    assert.equal((await readSse(subRes)).stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-ok"))
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent:parent-ok")))
+  })
+})
+
+test("fetchInput Request headers preserve x-magpie-session isolation", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "hello": "reply" })
+    const body = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const req1 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-1" }, body: JSON.stringify(body) })
+    const req2 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-2" }, body: JSON.stringify(body) })
+    assert.equal((await readSse(await kit.fetch(req1))).stopReason, "end_turn")
+    assert.equal((await readSse(await kit.fetch(req2))).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2)
+  })
+})
+
+// plugins#1401, sevenqcx (DSH + billion-context 0.1.216, agy-cli 0.1.103):
+// billion-context folds earlier messages into a summary that opens with its
+// kernel's SUMMARY_HEADER ("[Compressed conversation section]", then " — "
+// and a topic, then the summary). The bridge took each fold for a changed
+// history (drop_live history_mismatch, history=60 expected_history=61) and
+// replayed the conversation into a new session, where the model had lost
+// what it had just read and read it again, then the client folded again.
+const BILI_SUMMARY = "[Compressed conversation section] — reading the repo\n" +
+  "Read /repo/0.txt and /repo/1.txt: both list the build steps; nothing changed yet."
+
+function foldSteps(messages, from, to) {
+  return [...messages.slice(0, from), { role: "user", content: [{ type: "text", text: BILI_SUMMARY }] }, ...messages.slice(to)]
+}
+
+for (const shape of ["older steps", "every step before the pending call"]) {
+  test(`a client fold of earlier steps mid tool turn keeps the live session (${shape}, plugins#1401)`, async () => {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        kit.defaultPrompt = async (agent) => {
+          for (let step = 0; step < 5; step++) await agent.tool("Read", { path: `/repo/${step}.txt` })
+          await agent.text("done")
+          return { stopReason: "end_turn" }
+        }
+        const meta = { user_id: `bili-fold-${shape}` }
+        let messages = [{ role: "user", content: "TOOL read everything" }]
+        let parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+        for (let step = 0; step < 5; step++) {
+          assert.equal(parsed.stopReason, "tool_use", JSON.stringify(parsed))
+          const call = parsed.content.find((block) => block.type === "tool_use")
+          messages = [...messages, { role: "assistant", content: [call] }]
+          // the fold lands on the request that answers the fourth call
+          if (step === 3) messages = shape === "older steps" ? foldSteps(messages, 1, 5) : foldSteps(messages, 1, messages.length - 1)
+          messages = [...messages, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: `ok ${call.id}` }] }]
+          parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+        }
+        assert.equal(parsed.stopReason, "end_turn", JSON.stringify(parsed))
+        assert.equal(sessionsOpened(kit), 1, "one live session for the whole turn")
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.deepEqual(stderr.lines.filter((row) => row.action === "drop_live"), [])
+  })
+}
+
+test("a client fold before a new request keeps the live session (plugins#1401)", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const meta = { user_id: "bili-fold-next" }
+      let messages = [{ role: "user", content: "TOOL read" }]
+      let parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      const call = parsed.content.find((block) => block.type === "tool_use")
+      messages = [...messages, { role: "assistant", content: [call] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "file body" }] }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      messages = [...messages, { role: "assistant", content: parsed.content.filter((block) => block.type === "text") },
+        { role: "user", content: "second question" }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      // the client folds the first tool round, then asks again
+      messages = [...foldSteps(messages, 1, 3),
+        { role: "assistant", content: parsed.content.filter((block) => block.type === "text") },
+        { role: "user", content: "third question" }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(sessionsOpened(kit), 1, "the fold kept the session")
+      assert.ok(prompts(kit).at(-1).includes("third question"))
+      assert.ok(!prompts(kit).at(-1).includes("<conversation_history>"), "only the new request goes to agy")
+    })
+  } finally {
+    stderr.restore()
+  }
+  assert.deepEqual(stderr.lines.filter((row) => row.action === "session_new").map((row) => row.reason), ["no_live"])
+})
+
+test("a fold does not cover an edit after it, or an edit beside an old summary (plugins#1401)", async () => {
+  const summary = { role: "user", content: [{ type: "text", text: BILI_SUMMARY }] }
+  for (const shape of ["edit after the fold", "old summary, edited opening"]) {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const meta = { user_id: `bili-fold-edit-${shape}` }
+        const opening = shape === "edit after the fold"
+          ? [{ role: "user", content: "first ask" }, { role: "assistant", content: "first answer" }, { role: "user", content: "TOOL read" }]
+          : [{ role: "user", content: "first ask" }, summary, { role: "user", content: "TOOL read" }]
+        const first = await readSse(await kit.request(baseBody({ metadata: meta, messages: opening })))
+        assert.equal(first.stopReason, "tool_use", shape)
+        const call = first.content.find((block) => block.type === "tool_use")
+        const history = shape === "edit after the fold"
+          ? [{ role: "user", content: "first ask" }, summary, { role: "user", content: "TOOL read ALTERED" }]
+          : [{ role: "user", content: "first ask ALTERED" }, summary, { role: "user", content: "TOOL read" }]
+        const second = await readSse(await kit.request(baseBody({ metadata: meta, messages: [...history,
+          { role: "assistant", content: [call] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "ok" }] }] })))
+        assert.equal(second.stopReason, "end_turn", shape)
+      })
+    } finally {
+      stderr.restore()
+    }
+    const drops = stderr.lines.filter((row) => row.action === "drop_live")
+    assert.equal(drops.length, 1, shape)
+    assert.equal(drops[0].reason, "history_mismatch", shape)
+  }
+})
+
+// plugins#1401, sevenqcx's replay row after a gateway restart: a 190-message,
+// 503,098-byte history went into a 114,028-byte prompt with 10,305 bytes of
+// it; the instructions and the current turn had taken the rest.
+function longHistory(tasks) {
+  const step = (label) => `${label} head ` + "file line with some words. ".repeat(110) + ` ${label} tail`
+  const messages = [{ role: "user", content: "ANCHOR open the project" }, { role: "assistant", content: "ANCHOR ok" }]
+  for (let task = 0; task < tasks; task++) {
+    messages.push({ role: "user", content: `TASK-${task} check part ${task} of the build` })
+    for (let s = 0; s < 4; s++) {
+      const id = `toolu_t${task}s${s}`
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id, name: "Read", input: { path: `/repo/${task}/${s}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: step(`t${task}s${s}`) }] })
+    }
+    messages.push({ role: "assistant", content: `REPLY-${task} part ${task} is fine` })
+  }
+  return messages
+}
+
+for (const shape of ["big current turn", "big instructions"]) {
+  test(`a replay of a long history keeps a share for the history (${shape}, plugins#1401)`, async () => {
+    const stderr = captureStderr()
+    let prompt
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const messages = longHistory(40)
+        const last = 6
+        messages.push({ role: "user", content: "TASK-LAST read the three logs and fix the build" })
+        for (let s = 0; s < last; s++) {
+          const id = `toolu_last${s}`
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id, name: "Read", input: { path: `/repo/log${s}.txt` } }] })
+          const content = s === last - 1 && shape === "big current turn"
+            ? "LOG head " + "log line with a few words. ".repeat(3600) + " LOG tail"
+            : `LAST-STEP-${s} read`
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] })
+        }
+        const system = shape === "big instructions"
+          ? "SYSTEM head " + "an instruction line for the agent. ".repeat(2900) + " SYSTEM tail"
+          : "You are a test agent."
+        const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `long-${shape}` }, system, messages })))
+        assert.equal(parsed.stopReason, "end_turn")
+        prompt = prompts(kit).at(-1)
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.ok(bytes(prompt) <= 112 * 1024, `${shape}: initial prompt is ${bytes(prompt)} bytes`)
+    const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+    assert.ok(replay.bytes_before > 400 * 1024, `${shape}: history is ${replay.bytes_before} bytes`)
+    assert.ok(replay.bytes_after >= 24 * 1024, `${shape}: the history kept ${replay.bytes_after} bytes: ${JSON.stringify(replay)}`)
+    // what the model did just before: the task's steps and the last task's reply
+    for (let s = 0; s < 5; s++) assert.ok(prompt.includes(`LAST-STEP-${s} read`), `${shape}: step ${s} is kept`)
+    assert.ok(prompt.includes("REPLY-39 part 39"), `${shape}: the previous task's reply is kept`)
+    assert.ok(prompt.includes("t39s3 tail"), `${shape}: the previous task's last read is kept`)
+    assert.ok(prompt.includes(shape === "big current turn" ? "LOG tail" : "SYSTEM tail"), `${shape}: the clipped part keeps its end`)
+    assert.ok(prompt.includes(shape === "big current turn" ? "LOG head" : "SYSTEM head"), `${shape}: the clipped part keeps its start`)
+    assert.equal(typeof replay.head_bytes, "number")
+    assert.equal(typeof replay.turn_bytes, "number")
+    assert.equal(replay[shape === "big current turn" ? "turn_clipped" : "head_clipped"], true)
+  })
+}

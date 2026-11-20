@@ -20,7 +20,7 @@ const listed = async (models) => {
     return Response.json({ defaultModel: DEFAULT, models, nextToken: null })
   }
   try {
-    return await _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:1:profile/P" })
+    return await _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P" })
   } finally {
     globalThis.fetch = was
   }

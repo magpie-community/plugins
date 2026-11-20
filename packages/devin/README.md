@@ -86,8 +86,26 @@ The plugin's `fetch` handles this:
   #275): Devin turns a body past 10 MiB away with 413.
 - It turns the streamed reply back into a chat completion, streamed or
   not: text, reasoning, tool calls and usage.
+- A Gemini model's reply goes back with its thought signature, as the CLI
+  sends it: on the prompt with the reply's calls (or its words), with
+  `signature_type` "gemini" and the model that wrote it (since 0.1.41).
+  Neither a chat completion nor a Messages `tool_use` carries one, so the
+  plugin keeps each reply's signature by its call ids for the next
+  request, in memory: after a restart, earlier turns go back unsigned, as
+  before.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
+- Devin answers "There is an issue with this request, please try a
+  different model" to a long conversation it can't take, and every turn
+  after fails the same (since 0.1.44):
+  - A picture is sent as the type its bytes are (PNG, JPEG, GIF, WebP),
+    not the one it was said to be: Devin refuses a PNG labelled JPEG.
+  - A user message of white space alone isn't sent.
+  - Thinking signed somewhere Devin can't check is sent again once
+    without the signatures.
+  - Past half the model's window (about four bytes a token), the refusal
+    is a 400 "input is too long for the model's context", so the agent
+    compacts.
 - A reply with only metadata and usage is a 502, even when output tokens
   were counted. The plugin waits for actual content before opening a
   successful stream, so the gateway can try another channel.

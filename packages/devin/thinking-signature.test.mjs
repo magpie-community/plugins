@@ -134,6 +134,20 @@ test("the next request sends Claude's signed thinking back on the prompt that fo
   expect(only).toEqual({ role: 2, text: "", calls: ["read_file"], thinking: "t", signature: SIG, type: "anthropic" })
 })
 
+test("a search turn with adjacent signed thoughts replays without a thinking-only assistant prompt", () => {
+  const messages = [
+    { role: "user", content: "Look it up." },
+    { role: "assistant", content: [
+      { type: "thinking", thinking: "Search first.", signature: "s1" },
+      { type: "thinking", thinking: "Use the result.", signature: "s2" },
+      { type: "text", text: "Found it." },
+    ] },
+    { role: "user", content: "Continue." },
+  ]
+  const ps = prompts(buildMessages({ messages }, "claude-opus-5-5", "k")).filter((p) => p.role === 2)
+  expect(ps).toEqual([{ role: 2, text: "Found it.", calls: [], thinking: "Use the result.", signature: "s2", type: "anthropic" }])
+})
+
 test("thinking after the text goes on a prompt of its own ahead of the calls", () => {
   const ps = prompts(
     buildMessages(

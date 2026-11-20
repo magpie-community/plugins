@@ -4,6 +4,7 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
 import { parseTOML, stringify, parseEnv } from "./vendor.mjs"
+import { processExists } from "./proc.mjs"
 import { agent } from "./deepzora.agent.js"
 
 export const PROVIDER = "magpie-agent"
@@ -63,8 +64,7 @@ function lock(file) {
     if (e.code !== "EEXIST") throw e
     const pid = Number(read(file))
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid bridge lock; inspect .magpie-bridge/lock")
-    try { process.kill(pid, 0) } catch (error) {
-      if (error.code !== "ESRCH") throw error
+    if (!processExists(pid)) {
       fs.unlinkSync(file)
       return lock(file)
     }

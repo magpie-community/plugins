@@ -27,12 +27,17 @@ export function fakeLoomy() {
     logins: 0,
     chatCalls: [],
     chatRefusal: null, // set to an upstream message to answer 400 instead
+    chatCode: null, // set to {code, desc} to answer the chat 200 with it
     imageCalls: [],
     imageStatus: null, // set to a status to answer it instead of drawing
+    // set to {status, type, body} to answer every gateway path with it before
+    // the session is looked at, as a proxy or firewall on the way does
+    denied: null,
     firstLoginCalls: 0,
     dailyBalance: 3000, // the day's first first-login refreshes it to 5000
     recordsReads: 0,
     modelsReads: 0,
+    modelsCode: null, // set to a business code to answer the models read 200 with it
     // onboarding: done[key]=true once its complete call lands (idempotent)
     onboardingDone: {},
     onboardingQueries: 0,
@@ -42,12 +47,15 @@ export function fakeLoomy() {
       state.logins = 0
       state.chatCalls = []
       state.chatRefusal = null
+      state.chatCode = null
       state.imageCalls = []
       state.imageStatus = null
+      state.denied = null
       state.firstLoginCalls = 0
       state.dailyBalance = 3000
       state.recordsReads = 0
       state.modelsReads = 0
+      state.modelsCode = null
       state.onboardingDone = {}
       state.onboardingQueries = 0
       state.onboardingCompletes = 0
@@ -102,12 +110,25 @@ export function fakeLoomy() {
     port: 0,
     async fetch(req) {
       const url = new URL(req.url)
+      if (state.denied) {
+        const d = state.denied
+        return new Response(d.body, { status: d.status, headers: { "content-type": d.type ?? "text/html" } })
+      }
       const token = req.headers.get("token") ?? ""
       const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "")
-      if (token !== state.session || bearer !== state.session) return json(401, { code: "100002", desc: "session refused" })
+      // a refused session answers HTTP 200 with the business code, as the
+      // real gateway does on every path, chat included (measured 2026-11-16:
+      // a made-up token on /api/v1/chat/completions, /api/v1/models and
+      // /api/v2/points/records got 200 {"code":"100002","desc":"登录已失效，
+      // 请重新登录"}, and no token at all 200 {"code":"100002","desc":"缺少
+      // token"}), never a 401
+      if (!token && !bearer) return json(200, { code: "100002", desc: "缺少 token", trace_id: "t", data: {} })
+      if (token !== state.session || bearer !== state.session)
+        return json(200, { code: "100002", desc: "登录已失效，请重新登录", trace_id: "t", data: {} })
 
       if (url.pathname === "/api/v1/models") {
         state.modelsReads++
+        if (state.modelsCode) return json(200, { code: state.modelsCode, desc: "系统繁忙" })
         return json(200, {
           data: [
             { id: "spark-x", name: "Spark X2.5 (x0.1)", capabilities: { reasoning: true, function_calling: true, vision: false }, context_window: 128000, max_tokens: 8192 },
@@ -126,6 +147,7 @@ export function fakeLoomy() {
         const body = await req.json().catch(() => ({}))
         state.chatCalls.push({ body })
         if (state.chatRefusal) return json(400, { error: { message: state.chatRefusal, type: "invalid_request_error" } })
+        if (state.chatCode) return json(200, { ...state.chatCode, trace_id: "t", data: {} })
         const reply = body.stream
           ? new Response(
               [

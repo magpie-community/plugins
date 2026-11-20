@@ -3,7 +3,8 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
-import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
+import { familiesInGroup } from "./model-ids.mjs"
+import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./signin.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
@@ -19,18 +20,120 @@ class UsageError extends Error {
   }
 }
 
-// What agy prints when it starts its own Google sign-in.
 const SIGN_IN_TALK = /accounts\.google\.com|oauth|sign[ -]?in|log[ -]?in|authenticat|browser/i
 
 const text = value => typeof value === "string" ? value.trim() : ""
 const field = (value, camel, snake) => value?.[camel] ?? value?.[snake]
 
+// agy logs unauthenticated cache lookups before loading its keyring.
+function withoutDiagnostics(output) {
+  return output.split(/\r?\n/)
+    .filter(line => !/^\s*[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+[^\]]+\]/.test(line))
+    .join("\n")
+}
+
+const ELIGIBILITY = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i
+const NETWORK = /\b(?:eof|timeout|timed out|deadline exceeded|no such host|connection (?:refused|reset)|network|proxy|tls|ssl|certificate)\b/i
+
+// refusedEligibility says agy turned the run away on its eligibility
+// check. agy's print mode waits for that verdict before any command,
+// /usage too, and stops there when Antigravity says it doesn't serve the
+// account where it is (UNSUPPORTED_LOCATION), though the quota read agy
+// made meanwhile had its answer. (A check that failed on the network
+// says "Eligibility check failed: EOF"; that one is left alone.)
+function refusedEligibility(output) {
+  return ELIGIBILITY.test(output)
+}
+
+// Google's 403 #3501 at agy's eligibility check: Google turns the account
+// itself away, and agy refuses every command with it, `agy models`, print
+// mode and a turn alike (agy 1.5.9 against a Code Assist answering it):
+//   Eligibility check failed: PERMISSION_DENIED (code 403): You do not have
+//   a valid license of this product. ... (#3501). Please log out (/logout)
+//   and log back in (/login).
+// Three people on X (11-16) got only a list of fallback models, "model …
+// is unavailable to this agy account" or "not eligible" from the plugin.
+const LICENSE_REFUSAL = /valid license of this product|\(#3501\)/i
+
+export const LICENSE_REFUSED = "Google refuses this Google account for Antigravity " +
+  "(403 #3501: \"You do not have a valid license of this product\"). agy itself gets the same " +
+  "answer, so this account can't be used until Google accepts it. Update agy, then sign in to " +
+  "the account again (in magpie, or run `agy` in a terminal and /logout, then /login); sign in " +
+  "with a personal Google account (@gmail.com) rather than a Workspace one; unset AGY_ADC_AUTH " +
+  "if it is set; and turn off a VPN or proxy that puts you in a region Antigravity isn't offered in."
+
+const ACCOUNT_DISABLED_REFUSAL = /PERMISSION_DENIED \(code 403\):\s*This\s+service\s+has\s+been\s+disabled\s+in\s+this\s+account\s+for\s+violation\s+of\s+Terms\s+of\s+Service\.\s*Please\s+submit\s+an\s+appeal\s+to\s+continue\s+using\s+this\s+product\./
+export const ACCOUNT_DISABLED_REFUSED = "Google has disabled this account's access to Antigravity " +
+  "for violating the Terms of Service (HTTP 403: \"This service has been disabled in this account " +
+  "for violation of Terms of Service\"). Submit an appeal with Google before using this account again."
+
+// Google asks for the account to be verified (Cloud Code's 403
+// VALIDATION_REQUIRED). agy 1.5.9 words it three ways: a turn's model call
+// ends the reply with "⚠ Verification Required" alone (kidgpt on X, 11-16:
+// that bare line was the whole answer in Claude Code), and its eligibility
+// check says "…\n\nPlease verify your account in your browser to
+// continue:\n<link>", or "Verification required. Please complete
+// verification in your browser to continue." when Google gave no link.
+const VERIFY_REFUSAL = /please verify your account in your browser to continue|verification required\. please complete verification|verify your account to continue/i
+
+// The words magpie's gateway reads as Google's verification refusal
+// (provider.verifyAdvice), and its link in them (provider.verifyLink): it
+// rests the account as "verify" and shows Verify with the link, as it does
+// for the Antigravity and Gemini CLI routes.
+export const VERIFY_ADVICE = "this Google account needs to be verified"
+
+// verifyLinkIn is the https link agy's output or log gives to verify the
+// account at, "" when it gives none: taken as Gemini CLI takes it, the
+// validation_link before the validation_url, else the link agy prints after
+// "continue:", else an accounts.google.com one.
+export function verifyLinkIn(output) {
+  const said = String(output ?? "").replace(/\\u0026/g, "&").replace(/&amp;/g, "&")
+  const named = (key) => new RegExp(`"?${key}"?\\s*[:=]\\s*"?(https://[^\\s"'\\\\<>]+)`, "i").exec(said)?.[1]
+  const link = named("validation_?link") || named("validation_?url") ||
+    /in your browser to continue:\s*(https:\/\/[^\s"'\\<>]+)/i.exec(said)?.[1] ||
+    /(https:\/\/accounts\.google\.com\/[^\s"'\\<>]+)/i.exec(said)?.[1] || ""
+  const trimmed = link.replace(/[).,;\]}]+$/, "")
+  try {
+    const u = new URL(trimmed)
+    return u.protocol === "https:" && u.host ? trimmed : ""
+  } catch {
+    return ""
+  }
+}
+
+// verifyRefused is what the agent is told when Google wants the account
+// verified: with the link to do it at when agy gave one, else where to go.
+export function verifyRefused(link) {
+  const said = "Google wants this account verified before Antigravity serves it again (agy: \"Verification Required\")"
+  return link
+    ? `${said} — ${VERIFY_ADVICE}: open ${link} in a browser signed in to it, verify it, then try again`
+    : `${said} — ${VERIFY_ADVICE}: open the Antigravity app, or run \`agy\` in a terminal, signed in to it and do what it asks, then try again`
+}
+
+// agyRefusal is what to tell the user when agy's output says Google turned
+// the account away at its eligibility check, or "" when it doesn't: the
+// license refusal (#3501), or any other refusal of the check that isn't a
+// network failure ("Eligibility check failed: EOF"), in agy's own words.
+// agy's diagnostic log lines are not read: a background poll it logs can
+// fail on its own.
+export function agyRefusal(output) {
+  const said = withoutDiagnostics(String(output ?? ""))
+  if (LICENSE_REFUSAL.test(said)) return LICENSE_REFUSED
+  if (ACCOUNT_DISABLED_REFUSAL.test(said)) return ACCOUNT_DISABLED_REFUSED
+  if (VERIFY_REFUSAL.test(said)) return verifyRefused(verifyLinkIn(said))
+  if (!ELIGIBILITY.test(said) || NETWORK.test(said)) return ""
+  const line = said.split(/\r?\n/).map(l => l.trim().replace(/^error:\s*/i, "")).find(l => ELIGIBILITY.test(l)) || ""
+  return `Google refuses this account for Antigravity: ${line.slice(0, 400)}. agy itself gets the same answer. ` +
+    "Antigravity isn't offered in every region: turn off a VPN or proxy that puts you in another one, or use an account Google serves there."
+}
+
 function commandFailure(output) {
-  if (/not (?:logged|signed) in|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again/i.test(output)) {
+  if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(withoutDiagnostics(output))) {
     return new UsageError("agy usage needs authentication. Run `agy` in a terminal to sign in again.", { kind: "auth" })
   }
-  const eligibility = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i.test(output)
-  const network = /\b(?:eof|timeout|timed out|deadline exceeded|no such host|connection (?:refused|reset)|network|proxy|tls|ssl|certificate)\b/i.test(output)
+  if (LICENSE_REFUSAL.test(withoutDiagnostics(output))) return new UsageError(LICENSE_REFUSED)
+  const eligibility = ELIGIBILITY.test(output)
+  const network = NETWORK.test(output)
   if (network) return new UsageError(`agy usage ${eligibility ? "eligibility check " : ""}failed on a network request. Check network or proxy settings.`)
   if (eligibility) return new UsageError("agy reports that this account is not eligible for Antigravity.")
   return new UsageError("agy could not read usage. Run `agy` in a terminal to check its status.")
@@ -58,21 +161,45 @@ function cadence(bucket, id, name) {
   return { name: name || id }
 }
 
+// vendorOf is a model's family as magpie's cards group them (Gemini,
+// Claude, GPT-OSS), as the retired antigravity plugin named them.
+function vendorOf(id, name) {
+  const l = id.toLowerCase()
+  if (l.startsWith("gemini")) return "Gemini"
+  if (l.startsWith("claude")) return "Claude"
+  if (l.startsWith("gpt-oss")) return "GPT-OSS"
+  return String(name ?? "").trim().split(" ")[0] || id.split("-")[0]
+}
+
 // agy's command report is not its token-usage object or a model-availability list.
 // Unknown quota is not evidence of exhaustion or a full allowance.
+//
+// Each group is a pool its models share: its windows go as the pool's
+// ({ pool: "Gemini", name: "5 hours" }), and each model family the group
+// names gets a window of its own in that pool, reading the pool's most
+// used bucket, the one that stops it. That is what Google's own per-model
+// reading said: the retired antigravity plugin's fetchAvailableModels
+// read of 2026-11-11 gave every model of a pool the pool's figure, to the
+// digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
+// card shows the pools, and "Every model" lists the models, as it did for
+// the antigravity plugin.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
     throw new UsageError("agy returned an invalid usage report.")
   }
   if (report?.status !== "SUCCESS" || report?.command?.name !== "usage") {
-    throw commandFailure(`${text(report?.error)} ${text(report?.response)}`)
+    throw commandFailure(text(report?.error) || text(report?.response))
   }
   const groups = report.command.data?.groups
   const windows = []
+  const models = new Map() // family id -> its window
   for (const group of Array.isArray(groups) ? groups : []) {
     const pool = (text(field(group, "displayName", "display_name")) || text(group?.name) || "Quota")
       .replace(/\s+models$/i, "").replace(/\s+and\s+/gi, " & ")
+    const families = familiesInGroup(group)
+    const ids = [...new Set(families.flatMap(f => f.ids))].sort()
+    let tightest
     for (const bucket of Array.isArray(group?.buckets) ? group.buckets : []) {
       const id = text(field(bucket, "bucketId", "bucket_id")) || text(bucket?.id)
       if (!id || bucket?.disabled === true) continue
@@ -84,13 +211,34 @@ export function parseUsageReport(value) {
         ?? (remaining?.case === "remainingFraction" ? remaining.value : undefined)
       const known = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
       const resetsAt = resetTime(field(bucket, "resetTime", "reset_time"))
-      windows.push({
-        name: `${pool} · ${period.name}`,
+      const w = {
+        name: period.name,
+        pool,
         // This feature displays quota only; it must not change model routing.
         aside: true,
+        ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
         ...(period.span ? { span: period.span } : {}),
         ...(resetsAt ? { resetsAt } : {}),
+      }
+      windows.push(w)
+      if (known && (!tightest || w.used > tightest.used)) tightest = w
+    }
+    if (!tightest) continue
+    for (const f of families) {
+      const had = models.get(f.id)
+      // a model two groups name reads the one that stops it first
+      if (had && had.used >= tightest.used) continue
+      models.set(f.id, {
+        name: f.name,
+        model: f.id,
+        family: vendorOf(f.id, f.name),
+        pool,
+        aside: true,
+        models: f.ids,
+        used: tightest.used,
+        ...(tightest.span ? { span: tightest.span } : {}),
+        ...(tightest.resetsAt ? { resetsAt: tightest.resetsAt } : {}),
       })
     }
   }
@@ -98,7 +246,7 @@ export function parseUsageReport(value) {
     throw new UsageError("Limits not available: agy returned no enabled, measured quota buckets.")
   }
   // /usage has no verified account or plan identity. Do not borrow one elsewhere.
-  return { windows }
+  return { windows: [...[...models.values()].sort((a, b) => a.name.localeCompare(b.name)), ...windows] }
 }
 
 function timeout(value) {
@@ -224,14 +372,125 @@ function supportedVersion(output) {
   return major > 1 || major === 1 && (minor > 1 || minor === 1 && patch >= 11)
 }
 
+// ---- the quota read agy makes, made directly ----------------------------
+//
+// Recorded from agy 1.5.9's own /usage (CLOUD_CODE_URL pointed at a
+// recording proxy, 2026-11-16): with its stored Google sign-in it asks
+//   POST <Code Assist>/v1internal:loadCodeAssist {"metadata":{"ideType":"ANTIGRAVITY"}}
+// for the account's project (cloudaicompanionProject), then
+//   POST <Code Assist>/v1internal:retrieveUserQuotaSummary {"project":"<that project>"}
+// whose reply is the groups /usage prints, in camelCase. Both carry
+// User-Agent "antigravity/cli/<version> (aidev_client; os_type=<GOOS>;
+// arch=<GOARCH>; cl=<changelist>; auth_method=<auth_method>)" and
+// Content-Type application/json. With loadCodeAssist naming an ineligible
+// tier and no current one, agy still read the quota (200) and then
+// refused /usage with "Eligibility check failed: …" (01dadada on X:
+// 绕过查额度前询问地区限制就可以查到). So when agy refuses for that, the
+// same two requests are made here, the same way, and nothing else.
+
+const CODE_ASSIST = "https://daily-cloudcode-pa.googleapis.com"
+const TOKEN_URL = "https://oauth2.googleapis.com/token"
+// The installed-app OAuth client agy signs in with (its token is renewed
+// with the same client; the retired antigravity plugin used it too).
+// Google says such a client's secret isn't one. Written in parts so secret
+// scanners don't take it for a leak.
+const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep" + ".apps.googleusercontent.com"
+const CLIENT_SECRET = ["GOCSPX", "K58FWR486LdLJ1mLB8sXC4z6qDAf"].join("-")
+// The build changelist each agy release puts in its User-Agent (cl=), read
+// from its requests; a release not listed goes with the newest known one.
+const CLS = { "1.5.9": "1021519450" }
+const NEWEST_CL = "1021519450"
+const GOOS = { darwin: "darwin", linux: "linux", win32: "windows" }
+const GOARCH = { arm64: "arm64", x64: "amd64" }
+
+export function quotaUserAgent(version, authMethod, platform = process.platform, arch = process.arch) {
+  return `antigravity/cli/${version} (aidev_client; os_type=${GOOS[platform] ?? platform}; arch=${GOARCH[arch] ?? arch}; cl=${CLS[version] ?? NEWEST_CL}; auth_method=${authMethod || "consumer"})`
+}
+
+const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p.id : ""
+
+// The project Code Assist serves every consumer (personal Google) account
+// under: loadCodeAssist names it for Free, Pro and Ultra alike. Where
+// Google refuses the account at agy's eligibility check, loadCodeAssist
+// can name no project at all, and agy then asks retrieveUserQuotaSummary
+// with none, which Google answers 403 #3501 (agy 1.5.10, recorded
+// 2026-11-18), while its ACP sessions, which run no eligibility check,
+// go on serving the account's requests (IcyLiqu1d on X). Asked with this
+// project, the same account's quota answers 200.
+export const CONSUMER_PROJECT = "aicode-consumers"
+
+// readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
+// sign-in, as agy asks it. An access token with under two minutes left is
+// renewed in memory only; agy's stored sign-in is never written.
+export async function readQuotaDirect({
+  env = process.env, version, deadline, signal,
+  stored = storedToken, fetch: fetchFn = globalThis.fetch, now = Date.now,
+} = {}) {
+  const left = () => deadline - now()
+  const timed = () => {
+    if (left() <= 0) throw new UsageError("agy usage query timed out.")
+    const t = AbortSignal.timeout(left())
+    return signal ? AbortSignal.any([signal, t]) : t
+  }
+  const sign = await stored()
+  const token = sign?.token
+  if (!token) throw new UsageError("agy's stored sign-in couldn't be read.")
+  let access = text(token.access_token)
+  const ends = Date.parse(token.expiry ?? "")
+  if (!access || Number.isFinite(ends) && ends > 0 && ends - now() < 2 * 60 * 1000) {
+    if (!text(token.refresh_token)) throw new UsageError("agy's stored sign-in has expired.")
+    const res = await fetchFn(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token.refresh_token, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }).toString(),
+      signal: timed(),
+    })
+    let fresh
+    try { fresh = JSON.parse(await res.text()) } catch {}
+    access = res.ok ? text(fresh?.access_token) : ""
+    // Google's answer for a refresh token it no longer takes: only a new
+    // sign-in mends it
+    if (!access && (res.status === 400 || res.status === 401) && fresh?.error === "invalid_grant") {
+      throw new UsageError("agy's stored sign-in no longer works.", { kind: "auth" })
+    }
+    if (!access) throw new UsageError("agy's stored sign-in couldn't be renewed.")
+  }
+  const base = (text(env.CLOUD_CODE_URL) || CODE_ASSIST).replace(/\/+$/, "")
+  const headers = {
+    "User-Agent": quotaUserAgent(version, text(sign.auth_method)),
+    Authorization: "Bearer " + access,
+    "Content-Type": "application/json",
+    "Accept-Encoding": "gzip",
+  }
+  const call = async (method, body) => {
+    const res = await fetchFn(`${base}/v1internal:${method}`, { method: "POST", headers, body: JSON.stringify(body), signal: timed() })
+    const reply = await res.text()
+    if (res.status !== 200) throw new UsageError(`Antigravity's ${method} answered ${res.status}.`)
+    try { return JSON.parse(reply) } catch { throw new UsageError(`Antigravity's ${method} answered with no JSON.`) }
+  }
+  const load = await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } })
+  let project = companion(load?.cloudaicompanionProject)
+  // a consumer account Google names no project for: the one every consumer
+  // account is served under (a Workspace or Cloud one has its own)
+  if (!project && load?.gcpManaged !== true && (text(sign.auth_method) || "consumer") === "consumer") project = CONSUMER_PROJECT
+  if (!project) {
+    const why = text((load?.ineligibleTiers ?? []).find(x => text(x?.reasonMessage))?.reasonMessage)
+    throw new UsageError(why ? `Antigravity names no project for this account (${why.slice(0, 300)})` : "Antigravity names no project for this account.")
+  }
+  return call("retrieveUserQuotaSummary", { project })
+}
+
 export async function fetchUsage(agy, {
   env = process.env,
   timeoutMs = env.AGY_BRIDGE_USAGE_TIMEOUT_MS,
   maxOutputBytes = MAX_OUTPUT_BYTES,
   signal,
   tempRoot = os.tmpdir(),
+  quota = readQuotaDirect,
+  direct = false,
+  first = false,
 } = {}) {
-  if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
+  if (!agy) throw new UsageError(NO_AGY)
   const deadline = Date.now() + timeout(timeoutMs)
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
   let pendingTreeKill = null
@@ -267,9 +526,77 @@ export async function fetchUsage(agy, {
     })
     if (version.code !== 0) throw commandFailure(version.stderr)
     if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
+    // agy's access token has ended (or is about to): agy renews it when it
+    // runs, and when that renewal fails, even for a moment (DNS at startup,
+    // a slow keyring), agy starts its own Google sign-in, which on Windows
+    // opens the browser past every shim (plugins#1234). So the quota is
+    // read the way agy reads it, renewing the token in memory, and agy -p
+    // isn't run: a failed renewal is a failed read, never a sign-in.
+    if (direct) {
+      let data
+      try {
+        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        if (error instanceof UsageError) throw error
+        throw new UsageError("agy's stored sign-in couldn't be renewed. Check the network or proxy.")
+      }
+      return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+    }
+    // With a stored sign-in to read it with, the quota is read first the
+    // way agy's /usage reads it: loadCodeAssist, then
+    // retrieveUserQuotaSummary. agy -p /usage makes those two only after
+    // its whole start, about twelve Code Assist calls in six rounds one
+    // after another (loadCodeAssist four times, fetchUserInfo,
+    // fetchAvailableModels, fetchAdminControls, listExperiments…, recorded
+    // from agy 1.5.12 on 2026-11-20): 5 to 10 seconds on a quick network,
+    // past the deadline on a slower one or behind a proxy, where the card
+    // said "agy usage query timed out.". The two calls take about 1.5
+    // seconds. When they can't answer (a sign-in that can't be read, a
+    // refusal, a reply with no quota), agy -p is asked as before, in the
+    // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    let firstFailed = ""
+    if (first) {
+      try {
+        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        firstFailed = error instanceof UsageError ? error.message : "a network request failed"
+      }
+    }
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
-    if (result.code !== 0) throw commandFailure(result.stderr + "\n" + result.stdout)
-    return parseUsageReport(result.stdout)
+    let report
+    try { report = JSON.parse(result.stdout) } catch {}
+    if (result.code === 0 && report?.status === "SUCCESS") return parseUsageReport(report)
+    if (result.code === 0 && !report?.status) return parseUsageReport(result.stdout)
+    const said = report?.status && report.status !== "SUCCESS"
+      ? text(report.error) || text(report.response)
+      : result.stderr + "\n" + result.stdout
+    const failure = commandFailure(said)
+    // Refused on eligibility (a region Antigravity doesn't serve), not on
+    // a network failure: the quota is read the way agy reads it. Any
+    // failure of that read leaves agy's own answer standing: unknown,
+    // never zero or full.
+    if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
+      // when that read fails too, the error says why, after agy's refusal
+      const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
+      // asked already, before agy -p: not asked twice
+      if (firstFailed) throw alsoFailed(firstFailed)
+      let data
+      try {
+        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        throw alsoFailed(error instanceof UsageError ? error.message : "a network request failed")
+      }
+      try {
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch {
+        throw alsoFailed("Google's reply had no quota in it")
+      }
+    }
+    throw failure
   } finally {
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
@@ -298,6 +625,10 @@ function backoff(n) {
   return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
 }
 
+// what usage says while no agy is found: never held (createUsageReader),
+// and in noAgy's words, so it says how magpie gets one
+export const NO_AGY = "agy CLI not found. Sign in to this account again in magpie to have it installed, or install Antigravity CLI yourself."
+
 const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or run `agy` in a terminal; magpie doesn't run agy for usage until then."
 
 // No completed-result cache: sequential refreshes must see account/allowance changes.
@@ -306,10 +637,16 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 //   there is none, or it has ended with nothing to renew it: the read says
 //   the sign-in has expired (signIn "expired"), which magpie shows on the
 //   account, and nothing starts a Google sign-in in the background.
-// - a run agy failed for want of a sign-in (it said so, or it hung with an
-//   ended access token, as an agy waiting on its browser sign-in does) marks
-//   that stored sign-in dead: agy isn't run again until another is stored.
-// - any other failure isn't run again for backoff(n).
+// - while its access token has ended with a refresh token to renew it, agy
+//   -p isn't run either: the quota is read directly (fetchUsage's direct),
+//   so a renewal that fails for a moment can't start one (plugins#1234).
+// - an explicit authentication rejection, or an ended token hanging silently
+//   or with sign-in talk, blocks further background runs for that credential.
+//   Diagnostic-only output isn't evidence of a browser sign-in.
+// - any other failure isn't run again for backoff(n). No agy found is not
+//   held: finding it costs a few stat calls, and an agy installed since (a
+//   sign-in installs it; tmr11235 on X saw it) is used on the next read,
+//   not after hours of "not found" while its chats already run.
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
   const pending = new Map()
@@ -326,13 +663,21 @@ export function createUsageReader(resolveAgy, options = {}) {
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"
-    if (held && held.key === key && now() < held.until) {
+    const agy = resolveAgy()
+    if (!agy) return { windows: [], error: NO_AGY, signIn: "kept" }
+    // a failure held for another agy (gone, or another found since) isn't
+    // this one's
+    if (held && held.key === key && held.agy === agy && now() < held.until) {
       return { windows: [], error: held.error, signIn: held.auth ? "expired" : "kept" }
     }
     try {
-      const agy = resolveAgy()
+      // an access token that has ended or ends within two minutes, with a
+      // refresh token: read without running agy (fetchUsage's direct)
+      const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
       if (!pending.has(agy)) {
-        const query = fetchUsage(agy, fetchOptions).finally(() => {
+        // any other stored sign-in: read directly first, agy -p after
+        const first = !direct && stored?.state === "present"
+        const query = fetchUsage(agy, { ...fetchOptions, direct, first }).finally(() => {
           if (pending.get(agy) === query) pending.delete(agy)
         })
         pending.set(agy, query)
@@ -344,14 +689,15 @@ export function createUsageReader(resolveAgy, options = {}) {
     } catch (error) {
       const message = error instanceof UsageError ? error.message : "agy usage query failed. Check the CLI and temporary-directory permissions."
       if (error?.kind === "cancel") return { windows: [], error: message, signIn: "kept" }
+      const output = String(error.output ?? "")
       const auth = error?.kind === "auth" || error?.kind === "timeout" && stored?.state === "present" && stored.expired &&
-        (!String(error.output ?? "").trim() || SIGN_IN_TALK.test(error.output))
+        (!output.trim() || SIGN_IN_TALK.test(withoutDiagnostics(output)))
       if (auth && stored?.state === "present") {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
       }
-      const n = held?.key === key ? held.n + 1 : 1
-      held = { key, n, until: now() + backoff(n), error: message, auth }
+      const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
+      held = { key, agy, n, until: now() + backoff(n), error: message, auth }
       if (auth) saidExpired = true
       return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
     }

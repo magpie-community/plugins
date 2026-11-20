@@ -11,7 +11,7 @@
 
 import { createHash, randomBytes } from "node:crypto"
 import { closeSync, createReadStream, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs"
-import { homedir } from "node:os"
+import { arch, cpus, homedir, hostname, release, totalmem, userInfo } from "node:os"
 import { dirname, isAbsolute, join } from "node:path"
 import { createGunzip, gzipSync } from "node:zlib"
 
@@ -1005,8 +1005,43 @@ function systemOn(b) {
     changed = true
   }
   if (asReasoning(b.messages)) changed = true
+  if (callText(b)) changed = true
   if (b.messages[0]?.role !== "system") {
     b.messages.unshift({ role: "system", content: "You are a helpful assistant." })
+    changed = true
+  }
+  return changed
+}
+
+// Kimi K3.1 Pro refuses an assistant turn with tool_calls and no text,
+// which is how every OpenAI client records a call-only turn (dsh sends
+// "content": null), so an agent fails from its second request on, once the
+// model has called a tool. WorkBuddy answers it 400 "Invalid request
+// parameters" (Gloria335056 on X: only kimi-k3.1-pro, every other model
+// fine, from dsh). The same model on QwenWork refused null and "" and took
+// one space, with DeepSeek, GLM and Qwen on the same account taking the
+// empty turn (nanfei892, plugins #1213, measured). Measured 2026-11-19 on
+// www.workbuddy.ai, kimi-k3 took the null turn. So a kimi-k3.1-pro (and
+// -highspeed) call-only turn goes with one space; a turn with text, and
+// every other model, go as they came.
+const CALL_TEXT = " "
+function callTextModel(id) {
+  return /^kimi-k3\.1-pro(?:-|$)/i.test(String(id ?? ""))
+}
+
+function emptyContent(c) {
+  if (c === null || c === undefined || c === "") return true
+  return Array.isArray(c) && c.every((p) => p?.type === "text" && !p.text)
+}
+
+// callText gives b's call-only assistant turns CALL_TEXT for a model that
+// needs it; true when it changed any
+function callText(b) {
+  if (!callTextModel(b?.model)) return false
+  let changed = false
+  for (const m of b.messages) {
+    if (m?.role !== "assistant" || !Array.isArray(m.tool_calls) || !m.tool_calls.length || !emptyContent(m.content)) continue
+    m.content = CALL_TEXT
     changed = true
   }
   return changed
@@ -1600,6 +1635,214 @@ function withGrowth(site, chat, conv, was = "") {
   if (!events.some((e) => e?.eventCode === GROWTH_SEND && e?.id === conv)) events.push(event)
   chat.extra_vars = { ...vars, growthEvent: JSON.stringify(events), initiator: vars.initiator ?? "user" }
   return true
+}
+
+// ---- activity reports (magpie-community/plugins#691) ----
+//
+// WorkBuddy AI's desktop client reports each chat on POST /v2/report, an
+// array of events, and xxhhlk's capture of WorkBuddy AI 5.9.4 shows three
+// such calls around one user send: chat_message_send; then
+// chat_request_send, chat_message_response, chat_message_status and
+// chat_request_response; then agent_task_completed and
+// chat_response_complete. Each answered 200 {"code":0,"msg":"OK"}. On the
+// same day the client's account was granted its daily credit and three
+// accounts chatting through the plugin, which sent the growth event in the
+// chat body alone (withGrowth), were not. Whether the credit reads these
+// reports isn't known; they are what the official client sends for the
+// user's own chat, so the plugin sends them for the user's own chats too,
+// and never a chat of its own.
+//
+// Sent once the reply has been read to its end (reporting), with the token
+// counts and the finish reason the reply gave. A step that ends in tool
+// calls reports its message only; the request's events (chat_request_*,
+// agent_task_completed, chat_response_complete) go with the step that
+// ends the turn. chat_request_send goes with the step the user's own
+// message opened. Best effort: a report that fails is dropped, and the
+// chat's answer never waits on it.
+
+// reportSession is this process's session id, as the client's is its own
+// run's.
+const reportSession = randomBytes(16).toString("hex")
+
+// machineOf is a stable id for this computer, as the client sends one: a
+// hash, so neither the host's name nor the user's is sent.
+let machine
+function machineOf() {
+  if (machine) return machine
+  let user = ""
+  try {
+    user = userInfo().username
+  } catch {}
+  return (machine = createHash("sha256").update(`magpie-workbuddy|${hostname()}|${user}`).digest("hex"))
+}
+
+// reportBase is the fields every event carries (the capture's common set).
+function reportBase(site, a, code) {
+  const cpu = cpus()
+  return {
+    eventCode: code,
+    buddyId: "",
+    buddyName: "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
+    userId: a.uid ?? "",
+    username: a.name ?? "",
+    userNickname: a.name ?? "",
+    product: "SaaS",
+    commit: "",
+    ideName: "WorkBuddy",
+    ideType: "WorkBuddy",
+    ideVersion: site.app,
+    machineId: machineOf(),
+    sessionId: reportSession,
+    extName: site.appName,
+    extVersion: site.cli,
+    os: process.platform,
+    arch: arch(),
+    osVersion: release(),
+    cpuModel: cpu[0]?.model ?? "",
+    timestamp: Date.now(),
+    reportDelay: 0,
+    releaseDate: 0,
+    cpuCores: cpu.length,
+    memorySize: totalmem(),
+  }
+}
+
+// replyFacts reads the token counts and the finish reason off the end of a
+// reply, streamed or whole: the last usage object and the last
+// finish_reason it names.
+function replyFacts(tail) {
+  const out = { finish: "", input: 0, output: 0, total: 0, cached: 0 }
+  const reasons = [...tail.matchAll(/"finish_reason"\s*:\s*"([^"]+)"/g)]
+  if (reasons.length) out.finish = reasons.at(-1)[1]
+  const num = (k) => {
+    const m = [...tail.matchAll(new RegExp(`"${k}"\\s*:\\s*(\\d+)`, "g"))]
+    return m.length ? Number(m.at(-1)[1]) : 0
+  }
+  out.input = num("prompt_tokens")
+  out.output = num("completion_tokens")
+  out.total = num("total_tokens") || out.input + out.output
+  out.cached = num("cached_tokens")
+  return out
+}
+
+// reportEvents is the three /v2/report bodies for one step of a chat.
+// t holds the step's ids, model, input length and whether the user's own
+// message opened it; f is replyFacts of its reply; at its start and end
+// times.
+function reportEvents(site, a, t, f, start, end) {
+  const base = (code) => reportBase(site, a, code)
+  const name = site.models.find((m) => m[0] === t.model)?.[1] ?? t.model
+  const ids = {
+    conversationId: t.conv,
+    requestId: t.turn,
+    traceId: t.message,
+    rootRequestId: t.turn,
+    parentConversationId: "",
+    agentName: "",
+    agentType: "main",
+    "codebuddy.session_id": t.conv,
+    "codebuddy.conversation_request_id": t.turn,
+  }
+  const model = { requestModelId: t.model, requestModelName: name }
+  const tokens = { inputToken: f.input, outputToken: f.output, totalToken: f.total, cachedTokens: f.cached, cachedWriteTokens: 0, cachedMissTokens: Math.max(0, f.input - f.cached) }
+  const last = f.finish !== "tool_calls"
+  const ok = { isSuccessful: true, messageErrorCode: "", finishReason: f.finish || "stop" }
+  const first = [{ ...base("chat_message_send"), ...ids, messageId: t.message, ...model, historyCount: t.history, currentStepCount: t.step, totalStepCount: t.step, compactionCount: 0, presentAt: start, isContextTruncated: false }]
+  const second = []
+  if (t.userSend) {
+    second.push({
+      ...base("chat_request_send"), mode: "craft", source: "work", command: "", ...ids, ...model,
+      inputLength: t.input, mentionContextCount: 0, presentAt: start,
+      isPlan: false, isAutoExecuteTerminal: false, isAutoModify: false, codebaseEnable: false, isMaxMode: true,
+      mentionContexts: [], knowledgeId: [], knowledgeName: [],
+      codebaseId: "", inputAttemptId: "", recommendId: "", skillId: "",
+      vcsType: "", vcsRepo: "", vcsBranchName: "", vcsRevId: "",
+    })
+  }
+  second.push({ ...base("chat_message_response"), ...ids, messageId: t.message, ...model, responseModelId: t.model, totalStepCount: t.step, ...tokens, firstTokenAt: start, presentAt: end, ...ok })
+  second.push({ ...base("chat_message_status"), ...ids, messageId: t.message, ...model, messageErrorCode: "0" })
+  const third = []
+  if (last) {
+    const { traceId, ...noTrace } = ids
+    second.push({ ...base("chat_request_response"), mode: "craft", ...noTrace, ...model, toolCallCount: t.toolCalls, ...tokens, presentAt: end, ...ok })
+    third.push({ ...base("agent_task_completed"), mode: "LOCAL", task_id: t.turn, duration_ms: Math.max(0, end - start), total_steps: t.step })
+    third.push({ ...base("chat_response_complete"), conversationId: t.conv, requestId: t.turn, artifactType: "", source: "work" })
+  }
+  return [first, second, third].filter((e) => e.length)
+}
+
+// sendReports posts each body to /v2/report in turn, with the headers the
+// client sends there; failures are dropped.
+async function sendReports(site, a, bodies) {
+  for (const body of bodies) {
+    try {
+      const res = await fetch(endpointOf(site, a) + "/v2/report", {
+        method: "POST",
+        headers: {
+          Accept: "application/json, text/plain, */*", "Content-Type": "application/json", "User-Agent": cliAgent(site),
+          "X-Request-ID": hex(), "X-Product": "SaaS", Authorization: "Bearer " + a.access, "X-User-Id": a.uid ?? "",
+          "X-Domain": domainOf(site, a), "X-Requested-With": "XMLHttpRequest", ...enterpriseHeaders(a),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      })
+      await res.body?.cancel().catch(() => {})
+    } catch {}
+  }
+}
+
+// TAIL is how much of a reply's end replyFacts reads: the usage chunk and
+// the last finish_reason are in its last few events.
+const TAIL = 16384
+
+// reporting is res with the step's reports sent once its body has been
+// read to the end. A reply cut off before its end, or not read, sends
+// none: the client reports a send it saw answered.
+function reporting(site, a, t, res) {
+  if (!res.body || !res.ok || a.source === "key") return res
+  const start = Date.now()
+  const dec = new TextDecoder()
+  let tail = ""
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      transform(chunk, ctl) {
+        tail = (tail + dec.decode(chunk, { stream: true })).slice(-TAIL)
+        ctl.enqueue(chunk)
+      },
+      flush() {
+        tail = (tail + dec.decode()).slice(-TAIL)
+        sendReports(site, a, reportEvents(site, a, t, replyFacts(tail), start, Date.now()))
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
+}
+
+// stepOf is what reportEvents needs of a chat, read before it is sent:
+// the model, the user's input length, whether the user's own message
+// opened this step, the turn's step count and tool calls so far, and the
+// history's length.
+function stepOf(chat) {
+  const msgs = chat.messages
+  let step = 1
+  let toolCalls = 0
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m?.role === "user") break
+    if (m?.role === "assistant") {
+      step++
+      toolCalls += Array.isArray(m.tool_calls) ? m.tool_calls.length : 0
+    }
+  }
+  return {
+    model: typeof chat.model === "string" ? chat.model : "",
+    input: inputLengthOf(msgs),
+    userSend: msgs.at(-1)?.role === "user",
+    step,
+    toolCalls,
+    history: msgs.filter((m) => m?.role === "user" || m?.role === "assistant").length,
+  }
 }
 
 // regrown is a chat body given for conversation was given its growth event
@@ -2594,6 +2837,8 @@ const CN_ESTIMATED_WINDOWS = [
     aliases: ["deepseek-v4.1-flash-sg"],
     cap: 2e8,
     name: "deepseek-v4.1-flash tokens (est.)",
+    // the card WorkBuddy's refusal makes: nothing in it is estimated
+    refusedName: "deepseek-v4.1-flash tokens",
     short: "~200M",
     // no unit: the name already says tokens, and magpie's narrow account
     // cards cut a unit short ("tok…") beside the nine-digit numbers
@@ -2758,12 +3003,21 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   if (now >= end) return null // lapsed: nothing is exhausted, a new window opens on the next request
 
   const card = (amount, resetsAt, refused) => ({
-    name: win.name,
-    used: Math.min(100, (100 * amount) / win.cap),
-    amount,
-    limit: win.cap,
-    unit: win.unit,
-    display: `${tokensShort(amount)} / ${win.short}`,
+    name: (refused && win.refusedName) || win.name,
+    // A refusal is the vendor's word that the window is spent, and says
+    // nothing of a count: the card says 100% used and when WorkBuddy said it
+    // resets, with no tokens. It used to say the cap as its count,
+    // "200,000,000 / 200,000,000" under "(est.)", a number nothing measured,
+    // which read as magpie's estimate gone wrong (wsyfree on X).
+    ...(refused
+      ? { used: 100, display: "" }
+      : {
+          used: Math.min(100, (100 * amount) / win.cap),
+          amount,
+          limit: win.cap,
+          unit: win.unit,
+          display: `${tokensShort(amount)} / ${win.short}`,
+        }),
     resetsAt: new Date(resetsAt).toISOString(),
     span: FREE_WINDOW_SPAN / 1000,
     // the window's own model and the ids that share it, so magpie's exact
@@ -2785,7 +3039,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
     if (!Number.isFinite(t) || t <= now || t <= start) continue
     if (live === null || t > live) live = t
   }
-  if (live !== null) return card(win.cap, live, true)
+  if (live !== null) return card(0, live, true)
 
   return card(used, end, false)
 }
@@ -4389,6 +4643,9 @@ function makePlugin(site) {
               if (hadVars) changed = true
               grownFor = headers.get("X-Conversation-ID")
             }
+            // what the step's activity reports (#691) need of the chat,
+            // read now: the chat is let go before it is sent
+            const step = completion && site.ai && Array.isArray(chat?.messages) ? stepOf(chat) : null
             const post = (b) => {
               // sent as another account (reattend), the chat's conversation
               // id is that account's, and so is its growth event's
@@ -4521,7 +4778,12 @@ function makePlugin(site) {
             }
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
-            return res.status >= 400 ? explained(res) : kept(native ? res : unsaid(await renamed(res, names)), renewed ? "renewed" : "kept")
+            if (res.status >= 400) return explained(res)
+            const told = native ? res : unsaid(await renamed(res, names))
+            // the ids are the ones the chat went with, after any renewal
+            const conv = headers.get("X-Conversation-ID") ?? ""
+            const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
+            return kept(t ? reporting(site, a, t, told) : told, renewed ? "renewed" : "kept")
           },
         }
       },
@@ -4773,4 +5035,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

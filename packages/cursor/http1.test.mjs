@@ -103,7 +103,7 @@ const httpError = (e) =>
   typeof e.body === "string"
     ? new Response(e.body, { status: e.status, headers: { "content-type": "text/plain" } })
     : new Response(JSON.stringify(e.body), { status: e.status, headers: { "content-type": "application/json" } })
-function fakeAPI(base, { refuse, sseHttp, appendHttp, hangAppend } = {}) {
+function fakeAPI(base, { refuse, refuseAfterText, sseHttp, appendHttp, hangAppend } = {}) {
   const seen = { sse: [], appends: [] }
   const streams = new Map() // request id → RunSSE's controller
   globalThis.fetch = async (url, init = {}) => {
@@ -115,7 +115,10 @@ function fakeAPI(base, { refuse, sseHttp, appendHttp, hangAppend } = {}) {
       const id = fields(Buffer.from(init.body).subarray(5))[0].data.toString()
       seen.sse.push({ id, type: h.get("content-type"), auth: h.get("authorization"), encoding: h.get("accept-encoding") })
       if (sseHttp) return httpError(sseHttp)
-      if (refuse) return new Response(end(JSON.stringify({ error: refuse })), { headers: { "content-type": "application/connect+proto" } })
+      if (refuse) return new Response(Buffer.concat([
+        ...(refuseAfterText ? [update(1, pb().str(1, "partial answer").done())] : []),
+        end(JSON.stringify({ error: refuse })),
+      ]), { headers: { "content-type": "application/connect+proto" } })
       return new Response(new ReadableStream({ start: (c) => streams.set(id, c) }), { headers: { "content-type": "application/connect+proto" } })
     }
     if (u === "https://api2.cursor.sh/aiserver.v1.BidiService/BidiAppend") {
@@ -259,6 +262,31 @@ test("an error Cursor ends RunSSE with keeps its status", async () => {
   expect(r.status).toBe(401)
   expect(r.body.error.message).toContain("Authentication error")
 })
+
+for (const stream of [false, true]) {
+  test(`a content refusal through RunSSE keeps the sign-in and fails the request (stream=${stream})`, async () => {
+    const base = `http://127.0.0.1:${await freePort()}`
+    const message = "Unauthorized request.: The provider refused to serve this request based on the content"
+    fakeAPI(base, { refuse: { code: "unauthenticated", message }, refuseAfterText: stream })
+    const hooks = await CursorAuthPlugin()
+    const auth = fresh()
+    const loader = await hooks.auth.loader(async () => auth)
+    const response = await loader.fetch(base + "/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "grok-4.7-fast", stream, messages: [{ role: "user", content: "hello" }] }),
+    })
+    expect(response.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    if (stream) {
+      const text = await response.text()
+      const errors = text.split("\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6))).filter((event) => event.error)
+      expect(errors).toHaveLength(1)
+      expect(errors[0].error).toMatchObject({ code: 400, message })
+    } else {
+      expect(response.status).toBe(400)
+      expect((await response.json()).error.message).toBe(message)
+    }
+  })
+}
 
 const SIGNED_OUT = { code: "unauthenticated", message: "Error", details: [{ debug: { error: "ERROR_NOT_LOGGED_IN", details: { title: "Authentication error", detail: "If you are logged in, try logging out and back in." } } }] }
 

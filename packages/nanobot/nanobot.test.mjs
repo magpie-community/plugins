@@ -271,7 +271,7 @@ test('declares the standard community Agent entry and ships every module it load
     if (!shipped.has(file)) continue;
     for (const match of fs.readFileSync(path.join(dir, file), 'utf8').matchAll(/from\s+["'](\.\/[^"']+)["']/g)) loaded.add(match[1].slice(2));
   }
-  expect([...loaded].sort()).toEqual(['bridge.mjs', 'runtime.mjs']);
+  expect([...loaded].sort()).toEqual(['bridge.mjs', 'proc.mjs', 'runtime.mjs']);
   expect([...loaded].every(file => shipped.has(file))).toBe(true);
   // Tests are development artifacts and are not published.
   expect(shipped.has('nanobot.test.mjs')).toBe(false);

@@ -23,11 +23,16 @@ for (const [name, mocks] of [
   ["catalog.mjs", false],
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
+  ["tool-summary.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
+  ["dropped-call.mjs", false],
   ["repeat-batch.mjs", false],
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
+  ["spare.mjs", false],
+  ["tools-listed.mjs", false],
+  ["concurrent-convs.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
@@ -53,6 +58,12 @@ test("test/smoke.mjs against a fake agy", () => {
 
 test("test/array-items-unit.mjs", () => {
   const { code, output } = run([path.join(dir, "array-items-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)
+
+test("test/documents-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "documents-unit.mjs")], 60_000)
   expect(output).toMatch(/ALL OK/)
   expect(code).toBe(0)
 }, 70_000)

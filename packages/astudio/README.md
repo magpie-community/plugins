@@ -49,8 +49,11 @@ same daily points balance.
 | `xopglm52` | GLM-5.2 | 1M | |
 | `xopdeepseekv4pro0813` | DeepSeek-V4-Pro | 1M | |
 | `xopdsv4flash0731in` | DeepSeek-V4-Flash | 1M | |
+| `xdeepseek-flash-in` | DeepSeek-V4.1-Flash | 1M | 目录接口未返回，插件内补位 |
 
 思考档位（none / high / max，随模型）映射为 magpie 的推理档位；上游字段变化以实时目录为准。
+
+目录接口会滞后于桌面端自己的目录：网关已经能调、目录还没列出来的模型，由插件内置的补位表（`EXTRA_CATALOG`）补上，当前即 `xdeepseek-flash-in`（2026-11-13 直调 `/model-gateway/v1/responses` 返 200，同刻目录仍只给 7 个）。目录一旦列出同名 slug 就改用目录那一行；目录把它标成 `hidden` 或 `supported_in_api: false` 视为下架，补位表不复活它。
 
 ## 每日签到（每日登录积分）
 

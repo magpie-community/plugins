@@ -235,12 +235,17 @@ test("a China account refused under the cap reads full", async () => {
     cnRefusal("2026-11-02 19:17:02"),
   ]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.CN_ESTIMATED_WINDOWS[0])
-  expect(w.amount).toBe(2e8) // the rows sum to 80M
   expect(w.used).toBe(100)
   expect(w.refused).toBe(true)
   expect(w.aside).toBeUndefined() // the vendor's word stops the model
   expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
-  expect(w.display).toBe("200.0M / ~200M")
+  // the refusal says no count, and nothing in it is an estimate: no
+  // "200,000,000 / 200,000,000" under "(est.)" (wsyfree on X), the rows'
+  // 80M not passed off as the window's either
+  expect(w.name).toBe("deepseek-v4.1-flash tokens")
+  expect(w.amount).toBeUndefined()
+  expect(w.limit).toBeUndefined()
+  expect(w.display).toBe("")
 })
 
 // readLedgerTail stops the chain on both languages' edges: a Chinese refusal
@@ -296,7 +301,8 @@ test("a routing trace's failed WorkBuddy attempt pins the vendor reset", async (
     writeFileSync(join(root, "routing", `${day}.jsonl`), routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
     const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     const w = _internal.freeWindowOf(rows, "me@example.com", now)
-    expect(w.amount).toBe(1e8)
+    expect(w.used).toBe(100)
+    expect(w.amount).toBeUndefined()
     expect(w.refused).toBe(true)
     expect(w.aside).toBeUndefined()
     expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
@@ -358,7 +364,8 @@ test("a routing trace keeps accounts, models and builds apart", async () => {
       now,
       _internal.CN_ESTIMATED_WINDOWS[0],
     )
-    expect(cn.amount).toBe(2e8)
+    expect(cn.used).toBe(100)
+    expect(cn.name).toBe("deepseek-v4.1-flash tokens")
     expect(cn.refused).toBe(true)
     expect(cn.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
   } finally {
@@ -650,9 +657,10 @@ test("an account refused under the cap reads full, not 93%", async () => {
     row("2026-10-18T19:52:04+08:00", { status: 429, err: `${TIMEOUT_BEFORE_RESET}2026-10-19 19:52:24 UTC+8, alternatively, you can switch to the other models to continue using it.` }),
   ]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-10-18T23:00:00+08:00"))
-  expect(w.amount).toBe(1e8) // the rows sum to 92,792,962
-  expect(w.used).toBe(100)
-  expect(w.display).toBe("100.0M / 100M")
+  expect(w.used).toBe(100) // the rows sum to 92,792,962
+  expect(w.amount).toBeUndefined()
+  expect(w.display).toBe("")
+  expect(w.name).toBe("Free model tokens")
   expect(w.resetsAt).toBe(iso("2026-10-19T19:52:24+08:00"))
   expect(w.refused).toBe(true)
 })

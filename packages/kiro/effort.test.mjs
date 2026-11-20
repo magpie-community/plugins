@@ -33,7 +33,7 @@ const listed = (models) => {
     if (new URL(String(input)).pathname !== "/List-Available-Models") throw new Error("no network in tests")
     return Response.json({ defaultModel: { modelId: "auto" }, models })
   }
-  return _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:1:profile/P" })
+  return _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P" })
     .finally(() => (globalThis.fetch = was))
 }
 const model = (modelId, schema) => ({ modelId, modelName: modelId, tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 128000 },
@@ -128,4 +128,21 @@ test("each level with thinking on is the field Kiro lists, or its budget", async
       expect(body.additionalModelRequestFields).toBeUndefined()
       expect(said(body)).toContain(`<thinking_mode>enabled</thinking_mode><max_thinking_length>${b}</max_thinking_length>`)
     }
+})
+
+test("GPT and Grok expose and send their catalog's native reasoning levels", async () => {
+  for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "grok-4.7"]) {
+    const levels = id.startsWith("gpt-") ? ["none", "low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh"]
+    await listed([model(id, { type: "object", properties: { reasoning: { type: "object", properties: { effort: { type: "string", enum: levels, default: "high" } } } }, additionalProperties: false })])
+    for (const m of [_internal.configModel({ id }), _internal.runtimeModel({ id })]) expect(Object.keys(m.variants)).toEqual(levels)
+    for (const effort of levels) {
+      const body = repro(id, effort)
+      expect(body.additionalModelRequestFields).toEqual({ reasoning: { effort } })
+      expect(_internal.responsesBody(body).reasoning).toEqual({ effort })
+    }
+    if (id.startsWith("gpt-")) {
+      const req = { thinking: { type: "disabled" }, output_config: { effort: "high" }, messages: [{ role: "user", content: "q" }] }
+      expect(JSON.parse(_internal.buildKiro(req, id, "", 0)).additionalModelRequestFields).toEqual({ reasoning: { effort: "none" } })
+    }
+  }
 })

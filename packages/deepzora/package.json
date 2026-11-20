@@ -1,10 +1,11 @@
 {
   "name": "@magpie-community/agent-deepzora",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Deepzora Desktop, CLI and ACP as a Magpie agent, with a reversible TOML and dotenv configuration bridge",
   "type": "module",
   "main": "./index.mjs",
   "files": [
+    "proc.mjs",
     "index.mjs",
     "deepzora.agent.js",
     "bridge.mjs",

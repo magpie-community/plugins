@@ -96,6 +96,10 @@ plugin's `fetch` answers them on Cursor's agent API:
   before.
   Failures keep their statuses: 401 to sign in again, 429 at the
   usage limit, 400 for a prompt too long, 403 for a region refusal.
+  Cursor's explicit "The provider refused to serve this request based on
+  the content" is a 400 request refusal even when Cursor labels it
+  unauthenticated. Its message is kept without a sign-in hint; the
+  account is kept, and this does not make the refused request succeed.
 
 Tool results can continue a retained Run in the same plugin process. The owner
 uses the same session/cache key and first user message as `conversation_id`, so
@@ -153,8 +157,11 @@ Cursor completes by itself, which it writes and completes in the step but never
 starts on the client or sends to it; those count toward it too. When the count
 comes after the step's calls, a checkpoint whose state waits on exactly the
 calls the caller was given also ends the step (#550); a checkpoint between
-calls after a count sent ahead of them does not seal the batch early. The
-step's calls are the rest.
+calls after a count sent ahead of them does not seal the batch early. A
+partial or started MCP call can also precede the count while its exec follows
+the checkpoint. Until that call arrives as an exec or is completed by Cursor,
+the checkpoint cannot end the step merely because it lists only calls already
+sent. The step's calls are the rest.
 
 These are retention limits. A missing, expired, restarted, busy, incompatible,
 or full owner uses the original history reconstruction and stateless decoder

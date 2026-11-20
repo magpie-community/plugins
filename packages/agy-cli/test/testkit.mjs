@@ -30,6 +30,7 @@ export const REPO_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)
 // AGY_BRIDGE_TEST_INDEX 只用于反向验证（让同一套用例跑修复前的旧副本，确认能抓到旧缺陷）。
 export const INDEX_FILE = process.env.AGY_BRIDGE_TEST_INDEX || path.join(REPO_DIR, "index.mjs")
 export const USAGE_FILE = path.join(REPO_DIR, "usage.mjs")
+export const MODEL_IDS_FILE = path.join(REPO_DIR, "model-ids.mjs")
 export const PLATFORM_FILE = path.join(REPO_DIR, "platform.mjs")
 export const ARRAY_ITEMS_FILE = path.join(REPO_DIR, "array-items.mjs")
 export const CLOAK_FILE = path.join(REPO_DIR, "cloak.mjs")
@@ -38,6 +39,12 @@ export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
 export const STEP_USAGE_FILE = path.join(REPO_DIR, "step-usage.mjs")
 export const SIGNIN_FILE = path.join(REPO_DIR, "signin.mjs")
 export const TOOL_SCHEMA_FILE = path.join(REPO_DIR, "tool-schema.mjs")
+export const TOOL_BUDGET_FILE = path.join(REPO_DIR, "tool-budget.mjs")
+export const PROC_FILE = path.join(REPO_DIR, "proc.mjs")
+export const INSTALL_FILE = path.join(REPO_DIR, "install.mjs")
+export const ACCOUNT_FILE = path.join(REPO_DIR, "account.mjs")
+export const IMPORT_FILE = path.join(REPO_DIR, "import.mjs")
+export const DOCUMENTS_FILE = path.join(REPO_DIR, "documents.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -47,7 +54,7 @@ const RUNTIME_NAMES = ["Date", "setTimeout", "clearTimeout", "setInterval", "cle
 const RUNTIME_PRELUDE = `import { ${RUNTIME_NAMES.join(", ")} } from ${JSON.stringify(RUNTIME_SPECIFIER)};\n`
 const TEST_EXPORTS = "\nexport { Turn as __agyTestTurn, allProcs as __agyTestAllProcs, pool as __agyTestPool, " +
   "execOnce as __agyTestExecOnce, findAgy as __agyTestFindAgy, canonicalBody as __agyTestCanonicalBody, " +
-  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, reapOnExit as __agyTestReapOnExit };\n"
+  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, renderInitialPrompt as __agyTestRenderInitialPrompt, reapOnExit as __agyTestReapOnExit };\n"
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
 if (typeof vm.SourceTextModule !== "function" || typeof vm.SyntheticModule !== "function") {
@@ -172,9 +179,9 @@ class FakeChild extends EventEmitter {
 }
 
 function spawnModels(kit, file, args) {
-  kit.modelsSpawns.push({ file, at: kit.clock.now() })
+  kit.modelsSpawns.push({ file, args, at: kit.clock.now() })
   const raw = typeof kit.modelsBehavior === "function"
-    ? kit.modelsBehavior({ file, count: kit.modelsSpawns.length })
+    ? kit.modelsBehavior({ file, args, count: kit.modelsSpawns.length })
     : kit.modelsBehavior
   const behavior = raw || { hang: true }
   if (behavior.throwSync) throw Object.assign(new Error("spawn EACCES (test)"), { code: "EACCES" })
@@ -193,6 +200,7 @@ function spawnModels(kit, file, args) {
       return
     }
     if (behavior.stdout) child.stdout.emit("data", behavior.stdout)
+    if (behavior.stderr) child.stderr.emit("data", behavior.stderr)
     child.finish(behavior.code ?? 0)
   }
   if (!behavior.hang) {
@@ -209,12 +217,23 @@ class FakeAgy {
     this.child = child
     this.env = opts?.env || {}
     this.token = this.env.AGY_BRIDGE_TOKEN
+    this.spawnIndex = kit.acpSpawns.length - 1
     this.sessionId = null
     this.buffer = ""
     this.cancelWaiters = []
     this.cancelPending = false
     child.onStdin = (chunk) => this.onStdin(chunk)
+    // offeredModels may be a function of the agy's HOME: accounts on
+    // different plans are offered different models (#1229).
+    // and of its args: an agy on ~/.gemini is offered what the app's
+    // gateway lists, one on --gemini-dir its Google account's
+    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "", child.args) : kit.offeredModels
+    // Whether this agy reaches the bridge's MCP server and lists the tools;
+    // listTools(env) false stands in for an `nc` agy never runs (nc.cmd
+    // under agy 1.5 on Windows, plugins#1239).
+    this.listsTools = () => typeof kit.listTools === "function" ? kit.listTools(this.env) : kit.listTools !== false
     child.onKill = () => {
+      this.watchSocket?.close()
       for (const waiter of this.cancelWaiters.splice(0)) waiter()
     }
   }
@@ -241,36 +260,48 @@ class FakeAgy {
 
   onMessage(message) {
     const { id, method, params } = message
-    this.kit.acpLog.push({ method, params, sessionId: this.sessionId })
+    this.kit.acpLog.push({ method, params, sessionId: this.sessionId, spawn: this.spawnIndex })
     if (method === "initialize") {
-      this.respond(id, {
-        protocolVersion: 1,
-        agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
-        agentCapabilities: this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {},
-      })
+      const reply = () => {
+        this.kit.initialized++
+        this.respond(id, {
+          protocolVersion: 1,
+          agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
+          agentCapabilities: {
+            ...(this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {}),
+            // agy 1.5's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1)
+            ...(this.kit.appendable ? { _meta: { antigravity: { systemPrompt: { append: true } } } } : {}),
+          },
+        })
+      }
+      // agy's own start: spawn to initialize is ~0.25s warm, ~1s cold on Linux
+      if (this.kit.initializeDelayMs) setTimeout(reply, this.kit.initializeDelayMs)
+      else reply()
     } else if (method === "session/new" && this.kit.sessionNewError) {
       // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
       this.send({ id, error: this.kit.sessionNewError })
     } else if (method === "session/resume" && this.kit.sessionResume && params?.sessionId) {
       this.sessionId = params.sessionId
-      if (this.token) this.control({ kind: "list" })
+      if (this.token && this.listsTools()) this.listAndWatch()
       const models = { currentModelId: this.kit.initialAgyModel }
-      if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
+      if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/new") {
       this.sessionId = `fake-session-${++this.kit.sessionSerial}`
       // Only the bridge's own processes carry a control token; the catalog's
       // model probe runs agy without one, as real agy does without --ide-mcp-port.
-      if (this.token) this.control({ kind: "list" })
+      if (this.token && this.listsTools()) this.listAndWatch()
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
-      if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
+      if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
       if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
       else this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
-      this.respond(id, {})
+      // agy whose account Google turned away offers no model: every one is unknown
+      if (this.kit.setModelError) this.send({ id, error: this.kit.setModelError })
+      else this.respond(id, {})
     } else if (method === "session/prompt") {
       this.runPrompt(id, params)
     } else if (method === "session/cancel") {
@@ -302,6 +333,30 @@ class FakeAgy {
 
   update(update) {
     this.send({ method: "session/update", params: { sessionId: this.sessionId, update } })
+  }
+
+  // As mcp-server.mjs does: list the tools, and keep a watch open that
+  // lists them again on each tools_changed the bridge pushes.
+  listAndWatch() {
+    this.list()
+    if (this.watchSocket || this.kit.watchTools === false) return
+    const socket = new FakeSocket()
+    socket.write = (data) => {
+      socket.written += data
+      if (String(data).includes("tools_changed") && !this.child.closed) setImmediate(() => this.list())
+      return true
+    }
+    this.watchSocket = socket
+    this.kit.controlHandler(socket)
+    socket.emit("data", JSON.stringify({ token: this.token, kind: "watch" }) + "\n")
+  }
+
+  // kit.listings records, per agy, the tool names each tools/list returned.
+  list() {
+    return this.control({ kind: "list" }).then((reply) => {
+      this.kit.listings.push({ spawn: this.spawnIndex, tools: (reply?.result?.tools || []).map((tool) => tool.name) })
+      return reply
+    })
   }
 
   control(message) {
@@ -418,6 +473,8 @@ export async function createBridgeKit(options = {}) {
     modelsSpawns: [],
     acpSpawns: [],
     otherSpawns: [],
+    helpSpawns: [],
+    topHelpSpawns: [],
     spawnSyncs: [],
     execFiles: [],
     modelsBehavior: options.modelsBehavior ?? { stdout: modelsOutput(BASE_MODEL_ROWS) },
@@ -428,8 +485,15 @@ export async function createBridgeKit(options = {}) {
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    setModelError: options.setModelError ?? null,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
+    initializeDelayMs: options.initializeDelayMs ?? 0,
+    initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    appendable: options.appendable ?? false,
+    listTools: options.listTools ?? true,
+    watchTools: options.watchTools ?? true,
+    listings: [],
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
     acpLog: [],
@@ -450,6 +514,8 @@ export async function createBridgeKit(options = {}) {
     // agy's stored sign-in is read only when a test says what it is
     // (options.storedSignIn, macOS keychain output or "missing")
     ...(options.storedSignIn === undefined ? { AGY_BRIDGE_STORED_SIGNIN: "skip" } : {}),
+    // no spare agy unless a test asks: suites count spawns and ACP calls
+    AGY_BRIDGE_SPARE: "0",
     ...(options.env || {}),
   }
   for (const [key, value] of Object.entries(kit.env)) {
@@ -467,10 +533,31 @@ export async function createBridgeKit(options = {}) {
     },
   })
   const spawn = (file, args = [], opts = {}) => {
-    if (args[0] === "models") return spawnModels(kit, file, args)
+    // agy's own flags before the subcommand (--settings for `agy models`)
+    const sub = args[0] === "--settings" ? args[2] : args[0]
+    if (args[0] === "--help") {
+      kit.topHelpSpawns.push({ file, args })
+      const child = new FakeChild(kit, file, args)
+      setImmediate(() => {
+        if (options.topHelp) child.stderr.emit("data", options.topHelp)
+        child.finish(0)
+      })
+      return child
+    }
+    if (sub === "models") return spawnModels(kit, file, args)
+    if (args[0] === "acp" && args.includes("--help")) {
+      // agy's flag usage goes to stderr; an older agy doesn't list the flag
+      kit.helpSpawns.push({ file, args })
+      const child = new FakeChild(kit, file, args)
+      setImmediate(() => {
+        if (options.acpHelp) child.stderr.emit("data", options.acpHelp)
+        child.finish(0)
+      })
+      return child
+    }
     if (args[0] === "acp") {
       const child = new FakeChild(kit, file, args)
-      kit.acpSpawns.push({ file, args, env: opts.env })
+      kit.acpSpawns.push({ file, args, env: opts.env, cwd: opts.cwd, child })
       new FakeAgy(kit, child, opts)
       return child
     }
@@ -522,6 +609,7 @@ export async function createBridgeKit(options = {}) {
   const cache = new Map([[RUNTIME_SPECIFIER, runtime]])
   const indexUrl = pathToFileURL(path.join(REPO_DIR, "index.mjs")).href
   const usageUrl = pathToFileURL(USAGE_FILE).href
+  const modelIdsUrl = pathToFileURL(MODEL_IDS_FILE).href
   const platformUrl = pathToFileURL(PLATFORM_FILE).href
   const arrayItemsUrl = pathToFileURL(ARRAY_ITEMS_FILE).href
   const cloakUrl = pathToFileURL(CLOAK_FILE).href
@@ -530,6 +618,12 @@ export async function createBridgeKit(options = {}) {
   const stepUsageUrl = pathToFileURL(STEP_USAGE_FILE).href
   const signinUrl = pathToFileURL(SIGNIN_FILE).href
   const toolSchemaUrl = pathToFileURL(TOOL_SCHEMA_FILE).href
+  const toolBudgetUrl = pathToFileURL(TOOL_BUDGET_FILE).href
+  const procUrl = pathToFileURL(PROC_FILE).href
+  const installUrl = pathToFileURL(INSTALL_FILE).href
+  const accountUrl = pathToFileURL(ACCOUNT_FILE).href
+  const importUrl = pathToFileURL(IMPORT_FILE).href
+  const documentsUrl = pathToFileURL(DOCUMENTS_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -537,6 +631,7 @@ export async function createBridgeKit(options = {}) {
     if (cache.has(key)) return cache.get(key)
     let module
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
+    else if (key === "./model-ids.mjs") module = sourceModule(MODEL_IDS_FILE, "", modelIdsUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
     else if (key === "./array-items.mjs") module = sourceModule(ARRAY_ITEMS_FILE, "", arrayItemsUrl)
     else if (key === "./cloak.mjs") module = sourceModule(CLOAK_FILE, "", cloakUrl)
@@ -545,6 +640,12 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./step-usage.mjs") module = sourceModule(STEP_USAGE_FILE, "", stepUsageUrl)
     else if (key === "./signin.mjs") module = sourceModule(SIGNIN_FILE, "", signinUrl)
     else if (key === "./tool-schema.mjs") module = sourceModule(TOOL_SCHEMA_FILE, "", toolSchemaUrl)
+    else if (key === "./tool-budget.mjs") module = sourceModule(TOOL_BUDGET_FILE, "", toolBudgetUrl)
+    else if (key === "./proc.mjs") module = sourceModule(PROC_FILE, "", procUrl)
+    else if (key === "./install.mjs") module = sourceModule(INSTALL_FILE, "", installUrl)
+    else if (key === "./account.mjs") module = sourceModule(ACCOUNT_FILE, "", accountUrl)
+    else if (key === "./import.mjs") module = sourceModule(IMPORT_FILE, "", importUrl)
+    else if (key === "./documents.mjs") module = sourceModule(DOCUMENTS_FILE, "", documentsUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)

@@ -42,6 +42,11 @@ const MODEL_WIRE = {
   "glm-5.3-flash": "anthropic",
 }
 const wireOf = (id) => WIRE[MODEL_WIRE[id]] ?? WIRE.chat
+// alsoOf are the two APIs besides its own a model is served on (below),
+// which magpie relays a client's request to as it was sent rather than
+// translating it to the declared one (m.also; gaubeebangeel on X:
+// OpenDesign's Anthropic request to a chat model went as chat completions)
+const alsoOf = (id) => Object.values(WIRE).filter((w) => w !== wireOf(id))
 // The API a model is declared on is only its default: amr-link serves
 // every model on all three (keyblues, plugins#888: each of the fourteen
 // answered on chat completions and Responses at /v1 and on Anthropic's
@@ -346,6 +351,7 @@ function modelOf(id, m) {
     // the API magpie asks this model on (WIRE above), per model
     api: { npm: wireOf(id) },
     provider: { npm: wireOf(id) },
+    also: alsoOf(id),
     ...(rate && { rate }),
     limit: {
       context: Number.isFinite(context) && context > 0 ? context : 200_000,
@@ -370,6 +376,7 @@ function servedOf(id, m) {
     id,
     name: c.name,
     api: { id, url: LINK, npm: wireOf(id) },
+    also: alsoOf(id),
     status: "active",
     headers: {},
     options: {},
@@ -528,7 +535,7 @@ export const OpenDesignAuthPlugin = async () => {
         // catalog's 232000 for glm-5.3-flash, which amr-link refuses (CAP)
         const out = Number(m.limit?.output)
         const limit = CAP[id] && !(out > 0 && out <= CAP[id]) ? { limit: { ...(m.limit ?? {}), output: CAP[id] } } : {}
-        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
+        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, also: alsoOf(id), ...(rate && { rate }) }
       }
       cfg.provider[ID] = {
         name: "Open Design",

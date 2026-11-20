@@ -76,6 +76,19 @@ export function errMsg(e: unknown): string {
   return localizeDaemonMessage(msg);
 }
 
+/** 1.3.8: the daemon's own (already localized) message for an RPC error, falling back to the generic code text */
+export function rpcMessage(e: unknown): string {
+  const msg = (e as Error)?.message;
+  return msg ? localizeDaemonMessage(String(msg)) : errMsg(e);
+}
+
+/** 1.3.8: the file manager's name on this machine (the page runs on the daemon's machine, so the UA tells the OS) */
+export function revealLabel(ua = typeof navigator !== "undefined" ? navigator.userAgent : ""): string {
+  if (/Macintosh|Mac OS X/i.test(ua)) return t("panel.revealMac");
+  if (/Windows/i.test(ua)) return t("panel.revealWin");
+  return t("panel.revealLinux");
+}
+
 export function localizeDaemonMessage(msg: string): string {
   if (locale === "zh") return msg;
   if (msg === "后台已重启，本轮已中断") return "Daemon restarted — this turn was interrupted";

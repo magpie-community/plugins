@@ -39,8 +39,11 @@ test("a request goes in Antigravity's envelope, and its stream comes back Gemini
   const sent = seen.find((s) => s.name === "streamGenerateContent")
   expect(sent.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse")
   expect(sent.headers.authorization).toBe("Bearer tok")
-  expect(sent.headers["user-agent"]).toMatch(/^antigravity\/hub\/3\.1\.4 \w+\/\w+$/)
+  // as the app's language server sends it (2.32.1, captured)
+  expect(sent.headers["user-agent"]).toMatch(/^antigravity\/hub\/3\.1\.4 \(aidev_client; os_type=(darwin|linux|windows); arch=(arm64|amd64); cl=\d+\)$/)
+  expect(sent.headers.accept).toBeUndefined()
   expect(sent.json).toMatchObject({ model: "gemini-3.7-flash-low", project: "ag-proj", userAgent: "antigravity", requestType: "agent" })
+  expect(Object.keys(sent.json)).toEqual(["project", "requestId", "request", "model", "userAgent", "requestType"])
   expect(sent.json.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "low" })
   expect(sent.json.request.sessionId).toMatch(/^-\d+$/)
   // models are read once
@@ -53,6 +56,35 @@ test("OpenCode's variant names the level", async () => {
   const f = await loaderFetch(auth())
   await f(URL_("gemini-3.7-flash"), { method: "POST", body: ask("hi", { generationConfig: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } } }) })
   expect(seen.find((s) => s.name === "streamGenerateContent").json.model).toBe("gemini-3.7-flash-low")
+})
+
+test("the reply names the id it went out under, for magpie's ledger", async () => {
+  fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [{ content: { role: "model", parts: [{ text: "hi" }] }, finishReason: "STOP" }] }) })
+  const f = await loaderFetch(auth())
+  for (const [model, effort, method, want] of [
+    ["gemini-3.7-flash", "high", "streamGenerateContent", "gemini-3.7-flash-high"],
+    ["gemini-3.7-flash", "low", "generateContent", "gemini-3.7-flash-low"],
+    ["gemini-3-flash", "", "streamGenerateContent", "gemini-3-flash"],
+  ]) {
+    const res = await f(URL_(model, method), { method: "POST", headers: effort ? { "x-magpie-effort": effort } : {}, body: ask() })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("x-magpie-sent-model")).toBe(want)
+    await res.text()
+  }
+  fake({ fetchAvailableModels: models, streamGenerateContent: () => new Response(JSON.stringify({ error: { code: 500, message: "boom" } }), { status: 500 }) })
+  const g = await loaderFetch(auth())
+  const bad = await g(URL_("gemini-3.7-flash"), { method: "POST", headers: { "x-magpie-effort": "high" }, body: ask() })
+  expect(bad.status).toBe(500)
+  expect(bad.headers.get("x-magpie-sent-model")).toBe("gemini-3.7-flash-high")
+})
+
+test("a level in capitals, as Gemini's own clients write it, names the level too (#1169)", async () => {
+  const seen = fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
+  const f = await loaderFetch(auth())
+  await f(URL_("gemini-3.7-flash"), { method: "POST", body: ask("hi", { generationConfig: { thinkingConfig: { includeThoughts: true, thinkingLevel: "LOW" } } }) })
+  const sent = seen.find((s) => s.name === "streamGenerateContent").json
+  expect(sent.model).toBe("gemini-3.7-flash-low")
+  expect(sent.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "low" })
 })
 
 test("a Request input is read", async () => {
@@ -82,8 +114,13 @@ test("a 429 to a turned-away system prompt is a 400, not a quota", async () => {
   for (const [sys, says] of [
     ["x-anthropic-billing-header: cc_version=2.1", "Claude Code and the Claude Agent SDK"],
     ["You are Codex, a coding agent based on GPT-5.", "Codex's own system prompt"],
-    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "Hermes Agent's earlier default persona"],
+    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "Hermes Agent's default persona"],
+    ["You are Hermes Agent, built by Nous Research.", "Hermes Agent's default persona"],
+    ["You are opencode, an interactive CLI tool that helps users with software engineering tasks.", "OpenCode's system prompt"],
+    ["You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.", "Codex's prompt for a model it has none of its own for"],
+    ["You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.", "pi's default system prompt"],
     ["RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\n§ Role", "oh-my-pi (omp)'s system prompt"],
+    ["RFC 2119 keywords: MUST, REQUIRED,\r\nSHOULD, RECOMMENDED, MAY, OPTIONAL.\r\n\r\n§ Role", "oh-my-pi (omp)'s system prompt"],
   ]) {
     const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask("hi", { systemInstruction: { parts: [{ text: sys }] } }) })
     expect(res.status).toBe(400)
@@ -127,9 +164,10 @@ test("an account with no project is set up for its default tier", async () => {
   expect(load.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
   expect(load.json).toEqual({ metadata: { ideType: "ANTIGRAVITY" } })
   const on = seen.find((s) => s.name === "onboardUser")
-  expect(on.json).toEqual({ tier_id: "free-tier", metadata: { ide_type: "ANTIGRAVITY", ide_version: "3.1.4", ide_name: "antigravity" } })
-  expect(on.headers["user-agent"]).toEndWith(" google-api-nodejs-client/10.3.0")
-  expect(on.headers["x-goog-api-client"]).toBe("gl-node/22.21.1")
+  // as 2.32.1's language server asks it (captured)
+  expect(on.json).toEqual({ tierId: "free-tier", metadata: { ideType: "ANTIGRAVITY" } })
+  expect(on.headers["user-agent"]).toMatch(/^antigravity\/hub\/3\.1\.4 \(aidev_client; [^)]*\)$/)
+  expect(on.headers["x-goog-api-client"]).toBeUndefined()
   expect(seen.find((s) => s.name === "streamGenerateContent").json.project).toBe("ag-new")
 })
 
@@ -225,6 +263,40 @@ test("with the switch off, a refused request is not asked again, and the 429 say
   const j = await res.json()
   expect(j.error.message).toContain("exhausted your capacity")
   expect(j.error.message).toContain("Use AI credits")
+})
+
+// plugins#1148: a 429 came back while the model's quota wasn't used up,
+// and the credits note read as if it were
+const withQuota = (fraction) => ({ models: { "gemini-3-flash": { displayName: "Gemini 3 Flash", quotaInfo: fraction === undefined ? { resetTime: "2026-11-15T12:00:00Z" } : { remainingFraction: fraction, resetTime: "2026-11-15T12:00:00Z" } } } })
+
+test("a 429 while the model's quota is left says so, not to spend credits (plugins#1148)", async () => {
+  let reads = 0
+  fake({ loadCodeAssist: withCredits, fetchAvailableModels: () => (++reads === 1 ? withQuota(0.8) : withQuota(0.62)), streamGenerateContent: spentQuota })
+  const { f } = await creditsFetch(false)
+  const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+  expect(res.status).toBe(429)
+  const msg = (await res.json()).error.message
+  expect(msg).toContain("exhausted your capacity")
+  expect(msg).toContain("62% of its quota left")
+  expect(msg).not.toContain("Use AI credits")
+  expect(reads).toBe(2)
+})
+
+test("a 429 once the model's quota is used up still points at the credits switch", async () => {
+  let reads = 0
+  fake({ loadCodeAssist: withCredits, fetchAvailableModels: () => (++reads === 1 ? withQuota(0.4) : withQuota(undefined)), streamGenerateContent: spentQuota })
+  const { f } = await creditsFetch(false)
+  const msg = (await (await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })).json()).error.message
+  expect(msg).toContain("Use AI credits")
+  expect(msg).not.toContain("quota left")
+})
+
+test("when the quota can't be read again, the 429 keeps the credits note", async () => {
+  let reads = 0
+  fake({ loadCodeAssist: withCredits, fetchAvailableModels: () => (++reads === 1 ? withQuota(0.9) : new Response("boom", { status: 500 })), streamGenerateContent: spentQuota })
+  const { f } = await creditsFetch(false)
+  const msg = (await (await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })).json()).error.message
+  expect(msg).toContain("Use AI credits")
 })
 
 test("an account with no credits is not asked again, with the switch on", async () => {
@@ -365,4 +437,66 @@ test("a generateContent reply is asked again the same way", async () => {
   expect(res.status).toBe(200)
   expect(JSON.stringify(await res.json())).toContain("functionCall")
   expect(calls(seen)).toBe(2)
+})
+
+// Code Assist's real late error is a bare line, no "data:" before it, after
+// the thinking events (zRain's capture of gemini-4-argon-high, the bytes in
+// magpie's internal/gateway/sse_bare.go)
+const bareErr = '{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}'
+
+test("Code Assist's bare INVALID_ARGUMENT line after thinking is asked again too (Lawson0112 on X)", async () => {
+  _internal.retry400.floorMs = 3000
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), dataOf(think), bareErr) : sse(think, answer)) })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  const text = await res.text()
+  expect(text).not.toContain("INVALID_ARGUMENT")
+  expect(text.split("hmm").length - 1).toBe(1)
+  expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("a bare error written over several lines is read whole", async () => {
+  let n = 0
+  const pretty = JSON.stringify(JSON.parse(bareErr), null, 2)
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), pretty) : sse(answer)) })
+  const f = await loaderFetch(auth())
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("gemini-4's bad call that keeps coming says what it is, not a region or account refusal", async () => {
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => raw(dataOf(think), bareErr) })
+  const f = await loaderFetch(auth())
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(calls(seen)).toBe(3)
+  const line = text.split("\n").find((l) => l.includes("INVALID_ARGUMENT"))
+  const e = JSON.parse(line.replace(/^data:\s*/, "")).error
+  expect(e.code).toBe(400)
+  expect(e.status).toBe("INVALID_ARGUMENT")
+  expect(e.message).toContain("gemini-4-carbon turned down a call it built while thinking, asked 3 times")
+  expect(e.message).toContain("Request contains an invalid argument.")
+  expect(e.message).toContain("Not a region or account refusal")
+  // magpie's gateway reads "model … invalid" as a model not served
+  expect(e.message).not.toMatch(/model.{0,80}invalid/i)
+
+  _internal.retry400.floorMs = 0
+  fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const g = await loaderFetch(auth())
+  const res = await g(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(400)
+  expect((await res.json()).error.message).toContain("asked 3 times")
+})
+
+test("a fast 400 and another model's errors keep Google's words", async () => {
+  fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const f = await loaderFetch(auth())
+  _internal.retry400.floorMs = 3000
+  expect((await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).json()).error.message).toBe("Request contains an invalid argument.")
+  fake({ fetchAvailableModels: G4, streamGenerateContent: () => raw(dataOf(think), bareErr) })
+  const g = await loaderFetch(auth())
+  const text = await (await g(URL_("gemini-3-flash"), { method: "POST", body: ask() })).text()
+  expect(text).toContain(bareErr)
 })

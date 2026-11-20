@@ -6,7 +6,8 @@
 // OpenCode 1.x does (every export a plugin). It signs in to nothing and
 // sends no request. It checks registry.json first,
 // as magpie's Plugins page reads it (scripts/registry.mjs).
-import { readdirSync, readFileSync, existsSync } from "node:fs"
+import { readdirSync, readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { agentKindProblems, registryProblems } from "./registry.mjs"
@@ -14,6 +15,10 @@ import { agentKindProblems, registryProblems } from "./registry.mjs"
 const root = resolve(import.meta.dir, "..", "packages")
 const only = process.argv[2]
 let failed = 0
+// Each package gets a folder of its own as its directory, as magpie gives it
+// one: a plugin that writes state there (atomcode-state.json) leaves nothing
+// in the checkout (plugins#1100).
+const scratch = mkdtempSync(join(tmpdir(), "plugins-check-"))
 {
   const file = resolve(import.meta.dir, "..", "registry.json")
   const source = existsSync(file) ? readFileSync(file, "utf8") : null
@@ -53,7 +58,9 @@ for (const name of readdirSync(root)) {
     let servesModels = false
     const client = { app: { log: async () => {} }, auth: { set: async () => {} }, tui: { showToast: async () => {} }, config: { get: async () => ({ data: {} }) } }
     for (const fn of fns) {
-      const hooks = await fn({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })
+      const work = join(scratch, name)
+      mkdirSync(work, { recursive: true })
+      const hooks = await fn({ client, directory: work, worktree: work, $: undefined, project: {} })
       // Tools may also have an auth hook for their own API, without serving
       // chat models. Check their tools as well as their sign-in methods.
       if (hooks?.tool) {
@@ -102,6 +109,7 @@ for (const name of readdirSync(root)) {
   if (problems.length) failed++
   console.log(problems.length ? `✗ ${name}\n  ${problems.join("\n  ")}` : `✓ ${name}`)
 }
+rmSync(scratch, { recursive: true, force: true })
 process.exit(failed ? 1 : 0)
 
 // opencode2Problems loads a package as OpenCode 2.x does: its exports["."]
