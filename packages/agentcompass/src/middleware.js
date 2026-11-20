@@ -39,7 +39,7 @@ import {
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { MAGPIE_HOST, canonicalModel, catalogTables, expandHostProviders, magpieOptions, modelPinProblem, modelSpec, pinGiven, providerNamesOf, pyStrip, servedModel, splitEffortSuffix } from "./catalog.js";
+import { MAGPIE_HOST, canonicalModel, catalogTables, expandHostProviders, logWarning, magpieOptions, modelPinProblem, modelSpec, pinGiven, providerNamesOf, pyStrip, servedModel, splitEffortSuffix } from "./catalog.js";
 import { withoutUnconstrainingTag } from "./fleet.js";
 
 /** `canonicalModel` under a host's `options.catalog` (its models, aliases and `provider_names` table). */
@@ -187,7 +187,7 @@ const ONE_CONFIGURATION = "default";
 // Magpie logs at most 60 lines a minute of one middleware and drops the rest unseen (`internal/middleware/middleware.go` `say`,
 // `linesAMinute`, v0.1.4603), so a line that would repeat on every turn of a session (a hold rebuilt from the history, a typed
 // listing not sent) is logged once per runtime for that session, as a catalog name warning is once per runtime; the decision
-// carries it on every turn it is true of. The least recently logged goes first.
+// carries it on every turn it is true of. The least recently met goes first (meeting a line again refreshes it).
 const MAX_SESSION_LINES = 1024;
 const loggedSessionLines = new Map();
 
@@ -200,7 +200,7 @@ function logOncePerSession(sessionKey, line) {
   }
   loggedSessionLines.set(key, true);
   if (loggedSessionLines.size > MAX_SESSION_LINES) loggedSessionLines.delete(loggedSessionLines.keys().next().value);
-  console.warn(`agentcompass: ${line}`);
+  logWarning(line);
 }
 
 /**
@@ -744,7 +744,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
  * Whether the body changed.
  */
 function sendUnrouted(body, ctx, decision, options) {
-  console.warn(`agentcompass: ${decision.notice} (${decision.reason})`);
+  logWarning(`${decision.notice} (${decision.reason})`);
   ctx.state = ctx.state || {};
   ctx.state.agentcompass = decision;
   const fallback = String(options.defaultModel || options.fallbackModel || "").trim();
@@ -1126,9 +1126,10 @@ export function onProvider(body, ctx = {}) {
       accountBlocked: false,
       targetModel: prov.model.trim(),
       targetEffort: prevDecision?.targetEffort || "high",
-      // The provider's own model: what `onRequest` sent for its route says nothing of it.
-      sentEffort: undefined,
     };
+    // The provider's own model, sent by the one rule on a pool of that model alone: what `onRequest` sent for its route says
+    // nothing of it.
+    withSentEffort(fallbackDecision, [prov.model.trim()], options.catalog);
     if (prevDecision && ctx.state && typeof ctx.state === "object") {
       ctx.state.agentcompass = fallbackDecision;
       ctx.state.route = fallbackDecision;

@@ -25,8 +25,8 @@ import {
   SCORING_POLICY,
   canonicalModel,
   catalogNameWarning,
-  escapeControls,
   healthKey,
+  logWarning,
   nameFixesEffort,
   providerNamesOf,
   resolveModel,
@@ -628,7 +628,6 @@ function poolNameWarnings(options, models, aliases, providerNames) {
 }
 
 const MAX_LOGGED_NAME_WARNINGS = 1024;
-const MAX_LOG_LINE = 16384;
 const loggedNameWarnings = new Set();
 
 /** Whether this name warning is new here. The least recently seen goes first: under `routeAllModels` a client can write names. */
@@ -639,18 +638,11 @@ function firstNameWarning(warning) {
   return !seen;
 }
 
-/** One line whatever the model names in it hold: a reason can quote a row's name as the request wrote it. */
-function logLine(warning) {
-  return escapeControls(warning)
-    .replace(/\S{129,}/g, (long) => `${long.slice(0, 128)}...`)
-    .slice(0, MAX_LOG_LINE);
-}
-
 /** Log a route's warnings. A name warning is about the configuration, not this request: once per runtime. */
 export function logRouteWarnings(warnings) {
   for (const warning of warnings || []) {
     if (warning.startsWith(CATALOG_NAME_WARNING) && !firstNameWarning(warning)) continue;
-    console.warn(`agentcompass: ${logLine(warning)}`);
+    logWarning(warning);
   }
 }
 

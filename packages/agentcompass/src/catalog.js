@@ -1777,6 +1777,20 @@ export function safeName(name) {
   return escapeControls(text.length > MAX_NAME_IN_TEXT ? `${text.slice(0, MAX_NAME_IN_TEXT)}...` : text);
 }
 
+const MAX_LOG_LINE = 16384;
+
+/** One line whatever the model names in it hold: a reason can quote a row's name, or a pin, as the request wrote it. */
+export function logLine(line) {
+  return escapeControls(line)
+    .replace(/\S{129,}/g, (long) => `${long.slice(0, 128)}...`)
+    .slice(0, MAX_LOG_LINE);
+}
+
+/** Write one line to Magpie's log. Every line the plugin logs goes through here, so each is `logLine`'s one line. */
+export function logWarning(line) {
+  console.warn(`agentcompass: ${logLine(line)}`);
+}
+
 /** Starts every `catalogNameWarning`, so a host can log each once rather than on every request. */
 export const CATALOG_NAME_WARNING = "candidate name ";
 

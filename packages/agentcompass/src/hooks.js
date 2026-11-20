@@ -21,7 +21,7 @@ import {
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { canonicalModel, catalogTables, magpieOptions, providerNamesOf } from "./catalog.js";
+import { canonicalModel, catalogTables, logWarning, magpieOptions, providerNamesOf } from "./catalog.js";
 
 /** `canonicalModel`'s table arguments under a host's `options.catalog`. */
 const catalogArgs = (catalog) => {
@@ -274,7 +274,7 @@ export async function onRequest(body, ctx = {}) {
 
   if (!profile) {
     const unrouted = unroutedDecision(meta.reason);
-    console.warn(`agentcompass: ${unrouted.notice} (${unrouted.reason})`);
+    logWarning(`${unrouted.notice} (${unrouted.reason})`);
     ctx.state = ctx.state || {};
     ctx.state.sessionKey = sessionKey;
     ctx.state.agentcompass = unrouted;

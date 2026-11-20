@@ -30,7 +30,7 @@ import {
   rankCandidates,
   selectBestRoute,
 } from "./allocator.js";
-import { ROUTES, canonicalModel, magpieOptions, providerNamesOf } from "./catalog.js";
+import { ROUTES, canonicalModel, logWarning, magpieOptions, providerNamesOf } from "./catalog.js";
 import {
   SessionContinuityStore,
   analyzeTurnState,
@@ -372,7 +372,7 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
 
   if (!profile) {
     const unrouted = unroutedDecision(meta.reason);
-    console.warn(`agentcompass: ${unrouted.notice} (${unrouted.reason})`);
+    logWarning(`${unrouted.notice} (${unrouted.reason})`);
     const answers = {};
     if (questions.intent?.criteria) answers.intent = noneAnswer(questions.intent.criteria);
     if (questions.level?.criteria) answers.level = noneAnswer(questions.level.criteria);
