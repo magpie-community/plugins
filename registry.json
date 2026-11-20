@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/page-egress", "name": "Exit IPs", "kind": "page", "community": true,
+      "summary": { "en": "Manage saved proxies and per-provider/account/key exit bindings in self-hosted Magpie web, with persistent IP-change and failure history. Privileged host service uses the server's web management key; proxy probes do not spend model quota.", "zh": "在自建 Magpie web 中统一管理代理池及供应商、订阅账号和 Key 的出口绑定，记录出口 IP 变化和检测失败。宿主服务使用服务器的 web 管理密钥，代理检测不消耗模型额度。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
