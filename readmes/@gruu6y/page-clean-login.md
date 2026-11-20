@@ -233,6 +233,7 @@ bun bin/clean-login.mjs assets      # 只看已登记的资产（邮箱、手机
 
 ```sh
 bun bin/clean-login.mjs proxies add 家宽01 http 127.0.0.1 7102   # 存一条出口
+bun bin/clean-login.mjs proxies update <proxyId> --host 10.0.0.2 --exit-port 1080   # 改一条出口（改连接会清空探测结果）
 bun bin/clean-login.mjs accounts import plan                     # 预览 magpie 已有的账号
 bun bin/clean-login.mjs accounts import run --only <provider>#<recordId>
 bun bin/clean-login.mjs accounts exit <provider> <key> --mode custom --proxy <proxyId>

@@ -96,6 +96,9 @@ Refresh Token 有效，会先续期再保存。Token 过期时间从 JWT 的 `ex
 账号可用模型来自 `GET /api/models/available`，包括当前套餐里的 DeepSeek、Qwen、GLM、
 Kimi、MiniMax、Doubao 等真实模型。
 
+上下文窗口取该接口返回的 `contextWindowOptions` 最大值，没有时回退 `contextWindow`；
+数值由上游决定，可能调整，插件每次读取都会跟随。
+
 官方客户端的“快速”（`yd-fast`）和“旗舰”（`yd-ultra`）是服务端按会话解析的虚拟预设，
 不是可直接请求的模型。本插件不列出这两个 ID，避免未经解析就把虚拟 ID 发到
 `/chat/completions`；需要路由时可在 Magpie 里使用模型路由组。

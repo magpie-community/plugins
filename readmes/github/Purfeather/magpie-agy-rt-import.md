@@ -1,6 +1,6 @@
 # AGY 令牌管理 · Magpie 页面插件
 
-在同一个 Magpie 页面准备 AGY-CLI 导入 JSON，并从自己选择的 Magpie 账号文件导出 Refresh Token（RT）。
+在同一个 Magpie 页面准备 AGY-CLI 导入 JSON，并从已保存的 Magpie 账号导出 Refresh Token（RT）。
 
 ## 安装
 
@@ -20,16 +20,17 @@ magpie plugin add github:Purfeather/magpie-agy-rt-import
 
 ## 导出 Magpie 账号的 RT
 
-1. 在页面的 **导出 Refresh Token** 中选择 Magpie AGY 的 `accounts` 目录，或其中一个账号目录。Windows 默认位置为 `%USERPROFILE%\.local\state\magpie-agy-bridge\accounts`，设置了 `XDG_STATE_HOME` 时位于其下的 `magpie-agy-bridge/accounts`。
-2. 按目录 ID（Profile）选中账号，点击 **复制 RT**。如果页面选中了令牌，按 Ctrl+C（macOS 为 Command+C）复制。
+在 Windows 本机打开 Magpie，进入 **导出 Refresh Token → 自动定位 Magpie 账号 → 打开账号选择窗口**。在弹窗按邮箱或 Profile 选择账号，再点击 **复制 RT**。
 
-页面根据你选择的目录列出 AGY 账号文件。点复制时才读取选中账号的 `antigravity-oauth-token`。直接复用本机 Windows 凭据管理器的登录态没有独立账号文件。通过 Magpie 的「添加另一个 Google 账号」完成浏览器授权也会生成独立文件。
+自动定位使用 Magpie 的配置目录和 AGY 的状态目录。只列出 Magpie 登记、且有独立 `antigravity-oauth-token` 文件的 AGY 账号。直接复用 Windows 凭据管理器的本机登录态不在列表中。通过 Magpie 的「添加另一个 Google 账号」完成浏览器授权也会生成独立文件。
 
-转换和导出均在当前页面完成，无插件权限、后端、遥测或令牌持久化。复制内容包含完整 RT，用完请清理剪贴板。
+也可从页面手动选择 `accounts` 目录或单个账号目录。Windows 默认位置为 `%USERPROFILE%\.local\state\magpie-agy-bridge\accounts`。设置了 `XDG_STATE_HOME` 时，目录位于其下的 `magpie-agy-bridge/accounts`。
+
+自动导出由本机 PowerShell 窗口在你确认后读取选中的凭据文件，并直接写入系统剪贴板。插件页面服务只收到操作结果。手动导出和导入格式转换均在当前页面处理。
 
 ## 兼容性
 
-已知 `@magpie-community/opencode-agy-cli-auth` 从 `0.1.68` 起支持此导入格式。插件采用 Magpie 的静态页面接口，无依赖或构建步骤。
+已知 `@magpie-community/opencode-agy-cli-auth` 从 `0.1.68` 起支持此导入格式。自动定位需要 Windows 本机 Magpie、Bun 插件宿主和 Windows PowerShell。手动导出仍使用页面的目录选择器。
 
 - [Magpie 页面插件文档](https://usemagpie.ai/docs/plugins#pages)
 - [AGY-CLI 导入支持](https://github.com/magpie-community/plugins/commit/9907c187b212c55680acae4d46f5d2c868cda5f2)

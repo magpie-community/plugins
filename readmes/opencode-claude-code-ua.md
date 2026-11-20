@@ -4,7 +4,7 @@
 
 npm 包名：[`opencode-claude-code-ua`](https://www.npmjs.com/package/opencode-claude-code-ua)。供应商 ID：`ua-pro`。无 npm 运行依赖。
 
-> 当前源码版本为 **0.3.12**。本版本先通过 GitHub 提供，npm 暂未更新；请以管理页显示的实际运行版本为准。
+> GitHub 版 **0.3.13** 新增 `Claude Code @2（CLI 2.1.329）`。要安装这个精确版本，在 Magpie 手动添加框填写 `github:1466109846/ua-pro#v0.3.13`。管理页侧栏显示实际运行的插件版本。[更新日志](CHANGELOG.md)
 
 ## 操作入口索引
 
@@ -105,15 +105,16 @@ Base URL 可填写站点根地址，或以 `/v1`、`/v1beta` 结尾的地址。�
 
 ## 模板与版本
 
-插件内提供三份初始模板：
+模板名后的 `@` 表示插件内的修订号，`CLI` 后是对应的 Claude Code 客户端版本。
 
 | 模板 | 用途 |
 |---|---|
-| Codex | 内置只读的 Responses 请求规则 |
-| Claude Code | 内置只读的 Messages 请求规则 |
-| Claude Code VS Code 2.1.316 | 可编辑的 Messages 请求模板 |
+| Codex@1 | 内置只读的 Responses 请求规则 |
+| Claude Code @2（CLI 2.1.329） | 新连接的 Messages 请求头模板，保留原始请求正文 |
+| Claude Code @1（CLI 2.1.296） | 历史 Messages 兼容规则，可用于已有绑定和回退 |
+| Claude Code VS Code 2.1.316 | 可编辑的 VS Code / Agent SDK 模板，保留原有 14 项请求头 |
 
-自动绑定按最终上游协议选择：Responses → Codex，Messages → Claude Code，Chat / Gemini → 普通转发。
+新连接自动绑定时，Responses 用 Codex@1，Messages 用 Claude Code @2，Chat / Gemini 使用普通转发。升级后，已有连接和模型继续使用各自保存的版本。要切换，请在 **连接与模型 → 应用模板 → 指定模板版本** 选择对应的 CLI 版本，再应用到目标连接或模型。
 
 要自定义规则：
 
@@ -125,7 +126,7 @@ Base URL 可填写站点根地址，或以 `/v1`、`/v1beta` 结尾的地址。�
 
 请求头支持覆盖、补缺、删除和保留；参数按 `defaults → overrides → remove` 处理。模板不能覆盖 Authorization、API key、Cookie 等认证头，也不执行用户脚本。默认保护模型、消息、工具与流式选择；计数接口不执行生成参数覆盖。
 
-内置模板的会话与正文兼容规则可能影响提示前缀、token 用量或缓存。可复制为自定义模板后查看、修改或关闭。UA 和兼容字段不证明官方客户端身份，也不提供额外账号权限。
+`@2` 的样本来自 Windows x64 上的 `claude -p`。它发送的 UA 是 `claude-cli/2.1.329 (external, sdk-cli)`。`@2` 给第三方 Messages 请求设置这个 UA，并补齐缺少的 beta 和 Stainless 等请求头。已有非空 beta 和原生 Claude 客户端头优先，会话头沿用已有值或宿主提供的会话 ID。请求正文原样转发。历史 `@1` 的正文兼容规则会补充系统提示和元数据，适合需要该行为的连接。
 
 ### Messages 反代要求提示缓存键
 
