@@ -124,6 +124,12 @@ const MODELS = [
   // Droid 1.10.0 adds Hydrogen, the head of the Flash line, behind Factory's
   // Gemini4Hydrogen feature flag (#1073).
   ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  // Droid 1.14.0 adds GPT-6.2 Astra and GPT-6.2 Sol behind Factory's
+  // Gpt62Astra and Gpt62Sol feature flags (#1297).
+  ["gpt-6.2-astra", "GPT-6.2 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 3.2],
+  ["gpt-6.2-sol", "GPT-6.2 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
+  // Droid 1.15.0 adds Neon behind Factory's Gemini4Neon feature flag.
+  ["gemini-4-neon", "Gemini 4 Neon", GEMINI, "google", 1048576, 65536, E4, true, 1.2],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -140,6 +146,8 @@ const MODELS = [
   ["gpt-6-luna-fast", "GPT-6 Luna Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
   ["gpt-5.6-sol-fast", "GPT-5.6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 4],
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
+  ["gpt-6.2-astra-fast", "GPT-6.2 Astra Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 6.4],
+  ["gpt-6.2-sol-fast", "GPT-6.2 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 1.6],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 // Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
