@@ -1,0 +1,55 @@
+{
+  "name": "@magpie-community/opencode-aiproxy-auth",
+  "version": "0.5.0",
+  "description": "AiProxy provider plugin for Magpie/OpenCode with native account, plan and wallet quota reporting",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "icon.svg",
+    "icon.png",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "aiproxy",
+    "quota"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.4026"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.mjs && node --check opencode.mjs && node --check opencode2.mjs"
+  },
+  "magpie": {
+    "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/aiproxy/icon.png",
+    "name": "AI Proxy",
+    "summary": {
+      "en": "Your own AiProxy site: API-key models over OpenAI Chat or Responses, console password or browser-cookie sign-in, and wallet and plan quota windows.",
+      "zh": "接入自己的 AiProxy 站点：API key 调用 OpenAI Chat 或 Responses 模型，控制台密码或浏览器 Cookie 登录，显示钱包及套餐额度窗口。"
+    },
+    "maxConcurrency": 8
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/aiproxy"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/aiproxy#readme",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  }
+}
