@@ -41,6 +41,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
 | [openai-decisions](packages/openai-decisions) | OpenAI's native Decisions API as System One for magpie's classifiers and decision groups, with standard API-key sign-in and per-question refusal handling | `openai-decisions` |
+| [openrouter-decisions](packages/openrouter-decisions) | OpenRouter's Decisions API (Microsoft Decision 1.1 and 1) as System One for magpie's classifiers and decision groups, with API-key sign-in, credit usage and per-question refusal handling | `openrouter-decisions` |
 | [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
