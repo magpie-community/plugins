@@ -2169,6 +2169,7 @@ class Proc {
   // What a conversation sets; a spare gets it when one takes it (adopt).
   #assign(convKey, opts) {
     this.convKey = convKey
+    this.ephemeral = !!opts.ephemeral
     this.model = opts.model
     this.selection = opts.selection
     this.tools = opts.tools ?? []
@@ -3064,7 +3065,13 @@ class Proc {
     }
     if (this.turn === turn) {
       this.turn = null
-      if (!this.stopping && !this.retiring) park(this)
+      if (this.ephemeral) {
+        this.retiring = true
+        dropFromPool(this)
+        this.stop().catch(() => {})
+      } else if (!this.stopping && !this.retiring) {
+        park(this)
+      }
     }
   }
 
@@ -3091,7 +3098,7 @@ class Proc {
   }
 
   canPark() {
-    return !!this.sessionId && this.hasSentFirstTurn && !this.historyInvalid && !this.turn &&
+    return !this.ephemeral && !!this.sessionId && this.hasSentFirstTurn && !this.historyInvalid && !this.turn &&
       !this.dead && Array.isArray(this.expectedMessages)
   }
 
@@ -3667,13 +3674,22 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
-      if (!forceNew && !pool.get(convKey)) {
+      if (!forceNew && !opts.ephemeral && !pool.get(convKey)) {
         const candidate = isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
       const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked)
-      return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
+      try {
+        return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
+      } catch (error) {
+        if (value.proc.ephemeral && !value.proc.turn) {
+          value.proc.retiring = true
+          dropFromPool(value.proc)
+          value.proc.stop().catch(() => {})
+        }
+        throw error
+      }
     })
     if (outcome.retry) {
       extra = outcome.retry
@@ -3719,15 +3735,15 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // A flattened, growing first message changes conversationKey, so the live
   // session is under the previous key. Reuse it when the new opening continues
   // the whole previous opening (not just a shared prefix).
-  if (!existing && !forceNew && isFreshConversation) {
+  if (!existing && !forceNew && !opts.ephemeral && isFreshConversation) {
     const candidate = findLiveContinuedProc(opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
-  if (!existing && !forceNew && !isFreshConversation) {
+  if (!existing && !forceNew && !opts.ephemeral && !isFreshConversation) {
     const candidate = findRemaskedProc(convKey, opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
-  let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
+  let why = opts.ephemeral ? "ephemeral_side_sample" : (forceNew && opts.dropReason ? opts.dropReason : "no_live")
   let key = convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
     !opts.hasToolResults && !existing.turn.cancelRequested && existing.turn.model !== opts.model) {
@@ -3782,7 +3798,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
-  const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
+  const resume = forceNew || isFreshConversation || opts.ephemeral ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
   const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
@@ -4546,7 +4562,7 @@ function findRemaskedProc(convKey, opts) {
   const firstKey = historyKey([first])
   let found = null
   for (const proc of pool.values()) {
-    if (proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
+    if (proc.ephemeral || proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
     if (proc.convKey === convKey || /^(.*?)[0-9a-f]{64}$/.exec(proc.convKey)?.[1] !== account) continue
     if ((proc.userId || "") !== (opts.userId || "")) continue
     if ((proc.sessionScope || "") !== (opts.sessionScope || "")) continue
@@ -4570,7 +4586,7 @@ function findLiveContinuedProc(opts) {
   let bestLen = -1
   let tied = false
   for (const proc of pool.values()) {
-    if (proc.dead || proc.retiring || proc.turn) continue
+    if (proc.ephemeral || proc.dead || proc.retiring || proc.turn) continue
     if ((proc.userId || "") !== userId) continue
     if ((proc.sessionScope || "") !== sessionScope) continue
     if (proc.workDir !== opts.workDir) continue
@@ -7281,37 +7297,41 @@ export const AntigravityBridgePlugin = async () => {
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
             const sessionScope = requestSessionScope(fetchInput, init)
-            // an account's conversations are its own: its agy has them
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
+            const ephemeral = isEphemeralSideSample(trailing, resultBlocks)
+            const reqId = "req_" + randomBytes(4).toString("hex")
+            // an account's conversations are its own: its agy has them
+            const baseConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
+            const convKey = ephemeral ? `${baseConvKey}#side-${reqId}` : baseConvKey
             const callerWorkDir = namedWorkDirectory(body, init)
             const workDir = workDirectory(callerWorkDir)
             const instructions = sessionInstructions(body, callerWorkDir)
 
             try {
               const tools = normalizeTools(body)
-              for (const message of body.messages) {
-                if (message.role !== "assistant" || !Array.isArray(message.content)) continue
-                for (const block of message.content) {
-                  if (block?.type !== "tool_use") continue
-                  const entry = toolCalls.get(block.id)
-                  if (!entry || entry.call.clientSeen || !sameSessionScope(entry.proc, sessionScope)) continue
-                  entry.call.clientSeen = true
-                  entry.turn.touchClient()
+              if (!ephemeral) {
+                for (const message of body.messages) {
+                  if (message.role !== "assistant" || !Array.isArray(message.content)) continue
+                  for (const block of message.content) {
+                    if (block?.type !== "tool_use") continue
+                    const entry = toolCalls.get(block.id)
+                    if (!entry || entry.call.clientSeen || !sameSessionScope(entry.proc, sessionScope)) continue
+                    entry.call.clientSeen = true
+                    entry.turn.touchClient()
+                  }
                 }
               }
-              const reqId = "req_" + randomBytes(4).toString("hex")
               rememberRequestMeta(reqId, { layout, nonstream: body.stream === false })
               // Same conversation, other layout: one key, no replacement session.
               // Routine for some clients, so reported only in verbose mode.
-              if (noteLayout(convKey, layout) && process.env.AGY_BRIDGE_EVENTS === "verbose") {
+              if (!ephemeral && noteLayout(convKey, layout) && process.env.AGY_BRIDGE_EVENTS === "verbose") {
                 logBridgeEvent(null, null, "layout_flip", "layout_canonicalized",
                   { reqId, convKey, layout, nonstream: body.stream === false })
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
-                messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
+                messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey, ephemeral,
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
@@ -7563,4 +7583,21 @@ process.once("exit", reapOnExit)
 
 export { sanitizeInputSchema }
 export default { id: PROVIDER_ID, server: AntigravityBridgePlugin }
+
+// Background prompt-suggestion requests (e.g. Codex / T3 Code thread/sample
+// composer predictions and Claude Code suggestion mode) replay the main
+// conversation's history under the same session scope, but clients never
+// append the predicted text to the next real turn (#1369).
+const EPHEMERAL_SIDE_SAMPLE_RES = [
+  /^Predict the next message the user will send in this conversation\.\s+Reply with only that message,/i,
+  /^\[SUGGESTION MODE:/,
+]
+
+function isEphemeralSideSample(trailing, resultBlocks) {
+  if (!trailing?.history?.length || resultBlocks?.length) return false
+  const userMessages = (trailing.messages || []).filter((message) => message?.role === "user")
+  if (userMessages.length !== 1) return false
+  const text = contentText(userMessages[0].content).trim()
+  return !!text && EPHEMERAL_SIDE_SAMPLE_RES.some((re) => re.test(text))
+}
 
