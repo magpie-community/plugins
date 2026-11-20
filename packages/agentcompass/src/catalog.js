@@ -1180,11 +1180,21 @@ const PY_STRIP_RE = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, "g");
 /** `text` stripped as Python's `str.strip()` strips it. */
 export const pyStrip = (text) => String(text).replace(PY_STRIP_RE, "");
 
+// The names already split (a function of the text alone), bounded as `resolveModel`'s memo is.
+const SPLIT_MEMO_SIZE = 8192;
+const splits = new Map();
 /** `("claude-opus-5-5", "medium")` for `claude-opus-5-5:medium`; `(raw, null)` without an effort suffix (`split_model_effort`). */
 export function splitEffortSuffix(rawModel) {
-  const name = pyStrip(rawModel ?? "");
-  const match = COLON_EFFORT_RE.exec(name);
-  return match ? { name: match[1], effort: match[2].toLowerCase() } : { name, effort: null };
+  const text = typeof rawModel === "string" ? rawModel : String(rawModel ?? "");
+  let split = splits.get(text);
+  if (split === undefined) {
+    const name = pyStrip(text);
+    const match = COLON_EFFORT_RE.exec(name);
+    split = Object.freeze(match ? { name: match[1], effort: match[2].toLowerCase() } : { name, effort: null });
+    if (splits.size >= SPLIT_MEMO_SIZE) splits.clear();
+    splits.set(text, split);
+  }
+  return split;
 }
 
 /** A model pin the caller wrote malformed (`model_resolution.check_model_pin`): refused as the caller's error, never retried. */
@@ -1343,7 +1353,17 @@ export function providerNamesOf(catalog) {
   const given = catalog || {};
   let table = given.models ? NO_PROVIDER_NAMES : PROVIDER_NAMES;
   if (given.providerNames !== undefined && given.providerNames !== null) table = given.providerNames;
-  return given[LIST_HOST] ? { ...table, host: given[LIST_HOST] } : table;
+  return given[LIST_HOST] ? hostView(table, given[LIST_HOST]) : table;
+}
+
+const hostViews = new WeakMap();
+/** A table as a host reads it (`{ ...table, host }`): one object per table and host, so what is memoised on a table (`resolveModel`) is found again. */
+function hostView(table, host) {
+  if (!isRow(table)) return { ...table, host };
+  let views = hostViews.get(table);
+  if (!views) hostViews.set(table, (views = new Map()));
+  if (!views.has(host)) views.set(host, Object.freeze({ ...table, host }));
+  return views.get(host);
 }
 
 /** The tables a name is read with under a host's `options.catalog`: its models and aliases, the families, `providerNamesOf`. */
@@ -1482,6 +1502,44 @@ export function undecorated(rawName) {
  * the name itself asked for. `providers`: the endpoints the caller knows serve the name (`servingProviders`).
  */
 export function resolveModel(rawModel, models = MODELS, aliases = MODEL_ALIASES, families = FAMILIES, providerNames = PROVIDER_NAMES, providers = []) {
+  const memo = resolutionMemo(models, aliases, families, providerNames);
+  const key = `${typeof rawModel === "string" ? rawModel : String(rawModel)} ${(providers || []).join("")}`;
+  let resolved = memo.get(key);
+  if (resolved === undefined) {
+    if (memo.size >= RESOLUTION_MEMO_SIZE) memo.clear();
+    resolved = Object.freeze(resolveUncached(rawModel, models, aliases, families, providerNames, providers));
+    memo.set(key, resolved);
+  }
+  return resolved;
+}
+
+// How many names one set of tables keeps resolved: the pool's, the catalogue's and the pins' names many times over; a runtime that is
+// given ever new names (each request's pin) starts again rather than grow.
+const RESOLUTION_MEMO_SIZE = 8192;
+const resolutionMemos = new WeakMap();
+
+/**
+ * The names already resolved under these tables (`resolveModel` is a function of the name, the endpoints and the tables only, and no
+ * caller mutates a table: `knownNames`). Keyed by the tables themselves, so tables a request brings in its options get memos of their
+ * own and no answer outlives the tables it was read from.
+ */
+function resolutionMemo(models, aliases, families, providerNames) {
+  let level = resolutionMemos;
+  for (const table of [models || MODELS, aliases || NO_ALIASES, families || NO_FAMILIES]) {
+    let next = level.get(table);
+    if (!next) level.set(table, (next = new WeakMap()));
+    level = next;
+  }
+  const names = providerNames || NO_PROVIDER_NAMES_GIVEN;
+  let memo = level.get(names);
+  if (!memo) level.set(names, (memo = new Map()));
+  return memo;
+}
+const NO_ALIASES = Object.freeze({});
+const NO_FAMILIES = Object.freeze([]);
+const NO_PROVIDER_NAMES_GIVEN = Object.freeze({});
+
+function resolveUncached(rawModel, models, aliases, families, providerNames, providers) {
   const { known, byLength } = knownNames(models);
   const table = aliases || {};
   const names = providerNameTable(providerNames);
@@ -1579,6 +1637,18 @@ export function resolveModel(rawModel, models = MODELS, aliases = MODEL_ALIASES,
  * (`expandHostProviders`). Under any other table (Cindy, a direct caller of the allocator) no preset id is read.
  */
 export function resolveListed(rawModel, models = MODELS, aliases = MODEL_ALIASES, families = FAMILIES, providerNames = PROVIDER_NAMES, providers = []) {
+  const memo = resolutionMemo(models, aliases, families, providerNames);
+  const key = `listed ${String(rawModel ?? "")} ${(providers || []).join("")}`;
+  let resolved = memo.get(key);
+  if (resolved === undefined) {
+    if (memo.size >= RESOLUTION_MEMO_SIZE) memo.clear();
+    resolved = resolveListedUncached(rawModel, models, aliases, families, providerNames, providers);
+    memo.set(key, resolved);
+  }
+  return resolved;
+}
+
+function resolveListedUncached(rawModel, models, aliases, families, providerNames, providers) {
   const text = String(rawModel ?? "").trim();
   const listed = (providers || []).filter(Boolean).length === 0 ? listedPreset(text, providerNames) : null;
   if (listed && (listed.served.length !== 1 || listed.served[0] !== listed.preset)) {
@@ -1731,8 +1801,14 @@ export function catalogNameWarning(rawModel, models = MODELS, aliases = MODEL_AL
  */
 export function pyRound(value, digits) {
   const number = Number(value);
-  const scaled = Math.abs(number) * 10 ** digits;
-  if (Math.abs(scaled - Math.floor(scaled) - 0.5) > 1e-6) return Number(number.toFixed(digits)) + 0;
+  const scale = 10 ** digits;
+  const scaled = Math.abs(number) * scale;
+  if (Math.abs(scaled - Math.floor(scaled) - 0.5) > 1e-6) {
+    // Away from a tie the product's rounding error cannot move the nearest integer, and an integer over a power of ten is divided
+    // correctly rounded: the double `toFixed`'s text parses to, without building the text, while both are exact integers.
+    if (scaled < 2 ** 52 && Number.isInteger(scale)) return (number < 0 ? -Math.round(scaled) : Math.round(scaled)) / scale + 0;
+    return Number(number.toFixed(digits)) + 0;
+  }
   const exact = number.toFixed(digits + 60);
   const cut = exact.indexOf(".") + 1 + digits;
   if (!/^50*$/.test(exact.slice(cut)) || Number(exact[cut - 1]) % 2 === 1) return Number(number.toFixed(digits)) + 0;

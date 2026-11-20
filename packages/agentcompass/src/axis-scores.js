@@ -123,6 +123,28 @@ export function defaultScoredModels() {
   return (defaultScored ||= scoredModels());
 }
 
+// How many operators' score documents one set of aliases and provider names keeps scored tables for.
+const USER_SCORED_SIZE = 16;
+const userScored = new WeakMap();
+/**
+ * `scoredModels` of the shipped catalogue under an operator's scores, built once per scores document (read by its content, so a
+ * document changed in place is scored again) and aliases and provider names, as `defaultScoredModels` is built once: a request ranks
+ * its pool several times, and each ranking would otherwise score every row again and resolve every name on a table of its own.
+ */
+export function userScoredModels({ aliases = MODEL_ALIASES, userScores, providerNames = PROVIDER_NAMES }) {
+  let byNames = userScored.get(aliases);
+  if (!byNames) userScored.set(aliases, (byNames = new WeakMap()));
+  let tables = byNames.get(providerNames);
+  if (!tables) byNames.set(providerNames, (tables = new Map()));
+  const key = JSON.stringify(userScores);
+  if (!tables.has(key)) {
+    const table = scoredModels({ aliases, userScores, providerNames });
+    if (tables.size >= USER_SCORED_SIZE) tables.clear();
+    tables.set(key, table);
+  }
+  return tables.get(key);
+}
+
 // ---------------------------------------------------------------------------- values, targets and fit
 
 /** A score cell's value at `effort`: its `by_effort` entry, a bundle that names no effort running its single configuration. */

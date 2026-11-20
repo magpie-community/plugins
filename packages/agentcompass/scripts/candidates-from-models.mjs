@@ -17,13 +17,18 @@
  * Levels are read from `reasoning_levels` (plain names) when it lists any, else from `supported_reasoning_levels` (`[{ effort }]`),
  * as Magpie's `modelObject` writes both. The order of the list is kept. A row it cannot read (not an object, or no id) is
  * skipped, and an id listed again keeps its first row; each is named on stderr with why, as is a repeated id whose levels differ
- * from its first row's. Stdout is only the JSON.
+ * from its first row's. A Magpie routing group (`group/<id>`, `provider.GroupPrefix`; a group Magpie found, `auto/<model>`) is
+ * skipped and named too: Magpie picks its member, a provider's row the plugin never sees, so a row unchecked in `candidateModels`
+ * could serve a request sent to the group. Every member is listed as a row of its own. Stdout is only the JSON.
  */
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
 /** The effort of a model listed with no reasoning levels: its one configuration. */
 export const ONE_CONFIGURATION = "default";
+
+/** The id prefixes of Magpie's routing groups in its list (`internal/provider/group.go`: `GroupPrefix`, and a found group's `auto/<model>`). */
+export const GROUP_PREFIXES = ["group/", "auto/"];
 
 /** The effort names of one `/v1/models` row, lowercase, each once, in the order Magpie gives them. */
 export function levelsOf(row) {
@@ -50,6 +55,11 @@ export function candidatesFromModels(listing, warn = () => {}) {
     const id = typeof row.id === "string" ? row.id.trim() : "";
     if (!id) {
       warn(`row ${index}: skipped, no model id`);
+      return;
+    }
+    const group = GROUP_PREFIXES.find((prefix) => id.toLowerCase().startsWith(prefix));
+    if (group) {
+      warn(`row ${index}: ${id} skipped, a Magpie routing group (${group}...): Magpie picks its member, so a row unchecked in candidateModels could serve it; its members are listed as rows of their own`);
       return;
     }
     const levels = levelsOf(row);

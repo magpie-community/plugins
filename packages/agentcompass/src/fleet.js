@@ -29,7 +29,7 @@ import {
 } from "./catalog.js";
 import { PLAN_CAPACITY } from "./reference-data.js";
 import { canonicalWindowId, configuredPlan, planDefaults, planTable, planUnknownText } from "./plans.js";
-import { defaultScoredModels, scoredModels } from "./axis-scores.js";
+import { defaultScoredModels, userScoredModels } from "./axis-scores.js";
 import { EFFORTS } from "./user-scores.js";
 import { bundlePresets, bundleProviders, dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
 import { inferModelProviderFamily, normalizeProviderFamily, providerMatchesModel, providersMatch } from "./quota.js";
@@ -105,7 +105,7 @@ export function accountFrom(entry, nowMs) {
  * accounts document: scored models, aliases, family patterns, launch efforts, the scoring policy and the accounts.
  */
 export function buildFleet({ entries = null, nowMs = Date.now(), policy = SCORING_POLICY, models = null, aliases = MODEL_ALIASES, userScores = null, providerNames = PROVIDER_NAMES } = {}) {
-  const scored = models || (userScores ? scoredModels({ aliases, userScores, providerNames }) : defaultScoredModels());
+  const scored = models || (userScores ? userScoredModels({ aliases, userScores, providerNames }) : defaultScoredModels());
   const fleet = { models: scored, aliases, families: FAMILIES, providerNames, scoring: policy, dispatch_efforts: DISPATCH_EFFORTS, accounts: {} };
   const usage = { accounts: {} };
   for (const entry of entries || []) {

@@ -29,9 +29,8 @@ export function fiveAxisOrder(candidate) {
   return [-Number(candidate.score), pyRound(waitH, 4), doneKey, pyRound(usd, 4), -pyRound(Number(k.five_axis_level || 0.0), 4), k.harness_place || 0];
 }
 
-export function compareOrder(a, b) {
-  const x = fiveAxisOrder(a);
-  const y = fiveAxisOrder(b);
+/** Two `fiveAxisOrder` tuples compared, in tuple order. */
+function compareKeys(x, y) {
   for (let i = 0; i < x.length; i++) {
     if (x[i] < y[i]) return -1;
     if (x[i] > y[i]) return 1;
@@ -39,12 +38,19 @@ export function compareOrder(a, b) {
   return 0;
 }
 
-/** The name of the first key of `fiveAxisOrder` on which `first` beats `second` ("tie" when none does). */
-export function fiveAxisDecidingKey(first, second) {
-  const x = fiveAxisOrder(first);
-  const y = fiveAxisOrder(second);
+export function compareOrder(a, b) {
+  return compareKeys(fiveAxisOrder(a), fiveAxisOrder(b));
+}
+
+/** The name of the first key of two `fiveAxisOrder` tuples on which the first beats the second ("tie" when none does). */
+function decidingKey(x, y) {
   for (let i = 0; i < FIVE_AXIS_ORDER_KEYS.length; i++) if (x[i] !== y[i]) return FIVE_AXIS_ORDER_KEYS[i];
   return "tie";
+}
+
+/** The name of the first key of `fiveAxisOrder` on which `first` beats `second` ("tie" when none does). */
+export function fiveAxisDecidingKey(first, second) {
+  return decidingKey(fiveAxisOrder(first), fiveAxisOrder(second));
 }
 
 /** The ranking row for a bundle id: `<id>` is the row itself; a row built from a bundle entry also answers to its `base_id`. */
@@ -132,9 +138,11 @@ export function rank(taskIn, ctx) {
     c.score = Number(1.0 + raw) - 1.0;
   }
   for (const c of eligible) c.components.harness_place = 0;
-  eligible.sort(compareOrder);
+  // Each candidate's tuple once, not once per comparison: the order is `compareOrder`'s.
+  const keys = new Map(eligible.map((c) => [c, fiveAxisOrder(c)]));
+  eligible.sort((a, b) => compareKeys(keys.get(a), keys.get(b)));
   eligible.forEach((c, i) => {
-    c.components.decided_by = i + 1 < eligible.length ? fiveAxisDecidingKey(c, eligible[i + 1]) : "only_candidate";
+    c.components.decided_by = i + 1 < eligible.length ? decidingKey(keys.get(c), keys.get(eligible[i + 1])) : "only_candidate";
   });
   const system = { weights: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, pyRound(v, 3)])), quota_windows: quotaWindows };
   return { candidates, eligible, system, task };
