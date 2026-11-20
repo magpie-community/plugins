@@ -144,7 +144,7 @@ test("A6b: an agy removed after it was found is not found again", async () => {
   })
 })
 
-// ------------------------------------------------ A7 no-progress repeat limit
+// ------------------------------------------------ A7 unmatched tool rounds
 
 async function pendingToolTurn(kit, body) {
   const parsed = await readSse(await kit.request(body))
@@ -164,22 +164,16 @@ function unmatchedRound(body, { answerId = "toolu_unmatched", callId = "toolu_un
   }
 }
 
-test("A7: the third unmatched repeat against a quiet turn replays the request's own tool round", async () => {
+test("A7: an unmatched round against a quiet turn replays the request's own tool round at once", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit, { "UNMATCHED RESULT": "replayed from history" })
     const body = baseBody({ metadata: { user_id: "repeat-replay" }, messages: [{ role: "user", content: "TOOL start" }] })
     await pendingToolTurn(kit, body)
-    const unmatched = unmatchedRound(body)
-    for (const attempt of [1, 2]) {
-      const response = await kit.request(unmatched)
-      assert.equal(response.status, 409, `attempt ${attempt} must stay 409`)
-      assert.equal(response.headers.get("x-should-retry"), null)
-      await response.text()
-    }
-    assert.equal(kit.acpSpawns.length, 1, "the first two attempts must not start a process")
-    const third = await readSse(await kit.request(unmatched))
-    assert.equal(third.stopReason, "end_turn")
-    assert.equal(third.content.find((block) => block.type === "text")?.text, "replayed from history")
+    const response = await kit.request(unmatchedRound(body))
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const first = await readSse(response)
+    assert.equal(first.stopReason, "end_turn")
+    assert.equal(first.content.find((block) => block.type === "text")?.text, "replayed from history")
     assert.equal(kit.acpSpawns.length, 2, "the replay runs on a fresh process")
     assert.ok(prompts(kit).at(-1).includes("UNMATCHED RESULT"))
   })
@@ -216,38 +210,30 @@ test("A7: a turn the conversation went on without is replayed at the first unmat
   })
 })
 
-test("A7: a later round with the bridge's own id shape is not taken as the conversation moving on (#1051)", async () => {
+test("A7: a later round with the bridge's own id shape is replayed too (#1051)", async () => {
   await withKit({}, async (kit) => {
-    scriptedAgent(kit)
+    scriptedAgent(kit, { "FOREIGN RESULT": "replayed own shape" })
     const body = baseBody({ metadata: { user_id: "moved-on-own-shape" }, messages: [{ role: "user", content: "TOOL start" }] })
     const first = await pendingToolTurn(kit, body)
     const response = await kit.request(movedOnRound(body, first, "toolu_0123456789abcdef01234567"))
-    assert.equal(response.status, 409)
-    await response.text()
-    assert.equal(kit.acpSpawns.length, 1)
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const parsed = await readSse(response)
+    assert.equal(parsed.content.find((block) => block.type === "text")?.text, "replayed own shape")
+    assert.equal(kit.acpSpawns.length, 2)
   })
 })
 
-test("A7: a third repeat that cannot be replayed ends in a terminal 400 with attempts and turn_id", async () => {
+test("A7: an unmatched round that cannot be replayed is a terminal 400 at once", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)
     const body = baseBody({ metadata: { user_id: "repeat-terminal" }, messages: [{ role: "user", content: "TOOL start" }] })
     await pendingToolTurn(kit, body)
     // The result answers an ID that its own assistant message never issued.
     const broken = unmatchedRound(body, { answerId: "toolu_answer", callId: "toolu_other" })
-    const statuses = []
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await kit.request(broken)
-      statuses.push(response.status)
-      await response.text()
-    }
-    assert.deepEqual(statuses, [409, 409])
     const terminal = await errorOf(await kit.request(broken))
     assert.equal(terminal.status, 400)
     assert.equal(terminal.retry, "false")
     assert.equal(terminal.body.error.code, "tool_history_incomplete")
-    assert.equal(terminal.body.error.attempts, 3)
-    assert.match(terminal.body.error.turn_id, /^turn_[0-9a-f]+$/)
     assert.equal(kit.acpSpawns.length, 1, "an unreplayable round never starts a process")
   })
 })
@@ -589,10 +575,147 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
     assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
     const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
-    assert.equal(prompt.split(note).length - 1, 2, "one note before the pinned prompt, one after it")
+    // the turn before the loop (ANCHOR reply) takes room the steps left, so
+    // the one gap is between the loop's prompt and its newest steps (plugins#1401)
+    assert.ok(prompt.includes("ANCHOR reply"), "the turn before the loop is kept")
+    assert.equal(prompt.split(note).length - 1, 1, "one note, after the loop's prompt")
     assert.ok(prompt.indexOf("ANCHOR opening request") < prompt.indexOf("TASK START") &&
       prompt.indexOf("TASK START") < prompt.indexOf("step-15 tail"), "the kept history stays in order")
   })
+})
+
+test("A16: a trimmed replay keeps the task a nudge in a later turn refers back to (plugins#1401)", async () => {
+  // dsh, a long investigation: the assistant answered "still checking" and the
+  // user pushed on with "快点" twice, so the loop that runs now opened on a
+  // nudge, and the real task sits in an earlier, completed turn.
+  for (const lastIsResult of [true, false]) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+      const messages = [
+        { role: "user", content: "ANCHOR an older test message" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "REAL TASK: 调查 magpie 路由组配置，给出配置方案" },
+      ]
+      let step = 0
+      const steps = (count) => {
+        for (let index = 0; index < count; index++, step++) {
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${step}`, name: "Read", input: { path: `/repo/${step}.txt` } }] })
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${step}`, content: big(`step-${step}`) }] })
+        }
+      }
+      steps(6)
+      messages.push({ role: "assistant", content: "还在查，马上给结果" })
+      messages.push({ role: "user", content: "快点" })
+      steps(6)
+      messages.push({ role: "assistant", content: "继续检查上下文" })
+      messages.push({ role: "user", content: "NUDGE 别查了，直接给方案" })
+      steps(10)
+      if (lastIsResult) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
+      } else {
+        messages.push({ role: "assistant", content: "还差一点" })
+        messages.push({ role: "user", content: "LAST 继续" })
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `budget-nudge-${lastIsResult}` }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("REAL TASK: 调查 magpie 路由组配置"), "the task the nudges refer back to is kept")
+      assert.ok(prompt.includes(`step-${step - 1} tail`), "the newest steps are kept")
+      assert.ok(prompt.includes(lastIsResult ? "LAST RESULT" : "LAST 继续"))
+      assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf("NUDGE") || !prompt.includes("NUDGE"), "kept history stays in order")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf(`step-${step - 1} tail`), "kept history stays in order")
+    })
+  }
+})
+
+// plugins#1401, sevenqcx (DSH, Gemini 4 Neon): turn 1 pasted a narration
+// and asked to list a folder, pull three sounds out, stop, and write the
+// revised narration (ending "青瓦晨雾") only after "继续". Turn 2 was "继续"
+// alone, on a new session (session_new reason=history). The replay clipped the
+// middle out of the user's own long message, as it does a tool result's, and
+// pinned an older task at 4 KiB, so the requirements in the middle were gone.
+function narrationConversation({ narrationRepeats, toolSteps }) {
+  const narration = "江南的清晨，雨声落在青石板上，橹声从河心传来，远处有鸟鸣。".repeat(narrationRepeats)
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  const messages = [
+    { role: "user", content: "ANCHOR 写一段江南旁白" },
+    { role: "assistant", content: "ANCHOR 好的" },
+    { role: "user", content: [
+      { type: "text", text: `请先列出 /Users/x/audio 目录。之前的旁白：\n${narration}\nREQ-NARRATION 修改要求：语气更舒缓，保留三个声音，最后一句以“青瓦晨雾”结尾。\n${narration}\n先提取三个声音，然后停下，等我说“继续”再交付修改后的旁白。` },
+      { type: "text", text: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nworkspace: /Users/x" },
+    ] },
+  ]
+  for (let step = 0; step < toolSteps; step++) {
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_n${step}`, name: "Bash", input: { command: `ls /Users/x/audio/${step}` } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_n${step}`, content: big(`step-${step}`) }] })
+  }
+  messages.push({ role: "assistant", content: "SOUNDS 三个声音：雨声、橹声、鸟鸣。我先停下，等你说继续。" })
+  messages.push({ role: "user", content: "继续" })
+  return messages
+}
+
+test("A16: a replay after \"继续\" keeps the requirements in the middle of the user's long request (plugins#1401)", async () => {
+  // 150 repeats: a ~26 KB request inside the kept tail; 60 with 14 steps: a
+  // ~10 KB request that only a pin keeps.
+  for (const shape of [{ narrationRepeats: 150, toolSteps: 8 }, { narrationRepeats: 60, toolSteps: 14 }]) {
+    const stderr = captureStderr()
+    let prompt
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const messages = narrationConversation(shape)
+        const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `narration-${shape.toolSteps}` }, messages })))
+        assert.equal(parsed.stopReason, "end_turn")
+        prompt = prompts(kit).at(-1)
+      })
+    } finally {
+      stderr.restore()
+    }
+    const label = JSON.stringify(shape)
+    assert.ok(bytes(prompt) <= 112 * 1024, `${label}: initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("REQ-NARRATION 修改要求"), `${label}: the requirements are in the replay`)
+    assert.ok(prompt.includes("SOUNDS 三个声音"), `${label}: the newest reply is kept`)
+    assert.ok(!prompt.includes("step-0 head") || shape.toolSteps < 10, `${label}: tool output gave way first`)
+    const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+    assert.ok(replay, `${label}: a replay row is logged`)
+    assert.equal(replay.messages_before, shape.toolSteps * 2 + 4)
+    assert.equal(replay.user_before, 2)
+    assert.equal(replay.last_user_index[0], 2)
+    assert.deepEqual(replay.last_user_kept.slice(0, 1), [true])
+    assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
+    assert.ok(replay.bytes_after <= replay.bytes_before && replay.messages_after <= replay.messages_before)
+    const row = JSON.stringify(replay)
+    for (const secret of ["江南", "REQ-NARRATION", "ANCHOR", "继续", "/Users/x"]) {
+      assert.ok(!row.includes(secret), `${label}: the replay row carries no content (${secret})`)
+    }
+  }
+})
+
+test("A16: a replay into a new session after the history changed logs its counts under that reason (plugins#1401)", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const first = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages: [{ role: "user", content: "ANCHOR 写一段江南旁白" }] })))
+      assert.equal(first.stopReason, "end_turn")
+      const messages = narrationConversation({ narrationRepeats: 150, toolSteps: 8 })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.ok(prompts(kit).at(-1).includes("REQ-NARRATION 修改要求"))
+    })
+  } finally {
+    stderr.restore()
+  }
+  const sessionNew = stderr.lines.filter((row) => row.action === "session_new").at(-1)
+  const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+  assert.equal(sessionNew.reason, "history")
+  assert.equal(replay.reason, "history")
+  assert.equal(replay.conv, sessionNew.conv)
+  assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
 })
 
 test("A16: a replay that fits the budget keeps every big history block whole (#1055)", async () => {
@@ -1694,6 +1817,59 @@ test("live tool-turn drop logs drop_live and carries exact reason into session_n
   assert.equal(sessionNews.at(-1)?.reason, "history_mismatch")
 })
 
+// seven_7cx on X (DSH + agy-cli): a multi-step tool task dropped its live
+// session at nearly every step (drop_live "interrupted"), so the cache read
+// fell to 0 and the whole history was replayed. DSH adds user-role notes of
+// its own before a step (time-context's clock, tmux-context's reading, a
+// finished job's notice, a model-change note); none is the user steering.
+const DSH_STEP_NOTES = [
+  "Time sampled while preparing turn 3, step 2: 2026-11-18T10:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding step context: 12s.",
+  "Time sampled while preparing turn 3, step 3: 2026-11-18T10:24:45Z",
+  "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\nsession: main",
+  "Current runtime context: none. Earlier runtime-context snapshots no longer apply.",
+  "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.",
+  "The user switched this session to plan mode.",
+  "tmux location (turn 3):\nsession dev, window 1 \"main\", pane 0 %4\nwindow active=1, pane active=1, layout b25d,200x50,0,0,2",
+  "background job job_7 (bash: npm test) finished exit 0. Read its output with job_output.",
+  "[model changed: assistant turns above this point were generated by deepseek-v4; the session continues with agy-cli/gemini]",
+]
+
+for (const shape of ["same message", "own message"]) {
+  test(`a multi-step tool turn with DSH's own notes (${shape}) keeps its live session`, async () => {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        kit.defaultPrompt = async (agent) => {
+          for (let step = 0; step < DSH_STEP_NOTES.length; step++) await agent.tool("Read", { path: `/repo/${step}.txt` })
+          await agent.text("done")
+          return { stopReason: "end_turn" }
+        }
+        const meta = { user_id: `dsh-live-${shape}` }
+        let body = baseBody({ metadata: meta, messages: [{ role: "user", content: "TOOL read everything" }] })
+        let parsed = await readSse(await kit.request(body))
+        for (const note of DSH_STEP_NOTES) {
+          assert.equal(parsed.stopReason, "tool_use", JSON.stringify(parsed))
+          const call = parsed.content.find((block) => block.type === "tool_use")
+          const result = { type: "tool_result", tool_use_id: call.id, content: `ok ${call.id}` }
+          body = baseBody({ metadata: meta, messages: [
+            ...body.messages,
+            { role: "assistant", content: [call] },
+            ...(shape === "same message"
+              ? [{ role: "user", content: [result, { type: "text", text: note }] }]
+              : [{ role: "user", content: [result] }, { role: "user", content: [{ type: "text", text: note }] }]),
+          ] })
+          parsed = await readSse(await kit.request(body))
+        }
+        assert.equal(parsed.stopReason, "end_turn", JSON.stringify(parsed))
+        assert.equal(sessionsOpened(kit), 1, "one live session for the whole turn")
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.deepEqual(stderr.lines.filter((row) => row.action === "drop_live"), [])
+  })
+}
+
 test("A16: oversized history[0] cannot evict the newest history reply before <current_turn>", async () => {
   await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(16 * 1024) } }, async (kit) => {
     scriptedAgent(kit)
@@ -1975,3 +2151,175 @@ test("fetchInput Request headers preserve x-magpie-session isolation", async () 
     assert.equal(kit.acpSpawns.length, 2)
   })
 })
+
+// plugins#1401, sevenqcx (DSH + billion-context 0.1.216, agy-cli 0.1.103):
+// billion-context folds earlier messages into a summary that opens with its
+// kernel's SUMMARY_HEADER ("[Compressed conversation section]", then " — "
+// and a topic, then the summary). The bridge took each fold for a changed
+// history (drop_live history_mismatch, history=60 expected_history=61) and
+// replayed the conversation into a new session, where the model had lost
+// what it had just read and read it again, then the client folded again.
+const BILI_SUMMARY = "[Compressed conversation section] — reading the repo\n" +
+  "Read /repo/0.txt and /repo/1.txt: both list the build steps; nothing changed yet."
+
+function foldSteps(messages, from, to) {
+  return [...messages.slice(0, from), { role: "user", content: [{ type: "text", text: BILI_SUMMARY }] }, ...messages.slice(to)]
+}
+
+for (const shape of ["older steps", "every step before the pending call"]) {
+  test(`a client fold of earlier steps mid tool turn keeps the live session (${shape}, plugins#1401)`, async () => {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        kit.defaultPrompt = async (agent) => {
+          for (let step = 0; step < 5; step++) await agent.tool("Read", { path: `/repo/${step}.txt` })
+          await agent.text("done")
+          return { stopReason: "end_turn" }
+        }
+        const meta = { user_id: `bili-fold-${shape}` }
+        let messages = [{ role: "user", content: "TOOL read everything" }]
+        let parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+        for (let step = 0; step < 5; step++) {
+          assert.equal(parsed.stopReason, "tool_use", JSON.stringify(parsed))
+          const call = parsed.content.find((block) => block.type === "tool_use")
+          messages = [...messages, { role: "assistant", content: [call] }]
+          // the fold lands on the request that answers the fourth call
+          if (step === 3) messages = shape === "older steps" ? foldSteps(messages, 1, 5) : foldSteps(messages, 1, messages.length - 1)
+          messages = [...messages, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: `ok ${call.id}` }] }]
+          parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+        }
+        assert.equal(parsed.stopReason, "end_turn", JSON.stringify(parsed))
+        assert.equal(sessionsOpened(kit), 1, "one live session for the whole turn")
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.deepEqual(stderr.lines.filter((row) => row.action === "drop_live"), [])
+  })
+}
+
+test("a client fold before a new request keeps the live session (plugins#1401)", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const meta = { user_id: "bili-fold-next" }
+      let messages = [{ role: "user", content: "TOOL read" }]
+      let parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      const call = parsed.content.find((block) => block.type === "tool_use")
+      messages = [...messages, { role: "assistant", content: [call] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "file body" }] }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      messages = [...messages, { role: "assistant", content: parsed.content.filter((block) => block.type === "text") },
+        { role: "user", content: "second question" }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      // the client folds the first tool round, then asks again
+      messages = [...foldSteps(messages, 1, 3),
+        { role: "assistant", content: parsed.content.filter((block) => block.type === "text") },
+        { role: "user", content: "third question" }]
+      parsed = await readSse(await kit.request(baseBody({ metadata: meta, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(sessionsOpened(kit), 1, "the fold kept the session")
+      assert.ok(prompts(kit).at(-1).includes("third question"))
+      assert.ok(!prompts(kit).at(-1).includes("<conversation_history>"), "only the new request goes to agy")
+    })
+  } finally {
+    stderr.restore()
+  }
+  assert.deepEqual(stderr.lines.filter((row) => row.action === "session_new").map((row) => row.reason), ["no_live"])
+})
+
+test("a fold does not cover an edit after it, or an edit beside an old summary (plugins#1401)", async () => {
+  const summary = { role: "user", content: [{ type: "text", text: BILI_SUMMARY }] }
+  for (const shape of ["edit after the fold", "old summary, edited opening"]) {
+    const stderr = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const meta = { user_id: `bili-fold-edit-${shape}` }
+        const opening = shape === "edit after the fold"
+          ? [{ role: "user", content: "first ask" }, { role: "assistant", content: "first answer" }, { role: "user", content: "TOOL read" }]
+          : [{ role: "user", content: "first ask" }, summary, { role: "user", content: "TOOL read" }]
+        const first = await readSse(await kit.request(baseBody({ metadata: meta, messages: opening })))
+        assert.equal(first.stopReason, "tool_use", shape)
+        const call = first.content.find((block) => block.type === "tool_use")
+        const history = shape === "edit after the fold"
+          ? [{ role: "user", content: "first ask" }, summary, { role: "user", content: "TOOL read ALTERED" }]
+          : [{ role: "user", content: "first ask ALTERED" }, summary, { role: "user", content: "TOOL read" }]
+        const second = await readSse(await kit.request(baseBody({ metadata: meta, messages: [...history,
+          { role: "assistant", content: [call] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "ok" }] }] })))
+        assert.equal(second.stopReason, "end_turn", shape)
+      })
+    } finally {
+      stderr.restore()
+    }
+    const drops = stderr.lines.filter((row) => row.action === "drop_live")
+    assert.equal(drops.length, 1, shape)
+    assert.equal(drops[0].reason, "history_mismatch", shape)
+  }
+})
+
+// plugins#1401, sevenqcx's replay row after a gateway restart: a 190-message,
+// 503,098-byte history went into a 114,028-byte prompt with 10,305 bytes of
+// it; the instructions and the current turn had taken the rest.
+function longHistory(tasks) {
+  const step = (label) => `${label} head ` + "file line with some words. ".repeat(110) + ` ${label} tail`
+  const messages = [{ role: "user", content: "ANCHOR open the project" }, { role: "assistant", content: "ANCHOR ok" }]
+  for (let task = 0; task < tasks; task++) {
+    messages.push({ role: "user", content: `TASK-${task} check part ${task} of the build` })
+    for (let s = 0; s < 4; s++) {
+      const id = `toolu_t${task}s${s}`
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id, name: "Read", input: { path: `/repo/${task}/${s}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: step(`t${task}s${s}`) }] })
+    }
+    messages.push({ role: "assistant", content: `REPLY-${task} part ${task} is fine` })
+  }
+  return messages
+}
+
+for (const shape of ["big current turn", "big instructions"]) {
+  test(`a replay of a long history keeps a share for the history (${shape}, plugins#1401)`, async () => {
+    const stderr = captureStderr()
+    let prompt
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const messages = longHistory(40)
+        const last = 6
+        messages.push({ role: "user", content: "TASK-LAST read the three logs and fix the build" })
+        for (let s = 0; s < last; s++) {
+          const id = `toolu_last${s}`
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id, name: "Read", input: { path: `/repo/log${s}.txt` } }] })
+          const content = s === last - 1 && shape === "big current turn"
+            ? "LOG head " + "log line with a few words. ".repeat(3600) + " LOG tail"
+            : `LAST-STEP-${s} read`
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] })
+        }
+        const system = shape === "big instructions"
+          ? "SYSTEM head " + "an instruction line for the agent. ".repeat(2900) + " SYSTEM tail"
+          : "You are a test agent."
+        const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `long-${shape}` }, system, messages })))
+        assert.equal(parsed.stopReason, "end_turn")
+        prompt = prompts(kit).at(-1)
+      })
+    } finally {
+      stderr.restore()
+    }
+    assert.ok(bytes(prompt) <= 112 * 1024, `${shape}: initial prompt is ${bytes(prompt)} bytes`)
+    const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+    assert.ok(replay.bytes_before > 400 * 1024, `${shape}: history is ${replay.bytes_before} bytes`)
+    assert.ok(replay.bytes_after >= 24 * 1024, `${shape}: the history kept ${replay.bytes_after} bytes: ${JSON.stringify(replay)}`)
+    // what the model did just before: the task's steps and the last task's reply
+    for (let s = 0; s < 5; s++) assert.ok(prompt.includes(`LAST-STEP-${s} read`), `${shape}: step ${s} is kept`)
+    assert.ok(prompt.includes("REPLY-39 part 39"), `${shape}: the previous task's reply is kept`)
+    assert.ok(prompt.includes("t39s3 tail"), `${shape}: the previous task's last read is kept`)
+    assert.ok(prompt.includes(shape === "big current turn" ? "LOG tail" : "SYSTEM tail"), `${shape}: the clipped part keeps its end`)
+    assert.ok(prompt.includes(shape === "big current turn" ? "LOG head" : "SYSTEM head"), `${shape}: the clipped part keeps its start`)
+    assert.equal(typeof replay.head_bytes, "number")
+    assert.equal(typeof replay.turn_bytes, "number")
+    assert.equal(replay[shape === "big current turn" ? "turn_clipped" : "head_clipped"], true)
+  })
+}

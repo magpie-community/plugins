@@ -9,7 +9,7 @@ const input = { mode: "view", id: "task_1" }
 const request = (schema, extra = {}) => ({
   model: "claude-opus-5-5", max_tokens: 64, system: [{ type: "text", text: _internal.DROID_LINE }],
   messages: [{ role: "user", content: "Use the task tool." }],
-  tools: [{ name: "task", input_schema: schema }], ...extra,
+  tools: [{ name: "Task", input_schema: schema }], ...extra,
 })
 
 async function loaded(serve) {
@@ -31,23 +31,23 @@ for (const keyword of ["anyOf", "oneOf", "allOf"]) {
       if (body.tools.some((t) => ["anyOf", "oneOf", "allOf"].some((k) => Object.hasOwn(t.input_schema, k)))) {
         return Response.json({ type: "error", error: { type: "invalid_request_error", message: "tools.0.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level" } }, { status: 400 })
       }
-      return Response.json({ id: "msg_1", type: "message", content: [{ type: "tool_use", id: "call_1", name: "task", input: { arguments: input } }], stop_reason: "tool_use", usage: { input_tokens: 7, output_tokens: 5 } })
+      return Response.json({ id: "msg_1", type: "message", content: [{ type: "tool_use", id: "call_1", name: "Task", input: { arguments: input } }], stop_reason: "tool_use", usage: { input_tokens: 7, output_tokens: 5 } })
     })
     const res = await l.fetch(url, { method: "POST", body: JSON.stringify(request(schema)) })
     expect(res.status).toBe(200)
     expect(JSON.parse(seen[0].body).tools[0].input_schema).toEqual({ type: "object", properties: { arguments: schema }, required: ["arguments"], additionalProperties: false })
     const answer = await res.json()
-    expect(answer.content[0]).toEqual({ type: "tool_use", id: "call_1", name: "task", input })
+    expect(answer.content[0]).toEqual({ type: "tool_use", id: "call_1", name: "Task", input })
     expect(answer.usage).toEqual({ input_tokens: 7, output_tokens: 5 })
   })
 }
 
 test("wraps previous tool inputs and examples, preserving ordinary tools and count_tokens replies", async () => {
   const schema = { anyOf: [object] }
-  const ordinary = { name: "read", input_schema: { type: "object", properties: { path: { anyOf: [{ type: "string" }, { type: "null" }] } } } }
+  const ordinary = { name: "Read", input_schema: { type: "object", properties: { path: { anyOf: [{ type: "string" }, { type: "null" }] } } } }
   const body = request(schema, {
-    tools: [{ name: "task", input_schema: schema, input_examples: [input], cache_control: { type: "ephemeral" } }, ordinary],
-    messages: [{ role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "task", input }, { type: "tool_use", id: "call_2", name: "read", input: { path: null } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] }],
+    tools: [{ name: "Task", input_schema: schema, input_examples: [input], cache_control: { type: "ephemeral" } }, ordinary],
+    messages: [{ role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "Task", input }, { type: "tool_use", id: "call_2", name: "Read", input: { path: null } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] }],
   })
   const { l, seen } = await loaded(() => Response.json({ input_tokens: 42 }))
   const res = await l.fetch(url + "/count_tokens", { method: "POST", body: JSON.stringify(body) })
@@ -98,20 +98,20 @@ test("does not silently relocate a recursive resource without $id", async () => 
 })
 
 test("ordinary tools, nested compositions and OpenAI routes retain their original bytes", async () => {
-  const response = '{ "content": [{"type":"tool_use","name":"task","input":{"arguments":"a real caller field"}}] }'
+  const response = '{ "content": [{"type":"tool_use","name":"Task","input":{"arguments":"a real caller field"}}] }'
   const { l, seen } = await loaded(() => new Response(response, { headers: { "content-type": "application/json" } }))
   const body = JSON.stringify(request({ type: "object", properties: { value: { anyOf: [{ type: "string" }, { type: "null" }] } } }))
   const res = await l.fetch(url, { method: "POST", body })
   expect(seen[0].body).toBe(body)
   expect(await res.text()).toBe(response)
-  const openai = JSON.stringify({ model: "gpt-6-sol", instructions: _internal.DROID_LINE, input: "OK", tools: [{ type: "function", name: "task", parameters: { anyOf: [object] } }] })
+  const openai = JSON.stringify({ model: "gpt-6-sol", instructions: _internal.DROID_LINE, input: "OK", tools: [{ type: "function", name: "Task", parameters: { anyOf: [object] } }] })
   const other = await l.fetch("https://api.factory.ai/api/llm/o/v1/responses", { method: "POST", body: openai })
   expect(seen[1].body).toBe(openai)
   expect(await other.text()).toBe(response)
 })
 
 test("drops stale lengths after changing a request or reply, preserving response metadata", async () => {
-  const reply = JSON.stringify({ content: [{ type: "tool_use", name: "task", id: "call_1", input: { arguments: input } }], usage: { output_tokens: 42 } })
+  const reply = JSON.stringify({ content: [{ type: "tool_use", name: "Task", id: "call_1", input: { arguments: input } }], usage: { output_tokens: 42 } })
   const { l, seen } = await loaded(() => new Response(reply, { headers: { "content-type": "application/json", "content-length": String(reply.length), "content-encoding": "identity", "x-request-id": "request_1" } }))
   const res = await l.fetch(url, { method: "POST", headers: { "content-length": "1" }, body: JSON.stringify(request({ type: "object", anyOf: [object] })) })
   expect(seen[0].headers.get("content-length")).toBeNull()
@@ -124,7 +124,7 @@ test("drops stale lengths after changing a request or reply, preserving response
 
 for (const input of [{ wrong: {} }, { arguments: {}, extra: true }]) {
   test("invalid argument envelopes fail instead of reaching the caller", async () => {
-    const { l } = await loaded(() => Response.json({ content: [{ type: "tool_use", name: "task", input }] }))
+    const { l } = await loaded(() => Response.json({ content: [{ type: "tool_use", name: "Task", input }] }))
     await expect(l.fetch(url, { method: "POST", body: JSON.stringify(request({ anyOf: [object] })) })).rejects.toThrow("invalid wrapped arguments")
   })
 }
@@ -165,7 +165,7 @@ for (const eol of ["\n", "\r\n"]) {
       + event("content_block_start", { index: 0, content_block: { type: "text", text: "" } }, eol)
       + event("content_block_delta", { index: 0, delta: { type: "text_delta", text: "先调用" } }, eol)
       + "id: event_1" + eol + "retry: 1000" + eol
-      + event("content_block_start", { index: 1, content_block: { type: "tool_use", id: "call_1", name: "task", input: {} } }, eol)
+      + event("content_block_start", { index: 1, content_block: { type: "tool_use", id: "call_1", name: "Task", input: {} } }, eol)
       + event("content_block_start", { index: 2, content_block: { type: "tool_use", id: "call_2", name: "read", input: {} } }, eol)
     for (let i = 0; i < wrapped.length; i += 3) stream += event("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: wrapped.slice(i, i + 3) } }, eol)
     stream += event("ping", {}, eol)
@@ -176,7 +176,7 @@ for (const eol of ["\n", "\r\n"]) {
       + event("message_delta", { delta: { stop_reason: "tool_use" }, usage: { output_tokens: 9 } }, eol)
       + event("message_stop", {}, eol)
     const { l } = await loaded(() => new Response(bytes(stream), { headers: { "content-type": "text/event-stream", "content-length": "1" } }))
-    const tools = [{ name: "task", input_schema: { anyOf: [object] } }, { name: "read", input_schema: { type: "object" } }]
+    const tools = [{ name: "Task", input_schema: { anyOf: [object] } }, { name: "read", input_schema: { type: "object" } }]
     const res = await l.fetch(url, { method: "POST", body: JSON.stringify(request({}, { tools, stream: true })) })
     const text = await res.text(), out = events(text)
     expect(text).toContain(": keep-alive")
@@ -195,13 +195,13 @@ for (const eol of ["\n", "\r\n"]) {
 test("preserves large integer arguments in JSON, history and streaming replies", async () => {
   const number = "900719925474099312345"
   const input = '{"number":' + number + '}'
-  const reply = '{"content":[{"type":"tool_use","name":"task","input":{"arguments":' + input + '}}]}'
+  const reply = '{"content":[{"type":"tool_use","name":"Task","input":{"arguments":' + input + '}}]}'
   const { l, seen } = await loaded(() => new Response(reply, { headers: { "content-type": "application/json" } }))
-  const body = JSON.stringify(request({ anyOf: [{ type: "object" }] }, { messages: [{ role: "assistant", content: [{ type: "tool_use", name: "task", id: "call_1", input: "RAW_INPUT" }] }, { role: "user", content: "continue" }] })).replace('"RAW_INPUT"', input)
+  const body = JSON.stringify(request({ anyOf: [{ type: "object" }] }, { messages: [{ role: "assistant", content: [{ type: "tool_use", name: "Task", id: "call_1", input: "RAW_INPUT" }] }, { role: "user", content: "continue" }] })).replace('"RAW_INPUT"', input)
   const res = await l.fetch(url, { method: "POST", body })
   expect(seen[0].body).toContain('"arguments":' + input)
   expect(await res.text()).toContain('"input":' + input)
-  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "task", input: {} } })
+  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "Task", input: {} } })
     + event("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '{"arguments":' + input + '}' } })
     + event("content_block_stop", { index: 1 }) + event("message_stop", {})
   globalThis.fetch = async () => new Response(bytes(stream, 5), { headers: { "content-type": "text/event-stream" } })
@@ -210,7 +210,7 @@ test("preserves large integer arguments in JSON, history and streaming replies",
 })
 
 test("streaming initial inputs are unwrapped when the upstream sends no argument deltas", async () => {
-  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "task", input: { arguments: input } } }) + event("content_block_stop", { index: 1 }) + event("message_stop", {})
+  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "Task", input: { arguments: input } } }) + event("content_block_stop", { index: 1 }) + event("message_stop", {})
   const { l } = await loaded(() => new Response(bytes(stream, 7), { headers: { "content-type": "text/event-stream" } }))
   const res = await l.fetch(url, { method: "POST", body: JSON.stringify(request({ anyOf: [object] }, { stream: true })) })
   const out = events(await res.text())
@@ -220,7 +220,7 @@ test("streaming initial inputs are unwrapped when the upstream sends no argument
 
 for (const end of ["", event("message_stop", {})]) {
   test("an incomplete stream cannot deliver a completed tool call", async () => {
-    const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "task", input: {} } }) + event("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '{"arguments":{' } }) + end
+    const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "Task", input: {} } }) + event("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '{"arguments":{' } }) + end
     const { l } = await loaded(() => new Response(bytes(stream), { headers: { "content-type": "text/event-stream" } }))
     const res = await l.fetch(url, { method: "POST", body: JSON.stringify(request({ anyOf: [object] }, { stream: true })) })
     await expect(res.text()).rejects.toThrow("incomplete wrapped tool arguments")
@@ -229,7 +229,7 @@ for (const end of ["", event("message_stop", {})]) {
 
 test("upstream stream errors are preserved even during a partial tool call", async () => {
   const error = event("error", { error: { type: "overloaded_error", message: "try later" } })
-  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "task", input: {} } }) + error
+  const stream = event("content_block_start", { index: 1, content_block: { type: "tool_use", name: "Task", input: {} } }) + error
   const { l } = await loaded(() => new Response(bytes(stream), { headers: { "content-type": "text/event-stream" } }))
   const res = await l.fetch(url, { method: "POST", body: JSON.stringify(request({ anyOf: [object] }, { stream: true })) })
   expect(await res.text()).toContain(error)
@@ -246,7 +246,7 @@ test("cancelling the adapted stream cancels the upstream reader", async () => {
 })
 
 test("concurrent requests do not share their wrapped tool names", async () => {
-  const { l } = await loaded((body) => Response.json({ content: [{ type: "tool_use", name: "task", input: Object.hasOwn(body.tools[0].input_schema.properties ?? {}, "arguments") ? { arguments: input } : { arguments: "ordinary" } }] }))
+  const { l } = await loaded((body) => Response.json({ content: [{ type: "tool_use", name: "Task", input: Object.hasOwn(body.tools[0].input_schema.properties ?? {}, "arguments") ? { arguments: input } : { arguments: "ordinary" } }] }))
   const [wrapped, ordinary] = await Promise.all([
     l.fetch(url, { method: "POST", body: JSON.stringify(request({ anyOf: [object] })) }),
     l.fetch(url, { method: "POST", body: JSON.stringify(request({ type: "object", properties: {} })) }),

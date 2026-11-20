@@ -76,6 +76,10 @@ const VERSION_TIMEOUT = 15 * 1000
 const EFFORT = "x-magpie-effort"
 const SESSION = "x-magpie-session"
 const SUBAGENT = "x-magpie-subagent"
+// SENT is how magpie is told the model id a request went out under: the
+// variant the effort picked (gemini-3.1-pro-high for gemini-3.1-pro at high),
+// for its ledger and Routing page. magpie takes it off; OpenCode ignores it.
+const SENT = "x-magpie-sent-model"
 
 // ---- small helpers ------------------------------------------------------------------
 
@@ -1679,10 +1683,10 @@ async function complete(s, url, init, magpie) {
       const note = left > 0 ? quotaLeftNote(left) : CREDITS_NOTE
       return new Response(withNote(text, note), { status: 429, headers: { "content-type": "application/json" } })
     }
-    return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } })
+    return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json", [SENT]: sent } })
   }
-  if (stream) return new Response(unwrap(res.body, again400 ? badCallSaid(sent, asks) : undefined), { status: 200, headers: RESPONSE_HEADERS })
-  return new Response(JSON.stringify(await whole(res)), { status: 200, headers: { "content-type": "application/json" } })
+  if (stream) return new Response(unwrap(res.body, again400 ? badCallSaid(sent, asks) : undefined), { status: 200, headers: { ...RESPONSE_HEADERS, [SENT]: sent } })
+  return new Response(JSON.stringify(await whole(res)), { status: 200, headers: { "content-type": "application/json", [SENT]: sent } })
 }
 
 // ---- Google AI credits ----------------------------------------------------------------------

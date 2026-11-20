@@ -361,8 +361,10 @@ else if (version) {
   const env = { ...process.env, TEST_LOG: logPath, TEST_REPORT: JSON.stringify(report([group([bucket()])])), TEST_DESCENDANT: path.join(directory, "descendant"), ...extraEnv }
   return {
     executable, env,
-    // agy's stored sign-in can't be read here (signin.mjs is tested on its own)
-    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }) },
+    // agy's stored sign-in can't be read here (signin.mjs is tested on its
+    // own), and a direct read never reaches Google: a test that has one
+    // gives its own quota
+    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }), quota: async () => { throw new Error("no network in tests") } },
     async logs() { return (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line)) },
     // Every pid to see gone after a kill: the spawned children, and the agy
     // each one ran that got as far as logging (on Windows a grandchild under
@@ -659,6 +661,44 @@ test("reports sanitized failures and preserves the bridge sign-in; failures back
     assert.equal(ok.signIn, signIn === "expired" ? "renewed" : "kept")
     await f.assertClean()
   }
+})
+
+// tmr11235 on X (magpie v0.1.4520): the account's usage said "agy CLI not
+// found" while its chats ran through agy. A read made before agy was there
+// was held for the backoff, which grows to hours; agy found since is read
+// at once, and a failure held for one agy isn't another's.
+test("no agy found is not held: an agy found since is read at once", async t => {
+  const f = await fixture(t)
+  let agy = null
+  const clock = 1_000_000
+  const read = createUsageReader(() => agy, { ...f.options, now: () => clock })
+  for (let i = 0; i < 3; i++) {
+    const missing = await read()
+    assert.deepEqual(missing.windows, [])
+    assert.equal(missing.signIn, "kept")
+    assert.match(missing.error, /agy CLI not found[\s\S]*Sign in to this account again/)
+  }
+  agy = f.executable
+  const found = await read()
+  assert.equal(found.error, undefined)
+  assert.equal(found.windows.length, 1)
+  await f.assertClean()
+})
+
+test("a failure held for one agy is not another agy's", async t => {
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "connection refused" })
+  let agy = f.executable
+  const clock = 1_000_000
+  const read = createUsageReader(() => agy, { ...f.options, now: () => clock })
+  assert.match((await read()).error, /network or proxy/)
+  f.env.TEST_MODE = ""
+  assert.match((await read()).error, /network or proxy/, "the same agy is held")
+  const other = path.join(path.dirname(f.executable), "agy2" + path.extname(f.executable))
+  await fs.copyFile(f.executable, other)
+  await fs.chmod(other, 0o755)
+  agy = other
+  assert.equal((await read()).windows.length, 1)
+  await f.assertClean()
 })
 
 const startupAuthLogs = [
@@ -1049,14 +1089,44 @@ test("an ended or ending access token with a refresh token is read without runni
     assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
     await f.assertClean()
   }
-  // a token with time left still goes through agy
+})
+
+// agy -p /usage makes about twelve Code Assist calls in six rounds before
+// the two that read the quota: 5 to 10 seconds on a quick network, past
+// the deadline on a slow one ("agy usage query timed out." on the card).
+// With a stored sign-in the two are made first, and agy -p only when they
+// can't answer.
+test("a stored sign-in with time left is read directly first, so a slow agy -p doesn't time the card out", async t => {
+  const f = await fixture(t, { TEST_MODE: "hang" })
+  let asked = 0
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota: async () => { asked++; return SUMMARY }, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.signIn, "kept")
+  assert.equal(result.windows.length, 2)
+  assert.equal(asked, 1)
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+  await f.assertClean()
+})
+
+test("a direct read that can't answer goes through agy -p, and agy's answer stands", async t => {
   const f = await fixture(t)
   let asked = 0
   const stored = { state: "present", fp: "live", canRenew: true, expiresAt: 1_000_000 + 10 * 60_000, expired: false }
-  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY }, now: () => 1_000_000, signIn: async () => stored })
-  assert.equal((await read()).windows.length, 1)
-  assert.equal(asked, 0)
+  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; throw new Error("ECONNRESET") }, now: () => 1_000_000, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.windows.length, 1)
+  assert.equal(asked, 1)
   assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+  // a region refusal after it: the direct read isn't asked a second time
+  const g = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED })
+  let again = 0
+  const refused = await createUsageReader(() => g.executable, { ...g.options, quota: async () => { again++; throw new Error("ECONNRESET") }, signIn: async () => stored, now: () => 1_000_000 })()
+  assert.deepEqual(refused.windows, [])
+  assert.equal(again, 1)
+  assert.match(refused.error, /Reading the quota directly failed too: a network request failed\./)
 })
 
 test("a renewal that fails for a moment backs off and keeps the sign-in; one Google refuses asks for a new sign-in", async t => {

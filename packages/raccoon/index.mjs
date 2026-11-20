@@ -454,6 +454,14 @@ async function fetchLiveModels(token) {
   return models
 }
 
+// fellBack marks a list that isn't the account's own: magpie's plugin host
+// reads Symbol.for("magpie.fellBack"), and never routes by such a list as
+// if it were the account's plan (bitssly on X: a paid account left out of
+// sn-kimi-k3-1-pro, which the defaults lack).
+function fellBack(models) {
+  return Object.assign({ ...(models ?? {}) }, { [Symbol.for("magpie.fellBack")]: true })
+}
+
 function configModels() {
   return Object.fromEntries(
     FALLBACK_MODELS.map((m) => [
@@ -1216,10 +1224,12 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             token = a.access
           }
           const ms = await fetchLiveModels(token)
-          if (!ms.length) return provider.models
+          if (!ms.length) return fellBack(provider.models)
           return Object.fromEntries(ms.map((m) => [m.id, runtimeModel(provider, m)]))
         } catch {
-          return provider.models
+          // the defaults aren't this account's list: magpie keeps the one
+          // it read last, or takes the account to serve every model
+          return fellBack(provider.models)
         }
       },
     },

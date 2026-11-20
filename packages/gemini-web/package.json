@@ -1,0 +1,32 @@
+{
+  "name": "@magpie-community/opencode-gemini-web-auth",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "files": [
+    "index.mjs",
+    "gemini.mjs",
+    "browser.mjs",
+    "openai.mjs",
+    "prompt.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "description": "The Gemini web app (gemini.google.com) as a model provider: your Google account signed in through a browser window of its own, each request one streamed call to the app's own endpoint",
+  "magpie": {
+    "icon": "gemini-color",
+    "maxConcurrency": 2
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/gemini-web"
+  },
+  "keywords": ["magpie", "magpie-plugin", "opencode-plugin", "gemini", "gemini-web"],
+  "license": "MIT",
+  "exports": {
+    ".": "./opencode2.mjs"
+  }
+}

@@ -950,6 +950,42 @@ test("LRU 淘汰后，补默认字段的 follow-up 仍能 resume 原 session", a
   })
 })
 
+test("LRU 淘汰后 resume 的 agy 跑在原 session 的目录里（agy 的缓存跟着目录走）", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROCS: "1" }, sessionResume: true }, async (kit) => {
+    for (const text of ["a1", "b1", "a2", "b2", "a3"]) {
+      kit.prompts.push(async (agent) => {
+        await agent.text(text)
+        return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+      })
+    }
+    const bodyA = baseBody({ messages: [{ role: "user", content: "conversation A" }] })
+    const bodyB = baseBody({ messages: [{ role: "user", content: "conversation B" }] })
+    const follow = (body, prior, reply, next) => ({
+      ...body,
+      messages: [...prior, { role: "assistant", content: [{ type: "text", text: reply }] }, { role: "user", content: next }],
+    })
+    await runTurn(kit, bodyA)
+    await runTurn(kit, bodyB)
+    const a2 = follow(bodyA, bodyA.messages, "a1", "more A")
+    await runTurn(kit, a2)
+    await runTurn(kit, follow(bodyB, bodyB.messages, "b1", "more B"))
+    await runTurn(kit, follow(bodyA, a2.messages, "a2", "and more A"))
+    assert.equal(kit.acpSpawns.length, 5, "每次换会话都应挤掉另一个 agy")
+    const resumes = kit.acpLog.filter((item) => item.method === "session/resume")
+    assert.equal(resumes.length, 3, "A、B、A 都应 resume，而不是新开 session")
+    const [a, b, aAgain, bAgain, aThird] = kit.acpSpawns.map((spawn) => spawn.cwd)
+    assert.ok(a && b && a !== b, "两个会话应各有自己的目录")
+    assert.equal(aAgain, a, "resume 的 agy 换了目录，agy 会整段不走缓存")
+    assert.equal(bAgain, b)
+    assert.equal(aThird, a)
+    for (const item of resumes) {
+      const spawn = kit.acpSpawns[item.spawn]
+      assert.equal(item.params.cwd, spawn?.cwd ?? item.params.cwd)
+    }
+    assert.ok(fs.existsSync(path.join(a, ".agents", "agents")), "目录被删后应重新建好")
+  })
+})
+
 test("取消 prompt 把缓存比例校准为 0 后，下一回合工具步也不再把前缀估成读缓存", async () => {
   await withKit({}, async (kit) => {
     const cancelled = { inputTokens: 5000, cachedReadTokens: 0, outputTokens: 3 }
@@ -1290,8 +1326,10 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
     assert.ok(secondToolElapsedMs < 500, `同次生成续接工具耗时 ${secondToolElapsedMs.toFixed(0)}ms，不应空转等待 1000ms`)
     assert.deepEqual(plain(responses.map((r) => r.usage)), [
       { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 1255, output_tokens_details: { thinking_tokens: 850 } },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      // 同次生成的续接响应：无新输入/输出，但上下文仍是该生成的整窗（读自缓存），
+      // 全零会让 dsh 等客户端的上下文占用跳成 0%（@seven_7cx）
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
       { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 509, output_tokens_details: { thinking_tokens: 171 } },
       { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 640, output_tokens_details: { thinking_tokens: 283 } },
     ])
@@ -1643,7 +1681,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
       assert.equal(responses.length, 3)
       assert.deepEqual(plain(responses.map((r) => r.usage)), [
         { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 32, output_tokens_details: { thinking_tokens: 8 } },
-        { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+        { input_tokens: 0, cache_read_input_tokens: 1800 + 18_200, cache_creation_input_tokens: 0, output_tokens: 0 },
         { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 553, output_tokens_details: { thinking_tokens: 15 } },
       ])
     } finally {

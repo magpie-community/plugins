@@ -1313,12 +1313,6 @@ let nativeConv
   const mixed = continuation(bodyA, eventsA.events, "must-not-deliver")
   mixed.messages.at(-1).content.push(continuation(bodyB, eventsB.events, "must-not-deliver").messages.at(-1).content[0])
   check("mixed-conversation batch is rejected", (await callFetch(mixed)).status === 409)
-  const wrongArgs = continuation(bodyA, eventsA.events, "must-not-deliver")
-  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
-  renamed.id = "TU-wrong-arguments"
-  renamed.input.text = "different-arguments"
-  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
-  check("ID remapping cannot ignore changed arguments", (await callFetch(wrongArgs)).status === 409)
   const [resultA, resultB] = await Promise.all([
     readSSE(await callFetch(continuation(bodyA, eventsA.events, "result-A"))),
     readSSE(await callFetch(continuation(bodyB, eventsB.events, "result-B"))),
@@ -1327,6 +1321,25 @@ let nativeConv
   check("concurrent conversations keep tool results isolated", delivered.includes("result-A") && delivered.includes("result-B"))
   check("concurrent conversations use independent sessions", inits().length === before + 2)
   check("both concurrent conversations complete", stopOf(resultA.events) === "end_turn" && stopOf(resultB.events) === "end_turn")
+}
+
+{
+  // A renamed call whose arguments changed is never fed to the live call: the
+  // client's own round, as it says it ran, is replayed in a new session.
+  const body = { model, metadata: { user_id: "renamed-changed-args" }, messages: [{ role: "user", content: "TOOL renamed changed" }], tools: [echoTool] }
+  const pending = (await readSSE(await callFetch(body))).events
+  const before = inits().length
+  const wrongArgs = continuation(body, pending, "must-not-deliver")
+  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
+  renamed.id = "TU-wrong-arguments"
+  renamed.input.text = "different-arguments"
+  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
+  const response = await callFetch(wrongArgs)
+  const replayed = response.status === 200 ? (await readSSE(response)).events : []
+  // (the fake agy answers a replay whose history says TOOL with another call)
+  check("ID remapping cannot ignore changed arguments", response.status === 200 && stopOf(replayed) &&
+    inits().length === before + 1, `got ${response.status} ${stopOf(replayed)} ${inits().length - before}`)
+  check("changed arguments never reach the live call", !logs().some(event => event.type === "mcpResult" && event.result?.content?.[0]?.text === "must-not-deliver"))
 }
 
 {
@@ -2982,20 +2995,31 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const retryable = await callFetch(partial)
   check("partial matches retain upstream 409 without a no-retry header", retryable.status === 409 && retryable.headers.get("x-should-retry") === null)
   await retryable.text()
-  const unmatched = { ...body, messages: [...body.messages,
-    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
-      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
-  ] }
-  const live = await callFetch(unmatched)
-  check("unmatched results alone cannot supersede an unexpired tool owner", live.status === 409 && live.headers.get("x-should-retry") === null && inits().length === before)
-  await live.text()
   const conflict = nextTurn(body, pending, "no result for this pending call")
   const response = await callFetch(conflict)
   const error = await response.json()
   check("a request carrying the pending call without its result is terminal", response.status === 400 && response.headers.get("x-should-retry") === "false" && error.error?.code === "tool_state_conflict")
   const done = await drive(body, pending, "real result after conflict")
   check("terminal lineage conflicts leave the original tool turn usable", inits().length === before && stopOf(done.events) === "end_turn")
+}
+
+{
+  // A whole tool round of the client's own that no live call waits for, while
+  // the conversation's turn waits on a call: the client has moved past that
+  // call (X: tmr11235's 409), so its round is replayed, not refused.
+  const body = { model, metadata: { user_id: "unmatched-round" },
+    messages: [{ role: "user", content: "TOOL pending ownership" }], tools: [echoTool] }
+  await readSSE(await callFetch(body))
+  const before = inits().length
+  const unmatched = { ...body, messages: [...body.messages,
+    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
+      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
+  ] }
+  const live = await callFetch(unmatched)
+  const events = live.status === 200 ? (await readSSE(live)).events : []
+  check("unmatched results replay the request's own round instead of 409", live.status === 200 && stopOf(events) &&
+    inits().length === before + 1, `got ${live.status} ${stopOf(events)} ${inits().length - before}`)
 }
 
 {

@@ -224,7 +224,7 @@ test("adapts the built-in configuration skill self-reference on inference and co
   for (const endpoint of [url, url + "/count_tokens"]) {
     await l.fetch(endpoint, { method: "POST", body })
     const sent = JSON.parse(seen.at(-1).body)
-    expect(sent.messages[0].content).toEqual([{ ...block, text: skillReminder.replace("not Claude", "not the assistant") }, { type: "text", text: "Reply OK." }])
+    expect(sent.messages[0].content).toEqual([{ ...block, text: skillReminder.replace("not Claude", "not the assistant").replaceAll("harness", "runtime") }, { type: "text", text: "Reply OK." }])
     expect(sent.tools).toEqual(tools)
     expect(sent.system).toBe(droid)
   }
@@ -267,7 +267,7 @@ test("adapts Claude 5 system-role runtime context without changing its role or i
       .replace("You are powered by the model", "Current model:")
       .replace("The exact model ID is", "Model ID:")
       .replace("Assistant knowledge cutoff is", "Model knowledge cutoff:")
-      .replace("not Claude", "not the assistant")
+      .replace("not Claude", "not the assistant").replaceAll("harness", "runtime")
     const request = {
       system: [{ type: "text", text: droid }],
       messages: [{ role: "user", content: [{ type: "text", text: "Reply OK.", cache_control: { type: "ephemeral" } }] }, { role: "system", content: context }],
@@ -438,8 +438,9 @@ test("losslessly quotes fixed client metadata in tool output on inference and co
     expect(encoded).not.toContain("system-reminder")
     expect(sent.messages[1].content[0]).toEqual({ ...outputs[0], content: encoded })
     expect(sent.messages[1].content[1]).toEqual({ ...outputs[1], content: [{ ...outputs[1].content[0], text: encoded }, outputs[1].content[1]] })
-    expect(sent.messages[0]).toEqual(request.messages[0])
-    expect(sent.tools).toEqual(request.tools)
+    // Factory refuses Bash as a declared tool name: it goes out as droid's Execute (tool-names.mjs)
+    expect(sent.messages[0]).toEqual({ ...request.messages[0], content: [{ ...request.messages[0].content[0], name: "Execute" }] })
+    expect(sent.tools).toEqual([{ ...request.tools[0], name: "Execute" }])
     expect(seen.at(-1).headers.get("content-length")).toBeNull()
     const once = seen.at(-1).body
     await l.fetch(endpoint, { method: "POST", body: once })
@@ -463,7 +464,7 @@ test("losslessly quotes compaction openings inside historical JSONL tool output 
     expect(encoded).toStartWith("Tool output encoded as a JSON string.")
     expect(encoded).not.toContain(opening)
     expect(JSON.parse(encoded.slice(encoded.indexOf("\n") + 1))).toBe(source)
-    expect(sent).toEqual({ ...request, messages: [{ role: "user", content: [
+    expect(sent).toEqual({ ...request, tools: [{ ...request.tools[0], name: "Execute" }], messages: [{ role: "user", content: [
       { ...outputs[0], content: encoded },
       { ...outputs[1], content: [{ ...outputs[1].content[0], text: encoded }, outputs[1].content[1]] },
     ] }] })
@@ -503,7 +504,7 @@ test("adapts runtime context after a SessionStart hook's output, as a system mes
     .replace("You have been invoked in the following environment:", "The session environment is:")
     .replace("You are powered by the model named", "Current model name:")
     .replace("The exact model ID is", "Model ID:")
-    .replace("not Claude", "not the assistant")
+    .replace("not Claude", "not the assistant").replaceAll("harness", "runtime")
   const text = hook + "\n" + context
   for (const message of [{ role: "system", content: text }, { role: "user", content: [{ type: "text", text: "Reply OK." }, { type: "text", text }] }]) {
     await l.fetch(url, { method: "POST", body: JSON.stringify({ system: droid, messages: [message] }) })
@@ -528,7 +529,7 @@ test("adapts runtime metadata after subagent hooks and deferred tools without ch
     .replace("You have been invoked in the following environment:", "The session environment is:")
     .replace("You are powered by the model named", "Current model name:")
     .replace("The exact model ID is", "Model ID:")
-    .replace("not Claude", "not the assistant")
+    .replace("not Claude", "not the assistant").replaceAll("harness", "runtime")
   const prefixes = [tools,
     "SubagentStart hook additional context: " + hookBody,
     "SubagentStart hook additional context: " + hookBody + "\n\n" + tools,
@@ -541,7 +542,7 @@ test("adapts runtime metadata after subagent hooks and deferred tools without ch
         for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
           const request = { system: droid, messages: [{ role: "user", content: "OK" }, { role, content }] }
           await l.fetch(endpoint, { method: "POST", body: JSON.stringify(request) })
-          const expected = prefix + "\n\n" + adapted
+          const expected = (role === "system" ? prefix.replaceAll("harness", "runtime") : prefix) + "\n\n" + adapted
           const output = typeof content === "string" ? expected : [{ ...content[0], text: expected }]
           expect(JSON.parse(seen.at(-1).body)).toEqual({ ...request, messages: [request.messages[0], { role, content: output }] })
           const once = seen.at(-1).body
@@ -1262,10 +1263,10 @@ test("adapts token-prefixed runtime bundles as system turns or folded user text"
     "Previously read file: /tmp/large.ts. Its contents were omitted from the conversation summary because of length. Use Read tool if you need to access it.",
     "# Runtime context\nThe session environment is: \n - Primary working directory: /tmp/project\n - Platform: darwin",
     "Current model name: Sonnet 5.5. Model ID: group/auto-claude-sonnet-5-5. Model knowledge cutoff: June 2026.",
-    skillHeader, skills.replace("not Claude", "not the assistant"), hook].join("\n\n")
+    skillHeader, skills.replace("not Claude", "not the assistant").replaceAll("harness", "runtime"), hook].join("\n\n")
   const skillOnly = [token, skillHeader, skills, "## Exited Auto Mode", token].join("\n\n")
   for (const endpoint of [url, url + "/count_tokens"]) {
-    for (const [input, output] of [[text, expected], [skillOnly, skillOnly.replace("not Claude", "not the assistant")]]) {
+    for (const [input, output] of [[text, expected], [skillOnly, skillOnly.replace("not Claude", "not the assistant").replaceAll("harness", "runtime")]]) {
       for (const content of [input, [{ type: "text", text: input, cache_control: { type: "ephemeral" } }]]) {
         for (const role of ["system", "user"]) {
           const request = { system: droid, messages: [{ role, content }, { role: "user", content: "OK" }] }
@@ -1284,7 +1285,7 @@ test("adapts token-prefixed runtime bundles as system turns or folded user text"
 test("adapts standalone skill updates with trailing token context", async () => {
   const { l, seen } = await loaded()
   const text = "The following skills are available for use with the Skill tool:\n\n- custom: Keep not Claude in this user's description.\n" + configSkill + "\n\n## Exited Auto Mode\n\nResume using the dedicated tools for file reads, searches, and edits.\n\n<total_tokens>15000000 tokens left</total_tokens>"
-  const expected = text.replace(configSkill, configSkill.replace("not Claude", "not the assistant"))
+  const expected = text.replace(configSkill, configSkill.replace("not Claude", "not the assistant").replaceAll("harness", "runtime"))
   for (const endpoint of [url, url + "/count_tokens"]) {
     for (const role of ["system", "user"]) {
       for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
@@ -1308,7 +1309,7 @@ test("preserves quoted and incomplete standalone skill updates and tool output",
       for (const content of [value, [{ type: "text", text: value }]]) {
         const body = JSON.stringify({ system: droid, messages: [{ role, content }] })
         await l.fetch(url, { method: "POST", body })
-        expect(seen.at(-1).body).toBe(body)
+        expect(seen.at(-1).body).toBe(role === "system" ? body.replaceAll("harness", "runtime") : body)
       }
     }
   }
@@ -1335,7 +1336,7 @@ test("adapts complete skill paragraphs after runtime notifications and repeated 
   const modes = ["## Exited Auto Mode", "Resume using dedicated tools.", token, "While bypass permissions mode is active:", "Keep these tool-choice instructions verbatim.", token].join("\n\n")
   for (const notice of notices) {
     const text = [notice, header, list, modes, header, list, token].join("\n\n")
-    const expected = text.replaceAll(configSkill, configSkill.replace("not Claude", "not the assistant"))
+    const expected = text.replaceAll(configSkill, configSkill.replace("not Claude", "not the assistant").replaceAll("harness", "runtime"))
     for (const endpoint of [url, url + "/count_tokens"]) {
       for (const role of ["system", "user"]) {
         for (const content of [text, [{ type: "text", text, cache_control: { type: "ephemeral" } }]]) {
@@ -1373,7 +1374,7 @@ test("preserves incomplete skill paragraphs, quoted headers and hook-owned listi
       for (const content of [value, [{ type: "text", text: value }]]) {
         const body = JSON.stringify({ system: droid, messages: [{ role, content }] })
         await l.fetch(url, { method: "POST", body })
-        expect(seen.at(-1).body).toBe(body)
+        expect(seen.at(-1).body).toBe(role === "system" ? body.replaceAll("harness", "runtime") : body)
       }
     }
   }
@@ -1524,7 +1525,7 @@ const bareConfigSkill = '- update-config: Use this skill to configure the Claude
 
 test("a skill list sent alone as a system message has the update-config line adapted (#72)", async () => {
   const { l, seen } = await loaded()
-  const fixed = bareConfigSkill.replace("not Claude", "not the assistant")
+  const fixed = bareConfigSkill.replace("not Claude", "not the assistant").replaceAll("harness", "runtime")
   const list = "- custom: Keep not Claude in this user's description.\n" + bareConfigSkill + "\n- other: Another skill."
   for (const [text, want] of [[bareConfigSkill, fixed], [list, list.replace(bareConfigSkill, fixed)]]) {
     for (const content of [[{ type: "text", text }], text]) {
@@ -1544,7 +1545,7 @@ test("a skill list sent alone as a system message has the update-config line ada
 test("recognizes the update-config entry with or without the invoking slash (#72)", async () => {
   const { l, seen } = await loaded()
   const slashed = bareConfigSkill.replace("- update-config:", "- /update-config:")
-  const want = (text) => text.replace("not Claude", "not the assistant")
+  const want = (text) => text.replace("not Claude", "not the assistant").replaceAll("harness", "runtime")
   for (const text of [bareConfigSkill, slashed]) {
     const request = { model: "factory/claude-opus-5-5", max_tokens: 32, messages: [{ role: "user", content: "hi" }, { role: "system", content: text }] }
     await l.fetch(url, { method: "POST", body: JSON.stringify(request) })
@@ -1561,7 +1562,7 @@ test("only a system message that is a skill list is adapted (#72)", async () => 
   ]) {
     const request = { model: "factory/claude-opus-5-5", max_tokens: 32, messages: [{ role: "user", content: "hi" }, { role, content: text }] }
     await l.fetch(url, { method: "POST", body: JSON.stringify(request) })
-    expect(JSON.parse(seen.at(-1).body).messages[1].content).toBe(text)
+    expect(JSON.parse(seen.at(-1).body).messages[1].content).toBe(role === "system" ? text.replaceAll("harness", "runtime") : text)
   }
 })
 
@@ -1627,7 +1628,7 @@ test("adapts the update-config self-reference in a system prompt's configuration
     const sent = JSON.parse(seen.at(-1).body)
     expect(sent.system).toEqual([
       { type: "text", text: droid },
-      { ...system[1], text: text.replace(configDescription, configDescription.replace("not Claude", "not the assistant")) },
+      { ...system[1], text: text.replace(configDescription, configDescription.replace("not Claude", "not the assistant").replaceAll("harness", "runtime")) },
     ])
     expect(JSON.stringify(sent)).not.toContain("not Claude, so")
   }
@@ -1650,7 +1651,7 @@ test("leaves the refused sentence in a system prompt outside the update-config e
   ]
   const body = JSON.stringify({ model: "factory/claude-haiku-5-5", max_tokens: 32, system, messages: [{ role: "user", content: "hi" }] })
   await l.fetch(url, { method: "POST", body })
-  expect(seen[0].body).toBe(body)
+  expect(seen[0].body).toBe(body.replaceAll("harness", "runtime"))
 })
 
 test("adapting a system prompt's configuration section is idempotent", async () => {

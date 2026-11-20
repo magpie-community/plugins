@@ -488,8 +488,9 @@ export async function fetchUsage(agy, {
   tempRoot = os.tmpdir(),
   quota = readQuotaDirect,
   direct = false,
+  first = false,
 } = {}) {
-  if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
+  if (!agy) throw new UsageError(NO_AGY)
   const deadline = Date.now() + timeout(timeoutMs)
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
   let pendingTreeKill = null
@@ -542,6 +543,28 @@ export async function fetchUsage(agy, {
       }
       return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
     }
+    // With a stored sign-in to read it with, the quota is read first the
+    // way agy's /usage reads it: loadCodeAssist, then
+    // retrieveUserQuotaSummary. agy -p /usage makes those two only after
+    // its whole start, about twelve Code Assist calls in six rounds one
+    // after another (loadCodeAssist four times, fetchUserInfo,
+    // fetchAvailableModels, fetchAdminControls, listExperiments…, recorded
+    // from agy 1.5.12 on 2026-11-20): 5 to 10 seconds on a quick network,
+    // past the deadline on a slower one or behind a proxy, where the card
+    // said "agy usage query timed out.". The two calls take about 1.5
+    // seconds. When they can't answer (a sign-in that can't be read, a
+    // refusal, a reply with no quota), agy -p is asked as before, in the
+    // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    let firstFailed = ""
+    if (first) {
+      try {
+        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        firstFailed = error instanceof UsageError ? error.message : "a network request failed"
+      }
+    }
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
     let report
     try { report = JSON.parse(result.stdout) } catch {}
@@ -558,6 +581,8 @@ export async function fetchUsage(agy, {
     if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
       // when that read fails too, the error says why, after agy's refusal
       const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
+      // asked already, before agy -p: not asked twice
+      if (firstFailed) throw alsoFailed(firstFailed)
       let data
       try {
         data = await quota({ env, version: version.stdout.trim(), deadline, signal })
@@ -600,6 +625,10 @@ function backoff(n) {
   return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
 }
 
+// what usage says while no agy is found: never held (createUsageReader),
+// and in noAgy's words, so it says how magpie gets one
+export const NO_AGY = "agy CLI not found. Sign in to this account again in magpie to have it installed, or install Antigravity CLI yourself."
+
 const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or run `agy` in a terminal; magpie doesn't run agy for usage until then."
 
 // No completed-result cache: sequential refreshes must see account/allowance changes.
@@ -614,7 +643,10 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 // - an explicit authentication rejection, or an ended token hanging silently
 //   or with sign-in talk, blocks further background runs for that credential.
 //   Diagnostic-only output isn't evidence of a browser sign-in.
-// - any other failure isn't run again for backoff(n).
+// - any other failure isn't run again for backoff(n). No agy found is not
+//   held: finding it costs a few stat calls, and an agy installed since (a
+//   sign-in installs it; tmr11235 on X saw it) is used on the next read,
+//   not after hours of "not found" while its chats already run.
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
   const pending = new Map()
@@ -631,16 +663,21 @@ export function createUsageReader(resolveAgy, options = {}) {
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"
-    if (held && held.key === key && now() < held.until) {
+    const agy = resolveAgy()
+    if (!agy) return { windows: [], error: NO_AGY, signIn: "kept" }
+    // a failure held for another agy (gone, or another found since) isn't
+    // this one's
+    if (held && held.key === key && held.agy === agy && now() < held.until) {
       return { windows: [], error: held.error, signIn: held.auth ? "expired" : "kept" }
     }
     try {
-      const agy = resolveAgy()
       // an access token that has ended or ends within two minutes, with a
       // refresh token: read without running agy (fetchUsage's direct)
       const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
       if (!pending.has(agy)) {
-        const query = fetchUsage(agy, { ...fetchOptions, direct }).finally(() => {
+        // any other stored sign-in: read directly first, agy -p after
+        const first = !direct && stored?.state === "present"
+        const query = fetchUsage(agy, { ...fetchOptions, direct, first }).finally(() => {
           if (pending.get(agy) === query) pending.delete(agy)
         })
         pending.set(agy, query)
@@ -659,8 +696,8 @@ export function createUsageReader(resolveAgy, options = {}) {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
       }
-      const n = held?.key === key ? held.n + 1 : 1
-      held = { key, n, until: now() + backoff(n), error: message, auth }
+      const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
+      held = { key, agy, n, until: now() + backoff(n), error: message, auth }
       if (auth) saidExpired = true
       return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
     }

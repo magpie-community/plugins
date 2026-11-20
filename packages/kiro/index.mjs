@@ -542,11 +542,16 @@ function goG(x) {
 // round.
 //
 // Bonus credits (each allowance's bonuses: a first upgrade's trial credits,
-// a promotion's) are a window each while ACTIVE and not expired, after the
-// month's: their count, and when they lapse (runsOutAt), as they don't
-// reset. They are shown only (aside). Kiro spends the plan's credits
-// first, then these, so a month used up while a bonus has credits left
-// is set aside too, and the account isn't taken for spent.
+// a promotion's) are a window each while ACTIVE or EXHAUSTED (used up) and
+// not expired, after the month's: their count, and when they lapse
+// (runsOutAt), as they don't reset. They are shown only (aside). Kiro
+// spends the plan's credits first, then these, so a month used up while a
+// bonus has credits left goes on on them (credits): magpie asks the
+// account after those with plan credits left, as the plan's end at the
+// month's reset and a trial's run a year. It is set aside too, for a
+// magpie that doesn't know credits, so the account isn't taken for spent.
+// Only an ACTIVE bonus counts as credits left, and a bonus left that
+// lapses before the month's reset keeps the month set aside only.
 //
 // With overage on, Kiro goes on past the plan's credits, billed as post-paid
 // credits, until those reach the overage cap. The cap counts the overage
@@ -559,6 +564,8 @@ function goG(x) {
 // still sends means nothing, and the plan's credits are the month.
 const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
 const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
+const BONUS_SHOWN = new Set(["ACTIVE", "EXHAUSTED"])
+const ON_BONUS = { aside: true, credits: true }
 const overageOn = (l) =>
   String(l?.overageConfiguration?.overageStatus ?? "").toUpperCase() === "ENABLED" || l?.overageConfiguration?.overageEnabled === true
 
@@ -577,20 +584,28 @@ function readUsage(l, now = Date.now()) {
       windows.push({ name: "Free trial", used: (100 * used) / limit, resetsAt: at(num(t.freeTrialExpiry)), display: count(used, limit),
         amount: used, limit, unit: "credits" })
     }
-    const bonuses = []
+    const bonuses = [], spendable = []
     for (const b of Array.isArray(u?.bonuses) ? u.bonuses : []) {
       const used = num(b?.currentUsage), limit = num(b?.usageLimit), expires = num(b?.expiresAt)
-      if (String(b?.status ?? "").toUpperCase() !== "ACTIVE" || limit <= 0 || (expires > 0 && expires * 1000 <= now)) continue
+      if (!BONUS_SHOWN.has(String(b?.status ?? "").toUpperCase()) || limit <= 0 || (expires > 0 && expires * 1000 <= now)) continue
       const left = Math.max(0, limit - used)
       bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
         amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
+      // only an ACTIVE bonus is spent: one Kiro marks EXHAUSTED has nothing
+      // to go on with, whatever its count says
+      if (left > 0 && String(b?.status ?? "").toUpperCase() === "ACTIVE") spendable.push(expires)
     }
     const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
     const cap = overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0
     const reset = at(num(u?.nextDateReset) || num(l?.nextDateReset))
     const month = { resetsAt: reset, unit: "credits", span: 30 * 24 * 3600 }
     const name = u?.displayNamePlural || u?.displayName || "Credits"
-    const left = bonuses.some((b) => b.amount < b.limit)
+    const left = spendable.length > 0
+    // credits only when what is left outlasts the month: a bonus that
+    // lapses before the reset would be lost if asked last, so then the
+    // month is only set aside and the account keeps its listed place
+    const resetMs = Date.parse(reset ?? "")
+    const onBonus = spendable.some((e) => e > 0 && resetMs > 0 && e * 1000 < resetMs) ? { aside: true } : ON_BONUS
     if (cap > 0) {
       // what Kiro says of the overage, else what is past the plan
       const said = typeof u?.currentOveragesWithPrecision === "number" ? u.currentOveragesWithPrecision : u?.currentOverages
@@ -598,12 +613,12 @@ function readUsage(l, now = Date.now()) {
       const inPlan = Math.min(used, limit)
       plan = limit > 0 ? { name, used: (100 * inPlan) / limit, display: count(inPlan, limit), amount: inPlan, limit, ...month, aside: true } : undefined
       stop = { name: "Overage", used: (100 * over) / cap, display: count(over, cap), amount: over, limit: cap, ...month,
-        ...(over >= cap && left ? { aside: true } : {}) }
+        ...(over >= cap && left ? onBonus : {}) }
       windows.push(...(plan ? [plan] : []), stop)
       plan ??= stop
     } else if (limit > 0) {
       plan = stop = { name, used: (100 * used) / limit, display: count(used, limit), amount: used, limit, ...month,
-        ...(used >= limit && left ? { aside: true } : {}) }
+        ...(used >= limit && left ? onBonus : {}) }
       windows.push(plan)
     }
     windows.push(...bonuses)
@@ -655,9 +670,11 @@ function regionsUsage(reads, now = Date.now(), only = "") {
       allOver &&= over
     }
     monthName ??= plan.name
+    // a region's own windows are shown only: the sum below is weighed
+    const own = ({ credits, ...w }, n) => ({ ...w, name: `${n} (${r.region})`, aside: true })
     if (!counted) {
-      shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
-      if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+      shown.push(own(plan, plan.name))
+      if (over) shown.push(own(stop, stop.name))
       regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: Date.parse(stop.resetsAt ?? "") > 0 ? Date.parse(stop.resetsAt) : 0 })
       continue
     }
@@ -667,8 +684,8 @@ function regionsUsage(reads, now = Date.now(), only = "") {
     ofPlan += plan.limit
     const at = Date.parse(stop.resetsAt ?? "")
     if (at > 0 && (!resets || at < resets)) resets = at
-    shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
-    if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+    shown.push(own(plan, plan.name))
+    if (over) shown.push(own(stop, stop.name))
     regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: at > 0 ? at : 0 })
   }
   const windows = []

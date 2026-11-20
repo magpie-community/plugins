@@ -54,7 +54,7 @@ const RUNTIME_NAMES = ["Date", "setTimeout", "clearTimeout", "setInterval", "cle
 const RUNTIME_PRELUDE = `import { ${RUNTIME_NAMES.join(", ")} } from ${JSON.stringify(RUNTIME_SPECIFIER)};\n`
 const TEST_EXPORTS = "\nexport { Turn as __agyTestTurn, allProcs as __agyTestAllProcs, pool as __agyTestPool, " +
   "execOnce as __agyTestExecOnce, findAgy as __agyTestFindAgy, canonicalBody as __agyTestCanonicalBody, " +
-  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, reapOnExit as __agyTestReapOnExit };\n"
+  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, renderInitialPrompt as __agyTestRenderInitialPrompt, reapOnExit as __agyTestReapOnExit };\n"
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
 if (typeof vm.SourceTextModule !== "function" || typeof vm.SyntheticModule !== "function") {
@@ -225,7 +225,9 @@ class FakeAgy {
     child.onStdin = (chunk) => this.onStdin(chunk)
     // offeredModels may be a function of the agy's HOME: accounts on
     // different plans are offered different models (#1229).
-    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "") : kit.offeredModels
+    // and of its args: an agy on ~/.gemini is offered what the app's
+    // gateway lists, one on --gemini-dir its Google account's
+    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "", child.args) : kit.offeredModels
     // Whether this agy reaches the bridge's MCP server and lists the tools;
     // listTools(env) false stands in for an `nc` agy never runs (nc.cmd
     // under agy 1.5 on Windows, plugins#1239).
@@ -555,7 +557,7 @@ export async function createBridgeKit(options = {}) {
     }
     if (args[0] === "acp") {
       const child = new FakeChild(kit, file, args)
-      kit.acpSpawns.push({ file, args, env: opts.env, child })
+      kit.acpSpawns.push({ file, args, env: opts.env, cwd: opts.cwd, child })
       new FakeAgy(kit, child, opts)
       return child
     }

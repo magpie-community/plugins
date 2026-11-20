@@ -92,8 +92,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   arrives, the same turn continues, and the client executes each call exactly once.
 - **Session resume**: each finished turn is recorded. After a Magpie or plugin
   restart, the session continues through `session/resume` as long as the history
-  and instruction hashes still match. The state file stores session IDs and
-  hashes, never message text.
+  and instruction hashes still match. agy's prompt cache follows the folder it
+  runs in, so a resumed session runs in its own temporary folder again and its
+  cache still hits. The state file stores session IDs, hashes and that folder,
+  never message text.
 - **Isolation**: your global MCP configuration is never read. Every agy process
   runs with a temporary agent, and every permission request agy raises for its
   own tools (shell, file edits, browser) is refused. A request for one of the

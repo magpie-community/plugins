@@ -1550,3 +1550,30 @@ test("a desktop seat's refresh gives nothing, even when user_info answers a phon
   })
   expect(got).toBeUndefined()
 })
+
+// bitssly on X: a list the vendor didn't give for the account is marked as
+// fallen back, so magpie never routes by the plugin's defaults as if they
+// were the account's plan (they lack sn-kimi-k3-1-pro).
+test("a model list the vendor refused is marked fallen back", async () => {
+  startServer({
+    "/api/web/llm/v2/model_catalog": () => Response.json({ code: 200001, message: "forbidden" }, { status: 403 }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const given = { "sn-kimi-k3": { id: "sn-kimi-k3" } }
+  const tok = fakeJwt({ iss: "74350b", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const got = await hooks.provider.models({ models: given }, { auth: { type: "oauth", access: tok, refresh: "r", expires: Date.now() + 3_600_000 } })
+  expect(Object.keys(got)).toEqual(["sn-kimi-k3"])
+  expect(got[Symbol.for("magpie.fellBack")]).toBe(true)
+})
+
+test("a model list the vendor gave is the account's own", async () => {
+  startServer({
+    "/api/web/llm/v2/model_catalog": () =>
+      Response.json({ code: 0, data: { categories: [{ type: "chat", models: [{ name: "sn-kimi-k3-1-pro", description: "Kimi-K3.1-Pro", billing_multiplier: 1 }] }] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const tok = fakeJwt({ iss: "74350b", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const got = await hooks.provider.models({ models: {} }, { auth: { type: "oauth", access: tok, refresh: "r", expires: Date.now() + 3_600_000 } })
+  expect(Object.keys(got)).toContain("sn-kimi-k3-1-pro")
+  expect(got[Symbol.for("magpie.fellBack")]).toBeUndefined()
+})
