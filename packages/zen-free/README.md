@@ -109,7 +109,8 @@ parameters, and the descriptions of its `edit`, `read` and `skill` are
 refused under any name (#632). Those descriptions go reworded with the
 same meaning, and `edit` and `read` with DSH's parameters go as
 `text_replace` and `file_view`; the `edit` and `read` stand-ins Zen wants
-still go beside them.
+still go beside them. Zen reads tool names in any case, so ZCode 3.18's
+capitalized `Edit` and `Read`, with those same parameters, go the same way.
 
 Zen's free tier also tells OpenCode's own requests by the environment
 block every OpenCode prompt ends with (`<env>`, a `Working directory:`

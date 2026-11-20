@@ -360,8 +360,11 @@ function inCaseOf(found, word) {
 function servedName(name, taken, parameters) {
   for (const rule of REFUSED_TOGETHER)
     if (Object.hasOwn(rule.as, name) && rule.names.every((other) => taken.has(other))) return rule.as[name];
+  // Zen reads a tool's name in any case too: ZCode 3.18 sends `Edit` and
+  // `Read`, with the same parameters as DSH's lowercase tools.
   for (const rule of REFUSED_WITH_PARAMETERS)
-    if (rule.name === name && rule.parameters.every((key) => parameters?.has(key))) return rule.as;
+    if (rule.name === name.toLowerCase() && rule.parameters.every((key) => parameters?.has(key)))
+      return rule.as;
   let served = name;
   for (const { word, as } of REFUSED_WORDS) served = served.replace(word, (found) => inCaseOf(found, as));
   return served === name ? undefined : served;
