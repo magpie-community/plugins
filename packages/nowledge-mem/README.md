@@ -42,8 +42,9 @@ sequenceDiagram
 Requires **Magpie 0.1.1273 or newer** and Bun. From **Magpie 0.1.2210** the
 sharing key Magpie writes into your own agents on this computer arrives as
 `magpie-key`, and recall and saving include it automatically. On an older
-Magpie every harness key is `gateway-key`, which is not included: upgrade
-Magpie for keyed harnesses, or only unkeyed local requests get Mem. The package declares
+Magpie every harness key is `gateway-key`, which is not included by default:
+upgrade Magpie for keyed harnesses, or explicitly opt in to remote access as
+described below. The package declares
 `magpie.hooks: "./nowledge-mem.hooks.mjs"`, Magpie's asynchronous Bun hook
 entry; it is not gateway middleware and has no OpenCode provider. Use **Magpie
 0.1.1531 or newer** for options saved from the plugin page to reach the hook on
@@ -78,6 +79,52 @@ capture and advanced options; Magpie's plugin **Options** editor remains availab
 `allowInsecureHttp` only for a trusted network, such as a Tailscale tailnet; prefer HTTPS elsewhere.
 
 ## One gateway, several harnesses
+
+### Named gateway keys
+
+No released Magpie version supplies the authenticated `callerKeyId` to hooks
+yet. With no `keyPolicies` option, existing `recallRemote` and `captureRemote`
+broad opt-ins keep their main-branch behavior for both `remote` and `gateway-key`
+origins, including on today's hosts. They can expose configured Mem data to
+those clients; they are not per-key or tenant isolation.
+
+Adding `keyPolicies` explicitly enables strict key authorization, even when
+it is `{}`. For each `remote` or `gateway-key` request, each operation requires
+both its global switch (`recall` or `capture`), its matching remote switch
+(`recallRemote` or `captureRemote`), and an exact authenticated ID policy
+grant with an explicit Space. Missing or unknown IDs and policies without a
+Space are denied; a remote switch never overrides a denial. On today's hosts,
+configuring `keyPolicies` therefore disables both operations for those origins,
+even when the remote switches are on. Local requests and the local sharing-key
+origin retain their behavior; a matching policy can restrict the sharing key
+only when a future host supplies its authenticated ID. Unknown origins are always
+denied.
+
+Before adding `keyPolicies`, review existing remote grants and arrange a host
+that supplies authenticated IDs. Keep an empty `{}` to deny all named remote
+keys after removing the last entry; removing the option altogether restores
+broad remote opt-ins. Find non-secret IDs with `magpie gateway-key list`; never
+put a key secret in this option. Example:
+
+```json
+{"capture":true,"recallRemote":true,"captureRemote":true,"keyPolicies":{"example-key-id":{"recall":true,"capture":false,"spaceId":"example-space"}}}
+```
+
+Each named-key grant requires the exact Space ID returned by Mem. Search and
+import use that Space; recall discards hits with a different or missing
+`space_id`. Context Bundle and Working Memory are omitted for named-key requests
+because they can contain the owner's profile and rules. A shared Space or Mem
+credential can still expose memories to the key holder: this is not tenant
+isolation. A key identifies its credential, not a person or application;
+anyone holding a shared key gets its access. Rename and rotation retain the
+ID, while a new key gets a new ID. An issued child key needs its own policy.
+Revoking a policy affects requests begun after the change; an already bound
+completion may still be imported under the policy it started with.
+
+Keyed recall blocks and Thread IDs are isolated by key ID, even for identical
+sessions. Existing local and sharing-key Thread IDs are unchanged. The
+gateway's local trust model accepts arbitrary local tokens, so this cannot
+isolate mutually untrusted processes on the same computer.
 
 Magpie knows which agent sent a request. Unless `hostAgentId` is set, the hook
 uses `magpie:<agent>` as the host identity and sends it with the Context Bundle
@@ -157,11 +204,13 @@ derived value for all of them.
   direct local requests and `magpie-key` from this computer. Set it to give
   recall also to `remote` requests (another machine) and `gateway-key`
   requests (other gateway keys), which then receive what Mem recalls. It does
-  not turn on saving. A missing or unknown origin never gets recall.
+  not turn on saving. A missing or unknown origin never gets recall. When
+  `keyPolicies` is configured, it also requires a matching per-key recall grant.
 - `captureRemote`: default **false**. With `capture` on, also save
   conversations from `remote` and `gateway-key` requests. It does not grant
   recall: without `recallRemote` those requests are saved but get nothing from
-  Mem. The Settings page has separate switches for these options.
+  Mem. When `keyPolicies` is configured, it also requires a matching per-key
+  capture grant. The Settings page has separate switches for these options.
 - `port`: the loopback port of the page's connection test, default 3479. Change
   it only when another program holds that port; the page reads the same value.
 
@@ -282,7 +331,7 @@ JavaScript's exact range, including in unlisted options. Use one editor at a tim
 declares no reads and saving stores configuration without probing the
 connection or writing Memory. It shows connection, local and remote recall, apps excluded with `skipAgents`, local and remote capture, filtering and advanced options. Its **What is sent** section says
 the scope: direct local requests and `magpie-key` from this computer; other
-gateway keys and remote requests require separate `recallRemote` or `captureRemote` opt-ins. It follows Magpie's language (English, Simplified and
+gateway keys and remote requests require separate `recallRemote` or `captureRemote` opt-ins; configured key policies restrict them further. It follows Magpie's language (English, Simplified and
 Traditional Chinese, Japanese, German) and theme, and preserves options it does
 not show.
 

@@ -266,6 +266,22 @@ test("enabling a global gate conflicts if its remote grant changed elsewhere", a
  }
 })
 
+test("enabling remote access conflicts if key policies changed elsewhere", async () => {
+ for (const [global,remote] of [["recall","recallRemote"],["capture","captureRemote"]]) {
+  for (const enable of ["global","remote"]) {
+   const initial={[global]:enable === "remote",[remote]:enable === "global",keyPolicies:{}}
+   const f=await pageFixture(initial),e=f.elements
+   await e.configure.onclick()
+   const id=enable === "global" ? global : global+"-remote"
+   e[id].checked=true;e[id].onchange?.();e[id].dispatchEvent({type:"change"})
+   const changed={...initial};delete changed.keyPolicies;f.external(changed)
+   await f.save()
+   expect(e.result.dataset.message).toBe("conflict")
+   expect(f.writes()).toBe(0)
+  }
+ }
+})
+
 test("remote scope disclosure and exposure warnings exist in every language", async () => {
  const f=await pageFixture({})
  for (const language of ["en","zh","zh-TW","ja","de"]) {
@@ -379,6 +395,18 @@ test("released hosts keep the draft when a changed field was edited elsewhere", 
  expect(e.result.textContent).toContain("select Cancel, then reopen")
  e.close.onclick();await e.configure.onclick();expect(e.space.value).toBe("draft")
  e.cancel.onclick();await e.configure.onclick();expect(e.space.value).toBe("other")
+})
+
+test("summary capture refuses a stale remote grant or key-policy change", async () => {
+ for (const change of [{captureRemote:true,keyPolicies:{}},{captureRemote:true}]) {
+  const f=await pageFixture({capture:false,captureRemote:true,keyPolicies:{}}),e=f.elements
+  f.external({capture:false,...change, ...(Object.hasOwn(change,"keyPolicies") ? {captureRemote:false} : {})})
+  e["summary-capture"].checked=true
+  await e["summary-capture"].onchange()
+  expect(e["capture-feedback"].dataset.message).toBe("captureConflict")
+  expect(f.writes()).toBe(0)
+  expect(e["summary-capture"].checked).toBe(false)
+ }
 })
 
 test("summary capture switch saves on released hosts", async () => {

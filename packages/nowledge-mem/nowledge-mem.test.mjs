@@ -9,11 +9,11 @@ const realFetch = globalThis.fetch
 const calls = []
 let routes = {}
 
-const memory = (id, title, content, score) => ({ memory: { id, node_type: "Memory", title, content }, similarity_score: score })
+const memory = (id, title, content, score, space) => ({ memory: { id, node_type: "Memory", title, content, ...(space ? {space_id:space} : {}) }, similarity_score: score })
 
 function mock(extra = {}) {
   routes = {
-    "memories/search": () => Response.json([memory("mem-1", "Quartz codename", "The Quartz codename is QUARTZ-8413.", 0.91)]),
+    "memories/search": (body) => Response.json([memory("mem-1", "Quartz codename", "The Quartz codename is QUARTZ-8413.", 0.91, body?.space_id)]),
     "context/bundle": () => Response.json({ rendered_markdown: "# Individual Context Bundle\n\n## Focus Areas\n- Quartz release preparation" }),
     "agent/working-memory": () => Response.json({ exists: true, content: "## Focus Areas\n- Quartz release", date: "2026-10-30" }),
     "threads/import": (body) => Response.json({
@@ -449,7 +449,7 @@ test("capture is off when the option is absent", async () => {
   expect(of("threads/import")).toHaveLength(0)
 })
 
-test("the Magpie sharing key from this computer is included; other gateway keys are not", async () => {
+test("the Magpie sharing key from this computer is included; other gateway keys are not by default", async () => {
   mock()
   const [, own] = capturing("chat", { origin: "magpie-key" })
   await onRequest(structuredClone(chat), own)
@@ -763,5 +763,246 @@ test("remote opt-ins apply consistently across all gateway protocols", async () 
     await onResponse(response,{...c,success:true})
     expect(of("memories/search")).toHaveLength(1)
     expect(of("threads/import")).toHaveLength(1)
+  }
+})
+
+test("scope disclosure explains remote grants and strict policies on released hosts", async () => {
+  const dictionary = await Bun.file(new URL("./page/i18n.js", import.meta.url)).text()
+  const {messages} = runInNewContext(`${dictionary}\nnowledgeMemI18n`)
+  for (const [language, patterns] of Object.entries({
+    en: [/keyPolicies/, /no released Magpie/i, /denied/i],
+    zh: [/keyPolicies/, /没有已发布的 Magpie/, /拒绝/],
+    "zh-TW": [/keyPolicies/, /沒有已發行的 Magpie/, /拒絕/],
+    ja: [/keyPolicies/, /リリース済みの Magpie/, /拒否/],
+    de: [/keyPolicies/, /keine veröffentlichte Magpie-Version/i, /abgelehnt/],
+  })) for (const pattern of patterns) expect(messages[language].scopeDisclosure).toMatch(pattern)
+  const html = await Bun.file(new URL("./page/settings.html", import.meta.url)).text()
+  expect(html).toContain("No released Magpie supplies IDs yet")
+})
+
+test("without a host key ID, a sharing-key policy cannot restrict existing access", async () => {
+  mock()
+  const [, c] = capturing("chat", { origin: "magpie-key", options: {
+    capture: true, keyPolicies: { "key-own": { recall: false, capture: false } },
+  } })
+  await onRequest(structuredClone(chat), c)
+  await onResponse(reply, { ...c, success: true })
+  expect(of("memories/search")).toHaveLength(1)
+  expect(of("threads/import")).toHaveLength(1)
+})
+
+test("named key permissions are independent, require an authenticated ID and an explicit Space", async () => {
+  for (const [recall, capture] of [[false, false], [true, false], [false, true], [true, true]]) {
+    reset(); calls.length = 0; mock()
+    const [, c] = capturing("chat", { origin: "gateway-key", callerKeyId: "key-a", options: {
+      recall: true, capture: true, recallRemote: true, captureRemote: true, keyPolicies: { "key-a": { recall, capture, spaceId: "space-a" } },
+    } })
+    await onRequest(structuredClone(chat), c)
+    await onResponse(reply, { ...c, success: true })
+    expect(of("memories/search")).toHaveLength(Number(recall))
+    expect(of("threads/import")).toHaveLength(Number(capture))
+    expect(of("context/bundle")).toHaveLength(0)
+    expect(of("agent/working-memory")).toHaveLength(0)
+    if (recall) expect(of("memories/search")[0].body.space_id).toBe("space-a")
+    if (capture) expect(of("threads/import")[0].body.space_id).toBe("space-a")
+  }
+  for (const [origin, callerKeyId, policy] of [
+    ["gateway-key", undefined, { recall: true, capture: true, spaceId: "space-a" }],
+    ["gateway-key", "unknown", { recall: true, capture: true, spaceId: "space-a" }],
+    ["gateway-key", "key-a", { recall: true, capture: true }],
+    [undefined, "key-a", { recall: true, capture: true, spaceId: "space-a" }],
+  ]) {
+    reset(); calls.length = 0; mock()
+    const [, c] = capturing("chat", { origin, callerKeyId, options: { capture: true, recallRemote: true, captureRemote: true, keyPolicies: { "key-a": policy } } })
+    await onRequest(structuredClone(chat), c)
+    await onResponse(reply, { ...c, success: true })
+    expect(calls).toHaveLength(0)
+  }
+})
+
+test("skipAgents blocks even an explicitly granted gateway key", async () => {
+  const fixtures = [
+    ["chat",chat,reply],
+    ["responses",{input:[{role:"user",content:[{type:"input_text",text:"Quartz codename?"}]}]},{status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"answer"}]}]}],
+    ["anthropic",{messages:[{role:"user",content:[{type:"text",text:"Quartz codename?"}]}]},{type:"message",role:"assistant",content:[{type:"text",text:"answer"}],stop_reason:"end_turn"}],
+    ["gemini",{contents:[{role:"user",parts:[{text:"Quartz codename?"}]}]},{candidates:[{content:{role:"model",parts:[{text:"answer"}]},finishReason:"STOP"}]}],
+  ]
+  for (const [protocol, input, response] of fixtures) for (const [recall, capture] of [[true,false],[false,true],[true,true]]) {
+    reset(); calls.length = 0; mock()
+    const [, c] = capturing(protocol, { origin:"gateway-key", callerKeyId:"key-a", agent:"Claude Code", options: {
+      recall:true, capture:true, skipAgents:["claude-code"],
+      keyPolicies:{"key-a":{recall,capture,spaceId:"space-a"}},
+    } })
+    const body=structuredClone(input)
+    await onRequest(body,c)
+    await onResponse(response,{...c,success:true})
+    expect(body).toEqual(input)
+    expect(calls).toHaveLength(0)
+    expect(c.state.nowledgeMem).toBeUndefined()
+  }
+})
+
+test("global gates override key grants and explicit owner-key denials take effect", async () => {
+  for (const origin of ["gateway-key", "magpie-key"]) {
+    reset(); calls.length = 0; mock()
+    const [, c] = capturing("chat", { origin, callerKeyId: "key-a", options: {
+      recall: false, capture: false, keyPolicies: { "key-a": { recall: true, capture: true, spaceId: "space-a" } },
+    } })
+    await onRequest(structuredClone(chat), c)
+    await onResponse(reply, { ...c, success: true })
+    expect(calls).toHaveLength(0)
+  }
+  reset(); calls.length = 0; mock()
+  const [, c] = capturing("chat", { origin: "magpie-key", callerKeyId: "key-a", options: {
+    capture: true, keyPolicies: { "key-a": { recall: false, capture: false } },
+  } })
+  await onRequest(structuredClone(chat), c)
+  await onResponse(reply, { ...c, success: true })
+  expect(calls).toHaveLength(0)
+})
+
+test("same session and prompt do not share named-key recall or Thread identity", async () => {
+  mock({ "memories/search": (body) => Response.json([memory("m", "result", `answer-${of("memories/search").length}`, 1, body.space_id)]) })
+  const options = { capture: true, recallRemote: true, captureRemote: true, keyPolicies: {
+    "key-a": { recall: true, capture: true, spaceId: "shared-space" },
+    "key-b": { recall: true, capture: true, spaceId: "shared-space" },
+  } }
+  const [, a] = capturing("chat", { origin: "gateway-key", callerKeyId: "key-a", options })
+  const [, b] = capturing("chat", { origin: "gateway-key", callerKeyId: "key-b", options })
+  const first = structuredClone(chat), second = structuredClone(chat)
+  await onRequest(first, a)
+  await onRequest(second, b)
+  expect(first.messages[1].content).toContain("answer-1")
+  expect(second.messages[1].content).toContain("answer-2")
+  expect(second.messages[1].content).not.toContain("answer-1")
+  // Completion for a different authenticated key cannot use A's bound capture.
+  await onResponse(reply, { ...a, callerKeyId: "key-b", success: true })
+  expect(of("threads/import")).toHaveLength(0)
+  await Promise.all([onResponse(reply, { ...a, success: true }), onResponse(reply, { ...b, success: true })])
+  const threads = of("threads/import").map((call) => call.body.thread_id)
+  expect(threads).toHaveLength(2)
+  expect(threads[0]).not.toBe(threads[1])
+  const metadata = of("threads/import").map((call) => call.body.metadata)
+  expect(metadata[0].session_id).not.toBe(metadata[1].session_id)
+  expect(metadata[0].host_agent_id).not.toBe(metadata[1].host_agent_id)
+})
+
+test("malformed key policies fail closed", () => {
+  for (const keyPolicies of [[], "all", { a: true }, { a: { recall: true } }, { a: { recall: true, capture: "yes" } }, { a: { recall: true, capture: true, spaceId: " " } }, { "sk-magpie-synthetic": { recall: true, capture: true, spaceId: "space-a" } }]) {
+    expect(() => resolveOptions({ keyPolicies }, {})).toThrow("invalid")
+  }
+})
+
+test("named-key recall excludes results from a different or missing Space", async () => {
+ mock({"memories/search":()=>Response.json([
+  memory("missing","Private","missing Space",1),
+  memory("other","Private","different Space",1,"other-space"),
+  memory("right","Allowed","allowed Space",1,"space-a"),
+ ])})
+ const [, c] = capturing("chat", {origin:"gateway-key",callerKeyId:"key-a",options:{
+  recallRemote:true, captureRemote:true, keyPolicies:{"key-a":{recall:true,capture:false,spaceId:"space-a"}},
+ }})
+ const body=structuredClone(chat)
+ await onRequest(body,c)
+ expect(body.messages[1].content).toContain("allowed Space")
+ expect(body.messages[1].content).not.toContain("missing Space")
+ expect(body.messages[1].content).not.toContain("different Space")
+})
+
+test("each protocol keeps keyed recall and capture in the explicit Space", async () => {
+ const fixtures = [
+  ["chat", chat, reply],
+  ["responses", {input:[{role:"user",content:[{type:"input_text",text:"Quartz codename?"}]}]}, {status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"It is QUARTZ-8413."}]}]}],
+  ["anthropic", {messages:[{role:"user",content:[{type:"text",text:"Quartz codename?"}]}]}, {type:"message",role:"assistant",content:[{type:"text",text:"It is QUARTZ-8413."}],stop_reason:"end_turn"}],
+  ["gemini", {contents:[{role:"user",parts:[{text:"Quartz codename?"}]}]}, {candidates:[{content:{role:"model",parts:[{text:"It is QUARTZ-8413."}]},finishReason:"STOP"}]}],
+ ]
+ for (const origin of ["remote", "gateway-key"]) for (const [protocol, body, response] of fixtures) {
+  reset(); calls.length = 0; mock()
+  const [, c] = capturing(protocol, { origin, callerKeyId:"key-a", options:{capture:true,recallRemote:true,captureRemote:true,keyPolicies:{"key-a":{recall:true,capture:true,spaceId:"space-a"}}} })
+  await onRequest(structuredClone(body), c)
+  await onResponse(response, {...c,success:true})
+  expect(of("memories/search")[0].body.space_id).toBe("space-a")
+  expect(of("threads/import")[0].body.space_id).toBe("space-a")
+  expect(of("threads/import")[0].body.thread_id).toStartWith("magpie-key-")
+ }
+})
+
+test("revocation applies to the next request; a bound response uses its request snapshot", async () => {
+ mock()
+ const enabled = { capture:true, recall:false, captureRemote:true, keyPolicies:{"key-a":{recall:false,capture:true,spaceId:"space-a"}} }
+ const [, old] = capturing("chat", { origin:"gateway-key",callerKeyId:"key-a",options:enabled })
+ await onRequest(structuredClone(chat),old)
+ const [, later] = capturing("chat", { origin:"gateway-key",callerKeyId:"key-a",options:{...enabled,keyPolicies:{}} })
+ await onRequest(structuredClone(chat),later)
+ await onResponse(reply,{...old,success:true})
+ await onResponse(reply,{...later,success:true})
+ expect(of("threads/import")).toHaveLength(1)
+})
+
+test("strict remote permissions require global, remote and exact-key grants independently", async () => {
+  for (const origin of ["remote", "gateway-key"]) {
+    for (const operation of ["recall", "capture"]) {
+      for (const global of [false, true]) for (const remote of [false, true]) for (const grant of [false, true]) {
+        reset(); calls.length = 0; mock()
+        const options = {
+          recall: operation === "recall" && global,
+          capture: operation === "capture" && global,
+          recallRemote: operation === "recall" && remote,
+          captureRemote: operation === "capture" && remote,
+          keyPolicies: { "key-a": { recall: operation === "recall" && grant, capture: operation === "capture" && grant, spaceId: "space-a" } },
+        }
+        const [, c] = capturing("chat", { origin, callerKeyId: "key-a", options })
+        await onRequest(structuredClone(chat), c)
+        await onResponse(reply, { ...c, success: true })
+        expect(of(operation === "recall" ? "memories/search" : "threads/import")).toHaveLength(Number(global && remote && grant))
+        expect(of(operation === "recall" ? "threads/import" : "memories/search")).toHaveLength(0)
+        expect(of("context/bundle")).toHaveLength(0)
+        expect(of("agent/working-memory")).toHaveLength(0)
+      }
+    }
+  }
+})
+
+test("policy migration preserves broad opt-ins until explicitly enabled and fails closed thereafter", async () => {
+  for (const origin of ["remote", "gateway-key"]) {
+    for (const [policies, callerKeyId, expected] of [
+      [undefined, undefined, 1], [undefined, "unlisted", 1],
+      [{}, undefined, 0], [{}, "key-a", 0],
+      [{"key-a": { recall: true, capture: true, spaceId: "space-a" }}, undefined, 0],
+      [{"key-a": { recall: true, capture: true, spaceId: "space-a" }}, "unknown", 0],
+      [{"key-a": { recall: true, capture: true }}, "key-a", 0],
+      [{"key-a": { recall: false, capture: false, spaceId: "space-a" }}, "key-a", 0],
+      [{"key-a": { recall: true, capture: true, spaceId: "space-a" }}, "key-a", 1],
+    ]) {
+      reset(); calls.length = 0; mock()
+      const options = { recall:true, capture:true, recallRemote:true, captureRemote:true }
+      if (policies !== undefined) options.keyPolicies = policies
+      const [, c] = capturing("chat", { origin, callerKeyId, options })
+      await onRequest(structuredClone(chat), c)
+      await onResponse(reply, { ...c, success: true })
+      expect(of("memories/search")).toHaveLength(expected)
+      expect(of("threads/import")).toHaveLength(expected)
+      if (expected && policies) {
+        expect(of("memories/search")[0].body.space_id).toBe("space-a")
+        expect(of("threads/import")[0].body.space_id).toBe("space-a")
+        expect(of("context/bundle")).toHaveLength(0)
+      }
+    }
+  }
+  expect(() => resolveOptions({keyPolicies:null}, {})).toThrow("invalid")
+})
+
+test("a keyed response must retain both authenticated ID and originating class", async () => {
+  for (const origin of ["remote", "gateway-key"]) {
+    reset(); calls.length = 0; mock()
+    const options = { recall:false, capture:true, captureRemote:true, keyPolicies:{"key-a":{recall:false,capture:true,spaceId:"space-a"}} }
+    const [, c] = capturing("chat", { origin, callerKeyId:"key-a", options })
+    await onRequest(structuredClone(chat), c)
+    await onResponse(reply, {...c, origin:origin === "remote" ? "gateway-key" : "remote", success:true})
+    await onResponse(reply, {...c, callerKeyId:"key-b", success:true})
+    expect(of("threads/import")).toHaveLength(0)
+    await onResponse(reply, {...c, success:true})
+    expect(of("threads/import")).toHaveLength(1)
+    expect(of("threads/import")[0].body.space_id).toBe("space-a")
   }
 })
