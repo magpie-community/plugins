@@ -283,6 +283,7 @@ it off puts the config back.
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [thinkflow](packages/thinkflow) | [ThinkFlow CLI](https://github.com/muxueqingze/xuxiang-thinkflow): choose a gateway model for its user configuration and disconnect to restore the previous settings. |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [deepzora](packages/deepzora) | [Deepzora](https://github.com/SivanCola/deepzora) Desktop, CLI and ACP: reversible global TOML/dotenv bridge; restart Deepzora after choosing a model |
