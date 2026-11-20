@@ -485,7 +485,7 @@ function contentRefused(status, text, headers) {
 // the request carries what droid sends.
 function explain(status, text, headers) {
   if (status !== 403) return ""
-  if (contentRefused(status, text, headers)) return "Factory's usage policy check reads the whole conversation, so this session's requests are refused again until the text that tripped it is gone: start a new session, or remove or reword what the conversation quotes (another agent's system prompt or instructions pasted in a message or a tool's output are the usual cause)"
+  if (contentRefused(status, text, headers)) return "Factory's usage policy check reads the whole conversation, so this session's requests are refused again until the text that tripped it is gone: start a new session, or remove or reword what the conversation quotes (another agent's system prompt or instructions pasted in a message or a tool's output are the usual cause). When a new session's first turn is refused too, it is in what the agent sends every turn: its system prompt, instruction files, skill list or tools' descriptions; turn skills, MCP servers and plugins off for this chat, then on again a few at a time, to find which"
   if (orgRefused(status, text)) return "the Factory account's organization changed; remove the account in magpie and sign in to it again"
   return "Factory refused the request. magpie adapts fixed client metadata on both OpenAI and Anthropic routes. Factory may still refuse unsupported fields or wrappers; check the upstream error, the organization's model policy, plan and regional provider availability, and compare the same model in Droid"
 }
@@ -551,11 +551,24 @@ const PI_COMPAT = "You are an expert coding assistant."
 const DSH_OPENING = /(^|\n)You are an AI agent powered by DeepSeek (?:Harness|Runtime)\./
 const DSH_COMPAT = "You are an AI agent."
 const DSH_MODEL_LINE = /(^|\n)You are a coding agent powered by the ([^\n]+?) model\.(?=\n|$)/
+// dsh's Web GUI puts a paragraph in its system prompt
+// (@deepseek-ai/dsh-harness-dev-context, "You are interacting with the user
+// through the DeepSeek Harness Web GUI ..."), and one sentence of it is a
+// fixed line a vendor's client check reads as dsh: Google's Antigravity
+// turned it away from 11-17, and let it through with "gives" for "provides"
+// (agy-cli 0.1.88, packages/agy-cli/cloak.mjs, 3 of 3 on a real account).
+// @a1pha1nthefog's dsh on Factory (11-20, 0.1.53) was still refused with
+// the identity and model lines plain and the Web GUI notes in its prompt;
+// the sentence goes the same way here, in the prompt, wherever it sits in
+// its paragraph.
+const DSH_BROWSER = "The browser provides no implicit DOM, route, or screenshot context."
+const DSH_BROWSER_COMPAT = "The browser gives no implicit DOM, route, or screenshot context."
 function clientOpening(text) {
   if (typeof text !== "string") return text
   return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT)
     .replace(DSH_OPENING, (_, at) => at + DSH_COMPAT)
     .replace(DSH_MODEL_LINE, (_, at, model) => at + "Current model: " + model + ".")
+    .replaceAll(DSH_BROWSER, DSH_BROWSER_COMPAT)
 }
 
 // pi turns a compaction, and a branch it came back from, into a user
@@ -1738,8 +1751,18 @@ function userBlockText(text) {
       .replace("Assistant knowledge cutoff is", "Model knowledge cutoff:")
   }
   if (SKILL_REMINDER.test(text)) return configSkillText(text)
+  if (DSH_SKILL_CATALOG.test(text)) return harnessText(text)
   return text
 }
+
+// dsh (@deepseek-ai/dsh-tool-skill) announces its skills in a user turn, a
+// <system-reminder> of its own wording around <available_skills>: the first
+// catalog, a changed one, or an incomplete one. Like a tool's description,
+// a skill's is the client's metadata, not the user's words, and
+// @a1pha1nthefog's 174-skill catalog names "DeepSeek Harness" in it; the
+// word goes as harnessText says, as it does in the system prompt and the
+// tools' descriptions. Only a whole generated block matches.
+const DSH_SKILL_CATALOG = /^<system-reminder>\n(?:A skill is a reusable set of task-specific instructions\. The following skills are available in this session:|The available skill catalog changed\. This complete catalog replaces every earlier available-skills list in this session:|Skill discovery is incomplete\. This catalog of currently available skills replaces every earlier available-skills list in this session:)\n\n<available_skills>\n(?:(?!<\/?system-reminder>)[\s\S])*\n<\/system-reminder>$/
 
 // A chat completions user message is one string: magpie joins a Messages
 // turn's text blocks with nothing between them, so a reminder block and the
