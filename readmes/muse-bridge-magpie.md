@@ -1,33 +1,27 @@
 # MuseBridge for Magpie
 
-<p>
-  <a href="https://www.npmjs.com/package/muse-bridge-magpie"><img src="https://img.shields.io/npm/v/muse-bridge-magpie?logo=npm&color=cb3837" alt="npm 版本"></a>
-  <a href="https://www.npmjs.com/package/muse-bridge-magpie"><img src="https://img.shields.io/npm/dm/muse-bridge-magpie?color=cb3837" alt="npm 下载量"></a>
-  <a href="https://github.com/DaBinBinah/muse-bridge-magpie"><img src="https://img.shields.io/badge/GitHub-muse--bridge--magpie-181717?logo=github" alt="GitHub 仓库"></a>
-  <a href="https://github.com/DaBinBinah/muse-bridge"><img src="https://img.shields.io/badge/服务端-muse--bridge-2563EB?logo=github" alt="MuseBridge 服务端"></a>
-</p>
+想让 Magpie 直接用上 muse.ai？这个插件就是缺的那块拼图。
 
-在 [Magpie](https://usemagpie.ai)（兼容 OpenCode 插件）里通过你自己的
-[MuseBridge](https://github.com/DaBinBinah/muse-bridge) 反代使用 muse.ai：
-多账号轮换、可视化管理面板、（模拟）工具调用，全部由你的 MuseBridge 服务负责，
-这个插件只负责把 Magpie 的请求转发过去。
+前提只有一个：你已经跑起来了 [MuseBridge](https://github.com/DaBinBinah/muse-bridge)。
+它把 muse.ai 变成一个 OpenAI 兼容接口，重活全归它干——多账号自动轮换、可视化管理
+面板、工具调用（模拟）。而这个插件只做一件小事：把 Magpie 的请求转发给你的
+MuseBridge，就这么简单。
 
-> 说明：这是一个第三方社区插件，**未经 Magpie 官方审核或收录**。MuseBridge
-> 与 Meta/Muse AI 亦无官方关系。
+> 小声说明：这是第三方社区插件，Magpie 官方没审过也没收录；MuseBridge 跟
+> Meta/Muse AI 也没有任何官方关系。
 
 ## 工作方式
 
-Magpie 的供应商插件不起本地服务，而是提供一个自定义 `fetch`。MuseBridge
-本来就是 OpenAI 兼容接口，所以这个插件只做三件事：
+Magpie 的供应商插件不用起本地服务，只要提供一个自定义 `fetch` 就行。MuseBridge
+本来就说 OpenAI 的"话"（Chat Completions），所以插件只干三件事：
 
-1. 把 Magpie 网关生成的 Chat Completions 请求**原样转发**到你指定的
-   MuseBridge 服务，并附上你的 API Key；
-2. 从服务的 `GET /v1/models` **按账号刷新模型列表**（失败时回退内置目录）；
-3. 上游错误码**原样透传**——401（Key 无效）、404（模型不可用）、
-   429/5xx（限流/切换）都按 Magpie 的约定被正确理解。
+1. 把 Magpie 网关生成的请求**原样转发**给你的 MuseBridge，顺手带上你的 API Key；
+2. 从服务的 `GET /v1/models` **按账号刷新模型列表**（服务不在时就用内置目录）；
+3. 上游报什么错就**原样传什么错**——401（Key 失效）、404（模型不可用）、
+   429/5xx（限流/切换），Magpie 都认识，该切号切号。
 
-服务没启动时返回一个可读的 502（"无法连接 MuseBridge 服务…"），Magpie 会
-按 5xx 处理，不会误标你的账号。
+服务没启动？你会收到一句人话："无法连接 MuseBridge 服务（地址）：……请确认
+muse2api 已启动"。Magpie 按 5xx 处理，不会冤枉你的账号。
 
 ## 登录
 
@@ -82,8 +76,8 @@ magpie provider test musebridge muse-chat
 
 **方式三 · npm（如果已发布）**
 
-[![npm](https://img.shields.io/npm/v/muse-bridge-magpie?logo=npm&color=cb3837)](https://www.npmjs.com/package/muse-bridge-magpie)
-[![GitHub](https://img.shields.io/badge/GitHub-muse--bridge--magpie-181717?logo=github)](https://github.com/DaBinBinah/muse-bridge-magpie)
+npm 包：https://www.npmjs.com/package/muse-bridge-magpie
+主仓库：https://github.com/DaBinBinah/muse-bridge
 
 ```bash
 magpie plugin add muse-bridge-magpie
@@ -124,7 +118,7 @@ m provider test musebridge muse-chat
 
 ## 相关仓库
 
-- 服务端：[DaBinBinah/muse-bridge](https://github.com/DaBinBinah/muse-bridge)
+- 服务端（就是想让你看到的这个）：[DaBinBinah/muse-bridge](https://github.com/DaBinBinah/muse-bridge)
 - 发布步骤（建仓 / topic / npm / 社区列表 PR）：见本仓库 [PUBLISH.md](PUBLISH.md)
 
 ## License

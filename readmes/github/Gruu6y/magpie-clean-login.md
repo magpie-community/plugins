@@ -96,7 +96,7 @@ macOS 的精简包是在官方 zip 里删掉 `Camoufox.app/Contents/Resources/fo
 2. 找到 **Gruu6y** 发布的 **Clean Login**，点 **Install**。列表没同步出来就点 **Retry**——magpie 缓存的是 GitHub 告诉它的结果。
 3. 从侧栏打开 **Clean Login**，你会看到上面那张图里的页面。
 
-每个版本都在本仓库打了 tag（`v0.1.x`），[tag 列表](https://github.com/Gruu6y/magpie-clean-login/tags)就是版本历史。
+每个版本都在本仓库打了 tag（当前 `v0.2.x`，更早是 `v0.1.x`），[tag 列表](https://github.com/Gruu6y/magpie-clean-login/tags)就是版本历史。
 
 <a id="quick-start"></a>
 

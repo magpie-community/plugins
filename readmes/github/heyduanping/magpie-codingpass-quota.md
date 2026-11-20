@@ -6,10 +6,10 @@
 
 ## 安装
 
-从 GitHub 安装 `v0.2.0` 后登录：
+首次安装时，添加 GitHub 仓库并登录。以后可在 Magpie 的「插件 → 已安装」更新 CodingPass。
 
 ```sh
-magpie plugin add 'github:heyduanping/magpie-codingpass-quota#v0.2.0'
+magpie plugin add https://github.com/heyduanping/magpie-codingpass-quota
 magpie plugin login codingpass-quota
 ```
 
@@ -39,6 +39,32 @@ magpie quota history codingpass-quota
 ```
 
 首个读数是一个点，后续读数会连成曲线。5 小时窗口尚未开启时，卡片可以显示剩余额度，重置时间会在窗口开启后显示。[CodingPass 用量规则](https://codingpass.ai/zh/usage-limits)
+
+## 预热 5 小时窗口（v0.3.0）
+
+通过 GitHub 仓库地址安装的用户，更新现有插件即可沿用原账号。从 `v0.3.1` 起，两个自动预热开关位于「供应商 → CodingPass」的模型列表下方，在「插件选项」中可以分别设置。
+
+预热会通过本机 Magpie 网关向指定 CodingPass 账号发送一条 `hi`，最多请求 16 个输出 token，按所选模型消耗套餐额度。首个请求开启 5 小时窗口。周额度和月额度按账单周期重置。[CodingPass 用量规则](https://codingpass.ai/zh/usage-limits)
+
+| 触发方式 | 操作 |
+| --- | --- |
+| 立即预热 | 在插件目录运行 `node warmup.mjs list` 查看账号，然后运行 `node warmup.mjs now "CodingPass 账号标识" deepseek-v4.1-flash`，把引号内的整段替换为列出的账号。窗口运行期间手动执行也会发送。 |
+| 重置后预热 | 在「供应商 → CodingPass」打开「5 小时窗口重置后预热」并保存。窗口空闲且周、月额度充足时发送。 |
+| 每日定时 | 在同一处打开「每日定时预热」并保存。默认按本机时间 09:00 检查。恢复运行晚于设定时间一小时会跳过当次。 |
+
+两个自动开关默认关闭。账号列表来自 Magpie 的额度卡，空列表可先在用量页刷新 CodingPass。仅有一个完整登录账号时自动选用它。有多个账号时，在「插件 → 已安装 → CodingPass Usage → 选项」中填写目标账号。这里也可更换套餐内的模型，或指定每日的多个时间。例如：
+
+```json
+{
+  "warmupAccount": "CodingPass 0123456789abcdef",
+  "warmupModel": "deepseek-v4.1-flash",
+  "warmupTimes": ["08:30", "14:00"]
+}
+```
+
+Magpie 插件宿主运行期间每分钟检查一次。两个开关同时启用时，如果现在开窗会跨过下一个定时时刻，就等到该时刻。自动发送前会核对该账号的最新额度。窗口已开启、额度用完或读取失败时跳过。自动发送尝试按账号记录，同一账号在随后 5 小时内不会再次自动发送，宿主重启或上次响应丢失也适用。手动命令会显示结果，自动请求可在 Magpie 请求日志中查看。[Magpie 内置订阅的定时预热规则](https://github.com/yetone/magpie/blob/v0.1.4479/internal/provider/warmup_daily.go)
+
+手动命令默认连接 `127.0.0.1:3425`。使用其他本机端口时，在运行命令前设置环境变量 `MAGPIE_ADDR`。
 
 ## License
 

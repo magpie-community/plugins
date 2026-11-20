@@ -52,6 +52,7 @@ magpie loopra default
 | `models[].context` | `contextTokens`，未知时为 `-1` |
 | `models[].output` | `maxTokens`，未知时沿用 Loopra 默认值 `32768` |
 | `models[].images` | `imageInput`，仅明确支持时启用 |
+| `models[].efforts` | `reasoningEfforts`，按模型限定推理强度目录；空目录表示不发送推理强度，`default` 为 Loopra 保留值会被剔除，未公布时不写入并沿用内置目录 |
 
 渠道使用 `chat_completions`；上游供应商使用 Responses、Anthropic 等协议时，由 Magpie 网关转换。`specialCompatibility` 设为空，避免把原渠道的 OpenCode 等特殊兼容模式带到网关。插件还同步顶层 `baseUrl`、`apiKey`、`apiProtocol`、`specialCompatibility`、`availableModels`，供旧版 Loopra 使用。
 
@@ -79,7 +80,7 @@ magpie library sync
 
 0.2.0 默认启用自动映射：
 
-- **思考强度：** 只从所选模型的 `efforts` 中选择，依次偏好 `high`、`medium`、`low`、`minimal`、`none`、`xhigh`、`max`。未公布可识别档位时不接管此字段，保留或恢复原设置。
+- **思考强度：** 只从所选模型的 `efforts` 中选择，依次偏好 `high`、`medium`、`low`、`minimal`、`none`、`xhigh`、`max`。未公布可识别档位时不接管此字段，保留或恢复原设置。每个模型条目同时写入 `efforts` 对应的 `reasoningEfforts` 目录，让支持单模型强度的 Loopra 版本限定可选档位；空目录表示该模型不发送推理强度参数。
 - **图片理解：** 优先使用支持图片的主模型；否则从可用模型中选择第一个明确支持图片输入的模型；都不支持时清空回退模型，避免引用失效的旧渠道。
 - **危险操作校验：** 默认使用主模型发起独立校验请求，渠道指向 Magpie。此功能会增加模型请求；不改变 Loopra 的原有工具权限与人工审批规则。
 - **工具模型：** 默认使用主模型生成会话标题，`toolModel` 和 `toolModelChannelId` 同步指向 Magpie；切换主模型时同步更新。设为 `none` 时清空这两个字段，Loopra 使用消息截取标题。

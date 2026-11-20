@@ -59,6 +59,59 @@ OfficeAce / CodeArts（华为云 AgentArts / MaaS / 码道）接进 magpie。非
 计费清单上有的才会列出来。计费清单拉取失败时退回**上一份成功的清单**，
 不会把选不了的 id 一股脑洒出来。
 
+### 模型能力从哪来
+
+**只来自上游，不写死。** 两个 provider 的上游今天都**不提供能力声明**：
+
+| provider | 目录接口 | 返回的字段 |
+|---|---|---|
+| 果办 OfficeAce | `GET /v2/models` + `GET /v1/model-token-rates` | 只有 `id` / `name` |
+| 码道 CodeArts | `opengw gateway/config` + `builtinModels` | 只有 `model_id` / `model_name` / `context_window` / `max_tokens` |
+
+所以界面上「全部不支持图片输入」是**上游的事实**，不是插件的断言：`-vl` 视觉模型
+本来就被过滤掉（它们上下文小、不支持工具调用），其余的按上游的话写 `image: false`。
+
+一旦上游开始下发 `capabilities`（或顶层 `vision` / `input_modalities`），
+`src/models.mjs` 的 `upstreamCapabilities()` 会**自动**接管：`capabilities.input.image`、
+`modalities.input`、`attachment`、`supportsImage` 四处同源，不再需要对代码做任何改动。
+
+---
+
+## 缓存（T-42 最终口径：**只有 `provider.models` 做缓存**）
+
+用户原话：「所有的东西都需要缓存。更新缓存是我们来控制的，不要自动更新缓存」
+「重启项目的时候，我不希望它就会自动去发送什么请求」。
+
+但同样明确：「那个 usage 这些也不要改」「那个续期的没有问题，不要改」。
+所以最终只有一件事缓存化 —— 模型目录：
+
+| 钩子 | 现在的行为 |
+|---|---|
+| `provider.models` | **只读缓存**：命中 = 0 次请求；未命中 = 目录 1 次 + 倍率 1 次（**网关级**，N 个账号并发也只 1 份），成功才写缓存；失败回落静态表且不写缓存 |
+| `auth.usage` | **每次真实读 `/v1/subscription`**（不缓存） |
+| `auth.refresh` | `refreshLead: 10 分钟` 不变；插件内部按**会话总有效期的 50%** 把关：没过半 ⇒ 返回 `undefined`、零请求 |
+| `trialbit`（自动领体验版） | 默认**开**（不变；打开后每个账号进程内只试一次） |
+
+缓存文件在 magpie 配置目录（`input.directory`，即 `plugin-auth.json` 旁边）：
+
+```text
+officeace-models-cache.json   { [baseUrl|accountKey]: { at, list } }
+```
+
+（`officeace-usage-cache.json` 仍会在登录/重新登录时顺手写一份快照，那是**副产品**，
+`auth.usage` 不读它。）
+
+### `expires` 写的是**会话期限**（T-41 修正）
+
+`plugin-auth.json` 里的 `expires` 曾错写成华为云 **STS** 的期限（~1 小时），会话 JWT 其实还有 ~27 天
+⇒ magpie 每轮都判「该续期」，日志里成片「续期失败」。现在写 `jwt.exp × 1000`（会话期限），
+解不出 JWT 才退回 STS 的 `expiresAt`。
+
+### 续期 = 总有效期的 50%
+
+会话 JWT 自带 `iat` / `exp`，算得出「一半」：**剩余 ≤ 总长 × 0.5 才续**，否则零请求。
+算不出（没有 JWT）才按固定窗口兜底。`refreshLead` 那 10 分钟只是让 magpie「临期来问」，
+真正的闸门在插件内部。
 ---
 
 ## 签到
@@ -128,7 +181,7 @@ CodeArts 账号页的「插件选项」新增**邀请模式**（`invite_mode`，
 - 这类账号的处理：**用这个账号打开一次 OfficeAce 客户端**（左侧「模型」→ 右上角「接入模型」→「接入华为云 MaaS 模型」），让云端下发模型网关信息；插件会在下一次 `usage()` 自动补上（按账号缓存 6 小时）。
 
 **自动领取「个人体验版」**：`usage()` / `authorize()` 发现账号的 `GET /v1/subscription` 里**没有** `officeace.personal.package.trial`（或已过期）时，自动调
-`POST {CLAW_BASE}/v1/subscription/period` 下一张**免费 0 元**的 trial 订单（MONTH×1、`auto_pay:1`，需要 IAM project id + SKU 的 atomic product id）。每账号每进程只尝试一次，失败不重试；下单前后都会重读 `skus` 确认。成功后卡片显示「个人体验版 · 剩 500」，与「新用户专属福利 4000」并存。
+`POST {CLAW_BASE}/v1/subscription/period` 下一张**免费 0 元**的 trial 订单（MONTH×1、`auto_pay:1`，需要 IAM project id + SKU 的 atomic product id）。每账号每进程只尝试一次，失败不重试；下单前后都会重读 `skus` 确认。成功后卡片显示「额度 · 个人体验版」（`500 / 500`），与「额度 · 新用户专属福利」（`4000 / 4000`）并存。
 
 **自动接入模型（登录即得 key）**：登录完成后如果 `client-permission-validate` 没给 `model_info`，插件会自动调
 `POST {CLAW_BASE}/v1/claw/client-subscription`（`x-subscription-type: v2` + V11 签名，body `{}`）—— 这正是 OfficeAce 客户端登录后「开通」按钮走的同一个端点（客户端源码 `channel-plugins/auth/officeace-huawei-oauth` 的 `subscriptionClaw()`）。成功后会拿到 `model_info.model_auth_info`（`model_app_key`/`model_app_secret`）并写回账号，**全程不需要打开 OfficeAce 客户端 UI**。

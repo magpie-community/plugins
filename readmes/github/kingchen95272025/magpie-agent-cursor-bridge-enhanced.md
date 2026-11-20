@@ -35,7 +35,7 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 - 实际请求被本机代理截获，转成 Magpie 网关的 OpenAI 兼容请求；
 - 模型的返回再被翻译回 Cursor 的流式协议，渲染成正常的回复、工具调用与思考过程。
 
-最终效果：在 Cursor 里直接选择 `Opus`、`Sonnet`、`Fable` 或任意 Magpie 模型，计费与路由全部走 Magpie。
+最终效果：在 Cursor 里直接选择 `Opus`、`Sonnet`、`Fable` 或任意 Magpie 模型，计费与路由全部走 Magpie。同样的模型也可以在 Cursor CLI（`cursor-agent`）中使用，见 [3.10](#310-接管-cursor-clicursor-agent)。
 
 ### 1.2 它不是什么
 
@@ -67,6 +67,7 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | 更新检查（干净源码安装可一键升级） | ✅ 0.2.28 |
 | 控制台 GitHub 仓库入口 | ✅ 0.2.29 |
 | 一键停止并还原 Cursor 代理 | ✅ 0.2.31 |
+| Cursor CLI（`cursor-agent`）共用同一套桥接与模型 | ✅ 0.2.33 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
 | Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |
@@ -381,6 +382,28 @@ bash setup.command uninstall
 | Windows 日志出现 `EADDRINUSE` 或 agent id 重复 | Magpie 插件列表登记了两份本插件 | 在 Magpie 插件页保留一份，移除 `%LOCALAPPDATA%\magpie-cursor-bridge` 或仓库路径的其余登记 |
 | Windows 控制台「后台服务」显示未加载 | 登录自启文件被删除，或从未完成「启动」 | 检查 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\local.magpie.cursor-bridge.vbs`，重新点「启动」 |
 | Intel Mac 提示缺少引擎 | 包内缺少 `bin/darwin-x64` 产物 | 使用 v0.2.31+ 版本；或在 Apple Silicon 上运行 `scripts/build-native-macos-x64.sh` 重新构建并更新 `integrity.json` |
+| Cursor CLI 仍走官方后端 | 未通过包装器启动，或桥接断开 | 用 `cursor-agent-bridge` 启动；确认控制台「Cursor CLI 接管」中环境文件为「已写入」 |
+| Cursor CLI 提示证书错误 | 系统未信任桥接 CA，且未注入 `NODE_EXTRA_CA_CERTS` | 重跑 `bash setup.command`；使用包装器启动（会自动注入证书路径） |
+| 后台被强制终止后 Cursor CLI 连不上 | `agent-env` 残留并指向已停止的代理 | 重新启动后台，或删除 `~/.config/magpie-cursor-bridge/agent-env` |
+
+### 3.10 接管 Cursor CLI（cursor-agent）
+
+Cursor CLI（`cursor-agent`）与 IDE 使用同一套 `agent.v1` / `BidiAppend` 协议，因此可以共用同一个桥接引擎与同一份模型目录。区别只在接管方式：CLI 不读取 Cursor 的 `settings.json`，只能通过 `HTTPS_PROXY` 环境变量进入本机代理。
+
+setup 会自动安装 `cursor-agent-bridge`（优先 `~/.local/bin`，该目录不在 PATH 时退回安装目录的 `bin/`）：
+
+```sh
+cursor-agent-bridge --list-models
+cursor-agent-bridge -p --model <模型ID> "只回复：收到"
+```
+
+包装器只做三件事：载入桥接写出的 `~/.config/magpie-cursor-bridge/agent-env`、导出 `HTTPS_PROXY` 与 `NODE_EXTRA_CA_CERTS`、启动官方 `cursor-agent`。**不会修改官方二进制**；桥接断开时 `agent-env` 会被删除，包装器自动退回直连。
+
+控制台「Cursor CLI 接管」卡片提供安装/移除包装器、复制一次性启动命令，并显示 CLI 版本是否落在已实测范围。已实测版本：`2026.11.19`。CLI 运行时会改写 `~/.cursor/cli-config.json` 的默认模型，属正常行为，可用 `/model` 切回。
+
+如果使用 Orca 的「启动聊天」：Orca 会直接 spawn `cursor-agent --list-models` / `cursor-agent acp`，不经过 shell，且忽略它自己的 `agentDefaultEnv` / `agentCmdOverrides`。setup 会把 `~/.local/bin/cursor-agent` 替换为桥接包装器（官方入口保留为 `cursor-agent-official`），使 Orca 聊天、终端与脚本统一接管；控制台「官方入口」可一键恢复。官方 CLI 自更新会重建入口，重跑 setup 或点控制台的「接管官方入口」即可修复。Orca 会持久缓存旧模型目录，接管后若仍显示官方模型，重启一次 Orca 即可。
+
+**直接输入 `cursor-agent` 就接管默认开启**（可在控制台「可编辑参数」中关闭）：setup 会在 `~/.zshrc`（或 `~/.bashrc`）写入一个带 `# >>> cursor-bridge >>>` 标记的函数块，通过同名 shell 函数注入环境变量，并用 `command cursor-agent` 调用官方二进制。重新打开终端后生效；仅作用于交互式 shell，脚本与 IDE 集成不受影响。关闭开关只移除该标记块。Windows 不支持函数式接管，请使用 `cursor-agent-bridge`。
 
 ---
 
@@ -407,7 +430,8 @@ bash setup.command uninstall
 │   └── cursor.svg           # Cursor 官方图标（Agent 行 / 侧栏页）
 ├── lib/
 │   ├── config.js            # connection.json 校验与 Magpie 模型目录拉取
-│   ├── compatibility.js     # Cursor 已实测范围与版本比较
+│   ├── compatibility.js     # Cursor / Cursor CLI 已实测范围与版本比较
+│   ├── cursor-agent.js      # CLI 探测、agent-env 与 cursor-agent-bridge 包装器
 │   ├── bridge-settings.js   # 可编辑参数（运行模式、保留策略、模型显示名/顺序/隐藏）
 │   ├── supervisor.js        # 引擎启停/重启/断线容错状态机（依赖注入，可测试）
 │   ├── install.js           # 版本配对、证书、release stage、LaunchAgent / systemd 单元

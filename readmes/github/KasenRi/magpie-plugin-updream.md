@@ -5,7 +5,8 @@
 ---
 
 > 📌 **状态 / Status**：
-> - **v0.2.0（2026-11-11）**：新增 **Magpie「模型 → 供应商」页面多账号导入与切换**（`config` + `auth` 钩子，0 聊天模型暴露，OAuth 槽位独立轮换续期）、全工具 `account` 参数与任务归属槽位自动回绑，以及 **23 个非 Seedance 平台模型完整适配**（Kling 4.0 / v3.0 Omni / v3.0 Std / v3.0 Turbo / O1 / 2.5 Turbo、Wan 3.0 / 2.7 / 2.6 / 2.5 / 2.2、VIDU Q4 / Q2 Pro、PixVerse V6 Max、Hailuo H3 / MiniMax H3 Max / Hailuo 2.3、Happyhorse 1.1 / 1.0、Omni 1.1 Flash / Omni Flash、Veo 3.1），并通过线上只读 `/ai/video-models` 与免费 `/credit/estimate` 校验（未调用付费生成接口）。仓库内同步附带脱敏版 `/updream` Agent Skill（[`skills/updream/`](./skills/updream/)）。
+> - **v0.3.0（2026-11-20）**：在 `config` 中正式声明全部 **30 个支持视频生成模型**，并实现 `auth.loader` 标准 OpenAI Videos 协议适配（`GET /v1/models`、`POST /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`），自动将 data URL 在同一账号上传、把 `seconds`/`size` 转为时长/分辨率/画幅并支持所有厂商扩展参数覆盖；同时保留全部 8 个 MCP 工具、OAuth 刷新回写与多账号逻辑，误发 chat/responses 请求直接返回 `400`。
+> - **v0.2.0（2026-11-11）**：新增 **Magpie「模型 → 供应商」页面多账号导入与切换**（`config` + `auth` 钩子，OAuth 槽位独立轮换续期）、全工具 `account` 参数与任务归属槽位自动回绑，以及 **23 个非 Seedance 平台模型完整适配**（Kling 4.0 / v3.0 Omni / v3.0 Std / v3.0 Turbo / O1 / 2.5 Turbo、Wan 3.0 / 2.7 / 2.6 / 2.5 / 2.2、VIDU Q4 / Q2 Pro、PixVerse V6 Max、Hailuo H3 / MiniMax H3 Max / Hailuo 2.3、Happyhorse 1.1 / 1.0、Omni 1.1 Flash / Omni Flash、Veo 3.1），并通过线上只读 `/ai/video-models` 与免费 `/credit/estimate` 校验（未调用付费生成接口）。仓库内同步附带脱敏版 `/updream` Agent Skill（[`skills/updream/`](./skills/updream/)）。
 > - **v0.1.1（2026-11-10）**：已用真实账号端到端验证 Seedance 生成链路（`account`、`list_video_models live`、`estimate_credits`、`create_video` Seedance 2.5 样片模式 480p 4s 预估=实扣 340 积分、`wait_task` 及 Token 刷新轮换）。
 
 ## 🇨🇳 中文说明
@@ -21,10 +22,10 @@
 
 ### ✨ 核心功能
 
-- **Magpie「模型 → 供应商」多账号管理**：
-  - 在「模型 → 供应商 → + 添加供应商 → 来自插件」中直接看到 **UPdream**，粘贴 `access_token` + `refresh_token` + 可选备注名即可导入多个账号。
-  - **故意声明 0 个模型**（`/v1/models` 保持纯净），不污染聊天模型路由或 `/v1/videos`。
-  - 每个页面账号独立以 OAuth 结构保存在 `plugin-auth.json`（`updream`、`updream#<hash>`），支持 Magpie 后台自动续期与工具内单飞刷新写回对应槽位，**绝不混写 `~/.config/magpie/updream-tokens.json`**。
+- **Magpie「模型 → 供应商」多账号管理与标准 OpenAI 视频网关接入（v0.3.0）**：
+  - 在「模型 → 供应商 → + 添加供应商 → 来自插件」中直接看到 **UPdream** 并导入多个账号，插件会向 Magpie 声明全部 **30 个生成模型**（输出模态 `["video"]`），可在 `GET /v1/models` 列出并直接走标准 `POST /v1/videos` 网关调用。
+  - 每个页面账号独立以 OAuth 结构保存在 `plugin-auth.json`（`updream`、`updream#<hash>`），通过工具或网关调用触发刷新时均自动写回对应槽位，**绝不混写 `~/.config/magpie/updream-tokens.json`**。
+  - 若向这些视频模型误发 `/v1/chat/completions` 或 `/v1/responses`，插件直接拦截返回 `400`，不会误触发生成或扣积分。
 - **确定性账号路由与任务回绑**：
   - 所有工具支持可选 `account` 参数（可匹配备注名、自定义别名、槽位键、Token 末 4 位，或 `"options"` 指定旧版配置）。
   - 优先级：`args.account` > `task_id` 历史提交槽位 > 页面置顶启用账号（`first: true`）> `plugins.json` `options` > `UPDREAM_*` 环境变量（页面未添加账号时零中断回退到现有配置；严禁按次轮换账号）。
@@ -105,7 +106,50 @@
 | `wan-2.5-preview` | Wan 2.5 Preview | `/ai/supported-models` | `t2v`, `i2v` | `5`, `10`s | `t2v`: `720p`/`1080p` (`size`)；`i2v`: `480p`/`720p`/`1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `sound` | `negative_prompt` |
 | `wan-2.2` | Wan 2.2 | `/ai/supported-models` | `t2v`, `i2v` | `5`s | `t2v`: `720p`/`1080p` (`size`)；`i2v`: `480p`/`1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | 无 | `negative_prompt` |
 
-> 注：`test` 为前端内部 Mock 模型，`video-enhance-standard` / `video-enhance-pro` / `subtitle-erase-pro` 为画质增强/去字幕后处理接口，均不属于 `create_video` 生成模型，调用时会返回明确提示。
+> 注：`test` 为前端内部 Mock 模型，`video-enhance-standard` / `video-enhance-pro` / `subtitle-erase-pro` 为画质增强/去字幕后处理接口，均不属于生成模型，不会暴露在 `/v1/models`，通过 `create_video` 或网关调用时会返回明确提示。
+
+---
+
+### 🌐 通过 Magpie 网关 Key 调用（标准 OpenAI Videos API，v0.3.0）
+
+登录账号后，30 个模型以 `updream/<model>` 暴露在 Magpie 网关：
+
+```bash
+# 1. 查看模型列表（当前 Magpie 版本默认 /v1/models 也能看到这些模型 ID 但不带 kind 字段；推荐传 ?kind=video 只看视频模型并拿到 "kind": "video"，图片传 ?kind=image，全部传 ?kind=all，兼容后续 Magpie 版本变更；注意视频模型只能走 /v1/videos，误用来聊天会直接返回 400）
+curl -s "http://127.0.0.1:3425/v1/models?kind=video" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 或查看全部模型：
+curl -s "http://127.0.0.1:3425/v1/models?kind=all" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 2. 创建视频任务（支持 data URL 首帧/尾帧/参考图 + 厂商扩展参数）
+curl -s -X POST http://127.0.0.1:3425/v1/videos \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "updream/sed2-5",
+    "prompt": "A magpie soaring over misty mountains at sunrise",
+    "seconds": 5,
+    "size": "1280x720",
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "audio": true,
+    "bitrate_mode": "high"
+  }'
+
+# 3. 轮询状态（queued / in_progress / completed / failed，含 progress）
+curl -s "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 4. 下载 MP4
+curl -sL "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>/content" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -o updream.mp4
+```
+
+- **支持的额外字段**：`resolution`、`aspect_ratio`、`quality_mode`（`std`/`pro`/`4k`/`standard`/`prime`，支持从 `size` 自动映射）、`mode`（`t2v`/`i2v`/`firstlast`/`multiframe`/`ref2v`/`video_edit`/`clip2v`）、`audio` / `sound`、`output_format`、`bitrate_mode`、`num_videos`、`negative_prompt`、`cfg_scale`、`prompt_extend`、`enhance_prompt`、`shot_type`、`keep_original_sound`、`reference_videos`、`reference_audios`、`project_id`。其中 `resolution`、`aspect_ratio`、`quality_mode` 会覆盖 `size` 的自动推算值。
+- **`models: ["group/*"]` 网关 Key 说明**：若使用的 Magpie Key **只**限定了 `models: ["group/*"]`，直接传 `"model": "updream/sed2-5"` 会返回 `403`；在后台把 `updream/*` 加入路由分组（如 `group/updream`）后虽能用 `"model": "group/updream"` **创建任务**，但后续轮询 `GET /v1/videos/{id}` 与下载 `/content` 时 Magpie 会拿返回的实际成员模型（`updream/sed2-5`）与 Key 权限比对并返回 **`403`**。要完整走完轮询与下载流程，必须为该 Key 同时放行具体模型（如 `updream/*`）或使用不限定模型列表的网关 Key。
 
 ---
 
@@ -128,9 +172,47 @@
 
 ## 🌐 English Documentation
 
-`opencode-updream` (v0.2.0) is an unofficial **Magpie / OpenCode tools & multi-account provider plugin** for **UPdream (`https://www.updream.cn`)**. It integrates with Magpie's **Models → Providers** UI for multi-account sign-in (declaring **0 chat/video models** so `/v1/models` stays untouched) while exposing 8 `updream_*` MCP tools via `/mcp/magpie/tools`.
+`opencode-updream` (v0.3.0) is an unofficial **Magpie / OpenCode tools & multi-account provider plugin** for **UPdream (`https://www.updream.cn`)**. It integrates with Magpie's **Models → Providers** UI for multi-account sign-in, declares all **30 supported video models** with an `auth.loader` OpenAI `/v1/videos` adapter (`POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content`, plus `400` guard against chat/responses calls), while keeping all 8 `updream_*` MCP tools intact.
 
-### ✨ Highlights in v0.2.0
+### ✨ Highlights in v0.3.0
+
+- **OpenAI `/v1/videos` Gateway & Model Listing**:
+  - In current Magpie releases, bare `GET /v1/models` already lists UPdream's 30 model IDs alongside chat models (without a `"kind"` field). To list only video models with `"kind": "video"` entries (recommended, and forward-compatible if future Magpie moves media models out of the default list), query `GET /v1/models?kind=video` (images use `?kind=image`, all kinds use `?kind=all`). These models only work on `/v1/videos`; selecting them in a chat client returns HTTP `400`.
+  - Supports `POST /v1/videos`, `GET /v1/videos/{id}`, and `GET /v1/videos/{id}/content` via `auth.loader`, uploading `data:` URL frames on the same account, mapping `seconds` / `size` (overridable by explicit extras), and streaming MP4 bytes.
+  - **Gateway Keys Restricted to `models: ["group/*"]`**: Direct calls to `updream/<model>` fail `403`. While `"model": "group/<group-id>"` can **create** a task on `POST /v1/videos`, Magpie checks the concrete resolved member model (e.g. `updream/sed2-5`) during `GET /v1/videos/{id}` polling and `/content` download (`videoModelHeld`), returning **`403`** unless the key also grants `updream/*` (or uses an unrestricted key).
+
+#### Calling via Magpie Gateway Key (OpenAI Videos API)
+
+```bash
+# 1. List video models (recommended: ?kind=video for "kind": "video" entries & future compatibility; bare /v1/models also includes IDs without kind in current Magpie)
+curl -s "http://127.0.0.1:3425/v1/models?kind=video" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 2. Create video task
+curl -s -X POST http://127.0.0.1:3425/v1/videos \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "updream/sed2-5",
+    "prompt": "A magpie soaring over misty mountains at sunrise",
+    "seconds": 5,
+    "size": "1280x720",
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "audio": true
+  }'
+
+# 3. Poll task status & progress (queued / in_progress / completed / failed)
+curl -s "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 4. Download MP4 bytes
+curl -sL "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>/content" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -o updream.mp4
+```
+
+Supported extra vendor fields: `resolution`, `aspect_ratio`, `quality_mode` (`std`/`pro`/`4k`/`standard`/`prime`), `mode`, `audio` / `sound`, `output_format`, `bitrate_mode`, `num_videos`, `negative_prompt`, `cfg_scale`, `prompt_extend`, `enhance_prompt`, `shot_type`, `keep_original_sound`, `reference_videos`, `reference_audios`, `project_id`. Explicit extras override values inferred from `size`.
 
 - **Multi-Account Provider UI (`config` + `auth` + `MagpieAccountPool`)**:
   - Sign in multiple UPdream accounts under **Models → Providers → + Add provider → From plugins → UPdream** by pasting `access_token`, `refresh_token`, and an optional account label.

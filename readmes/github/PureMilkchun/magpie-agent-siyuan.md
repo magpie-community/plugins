@@ -6,7 +6,7 @@ Magpie 的 **插件 → 已安装** 和 **Agent** 都显示思源标志。连接
 
 ## 安装和连接
 
-已在 macOS 上验证 **思源笔记 3.8.11** 与 **Magpie 0.1.4274**。两者需要在同一台电脑运行，Magpie 网关需要已启动并配置至少一个可用模型。
+已验证 **思源笔记 3.8.11** 搭配 **Windows 11 x64 上的 Magpie 0.1.4291**，以及 **macOS 上的 Magpie 0.1.4274**。两者需要在同一台电脑运行，Magpie 网关需要已启动并配置至少一个可用模型。
 
 在 Magpie 的 **插件 → 发现 → 非官方 → GitHub** 中找到 **思源笔记 · SiYuan** 并点击安装。也可以从终端直接安装：
 
@@ -16,7 +16,21 @@ magpie plugin add github:PureMilkchun/magpie-agent-siyuan
 
 如果 macOS 上的 `magpie` 没有加入 PATH，可用 `/Applications/magpie.app/Contents/MacOS/magpie` 执行同一命令。
 
-插件使用 Magpie 自带的 Bun，无需构建或安装 npm 依赖。从检出的源码安装时，在仓库目录运行 `magpie plugin add "$PWD"`。已有连接会在原工作区打开时自动补上图标。
+插件使用 Magpie 自带的 Bun，无需构建或安装 npm 依赖。从检出的源码安装时，在仓库目录运行以下命令。
+
+Windows PowerShell
+
+```powershell
+magpie plugin add (Get-Location).Path
+```
+
+macOS 终端
+
+```sh
+magpie plugin add "$PWD"
+```
+
+保持 Magpie 运行，打开原工作区后会自动检查图标。如果云同步覆盖了本机的图标片段，插件会补回它，并保留其他设备的图标片段。
 
 1. 打开思源桌面版和要接入的工作区。
 2. 在 Magpie 的 **Agents → 思源笔记 · SiYuan** 选择支持工具调用的模型或路由组。
@@ -36,6 +50,12 @@ node bridge.mjs restore
 
 首次连接使用思源最近打开的本机工作区，并在本次连接期间绑定到该工作区。要切换工作区，请先在原工作区完成断开，再打开新的工作区并重新连接。
 
+## Windows 上的工作区发现
+
+思源默认将 `workspace.json` 和 `port.json` 写在 `%USERPROFILE%\.config\siyuan`。笔记工作区可以位于其他盘符，也可以使用带空格或中文的路径。
+
+如果用 `--home-dir` 启动思源内核，请在启动 Magpie 前设置 `SIYUAN_HOME_DIR`，值使用传给该参数的用户目录。例如，在 PowerShell 中运行 `$env:SIYUAN_HOME_DIR = 'D:\SiYuanHome'` 后，从同一窗口启动 Magpie。手动恢复时也使用这个环境变量。
+
 ## 接入实现
 
 - [siyuan.agent.js](./siyuan.agent.js) 用 Magpie 的 `magpie.agent` 接口注册模型选择器，把网关的 `/v1` 地址、思源专用凭据和模型 ID 写入连接文件。路由组沿用 Magpie 的 `group/<id>`。
@@ -44,6 +64,6 @@ node bridge.mjs restore
 
 上游参考 [Magpie Agent 插件文档](https://usemagpie.ai/docs/plugins#agent-plugins)、[思源设置读取源码](https://github.com/siyuan-note/siyuan/blob/v3.8.11/kernel/api/setting_read.go)、[设置补丁源码](https://github.com/siyuan-note/siyuan/blob/v3.8.11/kernel/api/setting_patch.go)、[CSS 片段接口](https://github.com/siyuan-note/siyuan/blob/v3.8.11/kernel/api/snippet.go)和[智能体模型选择及流式调用源码](https://github.com/siyuan-note/siyuan/blob/v3.8.11/kernel/api/agent.go)。
 
-运行 `npm test` 验证连接字段、图标打包、旧连接升级和断开恢复。
+运行 `npm test` 验证连接字段、图标、跨设备同步后的图标恢复，以及配置了环境代理时的本机断开恢复。
 
 思源笔记与 Magpie 标志分别归各自项目所有，在此用于标识所集成的应用。 [思源笔记](https://b3log.org/siyuan) · [Magpie](https://usemagpie.ai)

@@ -22,7 +22,7 @@
 
 ### ✨ 核心功能
 
-- **Magpie「模型 → 供应商」多账号管理（v0.2.0 新增）**：原生接入 Magpie Web 端 **模型 → 供应商 → `小云雀 (XiaoYunQue)`** 页面（声明 0 个模型，不干扰聊天与 `/v1/videos` 路由），支持可视化添加多个 Access Key 或网页端 Cookie 账号、置顶切换默认账号、查看积分余额，并通过 `account` 参数按需指定账号及自动绑定 `task_id → 槽位`。
+- **Magpie「模型 → 供应商」多账号管理与标准 OpenAI 视频网关接入（v0.3.0 新增）**：原生接入 Magpie Web 端 **模型 → 供应商 → `小云雀 (XiaoYunQue)`** 页面，声明全部 **11 个视频模型**（输出模态 `["video"]`，输入模态按模型声明 `text`/`image`/`video`/`audio`），支持 `GET /v1/models` 与 `/v1/videos` 标准 OpenAI 视频接口（通过 `auth.loader` 将请求按登录账号凭据翻译转发，自动上传 data URL 参考图并绑定任务账号；误向视频模型发 `/v1/chat/completions` 或 `/v1/responses` 时直接回 `400` 避免误扣积分），同时完整保留多账号管理与 `xiaoyunque_*` MCP 工具。
 - **官方 Access-Key Skill API 原生直连（纯 JS，无 CLI 子进程）**：直接请求 `https://xyq.jianying.com/api/biz/v1/skill/*`（`get_credit_balance`、`get_available_model_list`、`upload_file`、`submit_run`、`get_thread`），完美适配无头 Linux 服务器。
 - **全系列 Seedance 2.5 / 2.0 / 1.0 与平台模型支持（共 11 个）**：支持官方 Skill API 当前开放的 8 个模型（`Seedance_2.5`、`Seedance_2.5_draft`、`seedance2.0_vision`、`seedance2.0_fast_vision`、`Seedance_2.0_mini`、`Seedance_2.0_mini_lite`、`wan3.0`、`happyhorse-1.1`），并保留网页端兼容的 3 个旧通道模型（`seedance2.0_direct`、`seedance2.0_fast_direct`、`Seedance_1.0_fast`）。
 - **完整参数与多种创作模式**：支持画面比例（`aspect_ratio`）、画质/分辨率（`resolution`：`480p`/`720p`/`1080p`/`4k`）、时长（`duration`）、随机种子（`seed`，自动拦截不支持的模型）、音频提示词控制（`audio`）、输出格式校验（`output_format: "mp4"`），以及文生视频（`t2v`）、首尾帧生视频（`first_last_frame`，`generate_type: 1`）、全能多模态参考生视频（`reference`，支持引用 `[@图片1]`、`[@视频1]`、`[@音频1]`）、视频编辑（`edit`）与视频延长（`extend`）。
@@ -121,6 +121,76 @@ magpie plugin add /path/to/magpie-plugin-xiaoyunque
 
 #### 4.（可选回退）如何从浏览器获取网页端 Cookie
 若仅使用网页端 Cookie 回退模式，可在登录 [https://www.xiaoyunque.com](https://www.xiaoyunque.com) 后通过浏览器扩展导出 Cookie JSON / `cookies.txt` 并粘贴到供应商页面「网页端 Cookie / Session JSON」或配置 `cookieFile`。注意网页端 `submit_run` 在非浏览器环境极易触发字节跳动 Shark 风控（`ret=16014`），生产环境强烈建议使用 Access Key。
+
+---
+
+### 🌐 通过 Magpie 网关 Key 调用（标准 OpenAI Videos API，v0.3.0）
+
+登录任意小云雀账号后，插件会在 Magpie 声明全部 **11 个视频模型**（`xiaoyunque/<model>`：`Seedance_2.5`、`Seedance_2.5_draft`、`seedance2.0_fast_vision`、`seedance2.0_vision`、`Seedance_2.0_mini_lite`、`Seedance_2.0_mini`、`wan3.0`、`happyhorse-1.1`、`seedance2.0_direct`、`seedance2.0_fast_direct`、`Seedance_1.0_fast`）。
+
+#### 1. 查看模型列表
+
+```bash
+# 推荐：仅列出视频模型（返回带 "kind": "video" 的条目，并兼容后续 Magpie 版本）
+curl -s "http://127.0.0.1:3425/v1/models?kind=video" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 或同时列出 chat / image / video 全部模型
+curl -s "http://127.0.0.1:3425/v1/models?kind=all" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+```
+*(说明：在当前 Magpie 版本里，不带 `kind` 的默认 `GET /v1/models` 已经能看到这些插件视频模型 ID，与对话模型列在一起但不带 `"kind"` 字段；若只想获取带 `"kind": "video"` 标记的视频列表并兼容后续 Magpie 把媒体模型从默认列表移出的变更，推荐始终传 `?kind=video` / `?kind=image` / `?kind=all`。这些模型只能走 `/v1/videos`，在对话客户端误选它们聊天会直接返回 `400`。)*
+
+#### 2. 创建任务、轮询状态、下载 MP4
+
+```bash
+# 1) 创建视频生成任务
+curl -s -X POST http://127.0.0.1:3425/v1/videos \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "xiaoyunque/Seedance_2.5",
+    "prompt": "清晨薄雾中的山间溪流，电影级光影",
+    "seconds": 5,
+    "size": "1280x720",
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "audio": true,
+    "seed": 42
+  }'
+
+# 2) 轮询任务状态（返回 queued / in_progress / completed / failed 及 progress）
+curl -s "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 3) 任务完成后下载 MP4 视频字节流
+curl -sL "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>/content" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -o xiaoyunque.mp4
+```
+
+#### 3. 字段映射与支持的额外厂商参数
+- **标准 OpenAI 字段**：
+  - `model`：`xiaoyunque/<model_key>`（如 `xiaoyunque/Seedance_2.5`）。
+  - `seconds`：视频时长（秒）。
+  - `size`：`WxH`（如 `1280x720`、`720x1280`、`1920x1080`），自动推算 `resolution` 与 `aspect_ratio`。
+  - `input_reference` / `last_frame` / `reference_images`：支持 `data:...;base64,...` data URL 或 `https://...`，会在**同一账号**先上传素材再建任务。
+- **可透传并覆盖默认映射的额外厂商字段**：
+  - `resolution`（`480p` / `720p` / `1080p` / `4k`，会覆盖 `size` 推算值）
+  - `aspect_ratio`（`16:9` / `9:16` / `1:1` / `4:3` / `3:4` / `21:9` / `adaptive`，会覆盖 `size` 推算值）
+  - `audio`（布尔值，`false` 时自动附加静音提示）
+  - `mode`（`auto` / `t2v` / `first_last_frame` / `reference` / `edit` / `extend`）
+  - `seed`（仅支持随机种子的模型可用）
+  - `output_format`（仅 `"mp4"`）
+  - `reference_videos`、`reference_audios`、`ref_video_seconds`（用于 `reference` / `edit` / `extend`）
+  - `draft_task_id`（用于 `Seedance_2.5_draft` 两阶段样片升级正片）
+- **防护与错误格式**：误向这些视频模型发 `/v1/chat/completions` 或 `/v1/responses` 请求会立即返回 HTTP `400`，绝不触发生成或扣积分；积分不足（`402`）、凭据失效（`401`）、风控拦截（`403`）、审核失败码等均返回可读 OpenAI 风格错误 JSON。
+
+#### 4. 关于 `models: ["group/*"]` 网关 Key 的说明
+如果 Magpie 网关 Key **只**限定了 `models: ["group/*"]`：
+- 该 Key 在 `/v1/models?kind=video` 看不到单独的 `xiaoyunque/*` 模型，直接以 `"model": "xiaoyunque/Seedance_2.5"` 请求会返回 **`403`**；
+- 在后台建立路由分组（如 `group/video`，成员包含 `xiaoyunque/Seedance_2.5`）后，可以用 `"model": "group/video"` **创建任务（`POST /v1/videos`）**；**但是**随后用同一个只含 `group/*` 的 Key 去轮询 `GET /v1/videos/{id}` 或下载 `GET /v1/videos/{id}/content` 时，Magpie 会校验任务响应体中的具体模型（`xiaoyunque/Seedance_2.5`）并返回 **`403`**。
+- 因此若要走完 创建 → 轮询 → 下载 全流程，必须给该网关 Key **同时放行具体模型**（例如加入 `xiaoyunque/*` 或具体 `xiaoyunque/Seedance_2.5`），或者使用不限定模型列表的网关 Key。
 
 ---
 
@@ -248,7 +318,41 @@ It uses the **official Access-Key Skill API (`https://xyq.jianying.com/api/biz/v
 
 ### ✨ Features
 
-- **Magpie "Models → Providers" Multi-Account Support (v0.2.0)**: Exports `config` + `auth` hooks under provider ID `xiaoyunque` (`小云雀 (XiaoYunQue)`) with **0 models declared** (never routed for chat or `/v1/videos`). Add multiple Access-Key or Cookie accounts in the Web UI, reorder to switch the default account, view prepaid credit balance on Access-Key slots, pass `account` on any tool, and query all balances via `xiaoyunque_account({ "all_accounts": true })`.
+- **Magpie "Models → Providers" & OpenAI Videos Gateway Support (v0.3.0)**: Declares all **11 video models** under provider ID `xiaoyunque` (`modalities.output = ["video"]`) with an `auth.loader` OpenAI `fetch` adapter (`POST /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content`). In current Magpie releases, bare `GET /v1/models` already lists these model IDs alongside chat models (without a `"kind"` field); pass `?kind=video` (recommended for `"kind": "video"` entries and forward compatibility if future Magpie moves media models out of the default list), `?kind=image` for images, or `?kind=all` for all kinds. These models only accept `/v1/videos`—selecting them in a chat client returns HTTP `400`. Extra vendor fields (`resolution`, `aspect_ratio`, `audio`, `mode`, `seed`, `reference_videos`, `reference_audios`, `draft_task_id`) pass through and override `size`. Gateway keys restricted strictly to `models: ["group/*"]` can create tasks via `"model": "group/<id>"` **only**, while `GET /v1/videos/{id}` polling and `/content` download check the concrete member model ID (e.g. `xiaoyunque/Seedance_2.5`) and return `403` unless the key also grants `xiaoyunque/*` (or uses an unrestricted key). All 8 `xiaoyunque_*` MCP tools and multi-account logic remain unchanged.
+
+#### Calling via Magpie Gateway Key (OpenAI Videos API)
+
+```bash
+# 1. List video models (recommended: ?kind=video for "kind": "video" entries & future-proofing; bare /v1/models also shows the IDs without kind in current Magpie)
+curl -s "http://127.0.0.1:3425/v1/models?kind=video" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 2. Create video task (data URLs in input_reference/last_frame/reference_images upload on the same account)
+curl -s -X POST http://127.0.0.1:3425/v1/videos \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "xiaoyunque/Seedance_2.5",
+    "prompt": "Mist rising over mountain stream at dawn",
+    "seconds": 5,
+    "size": "1280x720",
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "audio": true,
+    "seed": 42
+  }'
+
+# 3. Poll task status & progress (queued / in_progress / completed / failed)
+curl -s "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>"
+
+# 4. Download MP4 bytes
+curl -sL "http://127.0.0.1:3425/v1/videos/<VIDEO_ID>/content" \
+  -H "Authorization: Bearer <YOUR_MAGPIE_KEY>" \
+  -o xiaoyunque.mp4
+```
+
+Supported extra vendor fields: `resolution`, `aspect_ratio`, `audio`, `mode`, `seed`, `output_format` (`"mp4"`), `reference_videos`, `reference_audios`, `ref_video_seconds`, `draft_task_id`. Explicit `resolution` / `aspect_ratio` override defaults derived from `size`.
 - **Official Access-Key Skill API Backend (Default, Headless-Friendly)**: Pure JS client calling `https://xyq.jianying.com/api/biz/v1/skill/*` with `Authorization: Bearer <AccessKey>` and `User-Agent: Pippit-CLI/1.0`—no CLI subprocess, no cookies, no `a_bogus`, and no Shark risk-control blocks (`ret=16014`).
 - **11 Audited Video Models**: Supports the 8 models currently exposed on the official Skill API (`Seedance_2.5`, `Seedance_2.5_draft`, `seedance2.0_vision`, `seedance2.0_fast_vision`, `Seedance_2.0_mini`, `Seedance_2.0_mini_lite`, `wan3.0`, `happyhorse-1.1`) plus 3 legacy Web-listed models (`seedance2.0_direct`, `seedance2.0_fast_direct`, `Seedance_1.0_fast`), enforcing model-specific media size/format/duration/seed/mode rules (see the 11-model table above).
 - **Zero-Downtime Fallback & Sticky Task Binding**: Credential priority is `args.account` > sticky `task_id → slot` binding > top enabled Providers-page account > `plugins.json` `options` (`accessKeyFile` / `cookieFile`) > `XYQ_*` env vars (never round-robins). Note: assets uploaded via `upload_image` belong to the uploading account—use the **same `account`** when calling `create_video`.

@@ -14,7 +14,7 @@
 - **三种登录** —— 本机客户端登录态自动导入 / 手机号 + 短信验证码 / 粘贴 session
 - **从文件批量导入** —— magpie 原生的「从文件导入账号…」按钮；认数组 / 单对象 / 每行一个 / 裸 session
 - **模型表跟随账号** —— 上游**按账号权限**下发不同模型集，所以每个账号各拉一份，magpie 取并集
-- **两个积分池分得清** —— `每日赠送`（次日重置、会作废）参与路由；`永久积分` 只展示
+- **两个积分池分得清** —— `额度 · 每日赠送`（次日重置、会作废）参与路由；`说明 · 永久积分` 只展示
 - **倍率标在模型上** —— 从官方展示名后缀解析（`GLM 5.3 Flash(x0.8)` → `x0.8`），拉不到就不显示
 - **新手任务面板** —— 8 项共 10000 积分，可单项完成或一键全做
 - **邀请码面板** —— 查「我生成的码」（含已用/上限/状态）、绑定别人的码、补首登初始化
@@ -121,6 +121,39 @@ magpie plugin add owner/magpie-loomy
 
 ---
 
+## 模型能力从哪来
+
+**全部来自上游，一个都不写死。**
+
+`provider.models` 每次拉 `GET /api/v1/models` 时，上游会随每个模型下发能力声明：
+
+```json
+{"id":"DeepSeek-V4.1-Flash",
+ "capabilities":{"reasoning":true,"vision":true,"function_calling":true,
+                 "input_modalities":["text","image"],"output_modalities":["text"]}}
+```
+
+插件把它原样映射成 magpie 的两组声明（`src/hooks/models.mjs` 的
+`mapUpstreamCapabilities`，**唯一一处映射**）：
+
+| 上游 | magpie |
+|---|---|
+| `capabilities.vision` / `input_modalities` 含 `image` | `capabilities.input.image`、`modalities.input`、`attachment`、`supportsImage` |
+| `capabilities.input_modalities` | `capabilities.input.{text,image,audio,video,pdf}` 与 `modalities.input` |
+| `capabilities.output_modalities` | `capabilities.output.*` 与 `modalities.output` |
+| `capabilities.function_calling` | `capabilities.toolcall` |
+| `capabilities.reasoning` | `capabilities.reasoning` |
+
+两条纪律：
+
+* **上游没给能力字段 ⇒ 回落 `["text"]`**，不按模型名猜（猜错的表现是「发图卡死」）。
+* **生图模型保持现状**：`doubao-seedream-5-lite` / `qwen-image-3.0-pro` /
+  `Hy-Image-3.5-preview` 的模态是「收文本 → 出图片」，与上游的文本能力无关。
+
+想核一份真实形状的映射结果：`node scripts/print-model-mapping.mjs`。
+
+---
+
 ## 批量导入
 
 用 magpie 原生的 **「＋ 从文件导入账号…」**（供应商编辑页 → 账号区）。
@@ -146,12 +179,23 @@ magpie plugin add owner/magpie-loomy
 
 ## 已知限制
 
+| 卡片上的窗口名 | 含义 | 字段 |
+|---|---|---|
+| `额度 · 每日赠送` | 每天重置的赠送额度，**参与路由** | `used` + `amount`/`limit`/`unit:"积分"` + `resetsAt` |
+| `说明 · 永久积分` | 永久池，只展示 | `aside:true` + `amount` |
+| `说明 · 可用总额` | 两池合计，只展示（`display` 带缓存时间戳） | `aside:true` + `amount` |
+| `停用 · 上游改路由` | 上游把这个号改派了，**立刻停派** | `used:100` + `display:"实际由 X 服务；换回后自动恢复"` |
+| `说明 · 上游限制` | 同上原因的解释行；**名字固定**，模型名只进 `display` | `aside:true` + `display:"全部模型实际由 X 服务"` |
+| `停用 · 积分耗尽` | 余额为零，满额（路由跳过） | `used:100` |
+| `停用 · 限流冷却` | 429 后短暂避开，到期自动恢复 | `used:100` + `resetsAt` |
+| `说明 · 登录失效` | 真正的登录问题 —— 开关是顶层 `signIn:"expired"` | `aside:true` + `signIn:"expired"` |
+
 - **session 不会过期，也没有 refresh token** —— 所以本插件**不实现** `auth.refresh`。
   凭证失效时只能人工重登（会如实标 `X-Magpie-Sign-In: expired`）。
   造一个空的 refresh 会让 magpie 以为「能自动恢复」，从而把换号重试当成有效处置。
 - **没有签到** —— 上游的日额度由服务端按自然日**自动**重置，没有任何「领取」动作。
   所以本插件**不实现** `auth.checkin`。
-- **`每日赠送` 的上限按 5000 算**（实测观测值，服务端重置到的那个数）。上游改了这个数时，
+- **`额度 · 每日赠送` 的上限按 5000 算**（实测观测值，服务端重置到的那个数）。上游改了这个数时，
   `src/usage.mjs` 的 `DAILY_RESET_AMOUNT` 要跟着改。
 - **`plugin-auth.json` 的格式不在 magpie 的插件契约里**。批量导入直接写它属于钻实现细节 ——
   所以：写前一定备份、只增不删、写完提示用户重载插件。
