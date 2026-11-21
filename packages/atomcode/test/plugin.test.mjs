@@ -1525,6 +1525,214 @@ test("provider.models：实时目录失败时重启后使用 last-good 磁盘缓
   }
 });
 
+/** 问题 #1434：status-v2 的占位套餐。 */
+const PLACEHOLDER_STATUS = {
+  codingplan_free: {
+    plan_name: "CodingPlan Lite",
+    plan_type: null,
+    status: -1,
+    claimed_at: null,
+    expires_at: null,
+    remaining_days: null,
+    total_days: 30,
+    apply_id: null,
+  },
+  current_usage: {
+    placeholder: true,
+    window_token_limit: null,
+    window_tokens_used: 0,
+    usage_percent: 0,
+    window_hours: null,
+    reset_at: "",
+    reset_at_display: "",
+    seconds_until_reset: 0,
+    reset_label: null,
+    usage_status_desc: null,
+  },
+  rate_limit_windows: [],
+};
+
+test("usage：占位套餐在自动领取关闭时返回未确认额度，而不是 0%", async () => {
+  const stub = stubFetch({ statusBody: PLACEHOLDER_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { locale: "zh", autoVersion: false, autoClaim: false });
+    const usage = await plugin.auth.usage(async () => AUTH);
+    assert.equal(usage.plan, "CodingPlan Lite");
+    assert.deepEqual(usage.windows, []);
+    assert.match(usage.error, /尚未确认/);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("usage：占位套餐会自动领取，成功后重取真实额度", async () => {
+  const stub = stubFetch({
+    statusResponses: [
+      { body: JSON.stringify(PLACEHOLDER_STATUS) },
+      { body: JSON.stringify(VALID_STATUS) },
+    ],
+    claimResponses: [
+      {
+        body: JSON.stringify({
+          success: true,
+          duplicate: false,
+          plan_name: "CodingPlan Lite-体验版",
+          plan_type: "Lite",
+        }),
+      },
+    ],
+  });
+  try {
+    const plugin = await AtomCodePlugin({}, { locale: "en", autoVersion: false, autoClaim: true });
+    const usage = await plugin.auth.usage(async () => AUTH);
+    assert.equal(usage.plan, "CodingPlan Lite-体验版");
+    assert.equal(usage.error, undefined);
+    assert.equal(usage.windows.length, 1);
+    assert.equal(usage.windows[0].used, 0);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 1);
+    assert.equal(stub.calls.filter((call) => call.url.includes("status-v2")).length, 2);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("usage：占位套餐领取失败时透出原因，不保留旧的可用窗口", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "atomcode-placeholder-usage-"));
+  const prior = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin(
+      { directory },
+      { locale: "zh", autoVersion: false, autoClaim: false },
+    );
+    const saved = await plugin.auth.usage(async () => AUTH);
+    assert.equal(saved.windows.length, 1);
+  } finally {
+    prior.restore();
+  }
+
+  const stub = stubFetch({
+    statusBody: PLACEHOLDER_STATUS,
+    claimResponses: [
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+    ],
+  });
+  try {
+    const plugin = await AtomCodePlugin(
+      { directory },
+      { locale: "zh", autoVersion: false, autoClaim: true },
+    );
+    const usage = await plugin.auth.usage(async () => AUTH);
+    assert.deepEqual(usage.windows, []);
+    assert.match(usage.error, /日限额已满|尚未确认/);
+    assert.equal(usage.stale, undefined);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 3);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("usage：领取后仍是占位套餐时不显示已用额度", async () => {
+  const stub = stubFetch({
+    statusBody: PLACEHOLDER_STATUS,
+    claimResponses: [
+      { body: JSON.stringify({ success: true, duplicate: false, plan_name: "CodingPlan Lite", plan_type: "Lite" }) },
+    ],
+  });
+  try {
+    const plugin = await AtomCodePlugin({}, { locale: "en", autoVersion: false, autoClaim: true });
+    const usage = await plugin.auth.usage(async () => AUTH);
+    assert.deepEqual(usage.windows, []);
+    assert.match(usage.error, /not confirmed/i);
+    assert.equal(stub.calls.filter((call) => call.url.includes("status-v2")).length, 2);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("usage：占位套餐的领取结果在冷却期内不重复请求，额度仍为空", async () => {
+  const stub = stubFetch({
+    statusBody: PLACEHOLDER_STATUS,
+    claimResponses: [
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+      { status: 400, body: JSON.stringify({ success: false, message: "全平台日限额已满" }) },
+    ],
+  });
+  try {
+    const plugin = await AtomCodePlugin({}, { locale: "zh", autoVersion: false, autoClaim: true, quotaTtlMs: 1 });
+    const first = await plugin.auth.usage(async () => AUTH);
+    assert.deepEqual(first.windows, []);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await plugin.auth.usage(async () => AUTH);
+    assert.deepEqual(second.windows, []);
+    assert.ok(second.error);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 3);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("checkin：占位套餐进入领取；领取后仍占位则如实失败", async () => {
+  const stub = stubFetch({
+    statusBody: PLACEHOLDER_STATUS,
+    claimResponses: [
+      { body: JSON.stringify({ success: true, duplicate: false, plan_name: "CodingPlan Lite", plan_type: "Lite" }) },
+    ],
+  });
+  try {
+    const plugin = await AtomCodePlugin({}, { locale: "zh", autoVersion: false });
+    const result = await plugin.auth.checkin(async () => AUTH);
+    assert.equal(result.outcome, "failed");
+    assert.match(result.message, /尚未确认/);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 1);
+    assert.ok(stub.calls.filter((call) => call.url.includes("status-v2")).length >= 2);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("models：占位套餐不按套餐名拉目录，领取成功后再拉已确认档位", async () => {
+  const stub = stubFetch({
+    statusResponses: [
+      { body: JSON.stringify(PLACEHOLDER_STATUS) },
+      { body: JSON.stringify(PLACEHOLDER_STATUS) },
+      { body: JSON.stringify(VALID_STATUS) },
+    ],
+    claimResponses: [
+      { body: JSON.stringify({ success: true, plan_name: "CodingPlan Lite-体验版", plan_type: "Lite" }) },
+    ],
+    modelsBody: [{ display_model_name: "after-claim", context_window: 1000 }],
+  });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false, autoClaim: true });
+    const models = await plugin.provider.models({}, { auth: AUTH });
+    assert.equal(models["after-claim"].limit.context, 1000);
+    assert.equal(models[Symbol.for("magpie.fellBack")], undefined);
+    const modelCalls = stub.calls.filter((call) => call.url.includes("models-v2"));
+    assert.equal(modelCalls.length, 1);
+    assert.equal(new URL(modelCalls[0].url).searchParams.get("plan_type"), "Lite");
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 1);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("models：自动领取关闭时占位套餐不请求 models-v2", async () => {
+  const stub = stubFetch({ statusBody: PLACEHOLDER_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false, autoClaim: false });
+    const models = await plugin.provider.models({}, { auth: AUTH });
+    assert.equal(models[Symbol.for("magpie.fellBack")], true);
+    assert.equal(stub.calls.filter((call) => call.url.includes("models-v2")).length, 0);
+    assert.equal(stub.calls.filter((call) => call.url.includes("claim-v2")).length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("usage：额度类 403 不把账号标记为 expired", async () => {
   const stub = stubFetch({
     statusBody: { message: "CodingPlan quota exhausted" },

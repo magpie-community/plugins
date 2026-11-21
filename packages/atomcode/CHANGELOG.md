@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## 0.3.2 - 2026-11-22
+
+### Fixed
+
+- A placeholder CodingPlan status (`current_usage.placeholder`, or an
+  unconfirmed free plan with `status: -1` and no claim time, expiry, remaining
+  days, or real quota window) was shown as 0% used and skipped automatic
+  claiming. That response now goes through the existing claim flow. Until a
+  real plan is confirmed, the quota card has no usage window and says the
+  entitlement is not available. Active plans, including genuine 0% and
+  exhausted windows, stay as they are.
+
 ## 0.3.1 - 2026-11-15
 
 ### Fixed

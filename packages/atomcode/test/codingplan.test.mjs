@@ -113,6 +113,128 @@ test("planNeedsClaim：remaining_days 为 null/undefined 时视为未知，不�
   }
 });
 
+/** 问题 #1434 的脱敏 status-v2：占位用量，权益尚未确认。 */
+const PLACEHOLDER_STATUS = {
+  codingplan_free: {
+    plan_name: "CodingPlan Lite",
+    plan_type: null,
+    status: -1,
+    claimed_at: null,
+    expires_at: null,
+    remaining_days: null,
+    total_days: 30,
+    apply_id: null,
+  },
+  current_usage: {
+    placeholder: true,
+    window_token_limit: null,
+    window_tokens_used: 0,
+    usage_percent: 0,
+    window_hours: null,
+    reset_at: "",
+    reset_at_display: "",
+    seconds_until_reset: 0,
+    reset_label: null,
+    usage_status_desc: null,
+  },
+  rate_limit_windows: [],
+};
+
+test("planNeedsClaim：占位套餐需要领取", () => {
+  assert.equal(planNeedsClaim(PLACEHOLDER_STATUS), true);
+});
+
+test("planNeedsClaim：status -1 且无领取/到期/剩余天数/真实额度窗口 → 需要领取", () => {
+  assert.equal(
+    planNeedsClaim({
+      codingplan_free: {
+        plan_name: "CodingPlan Lite",
+        status: -1,
+        claimed_at: null,
+        expires_at: null,
+        remaining_days: null,
+      },
+      current_usage: {},
+      rate_limit_windows: [],
+    }),
+    true,
+  );
+});
+
+test("planNeedsClaim：单独的负数状态不触发领取", () => {
+  assert.equal(
+    planNeedsClaim({
+      codingplan_free: { plan_name: "CodingPlan Lite", status: -2 },
+    }),
+    false,
+  );
+  assert.equal(
+    planNeedsClaim({
+      codingplan_free: {
+        plan_name: "CodingPlan Pro",
+        status: -1,
+        claimed_at: "2026-11-01T00:00:00Z",
+        expires_at: "2099-01-01",
+        remaining_days: 20,
+      },
+      current_usage: { usage_percent: 0, window_hours: 5, seconds_until_reset: 1000 },
+    }),
+    false,
+  );
+});
+
+test("planNeedsClaim：真实 0% 与耗尽的有效套餐不领取", () => {
+  assert.equal(
+    planNeedsClaim({
+      codingplan_free: {
+        plan_name: "CodingPlan Lite-体验版",
+        status: 1,
+        remaining_days: 4,
+        expires_at: "2099-10-20",
+      },
+      current_usage: { usage_percent: 0, window_hours: 5, seconds_until_reset: 1000 },
+      rate_limit_windows: [
+        { window_size_seconds: 18000, call_limit: 200, calls_used: 0, seconds_until_reset: 1000 },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    planNeedsClaim({
+      codingplan_free: {
+        plan_name: "CodingPlan Pro",
+        status: 1,
+        remaining_days: 12,
+        expires_at: "2099-12-01",
+      },
+      current_usage: { usage_percent: 100, window_hours: 5, seconds_until_reset: 30 },
+    }),
+    false,
+  );
+});
+
+test("planNeedsClaim：占位标记碰上真实额度窗口时保留有效套餐", () => {
+  const now = Date.parse("2026-11-21T00:00:00Z");
+  assert.equal(
+    planNeedsClaim(
+      {
+        codingplan_free: {
+          plan_name: "CodingPlan Pro",
+          status: 1,
+          remaining_days: 10,
+          expires_at: "2099-01-01",
+        },
+        current_usage: { placeholder: true, usage_percent: 0, window_hours: null },
+        rate_limit_windows: [
+          { window_hours: 5, call_limit: 200, calls_used: 0, usage_percent: 0 },
+        ],
+      },
+      now,
+    ),
+    false,
+  );
+});
+
 test("planNeedsClaim：expires_at 过期超 24h → 需要重领；24h 宽限内 → false", () => {
   const now = Date.parse("2026-10-16T12:00:00Z");
   assert.equal(

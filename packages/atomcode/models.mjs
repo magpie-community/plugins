@@ -17,7 +17,7 @@
  * @module magpie-atomcode/models
  */
 
-import { fetchStatus, fetchModels, planOf, planTier } from "./codingplan.mjs";
+import { fetchStatus, fetchModels, planIsUnconfirmed, planOf, planTier } from "./codingplan.mjs";
 import { DEFAULT_GATEWAY_BASE_URL, trustedURL } from "./internal.mjs";
 
 /** The AI SDK package that speaks the OpenAI-compatible dialect. */
@@ -180,8 +180,10 @@ export function toProviderModel(m = {}, providerID, { baseURL = DEFAULT_BASE_URL
  *
  * The chain is `status-v2` → plan tier → `models-v2?plan_type=`; results key on
  * the account (`uid` preferred, access token otherwise) so two accounts never
- * share a cache entry. Errors propagate — including `signIn: "expired"` ones —
- * so the provider hook decides between fallback and account marking.
+ * share a cache entry. A placeholder or otherwise unconfirmed plan is not a
+ * tier: the catalog stays empty so the caller can claim before asking for
+ * models. Errors propagate — including `signIn: "expired"` ones — so the
+ * provider hook decides between fallback and account marking.
  *
  * @param {{apiBase: string, clientVersion: string, timeoutMs?: number, ttlMs?: number, output?: number, fetchImpl?: Function, onReject?: Function}} opts
  */
@@ -211,6 +213,7 @@ export function createCatalog({
 
     const p = (async () => {
       const status = await fetchStatus(apiBase, credentials.access, { fetchImpl, clientVersion: version, timeoutMs });
+      if (planIsUnconfirmed(status)) return [];
       const tier = planTier(planOf(status)?.plan_name);
       const rows = await fetchModels(apiBase, credentials.access, tier, { fetchImpl, clientVersion: version, timeoutMs });
       const models = rows

@@ -230,6 +230,110 @@ test("quotaFromStatus deduplicates current_usage by unit, not span alone", () =>
   );
 });
 
+const PLACEHOLDER_STATUS = {
+  codingplan_free: {
+    plan_name: "CodingPlan Lite",
+    plan_type: null,
+    status: -1,
+    claimed_at: null,
+    expires_at: null,
+    remaining_days: null,
+    total_days: 30,
+    apply_id: null,
+  },
+  current_usage: {
+    placeholder: true,
+    window_token_limit: null,
+    window_tokens_used: 0,
+    usage_percent: 0,
+    window_hours: null,
+    reset_at: "",
+    reset_at_display: "",
+    seconds_until_reset: 0,
+    reset_label: null,
+    usage_status_desc: null,
+  },
+  rate_limit_windows: [],
+};
+
+test("quotaFromStatus：占位套餐不把 usage_percent 0 编成 5 小时额度", () => {
+  const usage = quotaFromStatus(PLACEHOLDER_STATUS, strings("zh"), { user: "alice" });
+  assert.equal(usage.plan, "CodingPlan Lite");
+  assert.equal(usage.user, "alice");
+  assert.equal(usage.until, undefined);
+  assert.deepEqual(usage.windows, []);
+  assert.equal(usage.error, strings("zh").planUnconfirmed);
+});
+
+test("quotaFromStatus：未确认且没有真实窗口时同样不编造额度", () => {
+  const usage = quotaFromStatus(
+    {
+      codingplan_free: {
+        plan_name: "CodingPlan Lite",
+        status: -1,
+        claimed_at: null,
+        expires_at: null,
+        remaining_days: null,
+      },
+      current_usage: { usage_percent: 0 },
+      rate_limit_windows: [],
+    },
+    t,
+  );
+  assert.deepEqual(usage.windows, []);
+  assert.equal(usage.error, t.planUnconfirmed);
+});
+
+test("quotaFromStatus：真实 0%、耗尽 100% 和付费档仍映射窗口", () => {
+  const fresh = quotaFromStatus(
+    {
+      codingplan_free: { plan_name: "CodingPlan Lite-体验版", expires_at: "2099-10-20", remaining_days: 4 },
+      current_usage: { usage_percent: 0, window_hours: 5, seconds_until_reset: 1000 },
+      rate_limit_windows: [],
+    },
+    t,
+  );
+  assert.equal(fresh.error, undefined);
+  assert.equal(fresh.windows.length, 1);
+  assert.equal(fresh.windows[0].used, 0);
+  assert.equal(fresh.windows[0].name, "5h window");
+
+  const exhausted = quotaFromStatus(
+    {
+      codingplan_free: { plan_name: "CodingPlan Pro", remaining_days: 12, expires_at: "2099-12-01" },
+      current_usage: { usage_percent: 100, window_hours: 5, seconds_until_reset: 30 },
+      rate_limit_windows: [],
+    },
+    t,
+  );
+  assert.equal(exhausted.error, undefined);
+  assert.equal(exhausted.windows.length, 1);
+  assert.equal(exhausted.windows[0].used, 100);
+  assert.equal(exhausted.plan, "CodingPlan Pro");
+});
+
+test("quotaFromStatus：占位用量旁的真实限流窗口仍然保留", () => {
+  const usage = quotaFromStatus(
+    {
+      codingplan_free: {
+        plan_name: "CodingPlan Pro",
+        status: 1,
+        remaining_days: 10,
+        expires_at: "2099-01-01",
+      },
+      current_usage: { placeholder: true, usage_percent: 0, window_hours: null },
+      rate_limit_windows: [
+        { window_hours: 5, call_limit: 200, calls_used: 0, usage_percent: 0, seconds_until_reset: 50 },
+      ],
+    },
+    t,
+  );
+  assert.equal(usage.error, undefined);
+  assert.equal(usage.windows.length, 1);
+  assert.equal(usage.windows[0].used, 0);
+  assert.equal(usage.windows[0].limit, 200);
+});
+
 test("quotaFromStatus keeps an explicit token window unknown instead of inventing zero", () => {
   const usage = quotaFromStatus(
     {
