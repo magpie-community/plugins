@@ -35,6 +35,7 @@ function routes(bill = BILL) {
     return sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]])
   })
   f.route("POST /api/v1/commercial/get_session_usage", (r) => {
+    expect(r.headers.get("authorization")).toBe("Cloud-IDE-JWT jwt-1")
     expect(ids).toContain(r.json.session_id)
     return bill instanceof Response ? bill : json(bill)
   })
@@ -79,6 +80,24 @@ test("a cache the stream named is not overwritten by the commercial record", asy
   const usage = (await res.json()).usage
   expect(usage.cache_read_input_tokens).toBe(8192)
   expect(usage.credits).toBe(0.12)
+})
+
+test("a turn names itself as the session the billing record is read by", async () => {
+  f = fakeTrae()
+  let turn
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    turn = r.json.request_id
+    expect(r.json.session_id).toBe(turn) // per-turn, not the conversation's
+    return sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]])
+  })
+  f.route("POST /api/v1/commercial/get_session_usage", (r) => {
+    expect(r.json.session_id).toBe(turn)
+    return json(BILL)
+  })
+  const res = await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] })
+  const usage = (await res.json()).usage
+  expect(usage.credits).toBe(0.12)
+  expect(usage.prompt_tokens_details.cached_tokens).toBe(4096)
 })
 
 test("a commercial record that cannot be read leaves the answer alone", async () => {

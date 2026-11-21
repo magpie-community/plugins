@@ -120,23 +120,18 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `solo_agent_lite`; `solo_coder`, SOLO's coder roster). If Trae answers
     4001, 4023 or 1005, the plugin tries the others once and remembers which
     one worked.
-  - `session_id` is the conversation's, as the IDE keeps one per conversation:
-    the session magpie (or OpenCode) names the request by, else the chat's
-    first user message, which every later turn repeats, together with the
-    account the request is made as. Trae counts a conversation by it, so a
-    fresh one per request made one user send that takes several steps (a tool
-    result sent back, a retry, another function answering) count as a
-    conversation of its own — several rows in the usage detail, each under no
-    title. One conversation answered by two accounts (magpie failing over, or
-    rotating, inside it) is named twice then, as two conversations, so Trae
-    never reads one account's conversation as another's; that costs the two
-    halves of such a conversation their single row. The id is a salted hash,
-    so it says nothing of the words it was made from; the salt is this
-    machine's own, made once in `~/.config/magpie/trae-session-salt`
-    (`MAGPIE_TRAE_SESSION_SALT` names another file), so a conversation keeps
-    its `session_id` when magpie restarts the plugin (on any update). If that
-    file can't be read or made, each run of the plugin has a salt of its own,
-    as before 0.2.32. `request_id` is the request's own, fresh on every one.
+  - `session_id` is the request's own turn id (the same as `request_id`),
+    fresh on every request. Trae applies its prompt cache and books a turn's
+    settled charge under the session a request carries: reading them back with
+    a reused conversation id returns the whole conversation's accumulated
+    total (a 220k-token prompt once showed a 27-million-token cache read),
+    not this turn's split. A fresh one per turn gives the per-turn cache read
+    and credits magpie needs. The conversation is not lost: its full history
+    travels in `messages`. The conversation id magpie (or OpenCode) names the
+    request by, else the chat's first user message with the account, is still
+    derived as a salted hash (`MAGPIE_TRAE_SESSION_SALT` names the salt, made
+    once in `~/.config/magpie/trae-session-salt`) and used as the fallback
+    when a caller supplies no turn id.
 - **Headers:** TRAE SOLO CN 0.1.69's (`x-ide-version`/`x-app-version`
   0.1.69, version code 20260917; Trae offers a model only to clients new
   enough for it): `Authorization: Cloud-IDE-JWT …`, `X-Cloudide-Token`,

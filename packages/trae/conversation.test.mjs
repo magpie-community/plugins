@@ -1,9 +1,9 @@
-// One conversation keeps one session_id: Trae counts a conversation by the
-// session its requests name, so a request naming a new session each time is
-// counted as a conversation of its own — one user send that takes several
-// steps shows up in the usage detail as several rows, each under no title.
-// The session comes from magpie's (or OpenCode's) session for the request
-// when it names one, else from the chat's first user message.
+// Every request names its own turn as its session_id: Trae applies its prompt
+// cache and books the settled charge (credits and cache read) under the
+// session a request carries. A reused conversation id makes that record grow
+// into the whole conversation's total instead of this turn's split, so the
+// cache hit rate and credits magpie needs would be wrong. The conversation
+// itself is carried in messages, not in the id.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
 import { TraeCNAuthPlugin, _internal } from "./index.mjs"
@@ -43,39 +43,36 @@ const serve = () => {
   f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
 }
 
-test("one send's steps carry one session_id; each request still has its own", async () => {
+test("one send's steps each name their own turn as session_id", async () => {
   serve()
   const first = await ask(chat(user("fix the bug")))
   const called = await ask(chat(user("fix the bug"), call))
   const answered = await ask(chat(user("fix the bug"), call, result))
-  const ids = [first, called, answered].map((x) => x.sent.json.session_id)
-  expect(ids[0]).toMatch(UUID)
-  expect(new Set(ids).size).toBe(1)
-  // request_id is the request's own: each step has one of its own
-  const reqs = [first, called, answered].map((x) => x.sent.json.request_id)
-  expect(new Set(reqs).size).toBe(3)
-  for (const r of reqs) expect(r).toMatch(UUID)
-  // the session header itself goes no further
-  for (const x of [first, called, answered]) expect(x.sent.headers.get(SESSION)).toBe(null)
+  const rows = [first, called, answered]
+  const ids = rows.map((x) => x.sent.json.session_id)
+  expect(new Set(ids).size).toBe(3)
+  for (const id of ids) expect(id).toMatch(UUID)
+  // the session a request names is its own request_id: billing and cache are
+  // read back per turn, not merged into one conversation's growing total
+  rows.forEach((x) => expect(x.sent.json.session_id).toBe(x.sent.json.request_id))
+  for (const x of rows) expect(x.sent.headers.get(SESSION)).toBe(null)
 })
 
 test("the next user message and another conversation are other sessions", async () => {
   serve()
   const first = await ask(chat(user("fix the bug")))
   const next = await ask(chat(user("fix the bug"), assistant("ok"), user("and then?")))
-  expect(next.sent.json.session_id).toBe(first.sent.json.session_id)
+  expect(next.sent.json.session_id).not.toBe(first.sent.json.session_id)
   const other = await ask(chat(user("something else")))
   expect(other.sent.json.session_id).not.toBe(first.sent.json.session_id)
 })
 
-test("the session magpie names wins over the chat's own first message", async () => {
+test("the session magpie names still leaves the turn's own session id", async () => {
   serve()
   const named = await ask(chat(user("hi")), { session: "ses_1" })
   const again = await ask(chat(user("hi"), assistant("ok"), user("more")), { session: "ses_1" })
-  expect(again.sent.json.session_id).toBe(named.sent.json.session_id)
-  // the same words under another session are another conversation
-  const other = await ask(chat(user("hi")), { session: "ses_2" })
-  expect(other.sent.json.session_id).not.toBe(named.sent.json.session_id)
+  expect(again.sent.json.session_id).not.toBe(named.sent.json.session_id)
+  for (const id of [named.sent.json.session_id, again.sent.json.session_id]) expect(id).toMatch(UUID)
   // and the session header is not sent to Trae
   expect(named.sent.headers.get(SESSION)).toBe(null)
 })
@@ -87,15 +84,14 @@ test("nothing names a conversation: a fresh session per request, as before", asy
   expect(one.sent.json.session_id).not.toBe(two.sent.json.session_id)
 })
 
-test("two accounts of one conversation are two conversations to Trae", async () => {
+test("two accounts of one conversation each name their own turn", async () => {
   serve()
   const named = await ask(chat(user("hi")), { session: "ses_1", auth: signedIn() })
   const other = await ask(chat(user("hi")), { session: "ses_1", auth: signedIn({ uid: "u-2", accountId: "Bob" }) })
   expect(other.sent.json.session_id).not.toBe(named.sent.json.session_id)
-  // each account's own conversation keeps its own id, so failing over
-  // back mid-conversation doesn't split it
+  // a turn sent again names another turn, whichever account answers it
   const again = await ask(chat(user("hi"), assistant("ok"), user("more")), { session: "ses_1", auth: signedIn() })
-  expect(again.sent.json.session_id).toBe(named.sent.json.session_id)
+  expect(again.sent.json.session_id).not.toBe(named.sent.json.session_id)
   // and the same holds when the conversation is named by the chat itself
   const first = await ask(chat(user("fix the bug")), { auth: signedIn() })
   const onOther = await ask(chat(user("fix the bug")), { auth: signedIn({ uid: "u-2", accountId: "Bob" }) })

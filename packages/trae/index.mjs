@@ -1646,7 +1646,13 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     ...(modelName ? { model_name: modelName } : {}),
     stream: true, // Trae answers in SSE either way
     request_id: requestId || randomUUID(),
-    session_id: session || randomUUID(),
+    // Both ids name this turn, not the conversation: Trae applies its prompt
+    // cache and books the settled charge under the session a request carries.
+    // A reused conversation id makes the commercial record accumulate every
+    // turn of the conversation (a 27M-token "cache read" on a 220k prompt);
+    // a fresh one gives the per-turn split magpie needs. The full history
+    // travels in messages, so the conversation itself is not lost.
+    session_id: requestId || session || randomUUID(),
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
   if (effort) body.reasoning_effort = effort
@@ -1852,7 +1858,7 @@ const numOrNull = (v) => {
 async function turnBilling(a, site, ids = [], delays = [250, 500, 1000, 2000, 3000], signal = null) {
   const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing || site.hosts.api
   const url = String(host).replace(/\/+$/, "") + BILLING_PATH
-  const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.access }
+  const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.token }
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     let payload
     try {
@@ -1882,7 +1888,9 @@ async function turnBilling(a, site, ids = [], delays = [250, 500, 1000, 2000, 30
       const cacheRead = numOrNull(info.cache_read_token ?? info.cacheReadToken)
       const input = numOrNull(info.input_token ?? info.inputToken)
       const output = numOrNull(info.output_token ?? info.outputToken)
-      if (credits != null || (input || 0) > 0 || (output || 0) > 0) return { credits, cacheRead, input, output }
+      // an empty envelope (credits_float 0 and no tokens) is an unsettled
+      // record: keep waiting instead of accepting a false zero
+      if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead, input, output }
     }
     if (attempt < delays.length) await new Promise((r) => setTimeout(r, delays[attempt]))
   }
