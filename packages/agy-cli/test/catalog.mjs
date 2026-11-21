@@ -912,8 +912,9 @@ test("config names the provider, keeping the user's own name", async () => {
     const registry = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../../../registry.json"), "utf8"))
     const row = registry.plugins.find((p) => p.providers?.includes("agy-cli"))
     assert.equal(cfg.provider["agy-cli"].name, row.name)
-    const own = { provider: { "agy-cli": { name: "My agy", options: { x: 1 } } } }
+    assert.equal(cfg.provider["agy-cli"].npm, kit.plugin.provider.npm)
+    const own = { provider: { "agy-cli": { name: "My agy", npm: "x", options: { x: 1 } } } }
     await kit.plugin.config(own)
-    assert.deepEqual(own.provider["agy-cli"], { name: "My agy", options: { x: 1 } })
+    assert.deepEqual(own.provider["agy-cli"], { name: "My agy", npm: "x", options: { x: 1 } })
   })
 })
