@@ -2576,7 +2576,7 @@ class Proc {
     // rules masked it alone) reads it for a later one, and a value in an
     // earlier message becomes a {{KIND_xxxxxxxx}} placeholder. The history
     // is the same one, so the session holds (yetone/magpie#7223).
-    if (sameUpToMaskedValues(expectedKey, actualKey)) return true
+    if (sameHistoryUpToMasking(this.expectedMessages, messages)) return true
     // Clients such as Claude Code canonicalize tool_use.input when they
     // persist history (e.g. filling default replace_all: false). The live
     // session still has the model-issued arguments. historyKey already
@@ -2584,9 +2584,12 @@ class Proc {
     // historyKey miss) requires the raw tool_use id+name sequence to line
     // up before ignoring input values. An exact match can still succeed if
     // only ids changed and inputs did not.
-    if (sameToolUseIdentities(this.expectedMessages, messages) &&
-      historyKey(stripToolUseInputs(this.expectedMessages)) ===
-        historyKey(stripToolUseInputs(messages))) return true
+    if (sameToolUseIdentities(this.expectedMessages, messages)) {
+      const expectedStripped = stripToolUseInputs(this.expectedMessages)
+      const actualStripped = stripToolUseInputs(messages)
+      if (historyKey(expectedStripped) === historyKey(actualStripped) ||
+        sameHistoryUpToMasking(expectedStripped, actualStripped)) return true
+    }
     // A client that compacts its own context (billion-context in DeepSeek
     // Harness) folds earlier messages into a summary the live session never
     // saw. agy still holds those messages whole, so the session holds as long
@@ -4555,7 +4558,6 @@ function findRemaskedProc(convKey, opts) {
   const history = opts?.history
   const account = /^(.*?)[0-9a-f]{64}$/.exec(convKey)?.[1]
   if (!first || !Array.isArray(history) || !history.length || account == null) return null
-  const firstKey = historyKey([first])
   let found = null
   for (const proc of pool.values()) {
     if (proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
@@ -4564,7 +4566,9 @@ function findRemaskedProc(convKey, opts) {
     if ((proc.sessionScope || "") !== (opts.sessionScope || "")) continue
     if (proc.workDir !== opts.workDir || !sameInstructions(proc.instructions, opts.instructions)) continue
     const expectedFirst = Array.isArray(proc.expectedMessages) ? proc.expectedMessages[0] : null
-    if (!expectedFirst || !sameUpToMaskedValues(historyKey([expectedFirst]), firstKey)) continue
+    // the same first message but for masking: each place they differ a
+    // value and its placeholder, or a key and a made-up key of its form
+    if (!expectedFirst || !sameHistoryUpToMasking([expectedFirst], [first])) continue
     if (!proc.matchesHistory(history)) continue
     // two would be a guess
     if (found) return null
@@ -4612,82 +4616,297 @@ function rekeyProc(proc, newKey) {
 }
 
 
-// A value magpie's masking put in place of what it found (redact.tag):
-// {{KIND_xxxxxxxx}}, its suffix lowercase base32.
-const MASKED_VALUE_RE = /\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}/g
-// The longest text one placeholder stands in for, as its JSON string.
+// magpie's masking writes {{KIND_xxxxxxxx}} in place of a value it found
+// (redact.tag: the kind, then 8 lowercase base32 of a keyed hash). The
+// model can write one back mangled (spaces in the braces, braces gone, its
+// case changed), and magpie restores those too (redact.Restore), so each
+// counts as a placeholder here.
+const PLACEHOLDER_SOURCE = String.raw`\{\{\s*[A-Za-z][A-Za-z0-9_]*_[A-Za-z2-7]{8}\s*\}\}|(?<![\p{L}\p{N}_])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_[a-z2-7]{8}(?![\p{L}\p{N}_])`
+const PLACEHOLDER_RE = new RegExp(`^(?:${PLACEHOLDER_SOURCE})$`, "u")
+// A token is a placeholder, a word (with the '.' and '-' inside it, so a
+// key is one token with its head), a run of space, or one other character.
+const MASK_TOKEN_RE = new RegExp(`${PLACEHOLDER_SOURCE}|[\\p{L}\\p{N}_](?:[\\p{L}\\p{N}_.-]*[\\p{L}\\p{N}_])?|\\s+|[^]`, "gu")
+// The longest text one placeholder stands in for, in characters.
 const MASKED_VALUE_MAX = 1024
+// The most token edits one text's comparison looks through.
+const MASK_DIFF_MAX_EDITS = 256
 
-// Whether two history keys are the same but for values masking wrote as a
-// placeholder in one and as written in the other: each placeholder of one
-// stands for some text of the other's, inside one JSON string, and
-// everything else is the same, byte for byte.
-function sameUpToMaskedValues(a, b) {
-  return matchesWithMaskedValues(a, b) || matchesWithMaskedValues(b, a)
+// Two texts are the same but for masking when every place they differ has
+// placeholders alone on one side: a value one request sent as written went
+// masked on the other (#7223, 0.1.100), a value went under another
+// placeholder (a kind the local model found late, a span it drew wider),
+// or the model wrote a placeholder back mangled. A hunk without a
+// placeholder on either side is a real edit.
+function sameTextUpToMasking(a, b) {
+  if (a === b) return true
+  // with no placeholder in either, only made-up keys can differ, and they
+  // keep the length
+  if (!PLACEHOLDER_IN_TEXT_RE.test(a) && !PLACEHOLDER_IN_TEXT_RE.test(b) && a.length !== b.length) return false
+  const hunks = tokenHunks(a.match(MASK_TOKEN_RE) || [], b.match(MASK_TOKEN_RE) || [], MASK_DIFF_MAX_EDITS)
+  return hunks != null && hunks.every(({ removed, added }) =>
+    maskingHunk(removed, added) || maskingHunk(added, removed) || shapedKeyHunk(removed.join(""), added.join("")))
 }
 
-function matchesWithMaskedValues(pattern, text) {
-  const parts = pattern.split(MASKED_VALUE_RE)
-  if (parts.length < 2) return false
-  const holes = pattern.match(MASKED_VALUE_RE)
-  if (!text.startsWith(parts[0])) return false
-  let at = parts[0].length
-  for (let index = 1; index < parts.length; index++) {
-    const next = parts[index]
-    const last = index === parts.length - 1
-    // the same placeholder in both, or the value it stands for
-    if (text.startsWith(holes[index - 1] + next, at) && (!last || at + holes[index - 1].length + next.length === text.length)) {
-      at += holes[index - 1].length + next.length
+// magpie can send a key as a made-up key of its own form (redact's shape.go:
+// sk_w3axCByTQgK1Px… as sk_hYQWRBFmdHNI…): the same head, length and
+// separators, and the same kind of character in each place, with six or
+// more made up. Only a key with a head (sk-, ghp_, xoxb-, AKIA) is shaped,
+// so a hash or an id without one that changed is still a real edit.
+function shapedKeyHunk(a, b) {
+  if (a.length !== b.length || a.length < 8 || !/^[A-Za-z0-9_.-]+$/.test(a) || !/^[A-Za-z0-9_.-]+$/.test(b)) return false
+  const head = shapedKeyHead(a)
+  if (!head || head !== shapedKeyHead(b)) return false
+  let made = 0
+  for (let index = 0; index < a.length; index++) {
+    if (charKind(a[index]) !== charKind(b[index])) return false
+    if (a[index] !== b[index]) made++
+  }
+  return made >= 6
+}
+
+function charKind(ch) {
+  return /[a-z]/.test(ch) ? "a" : /[A-Z]/.test(ch) ? "A" : /[0-9]/.test(ch) ? "0" : ch
+}
+
+// redact's keyHead
+const SHAPED_KEY_PREFIXES = ["sk-ant-api03-", "sk-ant-oat01-", "sk-ant-admin01-", "sk-proj-", "sk-svcacct-", "sk-or-v1-", "github_pat_"]
+function shapedKeyHead(value) {
+  const prefix = SHAPED_KEY_PREFIXES.find((head) => value.startsWith(head))
+  if (prefix) return prefix
+  if (value.startsWith("AKIA") || value.startsWith("ASIA")) return value.slice(0, 4)
+  return /^[A-Za-z]{1,4}[-_]/.exec(value)?.[0] || ""
+}
+
+const PLACEHOLDER_IN_TEXT_RE = new RegExp(PLACEHOLDER_SOURCE, "u")
+
+// placeholders (and the space between them) on one side, a value of a
+// value's length on the other
+function maskingHunk(placeholders, value) {
+  if (!placeholders.length || !value.length) return false
+  if (!placeholders.some((token) => PLACEHOLDER_RE.test(token)) ||
+    !placeholders.every((token) => PLACEHOLDER_RE.test(token) || !token.trim())) return false
+  return value.join("").length <= MASKED_VALUE_MAX
+}
+
+// The places two token lists differ, each as the tokens one has there and
+// the other has there (Myers' diff), or null past maxEdits.
+function tokenHunks(a, b, maxEdits) {
+  let start = 0
+  while (start < a.length && start < b.length && a[start] === b[start]) start++
+  let endA = a.length
+  let endB = b.length
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--
+    endB--
+  }
+  const x0 = a.slice(start, endA)
+  const y0 = b.slice(start, endB)
+  const n = x0.length
+  const m = y0.length
+  if (!n && !m) return []
+  const offset = maxEdits + 1
+  const v = new Int32Array(2 * maxEdits + 3).fill(-1)
+  v[offset + 1] = 0
+  const trace = []
+  let found = -1
+  for (let d = 0; d <= maxEdits && found < 0; d++) {
+    trace.push(v.slice())
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1
+      let y = x - k
+      while (x < n && y < m && x0[x] === y0[y]) {
+        x++
+        y++
+      }
+      v[offset + k] = x
+      if (x >= n && y >= m) {
+        found = d
+        break
+      }
+    }
+  }
+  if (found < 0) return null
+  // walk back from the end: each step is a token kept, removed or added
+  const ops = []
+  let x = n
+  let y = m
+  for (let d = found; d > 0; d--) {
+    const prev = trace[d]
+    const k = x - y
+    const prevK = k === -d || (k !== d && prev[offset + k - 1] < prev[offset + k + 1]) ? k + 1 : k - 1
+    const prevX = prev[offset + prevK]
+    const prevY = prevX - prevK
+    while (x > prevX && y > prevY) {
+      ops.push(0)
+      x--
+      y--
+    }
+    ops.push(x === prevX ? 1 : -1)
+    x = prevX
+    y = prevY
+  }
+  ops.reverse()
+  const hunks = []
+  let i = 0
+  let j = 0
+  let hunk = null
+  for (const op of [...new Array(x).fill(0), ...ops]) {
+    if (op === 0) {
+      hunk = null
+      i++
+      j++
       continue
     }
-    const end = last ? (text.endsWith(next) ? text.length - next.length : -1) : text.indexOf(next, at + 1)
-    if (end <= at || end - at > MASKED_VALUE_MAX) return false
-    const value = text.slice(at, end)
-    // a value never takes in the end of the JSON string it is in, nor a
-    // placeholder of its own: masking writes one in place of a value
-    if (/(?:^|[^\\])(?:\\\\)*"/.test(value) || /\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}/.test(value)) return false
-    at = end + next.length
+    if (!hunk) {
+      hunk = { removed: [], added: [] }
+      hunks.push(hunk)
+    }
+    if (op < 0) hunk.removed.push(x0[i++])
+    else hunk.added.push(y0[j++])
   }
-  return at === text.length
+  return hunks
 }
 
-function historyKey(messages) {
+// Whether two values of the history key are the same but for masking: the
+// same shape, the same keys, numbers and flags, and every string the same
+// or the same but for masking (sameTextUpToMasking).
+function sameUpToMasking(a, b) {
+  if (a === b) return true
+  if (typeof a === "string" || typeof b === "string") {
+    return typeof a === "string" && typeof b === "string" && sameTextUpToMasking(a, b)
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => sameUpToMasking(item, b[index]))
+  }
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false
+  const keysA = Object.keys(a).filter((key) => a[key] !== undefined).sort()
+  const keysB = Object.keys(b).filter((key) => b[key] !== undefined).sort()
+  return keysA.length === keysB.length && keysA.every((key, index) => key === keysB[index] && sameUpToMasking(a[key], b[key]))
+}
+
+// Where two histories first differ, as the key reads each message, with
+// no text of either: the message's index (and from the end), the block,
+// what differs in it, and whether it differs only by masking. For the
+// drop_live log (yetone/magpie#7223).
+function firstHistoryDiff(expected, actual) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) return null
+  const keyed = (messages) => {
+    const ids = new Map()
+    return messages.map((message) => ({
+      role: message?.role,
+      blocks: (Array.isArray(message?.content) ? message.content : [{ type: "text", text: message?.content ?? "" }])
+        .map((block) => historyBlock(block, ids))
+        .filter((block) => block && !(block.type === "text" && !String(block.text).trim()))
+        .map((block) => block.type === "text" ? { ...block, text: String(block.text).trim() } : block),
+    }))
+  }
+  const a = keyed(expected)
+  const b = keyed(actual)
+  // the first difference masking doesn't explain, else the first
+  let differing = 0
+  let maskedOnly = 0
+  let first = null
+  let firstMasked = null
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const where = messageDiff(a[index], b[index])
+    if (!where) continue
+    const at = { index, from_end: Math.max(a.length, b.length) - 1 - index, ...where }
+    if (where.masked) {
+      maskedOnly++
+      firstMasked ??= at
+    } else {
+      differing++
+      first ??= at
+    }
+  }
+  const out = first ?? firstMasked
+  return out && { ...out, differing_messages: differing, masked_messages: maskedOnly }
+}
+
+function messageDiff(a, b) {
+  if (!a || !b) return { field: a ? "missing_actual" : "missing_expected", masked: false }
+  if (a.role !== b.role) return { field: "role", masked: false }
+  if (stableJSON(a.blocks) === stableJSON(b.blocks)) return null
+  const masked = sameUpToMasking(a.blocks, b.blocks)
+  if (a.blocks.length !== b.blocks.length) {
+    return { role: a.role, field: "block_count", expected_blocks: a.blocks.length, actual_blocks: b.blocks.length, masked }
+  }
+  for (let block = 0; block < a.blocks.length; block++) {
+    const x = a.blocks[block]
+    const y = b.blocks[block]
+    if (stableJSON(x) === stableJSON(y)) continue
+    const out = { role: a.role, block, block_type: x.type, masked }
+    if (x.type !== y.type) return { ...out, field: "type", actual_type: y.type }
+    const keys = [...new Set([...Object.keys(x), ...Object.keys(y)])].sort()
+    const field = keys.find((key) => stableJSON(x[key]) !== stableJSON(y[key])) || "block"
+    out.field = field
+    const left = typeof x[field] === "string" ? x[field] : stableJSON(x[field]) ?? ""
+    const right = typeof y[field] === "string" ? y[field] : stableJSON(y[field]) ?? ""
+    let offset = 0
+    while (offset < left.length && offset < right.length && left[offset] === right[offset]) offset++
+    out.offset = offset
+    out.expected_len = left.length
+    out.actual_len = right.length
+    out.placeholders = PLACEHOLDER_IN_TEXT_RE.test(left) || PLACEHOLDER_IN_TEXT_RE.test(right)
+    return out
+  }
+  return { role: a.role, field: "block", masked }
+}
+
+// Whether two histories are the same but for masking, as the key reads
+// them.
+function sameHistoryUpToMasking(expected, actual) {
+  return sameUpToMasking(historyRows(expected), historyRows(actual))
+}
+
+// One block as the history key reads it, or null for a block the key
+// leaves out (thinking, tool catalog changes). ids numbers tool calls in
+// order, so a client's ids of its own key the same.
+function historyBlock(block, ids) {
+  if (!block) return null
+  if (block.type === "thinking" || block.type === "redacted_thinking" ||
+    block.type === "tool_addition" || block.type === "tool_removal") return null
+  let value
+  if (typeof block === "string" || block.type === "text") {
+    value = { type: "text", text: stripVolatileOpening(stripMagpiePlaceholderNotice(typeof block === "string" ? block : block.text || "")) }
+  } else if (block.type === "document") {
+    value = { type: "text", text: parseUserDocumentText(block) }
+  } else if (block.type === "search_result") {
+    value = { type: "text", text: parseSearchResultText(block) }
+  } else if (block.type === "image") {
+    const image = parseUserImage(block)
+    value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
+  } else if (block.type === "tool_use") {
+    const ordinal = ids.size + 1
+    ids.set(block.id, ordinal)
+    value = { type: "tool_use", id: ordinal, name: block.name, input: block.input ?? {} }
+  } else if (block.type === "tool_result") {
+    const result = toolResult(block)
+    // An image a tool returned is keyed by its hash, as a user's image
+    // is, not copied whole into the key on every round-trip (plugins#1137).
+    const content = result.content.map((part) => part.type === "image"
+      ? { type: "image", mimeType: part.mimeType, sha256: digest(part.data) }
+      : part)
+    value = { type: "tool_result", id: ids.get(block.tool_use_id) ?? block.tool_use_id, ...result, content }
+  } else if (block.type === "server_tool_use" || block.type === "mcp_tool_use" ||
+    block.type === "container_upload" || SERVER_TOOL_RESULT_BLOCK_TYPES.has(block.type)) {
+    value = { type: block.type, name: block.name || "", content: renderServerAssistantBlock(block) }
+  } else {
+    value = block
+  }
+  return value
+}
+
+// The history as the key reads it: one row for each run of messages of one
+// role, its texts joined and trimmed.
+function historyRows(messages) {
   const rows = []
   const ids = new Map()
   for (const message of messages) {
     const blocks = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content ?? "" }]
     for (const block of blocks) {
-      if (!block) continue
-      if (block.type === "thinking" || block.type === "redacted_thinking" ||
-        block.type === "tool_addition" || block.type === "tool_removal") continue
-      let value
-      if (typeof block === "string" || block.type === "text") {
-        value = { type: "text", text: stripVolatileOpening(stripMagpiePlaceholderNotice(typeof block === "string" ? block : block.text || "")) }
-      } else if (block.type === "document") {
-        value = { type: "text", text: parseUserDocumentText(block) }
-      } else if (block.type === "search_result") {
-        value = { type: "text", text: parseSearchResultText(block) }
-      } else if (block.type === "image") {
-        const image = parseUserImage(block)
-        value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
-      } else if (block.type === "tool_use") {
-        const ordinal = ids.size + 1
-        ids.set(block.id, ordinal)
-        value = { type: "tool_use", id: ordinal, name: block.name, input: block.input ?? {} }
-      } else if (block.type === "tool_result") {
-        const result = toolResult(block)
-        // An image a tool returned is keyed by its hash, as a user's image
-        // is, not copied whole into the key on every round-trip (plugins#1137).
-        const content = result.content.map((part) => part.type === "image"
-          ? { type: "image", mimeType: part.mimeType, sha256: digest(part.data) }
-          : part)
-        value = { type: "tool_result", id: ids.get(block.tool_use_id) ?? block.tool_use_id, ...result, content }
-      } else if (block.type === "server_tool_use" || block.type === "mcp_tool_use" ||
-        block.type === "container_upload" || SERVER_TOOL_RESULT_BLOCK_TYPES.has(block.type)) {
-        value = { type: block.type, name: block.name || "", content: renderServerAssistantBlock(block) }
-      } else {
-        value = block
-      }
+      const value = historyBlock(block, ids)
+      if (!value) continue
       let row = rows.at(-1)
       if (!row || row.role !== message.role) {
         row = { role: message.role, content: [] }
@@ -4701,7 +4920,11 @@ function historyKey(messages) {
   for (const row of rows) {
     row.content = row.content.filter(block => block.type !== "text" || (block.text = block.text.trim()) !== "")
   }
-  return stableJSON(rows.filter(row => row.content.length))
+  return rows.filter(row => row.content.length)
+}
+
+function historyKey(messages) {
+  return stableJSON(historyRows(messages))
 }
 
 // Assistant-prefill support: a trailing text-only assistant message is a
@@ -7443,6 +7666,9 @@ export const AntigravityBridgePlugin = async () => {
                       tools_grew: !!proc.toolsGrew(tools),
                       work_dir_changed: proc.workDir !== workDir,
                       instructions_changed: !sameInstructions(proc.instructions, instructions),
+                      // where the history the client sent first differs from
+                      // the session's, with no text (yetone/magpie#7223)
+                      first_diff: historyMatches ? null : firstHistoryDiff(proc.expectedMessages, trailingMessages(body).history),
                     })
                     acquireOpts.dropReason = dropReason
                     dropFromPool(proc)
