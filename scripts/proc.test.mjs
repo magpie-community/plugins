@@ -89,7 +89,7 @@ test("non-Linux platforms do not require procfs", () => {
 });
 
 test("runtime proc copies match the canonical implementation", () => {
-  assert.equal(procTargets.length, 17);
+  assert.equal(procTargets.length, 18);
   for (const relative of procTargets) {
     const target = `${root}${relative}`;
     assert.deepEqual(readFileSync(target, "utf8"), canonical, relative);
@@ -102,6 +102,7 @@ test("runtime proc copies match the canonical implementation", () => {
       deepzora: ["bridge.mjs"],
       "gcp-ai": ["lib/lock.mjs"],
       gumloop: ["gumloop.mjs"],
+      "github-stats": ["src/config.ts"],
       goanyapi: ["src/auth.ts"],
       "kimi-desktop": ["adapter.mjs"],
       mclaw: ["browser.mjs"],
