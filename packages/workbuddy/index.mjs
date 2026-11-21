@@ -2106,6 +2106,136 @@ function unsaid(res) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers })
 }
 
+
+// WorkBuddy streams reasoning in 1-4 character deltas (measured: 40 chunks
+// for 63 characters). OpenCode 2 stores every delta as its own part, so one
+// answer becomes thousands of parts and the message JSON is rewritten once
+// per part. coalesced holds the deltas until MERGE_CHARS or the next
+// non-reasoning event, then emits them as one, which leaves the reasoning
+// text intact while cutting the part count by roughly two orders of
+// magnitude.
+//
+// 8k rather than 1k: 1k still split a 3.7k-character thought into four
+// parts. The only cost of a larger buffer is how late the live "thinking"
+// text appears while the block is still open; the finished part is the same
+// either way.
+const MERGE_CHARS = 8192
+
+function coalesced(res) {
+  if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  let rest = ""
+  let held = null
+  let buf = ""
+  let field = "reasoning_content"
+
+  const flush = (out) => {
+    if (!buf || !held) return
+    const v = JSON.parse(JSON.stringify(held))
+    const c = v.choices?.[0]
+    if (c) {
+      c.delta = { ...(c.delta ?? {}), [field]: buf }
+      c.finish_reason = null
+    }
+    delete v.usage
+    out.push("data: " + JSON.stringify(v))
+    held = null
+    buf = ""
+  }
+
+  const event = (ev) => {
+    const out = []
+    const m = /^data:\s?(.*)$/m.exec(ev)
+    if (!m) return [ev]
+    if (m[1] === "[DONE]") {
+      flush(out)
+      out.push(ev)
+      return out
+    }
+    let v
+    try {
+      v = JSON.parse(m[1])
+    } catch {
+      flush(out)
+      out.push(ev)
+      return out
+    }
+    const c = v?.choices?.[0]
+    const d = c?.delta
+    const reason =
+      typeof d?.reasoning_content === "string"
+        ? d.reasoning_content
+        : typeof d?.reasoning === "string"
+          ? d.reasoning
+          : ""
+    if (reason) {
+      field = typeof d.reasoning_content === "string" ? "reasoning_content" : "reasoning"
+      if (!held) held = v
+      buf += reason
+      // A chunk that also carries text or a tool call ends the reasoning
+      // block; emit the rest without losing it.
+      const calls = d.tool_calls
+      const also = (typeof d.content === "string" && d.content) || (Array.isArray(calls) ? calls.length > 0 : calls)
+      // WorkBuddy sends finish_reason: "" on every delta, so only a named
+      // reason ends the block. The empty string reached this branch before
+      // and flushed every 1-4 character delta, which left the part count as
+      // it was.
+      if (also || (c?.finish_reason != null && c.finish_reason !== "")) {
+        flush(out)
+        const w = JSON.parse(JSON.stringify(v))
+        const rest = w.choices[0].delta ?? {}
+        delete rest[field]
+        delete rest.reasoning_content
+        delete rest.reasoning
+        w.choices[0].delta = rest
+        out.push("data: " + JSON.stringify(w))
+        return out
+      }
+      if (buf.length >= MERGE_CHARS) flush(out)
+      return out
+    }
+    flush(out)
+    if (d && (typeof d.reasoning_content === "string" || typeof d.reasoning === "string")) {
+      const w = JSON.parse(JSON.stringify(v))
+      const kept = {}
+      if (d.content !== undefined) kept.content = d.content
+      if (d.tool_calls !== undefined) kept.tool_calls = d.tool_calls
+      if (c?.finish_reason) w.choices[0].finish_reason = c.finish_reason
+      if (v.usage !== undefined) w.usage = v.usage
+      if (!Object.keys(kept).length && !w.choices[0].finish_reason && w.usage === undefined) return out
+      w.choices[0].delta = kept
+      out.push("data: " + JSON.stringify(w))
+      return out
+    }
+    out.push(ev)
+    return out
+  }
+
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      transform(chunk, ctl) {
+        rest = (rest + dec.decode(chunk, { stream: true })).replace(/\r\n/g, "\n")
+        const evs = rest.split("\n\n")
+        rest = evs.pop()
+        const out = evs.flatMap(event)
+        if (out.length) ctl.enqueue(enc.encode(out.map((e) => e + "\n\n").join("")))
+      },
+      flush(ctl) {
+        rest += dec.decode()
+        const out = []
+        if (rest) out.push(...event(rest))
+        flush(out)
+        if (out.length) ctl.enqueue(enc.encode(out.map((e) => e + "\n\n").join("")))
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
 // ---- signing in -------------------------------------------------------------
 
 // poll asks path until WorkBuddy answers with data, retrying the codes
@@ -4779,7 +4909,7 @@ function makePlugin(site) {
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
             if (res.status >= 400) return explained(res)
-            const told = native ? res : unsaid(await renamed(res, names))
+            const told = native ? res : coalesced(unsaid(await renamed(res, names)))
             // the ids are the ones the chat went with, after any renewal
             const conv = headers.get("X-Conversation-ID") ?? ""
             const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
@@ -5035,4 +5165,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
