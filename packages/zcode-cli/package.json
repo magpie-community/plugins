@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/opencode-zcode-cli-auth",
+  "version": "0.1.0",
+  "description": "Magpie/OpenCode model provider that runs your local ZCode CLI headlessly (zcode --prompt --output-format stream-json), so ZCode's own process signs in and makes every request",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "stream.mjs", "prompt.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "README.en.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-plugin", "opencode", "opencode-plugin", "zcode", "z.ai", "glm", "coding-plan"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/zcode-cli"
+  },
+  "scripts": { "test": "bun test" },
+  "magpie": { "maxConcurrency": 4 }
+}
