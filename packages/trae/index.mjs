@@ -42,6 +42,9 @@ const SITES = {
       auth: "https://api.trae.cn", // tokens, the account, credits
       api: "https://trae-api-cn.mchost.guru", // the models
       console: "https://console.enterprise.trae.cn", // an enterprise (SaaS) account's usage, in yuan
+      // the commercial usage endpoint: the settled charge and the real cache
+      // counters of a turn, which token_usage often reports as 0
+      billing: "https://api5-normal.mchost.guru",
     },
     // the console an enterprise (SaaS) sign-in names as its account's host,
     // which is what tells an enterprise account apart: it bills there, not
@@ -241,6 +244,7 @@ const SITES = {
       pay: "https://api-sg-central.trae.ai", // usage
       usPay: "https://api-us-east.trae.ai", // usage, the US deployment
       console: "https://console.enterprise.trae.ai", // an enterprise (SaaS) account's usage, in dollars
+      billing: "https://api5-normal.trae.ai", // the commercial usage endpoint, as on CN
     },
     // the console an enterprise (SaaS) sign-in names as its account's host,
     // as on Trae CN: it bills there, not on the dollar billing's page. Kept
@@ -1632,7 +1636,7 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null, requestId = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1641,7 +1645,7 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     model: config,
     ...(modelName ? { model_name: modelName } : {}),
     stream: true, // Trae answers in SSE either way
-    request_id: randomUUID(),
+    request_id: requestId || randomUUID(),
     session_id: session || randomUUID(),
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
@@ -1829,6 +1833,60 @@ function tokensOf(u) {
   const thought = n(u.reasoning_tokens, u.completion_tokens_details?.reasoning_tokens)
   if (thought) out.completion_tokens_details = { reasoning_tokens: thought }
   return out
+}
+
+// turnBilling reads the settled charge of one turn from Trae's commercial
+// usage endpoint. token_usage often names no cache (or a 0 read) while Trae
+// still bills the turn at its cache price; the commercial record carries the
+// real cache_read_token beside credits_float. The bill settles a moment after
+// the answer, so an empty record is retried a few times with a short backoff
+// and the first settled reading wins. A rejected or malformed record will not
+// start working during this turn, so it is not retried.
+const BILLING_PATH = "/api/v1/commercial/get_session_usage"
+const BILLING_DELAYS = [150, 300, 600]
+const BILLING_CREDITS = ["credits_float", "creditsFloat", "credits_consumed", "consumed_credits", "credit_cost", "credits_cost", "amount_float", "amountFloat"]
+const numOrNull = (v) => {
+  const x = typeof v === "string" ? Number(v.trim()) : Number(v)
+  return v != null && Number.isFinite(x) ? x : null
+}
+async function turnBilling(a, site, ids = [], delays = [250, 500, 1000, 2000, 3000], signal = null) {
+  const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing || site.hosts.api
+  const url = String(host).replace(/\/+$/, "") + BILLING_PATH
+  const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.access }
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    let payload
+    try {
+      const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ session_id: ids[attempt % ids.length] ?? "" }), signal })
+      if (!res.ok) {
+        if (res.status !== 429 && res.status < 500) return null
+      } else {
+        payload = await res.json()
+      }
+    } catch {
+      payload = null
+    }
+    if (payload) {
+      const data = payload.data && typeof payload.data === "object" ? payload.data : payload
+      const code = String(data.code ?? payload.code ?? 0)
+      if (code !== "0") return null // a rejected record will not settle during this turn
+      const bill = data.user_usage_group_by_session ?? data.userUsageGroupBySession ?? data
+      const info = bill?.extra_info ?? bill?.extraInfo ?? {}
+      const number = (keys) => {
+        for (const k of keys) {
+          const v = numOrNull(bill?.[k])
+          if (v != null) return v
+        }
+        return null
+      }
+      const credits = number(BILLING_CREDITS)
+      const cacheRead = numOrNull(info.cache_read_token ?? info.cacheReadToken)
+      const input = numOrNull(info.input_token ?? info.inputToken)
+      const output = numOrNull(info.output_token ?? info.outputToken)
+      if (credits != null || (input || 0) > 0 || (output || 0) > 0) return { credits, cacheRead, input, output }
+    }
+    if (attempt < delays.length) await new Promise((r) => setTimeout(r, delays[attempt]))
+  }
+  return null
 }
 
 let callSeq = 0
@@ -3049,12 +3107,25 @@ function failure(site, status, code, message, ctx = "") {
   return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}${ctx ? `; ${ctx}` : ""}`)
 }
 
+// the settled turn record fills the two readings token_usage leaves out: the
+// credits the turn spent and the cache it really read. A cache the stream
+// named wins; the commercial count is only used when the stream gave none.
+function withBilling(usage, bill) {
+  if (!usage || !bill) return usage
+  if (bill.credits != null) usage.credits = bill.credits
+  if (bill.cacheRead != null && !usage.prompt_tokens_details?.cached_tokens && !usage.cache_read_input_tokens) {
+    usage.prompt_tokens_details = { ...(usage.prompt_tokens_details ?? {}), cached_tokens: bill.cacheRead }
+    delete usage.magpie_cache_unknown
+  }
+  return usage
+}
+
 // openai is the answer as an OpenAI chat completion: a stream, or one body
 // abort, when given, lets the answer's reader close Trae's connection the
 // moment the agent goes away (a tool call made, a request cancelled): a
 // generator's return can't break a read that is already waiting, so the
 // fetch itself is what has to be stopped
-async function openai(req, it, abort, site, limit = 0, cut = 0) {
+async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) {
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
   const model = req.model
@@ -3072,6 +3143,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
       if (p.usage) usage = p.usage
       if (p.finish) finish = p.finish
     }
+    if (usage && billing) withBilling(usage, await billing())
     const message = { role: "assistant", content: text || (calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
     if (calls.length) message.tool_calls = calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
@@ -3113,6 +3185,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
           if (p.finish) finish = p.finish
         }
         if (!failed) {
+          if (usage && billing) withBilling(usage, await billing())
           put(chunk({}, calls ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop"))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
@@ -4333,7 +4406,8 @@ const makePlugin = (site) => async ({ client }) => {
               let refused = false
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
-                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                const requestId = randomUUID()
+                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry, requestId)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
                   headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
@@ -4381,7 +4455,8 @@ const makePlugin = (site) => async ({ client }) => {
                   break
                 }
                 fnOf.set(who, fn)
-                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0)
+                const bill = () => turnBilling(a, site, [sent.request_id, sent.session_id], BILLING_DELAYS, ac.signal)
+                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0, bill)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
