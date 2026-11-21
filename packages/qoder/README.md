@@ -9,6 +9,7 @@ accounts exist only on their own:
 | `qoder` | qoder.com (international) | Google, GitHub or email | `QoderAuthPlugin` |
 | `qoder-cn` | qoder.cn ([Qoder CN](#qoder-cn)) | Alibaba Cloud or phone number | `QoderCNAuthPlugin` |
 | `qwenwork` | gateway.qwenwork.cn ([QwenWork](#qwenwork-千问办公)) | phone number or email | `QwenWorkAuthPlugin` |
+| `qwenwork-intl` | qwenwork.ai ([QwenWork Intl](#qwenwork-intl)) | phone number, email or SSO, through the desktop app's device sign-in | `QwenWorkIntlAuthPlugin` |
 | `qwenwork-enterprise` | the enterprise's own domain ([QwenWork](#qwenwork-千问办公)) | email OTP or enterprise SSO | `QwenWorkEnterpriseAuthPlugin` |
 
 What follows is about `qoder`. Qoder CN works the same way on its own
@@ -461,6 +462,182 @@ The flagship deploys no model-catalog service (`/algo/api/v2/model/list`
 answers 503 there), so its list falls back to the public cloud's qwork
 models shipped in this package: flash, pro and qwen3.8-max-preview. A 503
 falls back; any other error doesn't.
+
+## QwenWork Intl
+
+`QwenWork Intl` serves the international site, qwenwork.ai — the English
+storefront with USD billing and its own docs at docs.qwenwork.ai. Its
+accounts are not the public cloud's: the two sites share one Ory
+authorization server, but each is an issuer of its own, and an account
+exists only where it was created.
+
+The site is a different OAuth client from the one this package has used so
+far, and its sign-in runs through the site's own device wrapper, as the
+desktop app's does:
+
+| | `qwenwork` (public cloud) | `qwenwork-intl` |
+|---|---|---|
+| issuer | qwenwork.cn | qwenwork.ai |
+| `client_id` (issuer) | `e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb` | `qwenwork-desktop-app` |
+| `redirect_uri` (issuer) | `qwenwork-cn://` | `https://gateway.qwenwork.ai/oauth/callback` |
+| device wrapper | gateway.qwenwork.cn | gateway.qwenwork.ai |
+| wrapper `client_id` | `e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb` | `cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a` |
+| wrapper `redirect_uri` | `qwenwork-cn://` | `qwenwork://` |
+| API host (chat, usage, poll, refresh) | gateway.qwenwork.cn | gateway.qwenwork.ai |
+| wallets | gateway.qwenwork.cn | openapi.qoder.sh |
+
+`qwenwork.ai` registers exactly one redirect for `qwenwork-desktop-app` —
+its own gateway's `/oauth/callback` — and refuses every custom scheme,
+including the `qwenwork-cn://` the public cloud takes. Dynamic client
+registration is closed there (`POST /oauth2/register` answers 403).
+
+The wrapper takes a client of its own, and no other pair works. The
+sign-in starts at `gateway.qwenwork.ai/device/selectAccounts` with
+`client_id` = `cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a` and `redirect_uri` =
+`qwenwork://` — the bare deeplink scheme, not the registered callback. That
+pair answers `302` to `qwenwork.ai/oauth2/auth` carrying
+`client_id=qwenwork-desktop-app`, `redirect_uri=https://gateway.qwenwork.ai/oauth/callback`
+and `scope=openid profile email offline_access qwen_work`, while the
+registered callback, `qwenwork-desktop-app` itself, or no `redirect_uri`
+at all are `400 INVALID_DEVICE_FLOW` (`field=query`, `reason=not_allowed`).
+The wrapper is what swaps the pair: it holds the desktop client, so the
+issuer's registered redirect stays on the site entry and the wrapper's own
+client and scheme travel on the start call only.
+
+The wrapper is also where the poll lives:
+`gateway.qwenwork.ai/api/v1/deviceToken/poll`. It takes `nonce`, `verifier`
+and `challenge_method` and nothing else — a `client_id` beside them is
+refused as `not_allowed` — and it answers `404` with an empty body until the
+browser authorizes: the same `404 {}` the CN gateway gives a pending flow,
+measured as the control, which adds `x-device-flow-state: pending` on its
+own gateway. A 404 there is a wait, not a failure, which is why the sign-in
+keeps asking until the authorization lands or the sign-in times out.
+`openapi.qoder.sh` does not serve it (`404`, its mounted prefix being
+`/sash/api/v1/`), which is why the site's API host is its own gateway.
+
+The wrapper's pair is also what renews the token. With a dummy refresh token
+(so this settles the request's shape, not the token), the gateway forwards
+exactly one pair — `client_id=cc65e5fc-…` with `redirect_uri=qwenwork://` —
+and answers `401 INVALID_REFRESH_TOKEN` carrying Ory's own `invalid_grant` as
+`upstreamError`. The issuer's pair (`qwenwork-desktop-app` with the gateway
+callback) and every mixed pair are `400 INVALID_REFRESH_REQUEST` with no
+upstream, refused before they leave; leaving out either field is a `400`
+naming it (`field=redirect_uri` or `field=client_id`,
+`missing_required_field`). So the renewal carries the pair the wrapper
+minted with, which is why `deviceRefreshBody` reads `deviceClientId` /
+`deviceRedirect` rather than the site's issuer pair.
+
+One route is the place this site is split:
+`gateway.qwenwork.ai/api/v1/adapter/user/wallets` answers `404`, while
+`openapi.qoder.sh` serves it (`401` without a token, not `404`). So the
+entry names `walletsHost` as `openapi.qoder.sh`; a wallet read sent to the
+gateway would come back empty and leave a personal balance without its
+pools. Everything else stays on the gateway — the refresh included, which
+`gateway.qwenwork.ai/api/v1/deviceToken/refresh` serves (`401` to a bad
+token, not `404`), so no `refreshHost` is set and a site that names neither
+keeps using its own `openapi` host for both, as the public cloud does.
+
+So this provider signs in the way the desktop app does: the issuer's client
+and redirect for everything the issuer answers, and the wrapper's own client,
+redirect and host for the device flow itself. The two are separate fields on
+the site — `clientId` / `redirect` for the issuer, `deviceClientId` /
+`deviceRedirect` / `deviceWeb` for the wrapper — so neither has to be a
+copy of the other. The same pair is what renews a token. The refresh
+endpoint checks the fields before the token, and that check is measured with
+a placeholder token: the wrapper's pair is the only one that passes it —
+answered `401 INVALID_REFRESH_TOKEN`, carrying Ory's own `invalid_grant` as
+`upstreamError`, so it reaches the issuer — while the issuer's pair is `400
+INVALID_REFRESH_REQUEST` with no upstream, and so is every mixed pair. A
+`client_id` without a `redirect_uri` is `400 field=redirect_uri
+missing_required_field`. A real refresh token has not been carried through,
+so the shape is settled and the renewal itself is not.
+
+**What is measured, and what is not.** Everything above came from anonymous
+requests: the authorizing hop carried a fresh PKCE pair, the poll a nonce no
+browser had authorized. No account has been carried through to a token, so
+this provider's sign-in is measured but not proven end to end, and these
+four points are what the first real sign-in settles:
+
+- **The token.** Whether the poll hands one back, whether the chat endpoint
+  takes it, and whether a real `drt-` refresh token renews (the pair's shape
+  is measured above; the token itself is not).
+- **The session.** The `302` sets `acw_tc` and `cdn_sec_tc`, and this poll,
+  like the public cloud's, sends no cookies at all. On the public cloud that
+  is enough — its sign-in completes against the same `404` pending answer,
+  so a poll is looked up by its nonce — but whether this gateway does the
+  same is unmeasured.
+- **The chat host.** `openapi` and `api` are the gateway: the poll, the
+  account-context and the model list are all measured there. The list is not
+  reachable with a bare bearer token — `gateway.qwenwork.ai` answers `403
+  Signature invalid` without the `Cosy-*` envelope this package signs every
+  call with — and the same route on `openapi.qoder.sh` answers `401`, so the
+  gateway is the host a signed-in account reads from. The chat path itself is
+  the one step left to that account.
+- **Usage.** The account-context and the credit pool are on the gateway, as
+  the sign-in and every chat call are; a non-200 read shows as usage
+  unavailable and leaves chat alone.
+
+### Models
+
+The catalog is three **tiers**, and the site carries those and nothing else:
+`qwork-auto` (`Standard｜Qwen3.8-Flash`), `qwork-advanced` (`Pro`) and
+`qwork-ultimate` (`Flagship`). The gateway's `/algo/api/v2/model/list`
+answers 11 scenes with only `qwork` filled, and every named id the public
+cloud has — `flash`, `pro`, `qwen3.8-max-preview`, `qwen4-max`,
+`deepseek-flash`, `qwen3.8-flash`, `glm-5.3`, `kimi-k3.1-pro` — is `unknown
+or disabled model` there, so the site carries its own three rather than
+inheriting the public cloud's list (magpie would otherwise offer models the
+gateway refuses, before anyone signs in).
+
+All three carry `price_factor: 0`, and on this site that is not "free". The
+price factor is Qoder's own billing: the multiple of credits a request costs,
+where 0 costs the plan nothing. Here it means only that no per-token surcharge
+is added on top of a subscription — a Free account pays every call from its
+credit pool, and the catalog never states that. Measured on one account: 700
+credits at the start of a session, 552.33 after it — 147.67 spent in one long
+conversation, most of it re-sent context — while every tier was listed at 0.
+So the site sets `freePricing: false`: magpie reads `is_free` alone there, and
+no tier is labelled 免费 beside a balance that is falling. The published
+factor is carried through as it stands (0×), since that is what the gateway
+says and there is no per-token price behind it to show instead. The public
+cloud keeps the price-based rule, where 0× genuinely means no credits are
+spent and Qoder's own client shows the same.
+
+A tier is a routing pool, not a model. The upstream answer to a
+`qwork-advanced` call echoes `"model":"Pro"` — the tier's own name, never the
+base model behind it — and the pool cannot be enumerated: each tier's
+`strategies` is null and no endpoint lists its candidates. What has been seen
+in relayed answers is only `Pro`, `Standard｜Qwen3.8-Flash`,
+`deepseek-v4.1-flash-1017` and `codearts/speed`, so the pool is known to
+include other vendors' models without being listable in advance.
+
+One tier was down while this was written, and it is the one to know about:
+`qwork-ultimate` (`Flagship`) answered `502 Error in upstream response`, `502
+ECONNRESET` and two 45-second timeouts across six calls, while `qwork-auto`
+and `qwork-advanced` answered 200 in 4–7 s in the same window. So the failure
+is that tier's upstream, not the site: the id stays in the catalog, magpie
+shows the 502 and asks again or of another account. It is a live state, not
+a documented one — this paragraph records what was seen, and the tier may be
+healthy by the time someone reads it.
+
+`qwork-ultimate` also cannot be probed through the gateway directly right
+now: this machine's direct connections to `gateway.qwenwork.ai` and
+`qwenwork.ai` are `CONNECT_TIMEOUT`, and only requests through magpie's proxy
+reach them. The scripts under `tools/` connect directly and so cannot run
+from here until that clears.
+
+Each claim is re-measurable without a credential with
+`tools/probe-qwenwork-intl.mjs`, which prints the claim beside the live
+answer, so a change on the vendor's side reads as a mismatch rather than as
+a stale paragraph.
+
+A sign-in with your own account is what closes the rest, and
+`tools/finish-qwenwork-intl.mjs` runs it in three steps: `start` begins the
+wrapper's device flow and prints the page to sign in on, `poll` asks the
+gateway until the browser authorizes (the same three-name query the plugin
+sends), and `probe` asks both hosts the routes above with the token it got,
+so the chat host and the usage route are answered by measurement rather than
+argued. The token is never printed, and the state file is deleted at the end.
 
 ## Daily check-in
 

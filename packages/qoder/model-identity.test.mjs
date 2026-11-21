@@ -1,6 +1,6 @@
 // Request-time labels preserve stable routing IDs on the shared Qoder protocol.
 import { afterEach, expect, test } from 'bun:test'
-import { QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin, QwenWorkEnterpriseAuthPlugin, _internal } from './index.mjs'
+import { QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin, QwenWorkIntlAuthPlugin, QwenWorkEnterpriseAuthPlugin, _internal } from './index.mjs'
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
 const catalog = { kmodel_latest: 'Kimi-K3', gmodel: 'GLM-5.3', qmodel_latest: 'Qwen3.8-Max', qmodel_38max: 'Qwen3.8-Max', dfmodel: 'DeepSeek-Flash', mmodel: 'MiniMax-M3.1-Flash', ultimate: 'Ultimate', future_slot: 'Future Model' }
@@ -30,7 +30,7 @@ async function fixture(create) {
   const ask = (model, stream = false) => loader.fetch('https://test.invalid/chat/completions', { method: 'POST', body: JSON.stringify({ model, stream, messages: [{ role: 'user', content: 'OK' }] }) })
   return { ask, sent, names, hooks, auth, listingCalls: () => listingCalls, refresh: () => hooks.provider.models({ models: {} }, { auth }), fail: () => { available = false } }
 }
-for (const [site, create] of [['qoder', QoderAuthPlugin], ['qoder-cn', QoderCNAuthPlugin], ['qwenwork', QwenWorkAuthPlugin], ['qwenwork-enterprise', QwenWorkEnterpriseAuthPlugin]]) {
+for (const [site, create] of [['qoder', QoderAuthPlugin], ['qoder-cn', QoderCNAuthPlugin], ['qwenwork', QwenWorkAuthPlugin], ['qwenwork-intl', QwenWorkIntlAuthPlugin], ['qwenwork-enterprise', QwenWorkEnterpriseAuthPlugin]]) {
   for (const stream of [false, true]) {
     test(`${site}: all model labels, duplicate labels and tiers; stream=${stream}`, async () => {
       const f = await fixture(create)

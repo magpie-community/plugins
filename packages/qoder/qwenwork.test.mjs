@@ -529,3 +529,210 @@ test("the identity 403 on the model list says to sign in again (tnt1223)", async
     restore()
   }
 })
+
+// qwenwork.ai is an Ory issuer of its own with its own OAuth client:
+// qwenwork-desktop-app, whose only registered redirect is the .ai gateway's
+// /oauth/callback. The public cloud's qwenwork-cn:// is refused there, so
+// the site must not inherit it.
+test("qwenwork-intl signs in through the site's own device wrapper, with the pair it alone accepts", async () => {
+  const mod = await import("./index.mjs")
+  const intl = await mod.QwenWorkIntlAuthPlugin({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })
+  const flow = await intl.auth.methods[0].authorize()
+  const url = new URL(flow.url)
+  // the wrapper is on the gateway, and it holds the desktop app's own client
+  // id with the bare deeplink scheme: any other pair is 400 not_allowed
+  expect(url.origin).toBe("https://gateway.qwenwork.ai")
+  expect(url.pathname).toBe("/device/selectAccounts")
+  expect(url.searchParams.get("client_id")).toBe("cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a")
+  expect(url.searchParams.get("redirect_uri")).toBe("qwenwork://")
+  expect(url.searchParams.get("challenge_method")).toBe("S256")
+  expect(url.searchParams.get("challenge")).toBeString()
+  expect(url.searchParams.get("nonce")).toBeString()
+  expect(url.searchParams.get("machine_id")).toBeString()
+  // the public cloud's scheme is not sent anywhere: .ai has it unregistered
+  expect(flow.url.includes("qwenwork-cn")).toBe(false)
+  // the issuer keeps the client and redirect the wrapper mints for it
+  const site = mod._internal.SITES["qwenwork-intl"]
+  expect(site.clientId).toBe("qwenwork-desktop-app")
+  expect(site.redirect).toBe("https://gateway.qwenwork.ai/oauth/callback")
+  expect(site.deviceClientId).not.toBe(site.clientId)
+  expect(site.deviceRedirect).not.toBe(site.redirect)
+})
+
+test("qwenwork-intl's calls go to its own gateway, not the CN one", async () => {
+  const mod = await import("./index.mjs")
+  const restore = mock()
+  answer = async () => new Response(JSON.stringify({ token: "dt", refresh_token: "dtr", user_id: "u1" }), { status: 200 })
+  try {
+    const s = mod._internal.SITES["qwenwork-intl"]
+    expect(s.openapi).toBe("https://gateway.qwenwork.ai")
+    expect(s.api).toBe("https://gateway.qwenwork.ai")
+    expect(s.web).toBe("https://qwenwork.ai")
+    // the poll follows the site's openapi host, and no CN host is reached
+    await mod.protocol.openapi(s, "/api/v1/deviceToken/poll", { query: { nonce: "n", verifier: "v", challenge_method: "S256" } })
+    expect(seen.length).toBe(1)
+    expect(seen[0].url.startsWith("https://gateway.qwenwork.ai/api/v1/deviceToken/poll?")).toBe(true)
+    expect(seen.some((r) => r.url.includes("qwenwork.cn"))).toBe(false)
+  } finally {
+    restore()
+  }
+})
+
+test("qwenwork-intl keeps QwenWork's own client identity, as the public cloud does", async () => {
+  const mod = await import("./index.mjs")
+  const intl = mod._internal.SITES["qwenwork-intl"]
+  const base = mod._internal.SITES.qwenwork
+  // everything the protocol needs is shared; the client, the redirect, the
+  // hosts and the model catalog differ (the catalog is a test of its own)
+  for (const key of ["rsaKey", "cosyVersion", "deviceOnly", "deviceRefreshTarget", "modelScene", "listAllModels", "clientType", "businessProduct", "sessionType", "usagePath", "userInfoPath"]) {
+    expect(intl[key]).toEqual(base[key])
+  }
+  expect(intl.clientType).toBe("6")
+  expect(intl.businessProduct).toBe("qoder_work")
+  expect(intl.clientId).not.toBe(base.clientId)
+  expect(intl.redirect).not.toBe(base.redirect)
+})
+
+// The international gateway's catalog is three tiers and nothing else: its
+// /algo/api/v2/model/list fills only `qwork`, and every named id the public
+// cloud has answers `unknown or disabled model` there — measured on the
+// gateway with the signed-in id list. Inheriting QWENWORK_MODELS would offer
+// magpie models the gateway refuses before anyone signs in.
+test("qwenwork-intl lists the three tiers its gateway serves, not the public cloud's named models", async () => {
+  const mod = await import("./index.mjs")
+  const intl = mod._internal.SITES["qwenwork-intl"]
+  const base = mod._internal.SITES.qwenwork
+  expect(intl.models.map((m) => m.id)).toEqual(["qwork-auto", "qwork-advanced", "qwork-ultimate"])
+  expect(intl.models.every((m) => typeof m.name === "string" && m.name.length > 0)).toBe(true)
+  // none of the public cloud's ids leaks in — each one is refused there
+  const named = new Set(base.models.map((m) => m.id))
+  for (const m of intl.models) expect(named.has(m.id)).toBe(false)
+  // the flagship's fallback list is the public cloud's, untouched
+  expect(intl.fallbackModels).toBeUndefined()
+  expect(mod._internal.SITES["qwenwork-enterprise"].fallbackModels.qwork.map((m) => m.key)).toEqual(base.models.map((m) => m.id))
+})
+
+// A price_factor of 0 is Qoder's "costs the plan nothing"; on this site it
+// is not. All three tiers carry it, and every call still draws on the Free
+// plan's credit pool (700 → 552 in one session), so magpie showed 免费 / 0×
+// beside a balance that was falling. The site sets freePricing: false, which
+// leaves is_free alone as the answer — and the public cloud, where 0× really
+// is free, keeps it.
+test("qwenwork-intl's tiers are priced, not free: a Free plan pays them from its credits", async () => {
+  const mod = await import("./index.mjs")
+  const intl = await mod.QwenWorkIntlAuthPlugin({ client, directory: process.cwd(), worktree: process.cwd(), $: undefined, project: {} })
+  const restore = mock()
+  const tiers = [
+    { key: "qwork-auto", display_name: "Standard｜Qwen3.8-Flash", enable: true, price_factor: 0, is_free: null },
+    { key: "qwork-advanced", display_name: "Pro", enable: true, price_factor: 0, is_free: null },
+    { key: "qwork-ultimate", display_name: "Flagship", enable: true, price_factor: 0, is_free: null },
+  ]
+  answer = async (url) => (url.includes("/model/list")
+    ? new Response(JSON.stringify({ qwork: tiers }), { status: 200 })
+    : new Response("{}", { status: 404 }))
+  try {
+    const cred = { type: "oauth", uid: "u1", email: "a@b.c", name: "A", machineId: "m1", access: "a", refresh: "r", expires: Date.now() + 3_600_000, deviceChat: true, deviceToken: "dt", deviceRefresh: "dtr" }
+    const ms = await intl.provider.models({ models: {} }, { auth: cred })
+    expect(Object.fromEntries(Object.entries(ms).map(([k, m]) => [k, m.free]))).toEqual({ "qwork-auto": false, "qwork-advanced": false, "qwork-ultimate": false })
+    // the site's switch is what decides, not a guess about the price
+    expect(mod._internal.SITES["qwenwork-intl"].freePricing).toBe(false)
+    expect(mod._internal.SITES.qwenwork.freePricing).toBeUndefined()
+    // freeOf unchanged where nothing sets it: 0× is still free on Qoder's own billing
+    expect(mod._internal.modelInfo({ key: "x", price_factor: 0 }).free).toBe(true)
+    expect(mod._internal.modelInfo({ key: "x", price_factor: 0 }, mod._internal.SITES["qwenwork-intl"]).free).toBe(false)
+    // is_free is still the answer on this site when the listing says it
+    expect(mod._internal.modelInfo({ key: "x", is_free: true }, mod._internal.SITES["qwenwork-intl"]).free).toBe(true)
+    // and the public cloud's same listing still reads 0× as free
+    seen.length = 0
+    const { pub } = await load()
+    const cn = await pub.provider.models({ models: {} }, { auth: cred })
+    expect(Object.values(cn).map((m) => m.free)).toEqual([true, true, true])
+  } finally {
+    restore()
+  }
+})
+
+// The gateway carries the sign-in and its routes — start, poll, refresh,
+// account-context — but answers 404 to the wallets route, which only
+// openapi.qoder.sh serves. A wallets read sent to the gateway comes back
+// empty and leaves a personal balance without its pools, so the site names
+// walletsHost; the refresh must stay on the gateway (where a bad token is a
+// 401, not a 404).
+test("qwenwork-intl keeps the gateway's routes, and reads wallets where they are served", async () => {
+  const mod = await import("./index.mjs")
+  const intl = mod._internal.SITES["qwenwork-intl"]
+  expect(intl.deviceWeb).toBe("https://gateway.qwenwork.ai")
+  expect(intl.openapi).toBe("https://gateway.qwenwork.ai")
+  expect(intl.api).toBe("https://gateway.qwenwork.ai")
+  // the refresh has no override: it is on the gateway
+  expect(intl.refreshHost).toBeUndefined()
+  expect(intl.walletsHost).toBe("https://openapi.qoder.sh")
+})
+
+test("qwenwork-intl's refresh goes to its own gateway, where the route is served", async () => {
+  const mod = await import("./index.mjs")
+  const restore = mock()
+  answer = async () => new Response(JSON.stringify({ device_token: "dt2", refresh_token: "dtr2", expires_at: Date.now() + 7_200_000 }), { status: 200 })
+  try {
+    await mod._internal.refreshDevice(mod._internal.SITES["qwenwork-intl"], "dtr", false, {})
+    expect(seen.length).toBe(1)
+    expect(seen[0].url.startsWith("https://gateway.qwenwork.ai/api/v1/deviceToken/refresh")).toBe(true)
+    // the public cloud keeps its own, unchanged
+    seen.length = 0
+    await mod._internal.refreshDevice(mod._internal.SITES.qwenwork, "dtr", false, {})
+    expect(seen[0].url.startsWith("https://gateway.qwenwork.cn/api/v1/deviceToken/refresh")).toBe(true)
+  } finally {
+    restore()
+  }
+})
+
+test("qwenwork-intl renews its device token with the wrapper's pair, not the issuer's", async () => {
+  const mod = await import("./index.mjs")
+  const intl = mod._internal.SITES["qwenwork-intl"]
+  // the wrapper minted the token, so the wrapper's client and scheme are the
+  // pair that renews it; the issuer's qwenwork-desktop-app and gateway
+  // callback never go on a refresh
+  expect(mod._internal.deviceRefreshBody(intl, "r", {})).toEqual({
+    refresh_token: "r",
+    target: "c",
+    client_id: "cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a",
+    redirect_uri: "qwenwork://",
+  })
+  // a biz account keeps its own target and team, and still the wrapper's pair
+  expect(mod._internal.deviceRefreshBody(intl, "r", { identity: "biz", teamId: "t7" })).toEqual({
+    refresh_token: "r",
+    target: "biz",
+    team_id: "t7",
+    client_id: "cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a",
+    redirect_uri: "qwenwork://",
+  })
+  // the public cloud's two identities are one and the same, so its body is
+  // unchanged; a site without a wrapper of its own falls back to its own pair
+  expect(mod._internal.deviceRefreshBody(mod._internal.SITES.qwenwork, "r", {})).toEqual({
+    refresh_token: "r",
+    target: "c",
+    client_id: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",
+    redirect_uri: "qwenwork-cn://",
+  })
+  // the enterprise flagship's account signed in with no redirect_uri at all,
+  // so its renewal carries none either
+  const ent = mod.protocol.siteOf(mod._internal.SITES["qwenwork-enterprise"], entCred())
+  expect(mod._internal.deviceRefreshBody(ent, "r", {})).toEqual({ refresh_token: "r", target: "c" })
+})
+
+// The gateway's own field check settles the pair, with a dummy token: only
+// the wrapper's pair is forwarded to the issuer (401 carrying Ory's
+// invalid_grant upstream); the issuer's pair and every mixed pair are
+// refused before they leave (400 INVALID_REFRESH_REQUEST, no upstream).
+test("qwenwork-intl's refresh carries the wrapper's pair, the only one the gateway forwards", async () => {
+  const mod = await import("./index.mjs")
+  const intl = mod._internal.SITES["qwenwork-intl"]
+  const body = mod._internal.deviceRefreshBody(intl, "r", {})
+  expect(body.client_id).toBe(intl.deviceClientId)
+  expect(body.redirect_uri).toBe(intl.deviceRedirect)
+  // the issuer's pair is a different one on this site, and never travels here
+  expect(body.client_id).not.toBe(intl.clientId)
+  expect(body.redirect_uri).not.toBe(intl.redirect)
+  // no cookie, no machine identity, nothing else the wrapper would refuse
+  expect(Object.keys(body).sort()).toEqual(["client_id", "redirect_uri", "refresh_token", "target"])
+})

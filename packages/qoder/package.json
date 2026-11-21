@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-qoder-auth",
-  "version": "0.2.71",
-  "description": "Qoder and QwenWork (千问办公) subscriptions in OpenCode and magpie: qoder.com, qoder.cn, gateway.qwenwork.cn and the enterprise flagship, VPC and dedicated domains",
+  "version": "0.3.0",
+  "description": "Qoder and QwenWork (千问办公) subscriptions in OpenCode and magpie: qoder.com, qoder.cn, gateway.qwenwork.cn, qwenwork.ai and the enterprise flagship, VPC and dedicated domains",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { ".": "./opencode2.mjs" },
@@ -9,6 +9,7 @@
     "index.mjs",
     "opencode.mjs",
     "opencode2.mjs",
+    "tools",
     "README.md",
     "LICENSE-CLIProxyAPI"
   ],

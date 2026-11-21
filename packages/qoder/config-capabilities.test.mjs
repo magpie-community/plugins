@@ -19,6 +19,7 @@ import {
   QoderAuthPlugin,
   QoderCNAuthPlugin,
   QwenWorkAuthPlugin,
+  QwenWorkIntlAuthPlugin,
   QwenWorkEnterpriseAuthPlugin,
 } from "./index.mjs"
 
@@ -34,6 +35,7 @@ const SITES = [
   ["qoder", QoderAuthPlugin],
   ["qoder-cn", QoderCNAuthPlugin],
   ["qwenwork", QwenWorkAuthPlugin],
+  ["qwenwork-intl", QwenWorkIntlAuthPlugin],
   ["qwenwork-enterprise", QwenWorkEnterpriseAuthPlugin],
 ]
 

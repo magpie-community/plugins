@@ -641,11 +641,12 @@ async function deviceSignIn(site) {
   const challenge = b64url(createHash("sha256").update(verifier).digest())
   const nonce = randomUUID()
   const machineId = randomUUID()
-  const q = new URLSearchParams({ challenge, challenge_method: "S256", nonce, machine_id: machineId, client_id: site.clientId })
-  if (site.redirect) q.set("redirect_uri", site.redirect)
+  const q = new URLSearchParams({ challenge, challenge_method: "S256", nonce, machine_id: machineId, client_id: site.deviceClientId ?? site.clientId })
+  const deviceRedirect = site.deviceRedirect ?? site.redirect
+  if (deviceRedirect) q.set("redirect_uri", deviceRedirect)
   const until = Date.now() + SIGN_IN_TIMEOUT
   return {
-    url: `${site.web}/device/selectAccounts?${q}`,
+    url: `${site.deviceWeb ?? site.web}/device/selectAccounts?${q}`,
     instructions: `Sign in to ${site.name} in the browser and authorize this device`,
     method: "auto",
     async callback() {
@@ -852,9 +853,18 @@ const CN_MODELS = [
 // the while an active promotion lasts, with a price before it, is a
 // discount, not a free model; a limited-time free model (Qwen3.8-Flash:
 // 0×, its original_price_factor 0.1 struck through) is free while it is.
-function freeOf(raw) {
+//
+// That rule reads a price as the credits a request costs, which is Qoder's
+// own billing: a factor of 0 costs the plan nothing. A site whose price
+// factor says something narrower sets freePricing: false, and then only
+// is_free speaks. QwenWork Intl is one: its three tiers all carry
+// price_factor 0 — no per-token surcharge on a Free subscription — while
+// every call draws on that plan's credit pool (700 → 552 measured in one
+// session), so 0× there means "not priced per token", not "free".
+function freeOf(raw, site) {
+  const byPrice = site?.freePricing !== false
   const price = raw.price_factor ?? raw.priceFactor
-  if (typeof price === "number" && Number.isFinite(price)) {
+  if (byPrice && typeof price === "number" && Number.isFinite(price)) {
     if (price !== 0) return false
     const p = raw.promotion ?? raw.prommotion
     const before = p?.before_promotion_price_factor ?? p?.beforePromotionPriceFactor
@@ -925,7 +935,7 @@ function windowsOf(raw) {
 // default from thinking_config (is_reasoning alone when it has none), and
 // its context: the largest window it offers (windowsOf), since a request
 // that needs more than the default is sent a larger one (windowFor).
-function modelInfo(raw) {
+function modelInfo(raw, site) {
   const { windows, defaultWindow } = windowsOf(raw)
   const m = {
     key: raw.key,
@@ -939,7 +949,7 @@ function modelInfo(raw) {
     alwaysThinks: false,
     efforts: Array.isArray(raw.reasoning_efforts) ? [...raw.reasoning_efforts] : [],
     defaultEffort: "",
-    free: freeOf(raw),
+    free: freeOf(raw, site),
     ...rateOf(raw),
     config: raw,
   }
@@ -995,10 +1005,10 @@ function sceneModels(listing) {
 // Kimi and MiniMax off, in every scene), and an enterprise qoder.com
 // account's stale job token was answered the same (plugins#484). A listing
 // with no model that costs credits, or with one of them on, isn't it.
-function freeView(entries) {
+function freeView(entries, site) {
   let off = false
   for (const m of entries) {
-    if (!m || ["", "auto", "default"].includes(String(m.key ?? "").trim()) || freeOf(m)) continue
+    if (!m || ["", "auto", "default"].includes(String(m.key ?? "").trim()) || freeOf(m, site)) continue
     if (m.enable) return false
     off = true
   }
@@ -1009,11 +1019,13 @@ function modelInfos(listing, site) {
   if (site?.modelScene) {
     return (Array.isArray(listing?.[site.modelScene]) ? listing[site.modelScene] : [])
       .filter((m) => (site.listAllModels || m?.enable) && !["", "auto", "default"].includes(String(m.key ?? "").trim()))
-      .map(modelInfo)
+      // not .map(modelInfo): map hands the index as the second argument, and
+      // that argument is the site here
+      .map((m) => modelInfo(m, site))
   }
   return sceneModels(listing)
     .filter((m) => m?.enable && !["", "auto", "default"].includes(String(m.key ?? "").trim()))
-    .map(modelInfo)
+    .map((m) => modelInfo(m, site))
 }
 
 async function fetchListing(site, cred) {
@@ -2904,7 +2916,22 @@ function deviceRefreshBody(site, refresh, a = {}) {
   const body = a?.identity === "biz" && a?.teamId
     ? { refresh_token: refresh, target: "biz", team_id: a.teamId }
     : { refresh_token: refresh, target: site.deviceRefreshTarget }
-  return site.clientId && site.redirect ? { ...body, client_id: site.clientId, redirect_uri: site.redirect } : body
+  // the pair that minted the token is the one to renew it: the device
+  // wrapper's where a site has one of its own (qwenwork-intl, whose wrapper
+  // signs in as a different client than the issuer knows), and the site's
+  // own otherwise, where the two coincide. Measured at the gateway's own
+  // field check with a dummy refresh token, so it settles the shape and not
+  // the token — a real refresh token has not been carried through — and the
+  // wrapper's pair is the only one that passes it: answered
+  // 401 INVALID_REFRESH_TOKEN carrying Ory's own invalid_grant as
+  // upstreamError, i.e. forwarded to the issuer. The issuer's pair is 400
+  // INVALID_REFRESH_REQUEST with no upstream (refused before it leaves),
+  // and so is every mixed pair (wrapper client + gateway callback, issuer
+  // client + qwenwork://). Omitting either field is a 400 naming it
+  // (field=redirect_uri / field=client_id, missing_required_field).
+  const clientId = site.deviceClientId ?? site.clientId
+  const redirect = site.deviceRedirect ?? site.redirect
+  return clientId && redirect ? { ...body, client_id: clientId, redirect_uri: redirect } : body
 }
 
 // refreshDevice trades the device refresh token for a new pair; it rotates
@@ -3084,7 +3111,8 @@ function parseUsage(env) {
   return out
 }
 
-// SITES are Qoder's two sites, each a subscription of its own.
+// SITES are Qoder's two sites and QwenWork's three, each a subscription of
+// its own.
 // QwenWork (千问办公, qwenwork.cn) speaks this protocol on Alibaba's own
 // service, with its own scene, client id and RSA key (the same key), as its
 // desktop client sends. The models below are the public cloud's qwork list
@@ -3106,6 +3134,23 @@ const QWORK_FALLBACK_LISTING = {
     { key: "qwen3.8-max-preview", display_name: "Qwen3.8-Max", is_vl: false, is_reasoning: false, max_input_tokens: 131072 },
   ],
 }
+// The international site's catalog is three tiers and nothing else: the
+// gateway's /algo/api/v2/model/list answers its 11 scenes with only `qwork`
+// filled, holding qwork-auto / qwork-advanced / qwork-ultimate, and every
+// named id the public cloud has (flash, pro, qwen3.8-max-preview, qwen4-max,
+// deepseek-flash, glm-5.3, kimi-k3.1-pro …) answers `unknown or disabled
+// model` there. So this site must not inherit QWENWORK_MODELS: before a
+// sign-in magpie would offer models the gateway refuses. Each tier is a
+// routing pool, not a model — the upstream answer echoes the tier's own name
+// ("Pro"), never the base model behind it.
+// images: true is the listing's own is_vl, true on all three. The context
+// each offers (200K / 400K / 1M, 180K max_input_tokens when a request names
+// none) is left to the signed-in listing, which carries it.
+const QWENWORK_INTL_MODELS = [
+  { id: "qwork-auto", name: "Standard｜Qwen3.8-Flash", images: true },
+  { id: "qwork-advanced", name: "Pro", images: true },
+  { id: "qwork-ultimate", name: "Flagship", images: true },
+]
 const QWENWORK_RSA_KEY = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
 4k6Pz1EaDicBMpdpxKduSZu5OANqUq8er4GM95omAGIOPOh+Nx0spthYA2BqGz+l
@@ -3211,13 +3256,16 @@ function accountIdentity(v) {
   return isBiz && orgId && teamId ? { identity: "biz", teamId } : {}
 }
 
-const QWENWORK_COMMON = {
-  clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", // the desktop client's
+// QwenWork's shared identity: one product whose sites differ in the client
+// the desktop app signs in as and in the redirect that sign-in carries. Both
+// are given per site; everything else is the same client.
+const qwenworkCommon = ({ clientId, redirect }) => ({
+  clientId,
   rsaKey: QWENWORK_RSA_KEY,
   usagePath: "/api/v1/adapter/user/account-context?include=user,plan,quota",
   parseUsage: parseAccountContext,
   cosyVersion: "1.1.59",
-  redirect: "qwenwork-cn://",
+  redirect,
   deviceOnly: true, // the device token is itself the chat token
   deviceRefreshTarget: "c",
   clientHeaders: qwenworkClientHeaders,
@@ -3229,7 +3277,7 @@ const QWENWORK_COMMON = {
   checkin: false,  // no campaigns endpoint, and no Qoder desktop identity to send
   models: QWENWORK_MODELS,
   systemPrompt: "You are QwenWork (qw), a helpful assistant. Use the instructions below and the tools available to you to assist the user.",
-}
+})
 
 const SITES = {
   qoder: {
@@ -3263,7 +3311,7 @@ const SITES = {
   // QwenWork's public cloud. QWENWORK_ENT_DOMAIN (the enterprise preset)
   // is the only variable read; the sites are these constants.
   qwenwork: {
-    ...QWENWORK_COMMON,
+    ...qwenworkCommon({ clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", redirect: "qwenwork-cn://" }),
     id: "qwenwork",
     name: "QwenWork",
     // the public cloud's personal accounts have wallets; the client asks
@@ -3273,12 +3321,64 @@ const SITES = {
     openapi: "https://gateway.qwenwork.cn",
     api: "https://gateway.qwenwork.cn",
   },
+  // QwenWork's international site. qwenwork.ai is an Ory issuer of its own:
+  // its discovery puts authorize on /oauth2/auth, token on /auth/oauth/token,
+  // userinfo on /user/info, revoke on /oauth2/revoke, and it knows the desktop
+  // client as qwenwork-desktop-app (e883ade2-… is invalid_client there).
+  //
+  // The issuer's own RFC 8628 device grant is not open to that client (POST
+  // /oauth2/device/auth answers invalid_grant, "does not have the
+  // 'urn:ietf:params:oauth:grant-type:device_code' grant"), so this site signs
+  // in through the site's own device wrapper instead. Each line below is a
+  // live measurement, reproducible with tools/probe-qwenwork-intl.mjs:
+  // - the wrapper is gateway.qwenwork.ai/device/selectAccounts, and it answers
+  //   302 for exactly one pair: client_id cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a
+  //   (the brand's oauthClientId, not qwenwork-desktop-app) with
+  //   redirect_uri=qwenwork:// (the bare deeplink scheme). Every other pair
+  //   measured — qwenwork-desktop-app, the registered callback, no redirect_uri
+  //   at all — is 400 INVALID_DEVICE_FLOW, field=query, reason=not_allowed.
+  // - that 302 lands on qwenwork.ai/oauth2/auth with client_id
+  //   qwenwork-desktop-app, redirect_uri https://gateway.qwenwork.ai/oauth/
+  //   callback and scope "openid profile email offline_access qwen_work": the
+  //   wrapper is what holds the desktop client, so the redirect above stays
+  //   the issuer's registered one and deviceRedirect carries the wrapper's.
+  // - the poll is gateway.qwenwork.ai/api/v1/deviceToken/poll, which answers
+  //   404 with an empty body until the browser authorizes — the same 404 {} the
+  //   CN gateway gives a pending flow, so a 404 is a wait, not a failure.
+  "qwenwork-intl": {
+    ...qwenworkCommon({ clientId: "qwenwork-desktop-app", redirect: "https://gateway.qwenwork.ai/oauth/callback" }),
+    id: "qwenwork-intl",
+    name: "QwenWork Intl",
+    web: "https://qwenwork.ai",
+    openapi: "https://gateway.qwenwork.ai",
+    api: "https://gateway.qwenwork.ai",
+    // the wrapper, and the client and redirect only it knows
+    deviceWeb: "https://gateway.qwenwork.ai",
+    deviceClientId: "cc65e5fc-05bd-4f5d-a4e8-0df19aa3d75a",
+    deviceRedirect: "qwenwork://",
+    // the pools behind a personal balance: the gateway serves the
+    // account-context but answers 404 to the wallets route, and
+    // openapi.qoder.sh serves the wallets (401 without a token, not 404).
+    // The refresh stays on the gateway, which serves it (401 to a bad
+    // refresh token, not 404). Both measured in the probe tool.
+    walletsHost: "https://openapi.qoder.sh",
+    walletsPath: "/api/v1/adapter/user/wallets",
+    // the site's catalog, read off its own gateway: three tiers, and none of
+    // the public cloud's named models are accepted here
+    models: QWENWORK_INTL_MODELS,
+    // all three tiers carry price_factor 0, which on this site means "no
+    // per-token surcharge", not "free": a Free account pays from its credit
+    // pool on every call (700 → 552 observed in one session), and nothing in
+    // the catalog states that. So freeOf reads is_free alone here, and magpie
+    // stops labelling tiers 免费 while the balance falls
+    freePricing: false,
+  },
   // QwenWork's enterprise flagship (企业旗舰版): the enterprise's own
   // domain, asked at sign-in — web/openapi/api all live on that one host,
   // and its device flow sends no redirect_uri. QWENWORK_ENT_DOMAIN presets
   // the domain so the sign-in asks nothing.
   "qwenwork-enterprise": {
-    ...QWENWORK_COMMON,
+    ...qwenworkCommon({ clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb", redirect: "qwenwork-cn://" }),
     id: "qwenwork-enterprise",
     name: "QwenWork 企业版",
     web: "https://gateway.qwenwork.cn",
@@ -3478,7 +3578,7 @@ const makePlugin = (site) => async ({ client }) => {
       // the keys this listing names and has off (ask tells a model off for
       // the credits apart by them)
       l.off = off
-      if (!s.modelScene) l.freeView = freeView(sceneModels(listing))
+      if (!s.modelScene) l.freeView = freeView(sceneModels(listing), s)
       listings.set(key, l)
     }
     return l
@@ -3555,11 +3655,24 @@ const makePlugin = (site) => async ({ client }) => {
           env = await read(token)
         }
         // the pools behind the balance, as the client asks for a personal
-        // account's; a failed read leaves the balance without them
+        // account's; a failed read leaves the balance without them. The
+        // wallets route may live on another host than the usage one, so a
+        // site names it (QwenWork Intl: usage on the gateway, wallets on the
+        // global API host).
         let wallets
         const ctxUser = (env?.data ?? env)?.user
         if (site.walletsPath && ctxUser?.is_biz !== true && ctxUser?.isBiz !== true) {
-          try { wallets = await read(token, site.walletsPath) } catch {}
+          try {
+            if (!site.walletsHost || site.walletsHost === site.openapi) wallets = await read(token, site.walletsPath)
+            else {
+              const s = siteOf(site, cred)
+              const res = await fetch(`${site.walletsHost}${site.walletsPath}`, {
+                headers: { Accept: "application/json", ...(s.clientHeaders?.() ?? {}), Authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(20_000),
+              })
+              if (res.status === 200) wallets = await res.json()
+            }
+          } catch {}
         }
         return { ...(site.parseUsage ? site.parseUsage(env, wallets) : { windows: [] }), signIn, ...who }
       }
@@ -4214,6 +4327,7 @@ const makePlugin = (site) => async ({ client }) => {
 export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
 export const QwenWorkAuthPlugin = makePlugin(SITES.qwenwork)
+export const QwenWorkIntlAuthPlugin = makePlugin(SITES["qwenwork-intl"])
 
 // enterpriseDomain reads what the user entered as their enterprise's
 // address, as the desktop client's enterprise mode reads its endpoint
@@ -4274,4 +4388,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, refreshDevice, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
