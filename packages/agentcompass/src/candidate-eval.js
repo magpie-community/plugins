@@ -11,19 +11,22 @@
  * Pure ES2022 module with zero external or Node-only dependencies (Bun and Magpie's `moejs`).
  */
 
-import { DIRECT_SOURCES, healthKey, modelLeaf, nameFixesEffort, resolveModel, rowKey, canonicalModel, splitEffortSuffix, pyRound } from "./catalog.js";
+import { DIRECT_SOURCES, PROVIDER_NAME_STATUSES, checkModelPin, healthKey, modelLeaf, modelPinProblem, pinGiven, pyStrip, nameFixesEffort, resolveListed, rowKey, canonicalModel, splitEffortSuffix, pyRound } from "./catalog.js";
 import {
   FIVE_AXES,
   IMAGE_INPUT_LEVEL,
-  TOOL_LEVEL_FACETS,
+  FACET_CATEGORY,
+  LEVEL_FACETS,
   atEffort,
+  facetAtEffort,
   fiveAxisFit,
   fiveAxisHeadroom,
   fiveAxisLevel,
   fiveAxisShares,
   fiveAxisValues,
+  readingEffort,
 } from "./axis-scores.js";
-import { CATEGORY_FACETS } from "./user-scores.js";
+import { CATEGORY_FACETS, appliedNote, appliedScores } from "./user-scores.js";
 import {
   bundleTaskUsd,
   capacityUsd,
@@ -64,30 +67,230 @@ const sumOf = (rows, fn) => rows.reduce((total, row) => total + fn(row), 0);
 
 // ---------------------------------------------------------------------------- the fleet's name resolution
 
-export const rowKeyOf = (model, fleet) => rowKey(model, fleet.models, fleet.aliases, fleet.families);
-export const canonicalOf = (model, fleet) => canonicalModel(model, fleet.aliases, fleet.models, fleet.families);
+export const rowKeyOf = (model, fleet, providers = []) => rowKey(model, fleet.models, fleet.aliases, fleet.families, fleet.providerNames, providers);
+export const canonicalOf = (model, fleet) => canonicalModel(model, fleet.aliases, fleet.models, fleet.families, [], fleet.providerNames);
 export const modelInfo = (fleet, model) => {
-  const resolved = resolveModel(String(model || ""), fleet.models, fleet.aliases, fleet.families);
+  const resolved = resolveListed(String(model || ""), fleet.models, fleet.aliases, fleet.families, fleet.providerNames);
   const value = DIRECT_SOURCES.includes(resolved.source) ? fleet.models[resolved.key] : null;
   return value && typeof value === "object" ? value : {};
 };
 
-/** Does the task's named model (or bundle id) name this bundle? Compares the resolved key and the raw spelling. */
-export function modelPinMatches(task, bundle, model) {
-  const named = task.constraint_model;
-  if (!named) return false;
-  const raw = String((bundle || {}).model || "");
-  return [(bundle || {}).id, model, raw].includes(named) || modelLeaf(named).toLowerCase() === modelLeaf(raw).toLowerCase();
+// ---------------------------------------------------------------------------- what a named model names
+
+/** The ids a bundle answers to: its own, and the entry id it was split from (one entry listing several efforts). */
+const idsOf = (bundle) => [(bundle || {}).id, (bundle || {}).source_id].filter(Boolean);
+/** An AgentCompass auto-bundle id (`auto:<account>:<harness>:<model>`, `auto_bundles.split_id`): it names that bundle only. */
+const isAutoId = (text) => text.startsWith("auto:") && text.slice(5).split(":").length >= 3;
+
+/**
+ * The endpoints a bundle reads a bare name with (`account_fleet.bundle_providers`): the catalogs a Magpie preset's own list was
+ * read on (`served`, set by the adapter's `onProvider`), else none: every other pool name carries its provider in its prefix.
+ */
+export const bundleProviders = (bundle) => [...new Set(((bundle || {}).served || []).filter(Boolean).map(String))];
+
+/**
+ * Every bundle a pin could name (`account_fleet.pin_pool`): each bundle the pool offers, before any filter of preference
+ * (`disabled`), availability (unavailable, health, cooldowns), `when`, modality or effort, which apply to the named bundles only,
+ * so a named bundle that cannot run is reported with its own reason, never replaced by one the name does not name. Narrowed to
+ * a named bundle id when the request names one (its own id, the entry it was split from, or the row a named effort was cut from).
+ */
+export function pinPool(ctx, bundleId = null) {
+  const seen = new Set();
+  const out = [];
+  for (const b of [...Object.values(ctx.pin_source || {}), ...Object.values(ctx.bundles || {})]) {
+    if (!b || typeof b !== "object" || seen.has(b.id)) continue;
+    seen.add(b.id);
+    if (bundleId && ![b.id, b.source_id, b.pin_carrier].includes(bundleId)) continue;
+    out.push(b);
+  }
+  return out;
 }
 
-/** The user named this bundle, or its model and effort: it keeps that effort. */
-export function exactPin(task, bundle, model) {
+/**
+ * Whether `pin` names `bundle` by identity (`account_fleet.pin_matches_identity`, no prefix test): an auto-bundle id names that id
+ * only; otherwise the bundle's id, or its row equal to the pin's row as the bundle reads names (its `served` endpoints for a bare
+ * pin): `<provider>/<name>` for a pair with no row there, its own leaf for an unmeasured name. No leaf comparison, no comparison
+ * of a resolved row id with a raw spelling.
+ */
+export function pinMatchesIdentity(pin, bundle, fleet) {
+  const text = String(pin ?? "").trim();
+  if (!text || !bundle || typeof bundle !== "object") return false;
+  if (isAutoId(text)) return idsOf(bundle).includes(text);
+  const spelled = splitEffortSuffix(text).name;
+  if (idsOf(bundle).some((id) => text === id || spelled === id)) return true;
+  const own = rowKeyOf(bundle.model || "", fleet);
+  if (!own) return false;
+  return rowKeyOf(text, fleet, spelled.includes("/") ? [] : bundleProviders(bundle)) === own;
+}
+
+/**
+ * `[spellings, named effort]` of a pin or an advertised spelling, lowercase (`account_fleet._pin_spellings`): the name, and with a
+ * `:effort` or `-effort` also the name with it, the other way round, so `x:high`, `x-high` and `x` meet.
+ */
+function pinSpellings(text, fleet, providers) {
+  const { name: spelled, effort: colon } = splitEffortSuffix(String(text ?? "").trim());
+  if (!spelled) return [[], null];
+  const low = spelled.toLowerCase();
+  if (colon) return [[low, `${low}-${colon}`], colon];
+  const dash = resolveListed(spelled, fleet.models, fleet.aliases, fleet.families, fleet.providerNames, providers).effort;
+  if (dash && low.endsWith(`-${dash}`)) return [[low, low.slice(0, -dash.length - 1)], dash];
+  return [[low], null];
+}
+
+/** Whether a bundle advertises the spelling the user typed, case and effort aside (`account_fleet._advertises_pin`). */
+function advertisesPin(bundle, text, fleet) {
+  const adv = advertisedModel(bundle);
+  if (!adv) return false;
+  const [pinForms, pinEffort] = pinSpellings(text, fleet, []);
+  if (pinForms.includes(adv.toLowerCase())) return true;
+  if (pinEffort !== null) return false;
+  return pinSpellings(adv, fleet, adv.includes("/") ? [] : bundleProviders(bundle))[0].some((form) => pinForms.includes(form));
+}
+
+/** The Magpie preset ids a bundle was listed under, as Magpie gives them (`account_fleet.bundle_presets`, never expanded). */
+export const bundlePresets = (bundle) => [...new Set(((bundle || {}).presets || []).filter(Boolean).map(String))];
+
+const ANTIGRAVITY = new Set(["antigravity", "antigravity-resilient"]);
+/** `account_fleet._same_provider`: equal ids, Antigravity's two launch providers alike; never a match on an empty id. */
+const sameProvider = (bundleProvider, provider) =>
+  Boolean(provider && bundleProvider) && (bundleProvider === provider || (ANTIGRAVITY.has(provider) && ANTIGRAVITY.has(bundleProvider)));
+
+/**
+ * Whether a prefix (lowercase) is the bundle's account, its provider, an endpoint it read its name on (`served`) or the Magpie
+ * preset it is listed under (`presets`) (`account_fleet._bundle_has_prefix`).
+ */
+function bundleHasPrefix(bundle, prefix) {
+  const account = String(bundle.account || "").toLowerCase();
+  const provider = String(bundle.provider || bundle.account || "").toLowerCase();
+  if (prefix === account || sameProvider(provider, prefix)) return true;
+  // A Magpie quota seat is keyed `<provider>/<seat>` (its account id, above) and also named by its seat alone.
+  if (bundle.seat && String(bundle.seat).toLowerCase() === prefix) return true;
+  return [...bundleProviders(bundle), ...bundlePresets(bundle)].some((id) => id.toLowerCase() === prefix);
+}
+
+/**
+ * A prefixed pin `P/name` on one bundle (`account_fleet._prefixed_bundle_matches`): its id, the spelling it advertises, or `P` one
+ * of the bundle's own ids (`bundleHasPrefix`) and the bundle of the pin's row as the bundle reads names.
+ */
+function prefixedBundleMatches(text, spelled, prefix, bundle, fleet) {
+  if (idsOf(bundle).some((id) => text === id || spelled === id)) return true;
+  if (advertisesPin(bundle, text, fleet)) return true;
+  if (!bundleHasPrefix(bundle, prefix)) return false;
+  const own = rowKeyOf(bundle.model || "", fleet);
+  // A prefix of one segment is read with the name, as AgentCompass reads `P/name`; a seat's `<provider>/<seat>/` is not a name.
+  const named = prefix.includes("/") ? text.slice(prefix.length + 1) : text;
+  return Boolean(own) && rowKeyOf(named, fleet, bundleProviders(bundle)) === own;
+}
+
+/**
+ * `[the pin as read, the bundles it names]` over `items` (`account_fleet._read_pin`, the owner's rule of 2026-11-20). An
+ * auto-bundle id names that id only. A bare name (no `/`) names the model on every bundle: each `pinNamesBundle` names, whatever it
+ * advertises. A prefixed `P/name` is obeyed: the bundles `P` names and no other, also when none of them can run. A prefix that
+ * names nothing in the pool is dropped and the rest is read again from the start (`unrecognizedPrefixMatches`).
+ */
+function readPin(text, items, fleet) {
+  if (items.length === 0 || isAutoId(text)) return [text, items.filter((b) => idsOf(b).includes(text)), null];
+  const spelled = splitEffortSuffix(text).name;
+  if (!spelled.includes("/")) return [text, items.filter((b) => pinMatchesIdentity(text, b, fleet)), null];
+  // The prefix is the longest leading part that is an id of a bundle in the pool and names a bundle with the rest (a seat's
+  // `<provider>/<seat>` before its provider), then the shorter ones; a prefix that is an id but names no bundle with the rest is
+  // obeyed (named nothing) only when no shorter one names a bundle: `claude/work/custom-m` is the preset `claude`'s `work/custom-m`
+  // when the seat `claude/work` has no `custom-m`.
+  const segments = spelled.split("/");
+  let unmatched = null;
+  for (let k = segments.length - 1; k >= 1; k--) {
+    const prefix = segments.slice(0, k).join("/").toLowerCase();
+    if (!items.some((b) => bundleHasPrefix(b, prefix))) continue;
+    const named = items.filter((b) => prefixedBundleMatches(text, spelled, prefix, b, fleet));
+    if (named.length > 0) return [text, named, prefix];
+    if (unmatched === null) unmatched = [text, named, prefix];
+  }
+  if (unmatched !== null) return unmatched;
+  const named = items.filter((b) => prefixedBundleMatches(text, spelled, segments[0].toLowerCase(), b, fleet));
+  if (named.length > 0) return [text, named, null];
+  return unrecognizedPrefixMatches(text, items, fleet);
+}
+
+/**
+ * A prefix that names nothing in the pool (no bundle id, no advertised spelling, no account, seat, provider, endpoint or preset of
+ * that id) is dropped and the rest is read as the pin from the start (`account_fleet._unrecognized_prefix_matches`; each level of a
+ * name with several `/` is decided again): `opencode/deepseek-v4-flash` where nothing is `opencode` is the bare `deepseek-v4-flash`.
+ */
+function unrecognizedPrefixMatches(text, items, fleet) {
+  return readPin(text.slice(text.indexOf("/") + 1), items, fleet);
+}
+
+const poolItems = (pool) => (pool || []).filter((b) => b && typeof b === "object");
+
+/**
+ * The bundles of `pool` (order kept) a pin names (`account_fleet.pin_matching_bundles`; see `readPin`). A malformed pin names
+ * nothing here: it is refused where the caller hands it over (`checkModelPin` in `task-intake.js`), and a stored one stays inert.
+ */
+export function pinMatchingBundles(pin, pool, fleet) {
+  if (!pinGiven(pin) || modelPinProblem(pin) !== null) return [];
+  return readPin(pyStrip(pin), poolItems(pool), fleet)[1];
+}
+
+/**
+ * How a pin reads on `pool`: `{ pin, named, prefix }`, the pin as read (`effectivePin`), the bundles it names and the prefix that
+ * named them (lowercase; `null` for a bare name, an id or an advertised spelling). Throws `InvalidModelPin` for a malformed pin.
+ */
+export function pinReading(pin, pool, fleet) {
+  const [asRead, named, prefix] = readPin(checkModelPin(pin), poolItems(pool), fleet);
+  return { pin: asRead, named, prefix };
+}
+
+/** The pin as read on `pool` (`account_fleet.effective_pin`): `P/` kept when `P` names something in the pool, else dropped. */
+export function effectivePin(pin, pool, fleet) {
+  return pinReading(pin, pool, fleet).pin;
+}
+
+/**
+ * Whether `pin` names `bundle` in `pool` (`account_fleet.pin_names_bundle`, `pool` the bundle alone when omitted): read through
+ * `pinMatchingBundles`, so a prefix is obeyed. Identity alone, with no prefix test, is `pinMatchesIdentity`.
+ */
+export function pinNamesBundle(pin, bundle, fleet, pool = [bundle]) {
+  if (!bundle || typeof bundle !== "object") return false;
+  return pinMatchingBundles(pin, pool, fleet).some((b) => b === bundle || (bundle.id && b.id === bundle.id));
+}
+
+/** The pin text a task holds: what the user typed (`constraint_raw_model`), else the resolved name. */
+const pinText = (task) => task.constraint_raw_model || task.constraint_model || null;
+
+/**
+ * Ids of the bundles the task's named model or bundle names over `pinPool` (`candidate_eval.pin_matched_ids`). A named bundle
+ * with no named model names that bundle only.
+ */
+export function pinMatchedIds(task, ctx) {
+  const cb = task.constraint_bundle;
+  const pool = pinPool(ctx, cb);
+  if (cb && !task.constraint_raw_model) return new Set(pool.map((b) => b.id));
+  const pin = pinText(task);
+  if (!pin) return new Set();
+  return new Set(pinMatchingBundles(pin, pool, ctx.fleet).map((b) => b.id));
+}
+
+/** The ids the task names in `ctx`, computed once per ranking (`rank` keeps them on the context). */
+const matchedIdsOf = (task, ctx) => ctx._pin_matched_ids || pinMatchedIds(task, ctx);
+
+/** Does the task's named model (or bundle id) name this bundle (`candidate_eval.model_pin_matches`)? */
+export function modelPinMatches(task, bundle, ctx) {
+  if (!(task.constraint_model || task.constraint_bundle)) return false;
+  return matchedIdsOf(task, ctx).has((bundle || {}).id);
+}
+
+/** The user named this bundle, or its model and effort: it keeps that effort (`candidate_eval.exact_pin`). */
+export function exactPin(task, bundle, ctx) {
   const bid = (bundle || {}).id;
-  if (bid && [task.pinned_bundle, task.constraint_bundle, task.constraint_model].includes(bid)) return true;
-  return Boolean(task.constraint_effort) && modelPinMatches(task, bundle, model);
+  if (bid && [task.pinned_bundle, task.constraint_bundle].includes(bid)) return true;
+  if (bid && !task.constraint_bundle && pinText(task) === bid) return true;
+  return Boolean(task.constraint_effort) && modelPinMatches(task, bundle, ctx);
 }
 
-export const bundleNamed = (task, bundle, model) => exactPin(task, bundle, model) || modelPinMatches(task, bundle, model);
+export const bundleNamed = (task, bundle, ctx) => exactPin(task, bundle, ctx) || modelPinMatches(task, bundle, ctx);
+
+/** The spelling a bundle advertises (`account_fleet.advertised_model`): its launch id, else its model, without `:effort`. */
+export const advertisedModel = (bundle) => splitEffortSuffix(String((bundle || {}).launch_model || (bundle || {}).model || "")).name;
 
 /** `model:effort` and `model-effort` launch ids run at that level only. */
 export function hasFixedEffort(bundle, fleet) {
@@ -112,11 +315,15 @@ export function dispatchTable(provider, fleet) {
   return null;
 }
 
-/** Names a table may hold this model under: its resolved key, then its raw spellings. */
+/**
+ * Names a table may hold this model under (`account_fleet.lookup_names`): its resolved key, then its raw spellings. A family
+ * guess never answers for the flagship it folded to; a name with no row on its provider never borrows the bare name's row.
+ */
 export function lookupNames(model, fleet) {
   const raw = splitEffortSuffix(String(model || "")).name;
+  const resolved = resolveListed(String(model || ""), fleet.models, fleet.aliases, fleet.families, fleet.providerNames);
+  if (PROVIDER_NAME_STATUSES.includes(resolved.source)) return [...new Set([`${resolved.provider}/${resolved.bare}`.toLowerCase(), raw].filter(Boolean))];
   const names = [raw, modelLeaf(model)];
-  const resolved = resolveModel(String(model || ""), fleet.models, fleet.aliases, fleet.families);
   if (DIRECT_SOURCES.includes(resolved.source)) names.unshift(resolved.key);
   return [...new Set(names.filter(Boolean))];
 }
@@ -140,24 +347,31 @@ export function namedEffortBundles(task, ctx) {
   if (!effort || task.constraint_bundle) return {};
   const fleet = ctx.fleet;
   const groups = new Map();
-  for (const bundle of Object.values(ctx.bundles)) {
+  // The named bundles over the pool before any filter; a bundle its `when` keeps out carries no level (it does not compete).
+  const pin = pinText(task);
+  const full = pinPool({ ...ctx, pin_source: ctx.bundles });
+  for (const bundle of pin ? pinMatchingBundles(pin, full, fleet) : full) {
     const model = rowKeyOf(bundle.model, fleet);
-    if (task.constraint_model && !modelPinMatches(task, bundle, model)) continue;
-    const key = JSON.stringify([bundle.account, bundle.harness || null, model]);
+    // One group per model and account; a name with no row groups by its advertised spelling (`candidate_eval.named_effort_bundles`).
+    const group = fleet.models[model] ? model : advertisedModel(bundle).toLowerCase() || model;
+    const key = JSON.stringify([bundle.account, bundle.harness || null, group, model]);
     if (!groups.has(key)) groups.set(key, { model, rows: [] });
     groups.get(key).rows.push(bundle);
   }
   const found = {};
   for (const { model, rows } of groups.values()) {
     const written = new Set(rows.map((r) => String(scoringEffort(r, modelInfo(fleet, r.model)) || "").toLowerCase()));
-    const carriers = rows.filter((r) => (!r.disabled || r.disabled_by_default) && !r.discovery_unavailable && !hasFixedEffort(r, fleet));
+    const enabled = rows.filter((r) => (!r.disabled || r.disabled_by_default) && !r.discovery_unavailable && !hasFixedEffort(r, fleet));
+    // No enabled carrier: the level is still cut from the named row, which then answers with its own reason.
+    const carriers = enabled.length > 0 ? enabled : rows.filter((r) => !hasFixedEffort(r, fleet));
     // Each level goes to the first row that offers it, so the answer does not depend on the order of the rows.
     for (const carrier of carriers) {
-      const allowed = dispatchAllowedEfforts(carrier, fleet, model);
+      // A carrier's own list decides what it may run at; only a carrier without one asks the launch table.
+      const own = Array.isArray(carrier.offered_efforts) ? carrier.offered_efforts : null;
+      const allowed = own || dispatchAllowedEfforts(carrier, fleet, model);
       const levels = (allowed !== null ? !allowed.includes(effort) : !task.constraint_model) ? [] : [effort];
       for (const level of levels) {
-        const own = Array.isArray(carrier.offered_efforts) ? carrier.offered_efforts : Array.isArray(carrier.efforts) ? carrier.efforts : null;
-        if (written.has(level) || (own && !own.includes(level))) continue;
+        if (written.has(level)) continue;
         written.add(level);
         const rowId = `${carrier.id}@${level}`;
         found[rowId] = { ...carrier, id: rowId, effort: level, pin_carrier: carrier.id };
@@ -175,10 +389,10 @@ export function whenFailure(bundle, task) {
   if (!rule || typeof rule !== "object") return null;
   const pinned = task.pinned_bundle || task.constraint_bundle;
   if (pinned && bundle.id && (pinned === bundle.id || pinned === bundle.source_id)) return null;
-  if ("max_reasoning_depth" in rule) {
-    const depth = task.profile && task.profile.reasoning_depth;
-    if (!isNum(depth) || depth > Number(rule.max_reasoning_depth)) {
-      return `its when rule allows reasoning depth up to ${rule.max_reasoning_depth}, the task has ${depth}`;
+  if ("max_primary_level" in rule) {
+    const depth = task.profile && task.profile.primary_level;
+    if (!isNum(depth) || depth > Number(rule.max_primary_level)) {
+      return `its when rule allows primary level up to ${rule.max_primary_level}, the task has ${depth}`;
     }
   }
   if ("min_difficulty" in rule) {
@@ -235,7 +449,6 @@ export function evaluateBundle(bundle, task, ctx) {
   const { policy, fleet } = ctx;
   const spec = fleet.accounts[bundle.account];
   const model = canonicalOf(bundle.model, fleet);
-  const ownModel = rowKeyOf(bundle.model, fleet);
   const info = modelInfo(fleet, bundle.model);
   const kind = task.kind;
   const baseHours = task.hours;
@@ -263,16 +476,22 @@ export function evaluateBundle(bundle, task, ctx) {
     (result._five_short_reasons ||= []).push(reason);
   };
 
-  if (bundle.disabled && !(bundle.disabled_by_default && bundleNamed(task, bundle, ownModel))) exclude("unchecked in model management");
+  // What the user named, over the pool before any filter (`pinMatchedIds`); none in the economy pool.
+  const pinHit = !pool && (task.constraint_model || task.constraint_bundle) ? matchedIdsOf(task, ctx).has(bundle.id) : false;
+  const exactHit =
+    [task.pinned_bundle, task.constraint_bundle].includes(bundle.id) ||
+    (!task.constraint_bundle && pinText(task) === bundle.id) ||
+    (Boolean(task.constraint_effort) && pinHit);
+  // Off by default (superseded in public data) is not the user's checkbox: naming the model still reaches it.
+  if (bundle.disabled && !(bundle.disabled_by_default && (exactHit || pinHit))) exclude("unchecked in model management");
   if (Array.isArray(bundle.disabled_efforts) && bundle.disabled_efforts.includes(String(bundle.effort || "").toLowerCase())) {
     exclude("unchecked in model management");
   }
   if (bundle.discovery_unavailable) exclude(typeof bundle.discovery_unavailable === "string" ? bundle.discovery_unavailable : "model not detected by discovery for 7+ days");
-  if (bundle.not_dispatchable) exclude(`${bundle.model}@${bundle.effort}: not in dispatch_efforts of ${bundle.provider || bundle.account || "its route"}`);
   if (ctx.unavailable.has(bundle.id) || (bundle.source_id && ctx.unavailable.has(bundle.source_id))) exclude(MARKED_BY_PARENT);
   const cooling = coolingReason(bundle, ctx.launch_failures, now);
   if (cooling) exclude(cooling);
-  if (ctx.unhealthy.has(healthKey(bundle.model, fleet.models, fleet.aliases, fleet.families)) || ctx.unhealthy.has(bundle.model)) exclude(MARKED_UNHEALTHY);
+  if (ctx.unhealthy.has(healthKey(bundle.model, fleet.models, fleet.aliases, fleet.families, fleet.providerNames)) || ctx.unhealthy.has(bundle.model)) exclude(MARKED_UNHEALTHY);
   if (task.min_context_tokens && Number(info.context_window || 128000) * 0.95 < task.min_context_tokens) {
     exclude(`context window ${info.context_window || 128000} outgrown by ${task.min_context_tokens} tokens`);
   }
@@ -286,19 +505,19 @@ export function evaluateBundle(bundle, task, ctx) {
   // task.metered_ok, or the plan's fallback pass when no subscription can take the work. Unknown billing stays explicit only.
   const billing = (spec.billing || "unknown") === "subscription" ? null : spec.billing || "unknown";
   if (billing && !task.metered_ok && !(billing === "metered" && task.metered_fallback)) {
-    if (!modelPinMatches(task, bundle, ownModel) && task.pinned_bundle !== bundle.id) {
+    if (!pinHit && task.pinned_bundle !== bundle.id) {
       exclude(billing === "metered" ? METERED_LAST_RESORT : `${billing} billing: explicit selection only`);
     }
   }
-  if (spec.verified === false && !task.include_unverified) exclude("account not verified as launchable");
-  if (info.advisor_only && !(info.advisor_for || []).includes(kind)) exclude("advisor only; cannot execute");
+  if (spec.verified === false) exclude("account not verified as launchable");
+  if (info.advisor_only && (!(info.advisor_for || []).includes(kind) || (task.profile || {}).access === "write")) exclude("advisor only; cannot execute");
   const accountOut = result.excluded.length > 0; // out by the account, the checkbox, a hold or billing: not by this task
   if (info.excluded_when === "local_only" && task.local_only) {
     taskExclude("the parent marked this work local-only (it must run on this machine: in-place edits, local tools, secrets or live accounts); this worker runs remotely");
   }
   if (info.excluded_when === "local_only" && task.outbound_ok === false) taskExclude("the parent disallowed outbound work; this worker runs remotely");
   if (info.text_only && task.file_transfer) taskExclude("this text-only runner cannot transfer or apply local files");
-  if (task.constraint_model && !modelPinMatches(task, bundle, ownModel)) taskExclude(EXPLICIT_MODEL_CONSTRAINT);
+  if ((task.constraint_model || task.constraint_bundle) && !pinHit) taskExclude(EXPLICIT_MODEL_CONSTRAINT);
   if (task.constraint_effort && String(scoringEffort(bundle, info) || "").toLowerCase() !== task.constraint_effort) taskExclude(EXPLICIT_EFFORT_CONSTRAINT);
   // A named bundle (its id, the entry it was split from, or the row a named effort was cut from) is the only one that runs.
   const namedBundle = task.pinned_bundle || task.constraint_bundle;
@@ -309,7 +528,7 @@ export function evaluateBundle(bundle, task, ctx) {
   // data error as a warning and its cost unpriced.
   const state = info.five_axis || { missing: [...FIVE_AXES], usd_status: "missing" };
   const billed = !(spec.unmetered || spec.unlimited);
-  const named0 = !pool && (modelPinMatches(task, bundle, ownModel) || task.pinned_bundle === bundle.id);
+  const named0 = !pool && (pinHit || task.pinned_bundle === bundle.id);
   const imgInfo = state.image_input || { status: "missing" };
   // The task reads images when the classifier says so (needs_visual, which task intake also sets for needs_gui) or when it
   // demands tool_operation 3: a model that takes no image input cannot do either.
@@ -320,9 +539,9 @@ export function evaluateBundle(bundle, task, ctx) {
 
   const missingTargets = (axis, level) => {
     if (level < five.demanded_level) return [];
-    if (axis === "tool_operation") {
-      const selected = TOOL_LEVEL_FACETS[level] || [];
-      return selected.filter((f) => ((values.tool_operation || {})[f] ?? null) === null).map((f) => `tool_operation.${f}`);
+    if (axis in LEVEL_FACETS) {
+      const selected = LEVEL_FACETS[axis][level] || [];
+      return selected.filter((f) => ((values[axis] || {})[f] ?? null) === null).map((f) => `${FACET_CATEGORY[f]}.${f}`);
     }
     if (values[axis] !== null && values[axis] !== undefined) return [];
     const cell = (state.categories || {})[axis] || {};
@@ -347,8 +566,12 @@ export function evaluateBundle(bundle, task, ctx) {
   }
   let blindMsg = null;
   if (blind.length > 0) {
-    const effNote = eff && blind.some((a) => (((state.categories || {})[a] || {}).value ?? null) !== null) ? ` at effort ${eff}` : "";
-    blindMsg = `no trusted data for the demanded category ${blind.join(", ")} on ${model}${effNote} (missing ${missingList.join(", ")}; fill with \`agentcompass score set ${model} ${missingList[0]} <1..3>\` or in the tray Manual Scores panel)`;
+    const cats = state.categories || {};
+    const hasHigh = missingList.some((t) =>
+      t.includes(".") ? facetAtEffort(cats, t.slice(0, t.indexOf(".")), t.slice(t.indexOf(".") + 1), "high") !== null : ((cats[t] || {}).value ?? null) !== null,
+    );
+    const effNote = eff && hasHigh ? ` at effort ${eff}` : "";
+    blindMsg = `no trusted data for the demanded category ${blind.join(", ")} on ${model}${effNote} (missing ${missingList.join(", ")}; fill with \`agentcompass score set ${model} ${missingList[0]} <level>\` or in the tray Manual Scores panel)`;
   }
   if (blindMsg && !pool) result._five_blind_msg = blindMsg;
   const errors = [
@@ -365,13 +588,11 @@ export function evaluateBundle(bundle, task, ctx) {
       exclude(`data error: ${error} (out of automatic routing; name the model to dispatch it)`);
     }
   }
-  const manualApplied = state.manual_scores || {};
+  // What the overlay applied, read at the effort this candidate is scored with (`user-scores.js` owns the text).
+  const manualApplied = appliedScores(state, readingEffort(state, eff));
   if (Object.keys(manualApplied).length > 0) {
-    const parts = Object.entries(manualApplied)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([t, r]) => `${t}=${Number(r.level)} (z=${r.z >= 0 ? "+" : "-"}${Math.abs(r.z).toFixed(4)}, ${r.kind}, ${r.as_of})`);
-    result.notes.push(`manual capability scores applied: ${parts.join("; ")}`);
-    result.manual_scores = { ...manualApplied };
+    result.notes.push(appliedNote(manualApplied, readingEffort(state, eff)));
+    result.manual_scores = manualApplied;
   }
   const estimated = state.estimates || {};
   if (Object.keys(estimated).length > 0) {
@@ -426,7 +647,7 @@ export function evaluateBundle(bundle, task, ctx) {
   if (!spec.unmetered) {
     const acctUsage = (ctx.usage.accounts || {})[bundle.account] || {};
     const acctStale = acctUsage.status === "stale" || acctUsage.stale === true;
-    const named = !pool && (modelPinMatches(task, bundle, ownModel) || task.pinned_bundle === bundle.id);
+    const named = !pool && (pinHit || task.pinned_bundle === bundle.id);
     for (const [wid, wspec, observed0] of applicableWindows(spec, model, acctUsage, bundle, bundle.model)) {
       (result._five_axis_windows ||= []).push(wid);
       longApplicable = longApplicable || !windowIsShort(wspec, policy);
@@ -598,10 +819,17 @@ export function evaluateBundle(bundle, task, ctx) {
   // burn is priced in its usd and its gain in the categories' effort shift). The economy decides.
   const [fit, axisRows] = fiveAxisFit(values, task.five_axis_demand, task.five_axis_targets);
   result._five_values = values; // the economy re-reads this candidate's scores at its effort over the demand grid
-  // The candidate's four category scores at this effort: what the radar and the explanation show (tool_operation: the weaker
-  // of its facets that have a value).
-  const tool = Object.values(values.tool_operation).filter((z) => z !== null && z !== undefined);
-  const shown = { ...Object.fromEntries(FIVE_AXES.filter((a) => a !== "tool_operation").map((a) => [a, values[a]])), tool_operation: tool.length > 0 ? Math.min(...tool) : null };
+  // The candidate's four category scores at this effort: what the radar and the explanation show (`aesthetics` and
+  // `tool_operation`: the weaker of their facets that have a value).
+  const shown = {};
+  for (const a of FIVE_AXES) {
+    if (a in LEVEL_FACETS) {
+      const present = Object.values(values[a] || {}).filter((z) => z !== null && z !== undefined);
+      shown[a] = present.length > 0 ? Math.min(...present) : null;
+    } else {
+      shown[a] = values[a];
+    }
+  }
   for (const [a, v] of Object.entries(shown)) result.components[a] = v === null || v === undefined ? null : pyRound(v, 4);
   for (const [a, v] of Object.entries(fiveAxisShares(values, ctx.targets))) result.components[`share_${a}`] = v;
   const rows = Object.values(axisRows);

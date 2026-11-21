@@ -17,10 +17,9 @@
  */
 
 import { pyRound } from "./catalog.js";
-import { fiveAxisFit, fiveAxisTargets } from "./axis-scores.js";
+import { fiveAxisFit, fiveAxisTargets, readingEffort } from "./axis-scores.js";
 import { FIVE_AXIS_ANCHOR } from "./reference-data.js";
 
-export const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const INF = Number.POSITIVE_INFINITY;
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 
@@ -58,10 +57,14 @@ export function bundleTaskUsd(spec, model, hours, info, contextBurn = 1.0) {
   return hours * modelUsdPerHour(model, info) * contextBurn;
 }
 
-/** `[multiplier, basis]` of the time a task takes this model at `effort`; `[null, null]` when the data has none. */
+/**
+ * `[multiplier, basis]` of the time a task takes this model at `effort`; `[null, null]` when the data has none. An effort off the
+ * scale, and a bundle that names no effort, read the effort the data declares (`readingEffort`).
+ */
 export function durationAt(info, effort) {
-  const five = (((info || {}).five_axis || {}).duration) || {};
-  const key = effort || "high";
+  const state = (info || {}).five_axis || {};
+  const five = state.duration || {};
+  const key = readingEffort(state, effort);
   const mult = (five.by_effort || {})[key];
   if (typeof mult === "number" && Number.isFinite(mult) && mult > 0) return [Number(mult), (five.basis_by_effort || {})[key] || {}];
   return [null, null];
@@ -315,7 +318,7 @@ export function fiveAxisSpendCost(rec, ladder, spendUsd, taskHours, spendMax = n
 // The demands a window's value ladder is read over: every mix of the three thinking categories (tool_operation 0).
 export const FIVE_AXIS_DEMAND_GRID = (() => {
   const grid = [];
-  for (let d1 = 0; d1 < 4; d1++) for (let d2 = 0; d2 < 4; d2++) for (let d3 = 0; d3 < 4; d3++) if (d1 || d2 || d3) grid.push({ divergence: d1, coding: d2, aesthetics: d3, tool_operation: 0 });
+  for (let d1 = 0; d1 < 4; d1++) for (let d2 = 0; d2 < 4; d2++) for (let d3 = 0; d3 < 4; d3++) if (d1 || d2 || d3) grid.push({ creativity: d1, coding: d2, aesthetics: d3, tool_operation: 0 });
   return grid;
 })();
 

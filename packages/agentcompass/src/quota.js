@@ -1231,42 +1231,7 @@ export function shouldSkipQuotaAccount(acct, ctx, quotaAccounts) {
   if (quotaAccounts.some((a) => a.key === "pool/quotas" && a.dispatchable === false)) {
     return true;
   }
-  const rawProv =
-    acct.provider ||
-    ctx?.provider?.id ||
-    ctx?.provider?.name ||
-    (typeof acct.key === "string" && acct.key.includes("/") ? acct.key.split("/")[0] : "") ||
-    (typeof acct.ref === "string" && acct.ref.includes("/") ? acct.ref.split("/")[0] : "");
-  const acctProv = normalizeProviderFamily(rawProv);
-  const fullKeys = new Set(
-    [
-      typeof acct.key === "string" && acct.key.includes("/") ? acct.key : "",
-      typeof acct.ref === "string" && acct.ref.includes("/") ? acct.ref : "",
-      acct.provider && acct.name ? `${acct.provider}/${acct.name}` : "",
-      acct.provider && acct.account ? `${acct.provider}/${acct.account}` : "",
-      acctProv && acct.name ? `${acctProv}/${acct.name}` : "",
-      acctProv && acct.account ? `${acctProv}/${acct.account}` : "",
-    ]
-      .filter((v) => typeof v === "string" && v.trim())
-      .map((v) => v.trim())
-  );
-  const bareNames = new Set(
-    [
-      acct.name,
-      acct.account,
-      typeof acct.key === "string" && !acct.key.includes("/") ? acct.key : "",
-      typeof acct.ref === "string" && !acct.ref.includes("/") ? acct.ref : "",
-    ]
-      .filter((v) => typeof v === "string" && v.trim())
-      .map((v) => v.trim())
-  );
-  const exactMatches = quotaAccounts.filter((a) => {
-    if (a.key === "pool/quotas") return false;
-    if (fullKeys.has(a.key)) return true;
-    const provOk = !acctProv || !a.provider || providersMatch(acctProv, a.provider);
-    if (!provOk) return false;
-    return bareNames.has(a.account) || bareNames.has(a.key);
-  });
+  const { acctProv, exactMatches } = matchQuotaAccount(acct, ctx, quotaAccounts);
   if (exactMatches.length > 0) {
     if (exactMatches.some((a) => a.dispatchable === false)) {
       return true;
@@ -1280,4 +1245,42 @@ export function shouldSkipQuotaAccount(acct, ctx, quotaAccounts) {
     }
   }
   return false;
+}
+
+function matchQuotaAccount(acct, ctx, quotaAccounts) {
+  const rawProv =
+    acct.provider ||
+    ctx?.provider?.id ||
+    ctx?.provider?.name ||
+    (typeof acct.key === "string" && acct.key.includes("/") ? acct.key.split("/")[0] : "") ||
+    (typeof acct.ref === "string" && acct.ref.includes("/") ? acct.ref.split("/")[0] : "");
+  const acctProv = normalizeProviderFamily(rawProv);
+  const fullKeys = new Set(
+    [
+      typeof acct.key === "string" && acct.key.includes("/") ? acct.key : "",
+      typeof acct.ref === "string" && acct.ref.includes("/") ? acct.ref : "",
+      acct.provider && acct.account ? `${acct.provider}/${acct.account}` : "",
+      acctProv && acct.account ? `${acctProv}/${acct.account}` : "",
+    ]
+      .filter((v) => typeof v === "string" && v.trim())
+      .map((v) => v.trim())
+  );
+  // Magpie's account (`internal/middleware/account.go`) names no seat: `name` is the provider's name, the same for every seat of it,
+  // and `ref` a hash keyed on this machine (`accountRef`), never a quotas key. Only an `account` or a `key` names a seat.
+  const bareNames = new Set(
+    [
+      acct.account,
+      typeof acct.key === "string" && !acct.key.includes("/") ? acct.key : "",
+    ]
+      .filter((v) => typeof v === "string" && v.trim())
+      .map((v) => v.trim())
+  );
+  const exactMatches = quotaAccounts.filter((a) => {
+    if (a.key === "pool/quotas") return false;
+    if (fullKeys.has(a.key)) return true;
+    const provOk = !acctProv || !a.provider || providersMatch(acctProv, a.provider);
+    if (!provOk) return false;
+    return bareNames.has(a.account) || bareNames.has(a.key);
+  });
+  return { acctProv, exactMatches };
 }

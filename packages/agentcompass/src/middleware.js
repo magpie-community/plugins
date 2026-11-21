@@ -22,6 +22,7 @@
 
 import {
   blockedRefusal,
+  candidateModelName,
   candidateOffers,
   effortGoneWarning,
   heldBundle,
@@ -33,11 +34,26 @@ import {
   extractModelList,
   mergePinOptions,
   pinOptionsOf,
+  pinKeepsHold,
   pinsFixEffort,
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { canonicalModel } from "./catalog.js";
+import { MAGPIE_HOST, canonicalModel, catalogTables, expandHostProviders, logWarning, magpieOptions, modelPinProblem, modelSpec, pinGiven, providerNamesOf, pyStrip, servedModel, splitEffortSuffix } from "./catalog.js";
+import { withoutUnconstrainingTag } from "./fleet.js";
+
+/** `canonicalModel` under a host's `options.catalog` (its models, aliases and `provider_names` table). */
+function catalogCanonical(rawModel, catalog) {
+  const names = catalogTables(catalog);
+  return canonicalModel(rawModel, names.aliases, names.models, names.families, [], names.providerNames);
+}
+
+/**
+ * The name a routed target or a preset's list entry is matched by, without its effort. Both sides are already without the tag that
+ * constrains no effort (`:auto`, `:off`, `:default`): `fleet.js` strips it from the target with `withoutUnconstrainingTag`, and
+ * `onProvider` strips it from the entry with the same function before reading it.
+ */
+const listedKey = (name) => splitEffortSuffix(String(name || "").trim()).name;
 import {
   STICK_KEEP_MS,
   bodyUpTo,
@@ -163,10 +179,57 @@ function shouldRoute(model, options = {}) {
   return isVirtualModelName(model, options);
 }
 
+// The effort of a row that lists no reasoning levels (`audit/gateway_coverage.py`: "the model's one configuration, offered at
+// `default`"). It is no level Magpie knows (`provider.MemberEfforts`, none..max), so the request asks for none: the bare model
+// id, no `:<effort>` (Magpie would read `m:default` as a model of that whole name) and no effort field.
+const ONE_CONFIGURATION = "default";
+
+// Magpie logs at most 60 lines a minute of one middleware and drops the rest unseen (`internal/middleware/middleware.go` `say`,
+// `linesAMinute`, v0.1.4603), so a line that would repeat on every turn of a session (a hold rebuilt from the history, a typed
+// listing not sent) is logged once per runtime for that session, as a catalog name warning is once per runtime; the decision
+// carries it on every turn it is true of. The least recently met goes first (meeting a line again refreshes it).
+const MAX_SESSION_LINES = 1024;
+const loggedSessionLines = new Map();
+
+/** Log a line about a session the first time this runtime meets it for that session. */
+function logOncePerSession(sessionKey, line) {
+  const key = JSON.stringify([sessionKey || null, line]);
+  if (loggedSessionLines.delete(key)) {
+    loggedSessionLines.set(key, true);
+    return;
+  }
+  loggedSessionLines.set(key, true);
+  if (loggedSessionLines.size > MAX_SESSION_LINES) loggedSessionLines.delete(loggedSessionLines.keys().next().value);
+  logWarning(line);
+}
+
+/**
+ * Log a decision's warnings: those it marks as about its session (`sessionNotices`) once per runtime for the session, the rest
+ * as `logRouteWarnings` does, and the notice of a hold rebuilt from the history once per runtime for the session.
+ */
+function logDecision(decision) {
+  const sessionKey = decision?.continuation?.sessionKey;
+  const notices = decision?.sessionNotices || [];
+  logRouteWarnings((decision?.warnings || []).filter((warning) => !notices.some((notice) => notice === warning)));
+  for (const notice of notices) logOncePerSession(sessionKey, notice);
+  if (decision?.continuation?.held && decision.continuation.stateFrom === "history") logOncePerSession(sessionKey, decision.continuation.notice);
+}
+
+// What a hold on a state rebuilt from the message history says (`replayedState`), in the decision and Magpie's log.
+const REBUILT_HOLD_NOTICE =
+  "held on a state rebuilt from the message history: this runtime did not serve the session's earlier turns, so it decided them " +
+  "again with this request's pins (an earlier turn's pin is not in the history); the route an earlier turn ran on is not known here";
+
+// The effort a route's `:<effort>` is spelled with for Magpie. Its askedAt splits only `provider.MemberEfforts` (none..max)
+// off a model, and Codex's `ultra` is no API's level that Magpie sends as `max` (`internal/gateway/ir.go` effortOf and
+// fitEffort, v0.1.4603): `<model>:ultra` would reach the vendor as a model of that whole name, so an `ultra` route goes as
+// `<model>:max`, what Magpie sends for it.
+const MAGPIE_SUFFIX_EFFORT = { ultra: "max" };
+
 function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const protocol = String(ctx?.protocol || "").toLowerCase();
-  if (options.injectProtocolEffort !== true || !targetEffort) return body;
+  if (options.injectProtocolEffort !== true || !targetEffort || targetEffort === ONE_CONFIGURATION) return body;
 
   if (protocol === "chat") {
     body.reasoning_effort = targetEffort === "max" ? "xhigh" : targetEffort;
@@ -189,12 +252,14 @@ function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
 /**
  * Apply the selected effort to the request body according to the client protocol,
  * or encode `<model>:<effort>` which Magpie's `askedAt` (`internal/gateway/gateway.go:1560`)
- * natively parses and applies to every upstream candidate!
+ * natively parses and applies to every upstream candidate. A route at `default` sends the bare
+ * model and no effort (`ONE_CONFIGURATION`).
  */
 export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const rawModel = decision.targetModel;
-  const targetEffort = decision.targetEffort || "high";
+  // The effort the route is sent at (`sentEffort`, a model's one configuration) where it differs from the engine's.
+  const targetEffort = decision.sentEffort || decision.targetEffort || "high";
 
   if (!rawModel) return body;
 
@@ -209,8 +274,8 @@ export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
       : mappedModel;
 
   // Magpie natively supports `<model>:<effort>` in `gateway.go:askedAt` (unless disabled by option)
-  if (options.useColonEffort !== false && targetEffort && !targetModel.includes(":")) {
-    body.model = `${targetModel}:${targetEffort}`;
+  if (options.useColonEffort !== false && targetEffort && targetEffort !== ONE_CONFIGURATION && !targetModel.includes(":")) {
+    body.model = `${targetModel}:${MAGPIE_SUFFIX_EFFORT[targetEffort] ?? targetEffort}`;
   } else {
     body.model = targetModel;
   }
@@ -262,11 +327,11 @@ function replayedState(body, ctx, env, chain, stale, depth) {
   const tokens = Number(earlier.facts.estimatedInputTokens || 0);
   return {
     sessionKey: earlier.sessionKey,
-    model: canonicalModel(d.targetModel, env.options.catalog?.aliases),
+    model: catalogCanonical(d.targetModel, env.options.catalog),
     target: d.targetModel,
     effort: d.targetEffort || "high",
     provider: "",
-    workKind: d.workKind || "general_implementation",
+    workKind: d.workKind || "other_or_mixed",
     difficulty: d.difficulty || "routine",
     profile: d.profile || null,
     pinnedBundle: d.pins?.pinnedBundle || null,
@@ -293,8 +358,158 @@ function replayedState(body, ctx, env, chain, stale, depth) {
  * decision and what to record; nothing is recorded here, so replaying an earlier turn leaves the
  * store as it was.
  */
+/**
+ * A session's hold on this turn, one path for `onRequest`, `hooks` and Mode B (`/v1/systemone`): the route it is sent to as the
+ * candidate list names it (`heldTarget`: the store keeps models canonical), the effort the pool still offers at or below the kept one
+ * (contract R2), and the record the store keeps of the turn, with the pin it is on. `{ gone }` instead, the continuation that routes
+ * again, when nothing at or below the held effort is offered or a pin fixes an effort the pool no longer runs (`effort_gone`).
+ */
+export function heldTurn(cont, sessionState, facts, { pins, candidateModels, options, now }) {
+  const keptEffort = keepsEffort(sessionState, cont.effort || sessionState?.effort || "high", facts.estimatedInputTokens, now, options);
+  const target = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
+  const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
+  const effort = pool ? heldEffortOn(pool, target, keptEffort, options.catalog, { pins, profile: sessionProfile(sessionState) }) : keptEffort;
+  if (effort === null || (effort !== keptEffort && pinsFixEffort(pins))) {
+    return {
+      gone: {
+        shouldHold: false,
+        why: "effort_gone",
+        previousModel: cont.previousModel || cont.model,
+        previousEffort: keptEffort,
+        within: Boolean(facts.within),
+        turn: facts.turn || 1,
+      },
+    };
+  }
+  return {
+    target,
+    effort,
+    keptEffort,
+    pool,
+    record: {
+      model: target,
+      effort,
+      provider: cont.provider || sessionState?.provider || "",
+      workKind: sessionState?.workKind || "other_or_mixed",
+      difficulty: sessionState?.difficulty || "routine",
+      why: cont.why,
+      held: true,
+      pinnedBundle: pins.pinnedBundle,
+    },
+  };
+}
+
+/**
+ * `pinKeepsHold` for one request (contract R3). Every turn the request decides again (`replayedState`) asks it with the same pool,
+ * quotas, time and pins, and a held route is judged by ranking that pool, so each held route is judged once per request, not once per
+ * replayed turn. Nothing outlives the request: the next one is judged on its own options. A session with no pinned bundle is one
+ * held route whether it says so with `null`, `""` or not at all (`pinKeepsHold` compares it only with a bundle the pins name), so
+ * those are one key: a typed listing judged from a new route and again from a held turn was ranked twice.
+ */
+export function holdJudge(options, candidateModels, liveQuotas, now) {
+  const judged = new Map();
+  return (pins, session) => {
+    const held = { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle || null, profile: sessionProfile(session) };
+    const key = JSON.stringify([pins, held]);
+    if (!judged.has(key)) judged.set(key, pinKeepsHold(pins, held, { ...options, candidateModels, quotas: liveQuotas, now }));
+    return judged.get(key);
+  };
+}
+
+/**
+ * `selectBestRoute` for one request, on its pool, catalog, quotas and time. A turn decided again from the history (`replayedState`)
+ * that was cold (its age is unknown, so a TTL-gated hold does not apply) is routed again with the same profile, pins and previous
+ * route as the turn after it, so a request on a runtime that never saw the session would rank one pool up to `MAX_REPLAY_DEPTH + 1`
+ * times on identical input: each distinct input is ranked once. The key is the input that varies within the request itself
+ * (`inputs`: unhealthy models, minimum context, the pins, the continuity), the very object spread into the ranking's options, so
+ * nothing the ranking reads from it can be left out of the key; what does not vary within a request (the pool, the catalog, the
+ * quotas read once, the time) is fixed when the decider is made. Each caller gets a decision of its own to add its fields to.
+ */
+export function routeDecider({ options, candidateModels, liveQuotas, now }) {
+  const decided = new Map();
+  const fixed = { candidateModels, catalog: options.catalog, quotas: liveQuotas, meteredOk: options.meteredOk, userScores: options.userScores, now };
+  return (profile, inputs) => {
+    const key = JSON.stringify([profile, inputs]);
+    if (!decided.has(key)) decided.set(key, selectBestRoute(profile, { ...fixed, ...inputs }));
+    const decision = decided.get(key);
+    return decision && typeof decision === "object" ? { ...decision } : decision;
+  };
+}
+
+/**
+ * A name the caller typed and the pool lists is the name sent. Magpie may list one row under several names on one preset
+ * (`deepseek/deepseek-flash` and `deepseek/deepseek-v4-flash`): a pin names every listing of its row there, they rank alike, and the
+ * route may be a listing the caller did not type. The pool's entry that spells the typed name (case and effort aside; a bare name
+ * also as the entry's own name after its `<preset>/`), on the route's preset, of the route's row, is sent instead, with the bundle
+ * of that entry, when it offers the route's effort (contract R2) and the ranking the pins get keeps it (`kept`: its own `when`, and
+ * every other filter of the ranking, may leave it out where the route's listing runs); otherwise `{ refused }` names it, and the
+ * route stays the engine's. With no name typed, or none such listed, `null`: the choice among listings is the ranking's. The
+ * engine's ranking is AgentCompass's (the parity fixtures); the name sent is Magpie's.
+ */
+function typedListing(target, effort, pins, candidateModels, catalog, kept) {
+  const pin = pins.constraintModel;
+  if (!target || !pinGiven(pin) || modelPinProblem(pin) !== null || !Array.isArray(candidateModels)) return null;
+  const typed = splitEffortSuffix(pyStrip(String(pin))).name.toLowerCase();
+  const routed = listedKey(target).toLowerCase();
+  if (routed === typed) return null;
+  const presetOf = (name) => (name.includes("/") ? name.slice(0, name.indexOf("/")) : "");
+  const spells = (name) => name === typed || (!typed.includes("/") && name.includes("/") && name.slice(name.indexOf("/") + 1) === typed);
+  const row = catalogCanonical(target, catalog);
+  const listings = candidateModels.filter((candidate) => {
+    const name = candidateModelName(candidate);
+    const low = name.toLowerCase();
+    return spells(low) && presetOf(low) === presetOf(routed) && catalogCanonical(name, catalog) === row;
+  });
+  // The route already goes under a listing spelling the typed name.
+  if (listings.length === 0 || listings.some((candidate) => listedKey(candidateModelName(candidate)).toLowerCase() === routed)) return null;
+  const entry = listings.find((candidate) => {
+    const name = candidateModelName(candidate);
+    return candidateOffers([candidate], name, effort, catalog, pins) && kept(name);
+  });
+  if (!entry) return { refused: candidateModelName(listings[0]) };
+  const name = candidateModelName(entry);
+  return { target: name, bundle: heldBundle([entry], name, effort, catalog, pins) };
+}
+
+/** Why a typed listing was not sent (`typedListing` `{ refused }`); a new route's `excluded` holds the ranking's own reason for it. */
+function typedListingWarning(pin, refused, target) {
+  return `${pin} is sent as ${target}, another listing of the row it names: the listing typed, ${refused}, is not among the candidates this request may run`;
+}
+
+/**
+ * The effort a route is sent at. A row that carries no effort of its own (a pool entry with no `efforts`, `effort` or `:effort`: a
+ * bare name, a `modelsByProvider` entry) of a model whose vendor documents no reasoning control (the catalogue's cited
+ * `operating_point`) is routed by the engine at an effort the data times only because its one reading is copied to every effort;
+ * the model takes none, and Magpie passes an effort on to a model that lists no levels as asked (`catalog.NearestEffort` keeps
+ * `want` when the levels are none). Such a route is its one configuration (`ONE_CONFIGURATION`): the bare model with no effort, as a
+ * converter row listed with no levels is. It is only what is sent (`decision.sentEffort`, set by `withSentEffort` where a decision
+ * reaches the body, whoever made it: `onRequest`'s own, the hooks' route, `onProvider`'s): the decision and the session's record keep
+ * the engine's effort, which a hold is judged at (`pinKeepsHold` ranks at the engine's efforts).
+ */
+function sentEffort(target, effort, pool, catalog, pins) {
+  // An effort the caller named (a pin's `:effort`, `pinnedEffort`, a pinned bundle) is sent as named.
+  if (!target || effort === ONE_CONFIGURATION || splitEffortSuffix(target).effort || pinsFixEffort(pins || {})) return effort;
+  const key = listedKey(target).toLowerCase();
+  const carriesEffort = (pool || []).some((entry) => {
+    const row = typeof entry === "string" ? { model: entry } : entry && typeof entry === "object" ? entry : {};
+    const name = withoutUnconstrainingTag(String(row.model || "").trim());
+    if (listedKey(name).toLowerCase() !== key) return false;
+    return Boolean(splitEffortSuffix(name).effort || row.effort || (Array.isArray(row.efforts) && row.efforts.length > 0));
+  });
+  if (carriesEffort) return effort;
+  const names = catalogTables(catalog);
+  return modelSpec(target, names.models, names.aliases, names.families, names.providerNames).operating_point ? ONE_CONFIGURATION : effort;
+}
+
+/** The decision with the effort it is sent at on this pool (`sentEffort`), where that differs from the engine's. */
+function withSentEffort(decision, pool, catalog) {
+  const sent = sentEffort(decision.targetModel, decision.targetEffort, pool, catalog, decision.pins);
+  decision.sentEffort = sent !== decision.targetEffort ? sent : undefined;
+  return decision;
+}
+
 function routeClaimed(body, ctx, env, depth = 0) {
-  const { options, store, now, candidateModels, hasExplicitCandidates, canRewriteModel } = env;
+  const { options, store, now, candidateModels, hasExplicitCandidates, canRewriteModel, liveQuotas, judgeHold } = env;
   const facts = extractRequestFacts(body, ctx);
   const sessionKey = facts.sessionKey || computeSessionKey(body, ctx, facts.firstWords);
   const chain = turnChain(body, facts);
@@ -311,11 +526,12 @@ function routeClaimed(body, ctx, env, depth = 0) {
   }
   const anchor = chain?.stamp || "";
   const pins = mergePinOptions(pinOptionsOf(options), body, body.task);
-  const liveQuotas = loadLiveQuotas(options, now);
 
   let cont = evaluateProviderContinuation(facts, sessionState, {
     now,
     pins,
+    // A pin keeps the hold only on a bundle it names in this pool that can run (contract R3); a malformed one never does.
+    pinKeepsHold: (session) => judgeHold(pins, session),
     affinityMode,
     availableModels: candidateModels,
     unhealthyModels: options.unhealthyModels,
@@ -326,73 +542,64 @@ function routeClaimed(body, ctx, env, depth = 0) {
     cacheTtl: options.cacheTtl,
     models: options.catalog?.models,
     aliases: options.catalog?.aliases,
+    providerNames: providerNamesOf(options.catalog),
   });
 
   if (cont.shouldHold && cont.model) {
-    const keptEffort = keepsEffort(
-      sessionState,
-      cont.effort || sessionState?.effort || "high",
-      facts.estimatedInputTokens,
-      now,
-      options
-    );
-    const target = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
-    // Contract R2: a hold runs what the pool offers now. Nothing at or below the held effort, or a pin that names it: route again.
-    const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
-    const heldEffort = pool ? heldEffortOn(pool, target, keptEffort, options.catalog, { pins, profile: sessionProfile(sessionState) }) : keptEffort;
-    if (heldEffort === null || (heldEffort !== keptEffort && pinsFixEffort(pins))) {
-      cont = {
-        shouldHold: false,
-        why: "effort_gone",
-        previousModel: cont.previousModel || cont.model,
-        previousEffort: keptEffort,
-        within: Boolean(facts.within),
-        turn: facts.turn || 1,
-      };
+    const turn = heldTurn(cont, sessionState, facts, { pins, candidateModels, options, now });
+    if (turn.gone) {
+      cont = turn.gone;
     } else {
+      const { keptEffort, pool } = turn;
+      const heldEffort = turn.effort;
+      const typed = typedListing(turn.target, heldEffort, pins, candidateModels, options.catalog, (name) =>
+        judgeHold(pins, { ...sessionState, target: name, model: name, effort: heldEffort, pinnedBundle: null }));
+      const target = typed?.target || turn.target;
+      const bundle = typed?.target ? typed.bundle : pool ? heldBundle(pool, target, heldEffort, options.catalog, pins) : null;
+      const fromHistory = Boolean(sessionState?.replayed);
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
-      const stepWarnings = heldEffort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${heldEffort}`];
+      const typedWarning = typed?.refused ? typedListingWarning(pins.constraintModel, typed.refused, target) : null;
+      const stepWarnings = [
+        ...(turn.effort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${turn.effort}`]),
+        ...(typedWarning ? [typedWarning] : []),
+      ];
       return {
         facts,
         sessionKey,
-        record: {
-          model: target,
-          effort: heldEffort,
-          provider: cont.provider || sessionState?.provider || "",
-          workKind: sessionState?.workKind || "general_implementation",
-          difficulty: sessionState?.difficulty || "routine",
-          why: cont.why,
-          held: true,
-          anchor,
-          pinnedBundle: pins.pinnedBundle,
-        },
+        record: { ...turn.record, model: target, effort: heldEffort, anchor },
         decision: {
           ok: true,
           targetModel: target,
-          canonicalModel: canonicalModel(cont.model, options.catalog?.aliases),
+          canonicalModel: catalogCanonical(cont.model, options.catalog),
           targetEffort: heldEffort,
           modelWithEffort: `${target}:${heldEffort}`,
-          bundle: pool ? heldBundle(pool, target, heldEffort, options.catalog, pins) : null,
+          bundle: bundle ? { ...bundle, effort: heldEffort } : null,
           canRewriteModel,
           hasExplicitCandidates,
           ...(heldAccounts ? { accounts: heldAccounts } : {}),
-          workKind: sessionState?.workKind || "general_implementation",
+          workKind: sessionState?.workKind || "other_or_mixed",
           difficulty: sessionState?.difficulty || "routine",
           axisDemand: sessionState?.profile?.axis_demand || null,
           profile: sessionState?.profile || null,
           pins,
           warnings: [...stepWarnings, ...heldWarnings],
+          ...(typedWarning ? { sessionNotices: [typedWarning] } : {}),
           continuation: {
             held: true,
             why: cont.why,
             sessionKey,
             anchor,
-            replayed: Boolean(sessionState?.replayed),
+            replayed: fromHistory,
+            // A hold this runtime's own record makes, or one on a state rebuilt from the message history (`replayedState`): the
+            // earlier turns decided again with this request's pins, since the pins of an earlier turn are not in the history. The
+            // route an earlier turn ran on is not known to a runtime that did not serve it, so a rebuilt hold names none.
+            stateFrom: fromHistory ? "history" : "record",
+            ...(fromHistory ? { notice: REBUILT_HOLD_NOTICE } : {}),
             turn: facts.turn,
             within: facts.within,
-            previousModel: cont.previousModel || cont.model,
-            previousEffort: cont.previousEffort || heldEffort,
+            previousModel: fromHistory ? null : cont.previousModel || cont.model,
+            previousEffort: fromHistory ? null : cont.previousEffort || heldEffort,
           },
         },
       };
@@ -422,15 +629,9 @@ function routeClaimed(body, ctx, env, depth = 0) {
   }
   const minContextTokens = cont.why === "outgrown" ? Number(facts.estimatedInputTokens || 0) : 0;
 
-  const decision = selectBestRoute(profile, {
-    candidateModels,
-    catalog: options.catalog,
+  const decision = env.decide(profile, {
     unhealthyModels,
     minContextTokens,
-    quotas: liveQuotas,
-    meteredOk: options.meteredOk,
-    userScores: options.userScores,
-    now,
     ...pins,
     continuity: {
       previousModel: cont.previousModel || null,
@@ -453,10 +654,11 @@ function routeClaimed(body, ctx, env, depth = 0) {
       sessionKey,
       anchor,
       replayed: Boolean(sessionState?.replayed),
+      stateFrom: sessionState ? (sessionState.replayed ? "history" : "record") : null,
       turn: facts.turn,
       within: facts.within,
-      previousModel: cont.previousModel || null,
-      previousEffort: cont.previousEffort || null,
+      previousModel: sessionState?.replayed ? null : cont.previousModel || null,
+      previousEffort: sessionState?.replayed ? null : cont.previousEffort || null,
     };
   }
 
@@ -489,7 +691,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
   let finalEffort = decision.targetEffort;
   if (
     sessionState &&
-    canonicalModel(decision.targetModel) === canonicalModel(sessionState.model) &&
+    catalogCanonical(decision.targetModel, options.catalog) === catalogCanonical(sessionState.model, options.catalog) &&
     cont.why !== "cold" &&
     cont.why !== "compacted" &&
     cont.why !== "first" &&
@@ -504,6 +706,16 @@ function routeClaimed(body, ctx, env, depth = 0) {
       options
     );
     if (!candidateModels || candidateOffers(candidateModels, decision.targetModel, kept, options.catalog)) finalEffort = kept;
+  }
+  const typed = typedListing(decision.targetModel, finalEffort, pins, candidateModels, options.catalog, (name) =>
+    judgeHold(pins, { target: name, model: name, effort: finalEffort, profile: decision.profile }));
+  if (typed?.target) {
+    decision.targetModel = typed.target;
+    decision.bundle = typed.bundle;
+  } else if (typed?.refused) {
+    const typedWarning = typedListingWarning(pins.constraintModel, typed.refused, decision.targetModel);
+    decision.warnings = [...(decision.warnings || []), typedWarning];
+    decision.sessionNotices = [typedWarning];
   }
   decision.targetEffort = finalEffort;
   decision.modelWithEffort = `${decision.targetModel}:${finalEffort}`;
@@ -532,7 +744,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
  * Whether the body changed.
  */
 function sendUnrouted(body, ctx, decision, options) {
-  console.warn(`agentcompass: ${decision.notice} (${decision.reason})`);
+  logWarning(`${decision.notice} (${decision.reason})`);
   ctx.state = ctx.state || {};
   ctx.state.agentcompass = decision;
   const fallback = String(options.defaultModel || options.fallbackModel || "").trim();
@@ -548,7 +760,7 @@ function sendUnrouted(body, ctx, decision, options) {
  * under `routeAllModels` with no pin is the one case with a target of its own: routing found nothing better, it goes as asked.
  */
 function rejectBlocked(body, ctx, blocked) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const pinned = Object.keys(mergePinOptions(pinOptionsOf(options), body, body.task)).length > 0;
   if (!pinned && !isVirtualModelName(body.model, options)) return null;
   ctx.state = ctx.state || {};
@@ -561,7 +773,7 @@ export function onRequest(body, ctx = {}) {
     return undefined;
   }
 
-  const options = ctx.options || {};
+  const options = magpieOptions(ctx.options);
   const isClaimedModel = shouldRoute(body.model, options);
   const providerModelsAll = extractAllProviderModels(options);
   const hasModelsByProvider = providerModelsAll.length > 0;
@@ -629,7 +841,7 @@ export function onRequest(body, ctx = {}) {
             {
               model: decision.targetModel,
               effort: decision.targetEffort || "high",
-              workKind: decision.workKind || "general_implementation",
+              workKind: decision.workKind || "other_or_mixed",
               difficulty: decision.difficulty || "routine",
               why: decision.continuation?.why || "first",
               held: Boolean(decision.continuation?.held),
@@ -646,6 +858,8 @@ export function onRequest(body, ctx = {}) {
     if (!decision && isClaimedModel) {
       // 2. Zero-latency (< 2 ms) synchronous execution inside `moejs`. A hooks' route this pool can't take still
       // carries the classifier's answer.
+      // The quotas are read once for the request: every turn it decides again reads the same.
+      const liveQuotas = loadLiveQuotas(options, now);
       const routed = routeClaimed(body, stateRoute?.profile ? { ...ctx, profile: stateRoute.profile } : ctx, {
         options,
         store,
@@ -653,10 +867,13 @@ export function onRequest(body, ctx = {}) {
         candidateModels,
         hasExplicitCandidates,
         canRewriteModel,
+        liveQuotas,
+        judgeHold: holdJudge(options, candidateModels, liveQuotas, now),
+        decide: routeDecider({ options, candidateModels, liveQuotas, now }),
       });
       decision = routed.decision;
       // Magpie's log is where a gateway operator sees that a pinned model is too slow for a live loop
-      logRouteWarnings(decision?.warnings);
+      logDecision(decision);
       for (const warning of decision?.warnings || []) {
         if (typeof ctx?.warn === "function") {
           ctx.warn(warning);
@@ -694,6 +911,7 @@ export function onRequest(body, ctx = {}) {
       return dropRouterFields(body) || changed ? body : undefined;
     }
 
+    withSentEffort(decision, candidateModels, options.catalog);
     ctx.state = ctx.state || {};
     ctx.state.agentcompass = decision;
     ctx.state.route = decision;
@@ -705,7 +923,7 @@ export function onRequest(body, ctx = {}) {
 
     if (!allowModelRewrite) {
       if (options.injectProtocolEffort === true) {
-        applyProtocolEffortOnly(body, decision.targetEffort, ctx);
+        applyProtocolEffortOnly(body, decision.sentEffort || decision.targetEffort, ctx);
         return body;
       }
       return dropRouterFields(body) ? body : undefined;
@@ -722,6 +940,42 @@ export function onRequest(body, ctx = {}) {
 }
 
 /**
+ * A preset's list as entries offered on it: each keeps the preset id as Magpie gives it (`presets`) and the catalogs it serves
+ * (`served`), and a name the preset's own `provider_names` declaration makes another model than the bare name is routed by the
+ * spelling that keeps reading that declaration (`servedModel`) with the name as listed beside it (`launch_model`; recorded in
+ * `listedAs` when given). A tag that constrains no effort (`:auto`, `:off`, `:default`) stays on the entry.
+ */
+function presetEntries(list, presetId, names, listedAs = null) {
+  const endpoints = expandHostProviders([presetId], MAGPIE_HOST, names.providerNames);
+  return list.map((entry) => {
+    const name = typeof entry === "string" ? entry : entry?.model;
+    if (!name) return entry;
+    const bare = withoutUnconstrainingTag(String(name).trim());
+    const tag = String(name).trim().slice(bare.length);
+    const served = servedModel(bare, endpoints, names.models, names.aliases, names.families, names.providerNames);
+    const offeredOn = { presets: [presetId], served: endpoints };
+    if (served === bare) return typeof entry === "string" ? { model: entry, ...offeredOn } : { ...entry, ...offeredOn };
+    if (listedAs) listedAs.set(listedKey(served), listedKey(bare));
+    return { ...(typeof entry === "string" ? {} : entry), model: `${served}${tag}`, launch_model: bare, ...offeredOn };
+  });
+}
+
+/**
+ * The rows the host offers on presets other than `prov` (`candidateModels`, and each other preset's `modelsByProvider` list as
+ * entries offered on it): a named model is matched over them too, so a prefix that names one of them is not dropped and served
+ * by this preset; they never compete here.
+ */
+function otherPresetRows(options, ctx, prov, names) {
+  const rows = [...(explicitCandidateModels(options, ctx) || [])];
+  for (const [id, list] of Object.entries(options.modelsByProvider || {})) {
+    if (id === prov?.id || id === prov?.name) continue;
+    const entries = extractModelList(list);
+    if (entries) rows.push(...presetEntries(entries, id, names));
+  }
+  return rows;
+}
+
+/**
  * Middleware `onProvider(body, ctx)` hook (`internal/middleware/run.go:Tried`):
  * Magpie passes `ctx.provider = { id, name, account, model }`.
  * Supports optional per-provider model lists via `options.modelsByProvider[provider.id]`
@@ -733,13 +987,25 @@ export function onProvider(body, ctx = {}) {
     return undefined;
   }
 
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   const liveQuotas = loadLiveQuotas(options, now);
   const prov = ctx?.provider && typeof ctx.provider === "object" ? ctx.provider : null;
-  const providerModels =
+  const listedModels =
     extractModelList(options.modelsByProvider?.[prov?.id]) ||
     extractModelList(options.modelsByProvider?.[prov?.name]);
+  // The names of a preset's list are in that preset's namespace (`model_resolution.serving_providers`): one the preset's own
+  // `provider_names` declaration makes another model than the bare name is (no row there, or another row) is routed by the
+  // spelling that keeps reading that declaration (`servedModel`, under `options.catalog`), and sent to the preset as listed
+  // whenever the target routed on, here or by `onRequest`, is that spelling. A tag that constrains no effort (`:auto`, `:off`,
+  // `:default`) is kept on the entry and left out of the name read and matched, as `fleet.js` leaves it out of the target. The
+  // preset's id is read through `host_providers.magpie` (`opencode-zen` serves models.dev's `opencode`). Every entry of the list
+  // keeps the preset id as Magpie gives it (`presets`) and the catalogs it serves (`served`), and a converted one the name as listed
+  // (`launch_model`), as a bundle AgentCompass derives for a Magpie account keeps them: a model the user names with the preset's id
+  // or its catalog's as the prefix names these entries (`pinMatchingBundles`).
+  const names = catalogTables(options.catalog);
+  const listedAs = new Map();
+  const providerModels = listedModels && prov?.id ? presetEntries(listedModels, prov.id, names, listedAs) : listedModels;
 
   if (ctx?.state?.routeBlocked) return undefined;
 
@@ -760,16 +1026,18 @@ export function onProvider(body, ctx = {}) {
     // The user unchecks an effort in the pool, and a provider's own list holds no such row (contract R2).
     const unchecked = (explicitCandidateModels(options, ctx) || []).filter((entry) => entry?.disabled && !entry.disabled_by_default);
     const providerPool = [...providerModels, ...unchecked];
+    const elsewhere = otherPresetRows(options, ctx, prov, names);
     const needProviderRoute =
       isVirtualModelName(body.model, options) ||
       prevDecision.ok === false ||
       prevDecision.canRewriteModel === false ||
       prevDecision.hasExplicitCandidates === false ||
-      !candidateOffers(providerPool, prevDecision.targetModel, prevDecision.targetEffort || "high", options.catalog) ||
+      !candidateOffers(providerPool, prevDecision.targetModel, prevDecision.targetEffort || "high", options.catalog, undefined, elsewhere) ||
       options.routePerProvider === true;
 
     if (needProviderRoute) {
       const store = options.continuityStore || defaultContinuityStore;
+      const pins = mergePinOptions(pinOptionsOf(options), prevDecision.pins);
       const routed = selectBestRoute(prevProfile, {
         candidateModels: providerPool,
         catalog: options.catalog,
@@ -782,19 +1050,33 @@ export function onProvider(body, ctx = {}) {
         meteredOk: options.meteredOk,
         userScores: options.userScores,
         now,
-        ...mergePinOptions(pinOptionsOf(options), prevDecision.pins),
+        // The rows on the other presets: a model named with another preset's prefix names those, never this preset's.
+        pinOnlyModels: elsewhere,
+        ...pins,
       });
       logRouteWarnings(routed.warnings);
       if (routed.ok && routed.targetModel) {
+        const routedEffort = routed.targetEffort || prevDecision.targetEffort || "high";
+        const judgeHold = holdJudge(options, providerPool, liveQuotas, now);
+        const typed = typedListing(routed.targetModel, routedEffort, pins, providerPool, options.catalog, (name) =>
+          judgeHold(pins, { target: name, model: name, effort: routedEffort, profile: routed.profile }));
+        const targetModel = typed?.target || routed.targetModel;
+        const bundle = typed?.target ? typed.bundle : routed.bundle;
+        const targetEffort = routedEffort;
+        const typedWarning = typed?.refused ? typedListingWarning(pins.constraintModel, typed.refused, targetModel) : null;
+        if (typedWarning) {
+          routed.warnings = [...(routed.warnings || []), typedWarning];
+          logOncePerSession(prevDecision.continuation?.sessionKey, typedWarning);
+        }
         const updated = {
           ...prevDecision,
           ok: true,
           accountBlocked: false,
-          targetModel: routed.targetModel,
+          targetModel,
           canonicalModel: routed.canonicalModel,
-          targetEffort: routed.targetEffort || prevDecision.targetEffort || "high",
-          modelWithEffort: `${routed.targetModel}:${routed.targetEffort || prevDecision.targetEffort || "high"}`,
-          bundle: routed.bundle,
+          targetEffort,
+          modelWithEffort: `${targetModel}:${targetEffort}`,
+          bundle,
           profile: routed.profile,
           selectedAccount: routed.selectedAccount ?? prevDecision.selectedAccount ?? null,
           quota: routed.quota ?? prevDecision.quota ?? null,
@@ -803,14 +1085,22 @@ export function onProvider(body, ctx = {}) {
           warnings: [...(prevDecision.warnings || []), ...(routed.warnings || [])],
           ...(routed.accounts ? { accounts: routed.accounts } : {}),
         };
+        withSentEffort(updated, providerPool, options.catalog);
         if (ctx.state && typeof ctx.state === "object") {
           ctx.state.agentcompass = updated;
           ctx.state.route = updated;
         }
-        applyRoutedModelAndEffort(body, updated, ctx);
+        const listed = listedAs.get(listedKey(updated.targetModel));
+        applyRoutedModelAndEffort(body, listed ? { ...updated, targetModel: listed } : updated, ctx);
         return body;
       }
       return undefined;
+    }
+    // The route `onRequest` chose stands on this preset; it still goes upstream under the name the preset lists for it.
+    const listed = prevDecision.ok !== false && prevDecision.targetModel ? listedAs.get(listedKey(prevDecision.targetModel)) : null;
+    if (listed) {
+      applyRoutedModelAndEffort(body, { ...prevDecision, targetModel: listed }, ctx);
+      return body;
     }
   }
 
@@ -837,6 +1127,9 @@ export function onProvider(body, ctx = {}) {
       targetModel: prov.model.trim(),
       targetEffort: prevDecision?.targetEffort || "high",
     };
+    // The provider's own model, sent by the one rule on a pool of that model alone: what `onRequest` sent for its route says
+    // nothing of it.
+    withSentEffort(fallbackDecision, [prov.model.trim()], options.catalog);
     if (prevDecision && ctx.state && typeof ctx.state === "object") {
       ctx.state.agentcompass = fallbackDecision;
       ctx.state.route = fallbackDecision;
@@ -855,7 +1148,7 @@ export function onProvider(body, ctx = {}) {
  * records nothing, since it must not start a session that later turns hold, and its JSON reply says why.
  */
 export function onResponse(body, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const store = options.continuityStore || defaultContinuityStore;
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   const decision = ctx?.state?.agentcompass || ctx?.state?.route;
@@ -890,7 +1183,7 @@ export function onResponse(body, ctx = {}) {
  */
 export function onAccount(accountOrBody, ctx = {}) {
   const decision = ctx?.state?.agentcompass || ctx?.state?.route;
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   if (decision?.ok === false && decision?.accountBlocked === true) {
     return { skip: true };
   }
@@ -923,6 +1216,9 @@ export function onAccount(accountOrBody, ctx = {}) {
     return { skip: true };
   }
 
+  // No skip for a seat a pin names: Magpie's account carries no seat this plugin can read (its `name` is the provider's, its `ref`
+  // a keyed hash of the login), and a skip of every seat is a 404 (`internal/gateway/gateway.go`, no fail-open). A seat prefix
+  // decides the plugin's choice and refusal; which seat of the provider Magpie then uses is Magpie's.
   if (!decision) return undefined;
 
   const allowedByKind = options.accountsByWorkKind?.[decision.workKind];

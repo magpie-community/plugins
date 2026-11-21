@@ -18,7 +18,8 @@ import {
   canonicalModel,
   healthKey,
   modelSpec,
-  resolveModel,
+  pinGiven,
+  providerNamesOf,
 } from "./catalog.js";
 import { defaultScoredModels } from "./axis-scores.js";
 import { dispatchAllowedEfforts } from "./candidate-eval.js";
@@ -27,9 +28,11 @@ import { isModelQuotaExhausted } from "./quota.js";
 /** The scored models a call reads (the host's own `options.models` when it gives some). */
 const modelsOf = (options) => (options && options.models) || defaultScoredModels();
 const aliasesOf = (options) => (options && options.aliases) || MODEL_ALIASES;
+/** The `provider_names` table of the host catalogue the call reads (`providerNamesOf`, passed in as `options.providerNames`). */
+const namesOf = (options) => (options && options.providerNames) || providerNamesOf({ models: options && options.models });
 
 /** The row of a model a session runs on: its context window and whether the public data says it takes images. */
-const specOf = (model, options) => modelSpec(model, modelsOf(options), aliasesOf(options), FAMILIES);
+const specOf = (model, options) => modelSpec(model, modelsOf(options), aliasesOf(options), FAMILIES, namesOf(options));
 
 /** Whether the public data cites image input for this model (unknown is not yes: a turn that needs images routes again). */
 const takesImages = (spec) => (((spec || {}).five_axis || {}).image_input || {}).status === "yes";
@@ -864,7 +867,7 @@ export function keepsEffort(
     return wantedEffort || "medium";
   }
 
-  const fleet = { models: modelsOf(options), aliases: aliasesOf(options), families: FAMILIES, dispatch_efforts: DISPATCH_EFFORTS };
+  const fleet = { models: modelsOf(options), aliases: aliasesOf(options), families: FAMILIES, providerNames: namesOf(options), dispatch_efforts: DISPATCH_EFFORTS };
   const allowed = dispatchAllowedEfforts({ provider: sessionState.provider || "", model: sessionState.model }, fleet, sessionState.model);
   return ratchetEffort(sessionState.effort, wantedEffort, allowed || undefined);
 }
@@ -893,21 +896,14 @@ export function keepsEffort(
  *   - `"off"`: `affinityMode === "off"`
  */
 /**
- * Whether the user now names something other than what the session runs (contract R3). A hold would hide that.
+ * Whether the request's pins end the session's hold (contract R3): a request that names a model, a bundle or an effort keeps the
+ * hold only when `options.pinKeepsHold(sessionState)` says the held bundle is among those it names in the current pool
+ * (`allocator.js` `pinKeepsHold`); without that judge every pin routes again, so a pin is never held past.
  */
 function pinOverridesSession(sessionState, pins, options) {
-  if (!pins) return false;
-  if (pins.pinnedBundle && pins.pinnedBundle !== sessionState.pinnedBundle) return true;
-  let effort = pins.constraintEffort ? String(pins.constraintEffort).trim().toLowerCase() : null;
-  if (pins.constraintModel) {
-    const models = modelsOf(options);
-    const aliases = aliasesOf(options);
-    // Each row is its own model (contract R1): a session on a family row is not on the flagship it folds to, nor the other way round.
-    const running = healthKey(sessionState.target || sessionState.model, models, aliases);
-    if (healthKey(String(pins.constraintModel), models, aliases) !== running) return true;
-    effort = effort || resolveModel(String(pins.constraintModel), models, aliases).effort;
-  }
-  return Boolean(effort && effort !== sessionState.effort);
+  if (!pins || ![pins.constraintModel, pins.pinnedBundle, pins.constraintEffort].some(pinGiven)) return false;
+  if (typeof options.pinKeepsHold !== "function") return true;
+  return !options.pinKeepsHold(sessionState);
 }
 
 export function evaluateProviderContinuation(facts = {}, sessionState = null, options = {}) {
@@ -932,7 +928,7 @@ export function evaluateProviderContinuation(facts = {}, sessionState = null, op
     };
   }
 
-  const currentModel = canonicalModel(sessionState.model, aliasesOf(options), modelsOf(options));
+  const currentModel = canonicalModel(sessionState.model, aliasesOf(options), modelsOf(options), FAMILIES, [], namesOf(options));
   const spec = specOf(currentModel, options);
 
   // 1. Check 24h session retention expiry
@@ -967,9 +963,9 @@ export function evaluateProviderContinuation(facts = {}, sessionState = null, op
       ? facts.candidateModels
       : [];
   if (candidateList.length > 0) {
-    const running = healthKey(sessionState.target || sessionState.model, options.models, options.aliases);
+    const running = healthKey(sessionState.target || sessionState.model, options.models, options.aliases, FAMILIES, namesOf(options));
     const candidateKeys = candidateList.map((m) =>
-      healthKey(typeof m === "string" ? m : m?.model || m?.id || "", options.models, options.aliases)
+      healthKey(typeof m === "string" ? m : m?.model || m?.id || "", options.models, options.aliases, FAMILIES, namesOf(options))
     );
     if (!candidateKeys.includes(running)) {
       return {
@@ -985,9 +981,9 @@ export function evaluateProviderContinuation(facts = {}, sessionState = null, op
 
   // 3. Check provider/model health
   const runningName = sessionState.target || sessionState.model;
-  const failedModel = healthKey(runningName, options.models, options.aliases);
+  const failedModel = healthKey(runningName, options.models, options.aliases, FAMILIES, namesOf(options));
   const unhealthySet = new Set(
-    (options.unhealthyModels || []).map((m) => healthKey(m, options.models, options.aliases))
+    (options.unhealthyModels || []).map((m) => healthKey(m, options.models, options.aliases, FAMILIES, namesOf(options)))
   );
   const storeHealthy =
     options.store && typeof options.store.isModelHealthy === "function"
@@ -1253,7 +1249,7 @@ export class SessionContinuityStore {
       model: "",
       effort: "medium",
       provider: "",
-      workKind: "general_implementation",
+      workKind: "other_or_mixed",
       difficulty: "routine",
       tokens: 0,
       requestTokens: 0,
@@ -1325,7 +1321,7 @@ export class SessionContinuityStore {
         target: decision.model || existing?.target || "",
         effort: decision.effort || existing?.effort || "medium",
         provider: decision.provider ?? existing?.provider ?? "",
-        workKind: decision.workKind || existing?.workKind || "general_implementation",
+        workKind: decision.workKind || existing?.workKind || "other_or_mixed",
         difficulty: decision.difficulty || existing?.difficulty || "routine",
         tokens,
         requestTokens: estTokens > 0 ? estTokens : prevReqTokens,

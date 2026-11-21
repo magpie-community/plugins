@@ -5,7 +5,7 @@ export const BASE_TASK = "Rename foo to bar in util.py.";
 const WORDS = [
   // loops and pace
   "抢票", "秒杀", "挂机", "盯盘", "直播间", "flash sale", "order book", "polling", "game", "real-time",
-  // fast requests and urgency
+  // fast requests and urgency words
   "urgent", "URGENT", "加急", "asap", "紧急", "尽快", "fast mode", "not urgent",
   // multi_task
   "同时", "并且", "另外", "and also", "both", "as well as",
@@ -18,7 +18,7 @@ const WORDS = [
   // needs_gui, needs_visual, local_only
   "screenshot", "image", "图片", "截图", "设计稿", "figma", "mockup", "visual diff", "click the", "点击", "用鼠标", "operate the browser",
   "D:/work/x", "localhost", "pytest", "worktree", "public web",
-  // reasoning_depth and the demand on each category
+  // the depth (primary_level) and the demand on each category
   "prove", "formal proof", "形式化证明", "architecture", "架构", "refactor", "重构", "deadlock", "死锁", "race condition", "root cause", "根因",
   "brainstorm", "头脑风暴", "发散", "creative", "first principles", "whole repository", "cross-module", "跨模块", "分布式",
   // work_kind

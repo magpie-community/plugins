@@ -1,0 +1,1341 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "gpt-3.5-turbo",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-3.5-turbo",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4-turbo",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4-turbo",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4.1",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4.1",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4.1-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4.1-mini",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4.1-nano",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4.1-nano",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4o",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4o",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4o-2024-05-13",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4o-2024-05-13",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4o-2024-08-06",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4o-2024-08-06",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4o-2024-11-20",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4o-2024-11-20",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-4o-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-4o-mini",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-5",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "minimal"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gpt-5-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5-mini",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "minimal"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gpt-5-nano",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5-nano",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "minimal"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gpt-5-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "high"
+   ]
+  },
+  {
+   "id": "gpt-5.1",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.1",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gpt-5.2",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.2",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.2-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.2-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.3-codex",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.3-codex",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.3-codex-spark",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.3-codex-spark",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.4",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.4",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.4-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.4-mini",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.4-nano",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.4-nano",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.4-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.4-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.5",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.5",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.5-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.5-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "reasoning_levels": [
+    "medium",
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "gpt-5.6",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.6",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-5.6-luna",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.6-luna",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-5.6-sol",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.6-sol",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-5.6-terra",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-5.6-terra",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-6-astra",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-6-astra",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-6-luna",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-6-luna",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-6-sol",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-6-sol",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-6.1-sol",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-6.1-sol",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-6.1-terra",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-6.1-terra",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-daybreak-blue-latest",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-daybreak-blue-latest",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "gpt-daybreak-red-latest",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "gpt-daybreak-red-latest",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "none"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  {
+   "id": "o1",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o1",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o1-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o1-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o3",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o3",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o3-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o3-mini",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o3-pro",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o3-pro",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o4-mini",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "openai",
+   "display_name": "o4-mini",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "claude-opus-4-6-thinking",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "claude-opus-4-6-thinking",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high",
+    "max"
+   ]
+  },
+  {
+   "id": "claude-sonnet-4-6",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "claude-sonnet-4-6",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high",
+    "max"
+   ]
+  },
+  {
+   "id": "gemini-3-flash",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "gemini-3-flash",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "minimal"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gemini-3.1-flash-lite",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "gemini-3.1-flash-lite",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "minimal"
+    },
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gemini-3.1-pro-low",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "gemini-3.1-pro-low",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "gemini-pro-agent",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "gemini-pro-agent",
+   "reasoning": false,
+   "supported_reasoning_levels": [],
+   "reasoning_levels": []
+  },
+  {
+   "id": "gpt-oss-120b-medium",
+   "object": "model",
+   "type": "model",
+   "created": 0,
+   "created_at": "2025-01-01T00:00:00Z",
+   "owned_by": "account:antigravity",
+   "display_name": "gpt-oss-120b-medium",
+   "reasoning": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    }
+   ],
+   "reasoning_levels": [
+    "low",
+    "medium",
+    "high"
+   ]
+  }
+ ]
+}
