@@ -83,7 +83,7 @@ test("fetch stub: all six tools preserve wire bodies, defaults and complete JSON
   const cfg = {};
   await plugin.config(cfg);
   assert.deepEqual(cfg.provider, { search1api: { name: "Search1API", models: {} } });
-  assert.equal(plugin.auth.single, true);
+  assert.notEqual(plugin.auth.single, true);
   assert.deepEqual(plugin.auth.methods.map((m) => m.type), ["oauth", "api"]);
 });
 

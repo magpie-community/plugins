@@ -29,7 +29,21 @@ export interface PluginInput {
 export interface Options {
   apiKey?: string;
   baseUrl?: string;
+  keyPick?: "order" | "rotate";
 }
+
+export interface StaticCredential {
+  kind: "key";
+  id: string;
+  key: string;
+}
+export interface SavedCredential {
+  kind: "saved";
+  id: string;
+  accountKey: string;
+  auth: StoredAuth;
+}
+export type Credential = StaticCredential | SavedCredential;
 
 export function serviceURL(value: string): URL {
   const url = new URL(value);

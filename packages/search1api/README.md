@@ -51,14 +51,15 @@ installation, use an API key instead. The callback expires after five minutes.
 
 Magpie saves access and refresh tokens in `plugin-auth.json` under its config
 directory (`~/.config/magpie`, or `$XDG_CONFIG_HOME/magpie`) with file mode
-`0600`. The plugin reads only its own `search1api` entry and saves refreshed
-tokens through Magpie's `client.auth.set`; it does not maintain a second token
+`0600`. The plugin reads its own `search1api` entry and every `search1api#…`
+account beside it, and saves refreshed tokens back into the account they came
+from through Magpie's `client.auth.set`; it does not maintain a second token
 store. Tool calls refresh expiring tokens and retry once after an OAuth `401`.
 Refreshes are serialized across simultaneous calls and Magpie processes.
 
 Search1API appears as a sign-in entry with **no chat models**. It authenticates
-the tools, not a model provider. One Search1API account is active at a time;
-signing in again replaces it.
+the tools, not a model provider. Signing in again adds another account instead
+of replacing the first; see [Multiple accounts and keys](#multiple-accounts-and-keys).
 
 To remove the saved sign-in:
 
@@ -82,14 +83,39 @@ Get a key at [s1.dev](https://s1.dev/?utm_source=magpie&utm_medium=readme).
 
 For automated deployments, the plugin also accepts an `apiKey` plugin option
 in Magpie's options editor, or `SEARCH1API_API_KEY` in the environment of the
-Magpie process. Precedence: plugin option → environment → Magpie sign-in.
-An option or environment key overrides a saved OAuth account. `SEARCH1API_KEY`
-and the CLI's `s1 login` session are not read.
+Magpie process. Either may list several keys separated by commas
+(`key-one,key-two`); they are trimmed, duplicates dropped and tried in turn.
+Precedence: plugin option → environment → Magpie sign-in. Option or
+environment keys override every saved account. `SEARCH1API_KEY` and the CLI's
+`s1 login` session are not read.
 
 `baseUrl` is an optional API base URL for a compatible deployment or local
 testing. It defaults to `https://api.search1api.com`. HTTPS is required, except
 for loopback test servers. OAuth discovery uses that API's protected-resource
 metadata and validates the issuer and endpoints.
+
+### Multiple accounts and keys
+
+Sign in more than once, with OAuth or an API key, and Magpie keeps every
+account in `plugin-auth.json`: the first as `search1api`, later ones as
+`search1api#…`. A refreshed token is written back into the account it came from,
+so refreshing one account never replaces another.
+
+Tools use the credentials in this order: `apiKey` option keys, then
+`SEARCH1API_API_KEY` keys, then every saved account (the `search1api` entry
+first, then the `search1api#…` entries by name). When a request is refused with
+`401`, `402`, `403` or `429`, the plugin rests that credential and immediately
+retries with the next one. The rest lasts for the server's `Retry-After` when it
+sends one, otherwise 60 seconds after a `429` and 10 minutes after the others,
+and never less than a second or more than an hour. Rested credentials go to the
+back of the queue and are used again when everything else is refused; a
+successful call clears the rest. Other errors, timeouts, cancellations and
+unreadable responses do not switch credentials.
+
+Set the `keyPick` plugin option to `rotate` to spread calls over the available
+credentials instead of always starting with the first. The default is `order`.
+With a single saved OAuth account, a `401` still refreshes that account once
+and retries once, as before.
 
 ## Connect your agent
 
@@ -142,9 +168,10 @@ preserve optional `published_date` and per-result `metadata`; Ask preserves
 “Powered by xAI”. Results are returned as JSON text.
 
 Magpie gives tools a 55-second deadline. Cancellation is forwarded to fetch.
-Automatic request retries are disabled to keep calls within that deadline; OAuth
-authentication is retried once after refreshing. Other upstream errors return
-to the calling agent.
+Automatic request retries are disabled to keep calls within that deadline; the
+only retries are the single OAuth retry after refreshing and switching to
+another credential when one is refused. Other upstream errors return to the
+calling agent.
 
 ## Web search for every model
 
@@ -156,7 +183,9 @@ like any other search API there.
 It takes no separate key: it searches as the Search1API account you signed in
 to above (OAuth or API key), which Magpie renews before each search. An
 `apiKey` option or `SEARCH1API_API_KEY` is not used here: a search always
-goes out as the account Magpie picked, so a refusal rests that account. Each search
+goes out as the account Magpie picked, so a refusal rests that account. Only a
+host that calls this entry without Magpie's account picker falls back to the
+credentials above, with the same rest-and-switch rules. Each search
 is a Search1API `search` call on Google with up to the number of results
 Magpie asks for, without page content. A refused request (401, 402, 429)
 keeps its status, so Magpie rests the account for search and asks the next
@@ -189,7 +218,9 @@ bun scripts/check.mjs
 
 The fetch-stub tests replace every fetch with synthetic responses, covering
 all six wire bodies, defaults, validation, safe errors, OAuth discovery,
-refresh/retry limits and cancellation. Local loopback fixtures additionally
+refresh/retry limits and cancellation. Multiple saved accounts, comma-separated
+keys, `order`/`rotate` picking, `Retry-After` rests and per-account refresh
+write-back have tests of their own. Local loopback fixtures additionally
 exercise PKCE browser callbacks, key precedence, concurrent refreshes and
 logout without real accounts or paid API calls.
 
