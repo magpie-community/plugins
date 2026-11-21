@@ -1097,6 +1097,9 @@ for (const [name, system, headers, expectedDir, named] of [
   ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
   ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(os.tmpdir()) }, path.resolve(os.tmpdir()), os.tmpdir()],
   ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
+  // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
+  // sentence after the closing quote
+  ["quoted prompt ending a sentence", `Current working directory: "${os.tmpdir()}".`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events

@@ -2577,6 +2577,11 @@ class Proc {
     // earlier message becomes a {{KIND_xxxxxxxx}} placeholder. The history
     // is the same one, so the session holds (yetone/magpie#7223).
     if (sameHistoryUpToMasking(this.expectedMessages, messages)) return true
+    // A proxy between the client and magpie (billion-context's nudge) can
+    // add text after a step's tool results for one request; the client never
+    // had it, so the next request's history goes on without it
+    // (yetone/magpie#7223).
+    if (droppedOneRequestText(this.expectedMessages, messages)) return true
     // Clients such as Claude Code canonicalize tool_use.input when they
     // persist history (e.g. filling default replace_all: false). The live
     // session still has the model-issued arguments. historyKey already
@@ -3732,6 +3737,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
   let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
+  let historyDiff
   let key = convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
     !opts.hasToolResults && !existing.turn.cancelRequested && existing.turn.model !== opts.model) {
@@ -3781,6 +3787,9 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         existing.workDir !== opts.workDir ? "work_dir" :
         !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
         !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
+      // where the history first differs from the session's, with no text,
+      // as drop_live logs it (yetone/magpie#7223)
+      if (why === "history") historyDiff = firstHistoryDiff(existing.expectedMessages, matchedHistory)
     }
     existing.retiring = true
     dropFromPool(existing)
@@ -3816,6 +3825,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   logSessionEvent(proc, why, {
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
+    ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
   })
   return { proc, history: opts.history }
 }
@@ -4232,6 +4242,35 @@ function compactedEarlierHistory(expected, actual) {
   if (historyKey(mine) === historyKey(tail)) return true
   return sameToolUseIdentities(mine, tail) &&
     historyKey(stripToolUseInputs(mine)) === historyKey(stripToolUseInputs(tail))
+}
+
+// Whether actual is expected but for text that was there for one request
+// only: the text after the tool results of expected's newest user row, which
+// actual has cut short or not at all (the rest the same but for masking).
+// Something between the client and magpie added it to that request (a
+// proxy's nudge, a plugin's note): the client never stored it, so the next
+// request goes on without it. agy saw it once, as the request had it. Only
+// that row: a user's own text, or text in any earlier row, that changed is
+// still a changed history. A row's text is never forgiven for growing.
+function droppedOneRequestText(expected, actual) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) return false
+  const a = historyRows(expected)
+  const b = historyRows(actual)
+  if (a.length !== b.length) return false
+  let row = a.length - 1
+  while (row >= 0 && a[row].role !== "user") row--
+  if (row < 0 || b[row].role !== "user") return false
+  const mine = a[row].content
+  const theirs = b[row].content
+  const lastResult = mine.findLastIndex((block) => block.type === "tool_result")
+  // text alone after the row's last tool result, merged into one block
+  if (lastResult < 0 || lastResult !== mine.length - 2 || mine.at(-1).type !== "text") return false
+  const kept = theirs.length === mine.length && theirs.at(-1).type === "text" ? theirs.at(-1).text : null
+  if (kept == null && theirs.length !== mine.length - 1) return false
+  if (kept != null && (kept === mine.at(-1).text || !mine.at(-1).text.startsWith(kept))) return false
+  const cut = a.map((item, index) => index !== row ? item
+    : { ...item, content: kept == null ? mine.slice(0, -1) : [...mine.slice(0, -1), { ...mine.at(-1), text: kept }] })
+  return sameUpToMasking(cut, b)
 }
 
 function sameToolUseIdentities(left, right) {
@@ -4679,13 +4718,29 @@ function shapedKeyHead(value) {
 
 const PLACEHOLDER_IN_TEXT_RE = new RegExp(PLACEHOLDER_SOURCE, "u")
 
+const PLACEHOLDERS_IN_TEXT_RE = new RegExp(PLACEHOLDER_SOURCE, "gu")
+
 // placeholders (and the space between them) on one side, a value of a
-// value's length on the other
+// value's length on the other. The text around the placeholders, when they
+// are glued to a word (张三的电话 as {{PERSON_x}}的电话, alice-project as
+// {{USER_x}}-project), is the same on both sides, character for character,
+// so a word changed beside a placeholder is still a real edit
+// (yetone/magpie#7223).
 function maskingHunk(placeholders, value) {
   if (!placeholders.length || !value.length) return false
-  if (!placeholders.some((token) => PLACEHOLDER_RE.test(token)) ||
-    !placeholders.every((token) => PLACEHOLDER_RE.test(token) || !token.trim())) return false
-  return value.join("").length <= MASKED_VALUE_MAX
+  const masked = placeholders.join("")
+  const written = value.join("")
+  const found = [...masked.matchAll(PLACEHOLDERS_IN_TEXT_RE)]
+  if (!found.length) return false
+  const start = found[0].index
+  const end = found.at(-1).index + found.at(-1)[0].length
+  // only placeholders and the space between them in the middle
+  if (masked.slice(start, end).replace(PLACEHOLDERS_IN_TEXT_RE, "").trim()) return false
+  // space alone around them is not text of the value's (as before)
+  const before = masked.slice(0, start).trim() ? masked.slice(0, start) : ""
+  const after = masked.slice(end).trim() ? masked.slice(end) : ""
+  if (written.length <= before.length + after.length || !written.startsWith(before) || !written.endsWith(after)) return false
+  return written.length - before.length - after.length <= MASKED_VALUE_MAX
 }
 
 // The places two token lists differ, each as the tokens one has there and
@@ -4784,22 +4839,14 @@ function sameUpToMasking(a, b) {
   return keysA.length === keysB.length && keysA.every((key, index) => key === keysB[index] && sameUpToMasking(a[key], b[key]))
 }
 
-// Where two histories first differ, as the key reads each message, with
-// no text of either: the message's index (and from the end), the block,
-// what differs in it, and whether it differs only by masking. For the
-// drop_live log (yetone/magpie#7223).
+// Where two histories first differ, as the key reads them (historyRows:
+// a run of one role's messages is one row, its texts joined), with no text
+// of either: the row's index (and from the end), the block, what differs in
+// it, and whether it differs only by masking; rows is how many rows the
+// longer has. For the drop_live and session_new logs (yetone/magpie#7223).
 function firstHistoryDiff(expected, actual) {
   if (!Array.isArray(expected) || !Array.isArray(actual)) return null
-  const keyed = (messages) => {
-    const ids = new Map()
-    return messages.map((message) => ({
-      role: message?.role,
-      blocks: (Array.isArray(message?.content) ? message.content : [{ type: "text", text: message?.content ?? "" }])
-        .map((block) => historyBlock(block, ids))
-        .filter((block) => block && !(block.type === "text" && !String(block.text).trim()))
-        .map((block) => block.type === "text" ? { ...block, text: String(block.text).trim() } : block),
-    }))
-  }
+  const keyed = (messages) => historyRows(messages).map((row) => ({ role: row.role, blocks: row.content }))
   const a = keyed(expected)
   const b = keyed(actual)
   // the first difference masking doesn't explain, else the first
@@ -4820,7 +4867,7 @@ function firstHistoryDiff(expected, actual) {
     }
   }
   const out = first ?? firstMasked
-  return out && { ...out, differing_messages: differing, masked_messages: maskedOnly }
+  return out && { ...out, rows: Math.max(a.length, b.length), differing_messages: differing, masked_messages: maskedOnly }
 }
 
 function messageDiff(a, b) {
@@ -6490,11 +6537,20 @@ function namedWorkDirectory(body, init) {
   const pattern = /(?:Primary working directory|^\s*(?:-\s*)?Working directory|Current working directory): *([^\r\n]+)$|<cwd>([^<\r\n]+)<\/cwd>/gm
   for (const text of texts) {
     for (const match of text.matchAll(pattern)) {
-      const value = (match[1] || match[2]).trim().replace(/^[`'"]+|[`'"]+$/g, "")
+      const value = unquotedDirectory((match[1] || match[2]).trim())
       if (value) directory = value
     }
   }
   return directory
+}
+
+// A directory as a prompt names it: bare, or quoted and ending a sentence
+// (DSH: Current working directory: "/path/to/dir".), where the closing
+// quote is followed by the sentence's mark (yetone/magpie#7223).
+function unquotedDirectory(value) {
+  const quoted = /^([`'"])(.*)\1[.,;:]?$/.exec(value)
+  if (quoted) return quoted[2].trim()
+  return value.replace(/^[`'"]+|[`'"]+$/g, "")
 }
 
 function workDirectory(directory) {
