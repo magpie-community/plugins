@@ -2,10 +2,21 @@
 // and byte cursor: a normal tick reads only appended bytes. A replacement,
 // truncation or same-size rewrite starts a fresh replay. Calendar-day usage
 // is refreshed even when the log has not changed.
-import { closeSync, existsSync, openSync, fstatSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
+//
+// Directory discovery is not repeated every tick. The first scan walks the
+// tree. After that, a tick re-stats files already inside the window and
+// re-lists a directory only when its own stamp changed. A content write does
+// not update the parent directory's mtime on NTFS, APFS or ext4 — only
+// create, delete and rename do — so an appended file is statted on its own
+// and its cold siblings are not. While a watcher is healthy, the periodic
+// discovery tick (15s, or MAGPIE_AGENT_OFFICE_DISCOVER_EVERY) uses those
+// directory stamps too, so a dropped create still shows up without statting
+// every cold file. With no healthy watcher, that tick walks the tree in full
+// (plugins#1374).
+import { closeSync, existsSync, openSync, fstatSync, readFileSync, readSync, readdirSync, statSync, watch } from "node:fs"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, join, sep } from "node:path"
 import { StringDecoder } from "node:string_decoder"
 import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readCursor, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
 import { processExists } from "./proc.mjs"
@@ -167,23 +178,25 @@ export function sources() {
   return srcs
 }
 
-// the files under root, `depth` folders down, changed since `since`
-function walk(root, depth, match, since, out) {
-  let names
-  try { names = readdirSync(root, { withFileTypes: true }) } catch { return }
-  for (const e of names) {
-    const p = join(root, e.name)
-    if (depth > 0) {
-      if (!e.isDirectory()) continue
-      // Codex's YYYY/MM/DD: a whole old month or day is skipped by its name
-      walk(p, depth - 1, match, since, out)
-    } else if (e.isFile() && match(e.name, p)) {
-      let st
-      try { st = statSync(p) } catch { continue }
-      if (st.mtimeMs >= since) out.push({ path: p, size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs, dev: st.dev, ino: st.ino, birthtime: st.birthtimeMs })
-    }
-  }
+// path is root, or a descendant. A shared prefix is not a descendant
+// (/agent vs /agent-office).
+function isUnder(root, path) {
+  if (path === root) return true
+  const prefix = root.endsWith(sep) ? root : root + sep
+  return path.startsWith(prefix)
 }
+function relDepth(root, dir) {
+  if (dir === root) return 0
+  if (!isUnder(root, dir)) return -1
+  return dir.slice(root.length + 1).split(sep).length
+}
+function fileRec(path, st) {
+  return { path, size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs, dev: st.dev, ino: st.ino, birthtime: st.birthtimeMs }
+}
+// Directory identity for "did the set of names change". mtime moves on
+// create/delete/rename. It does not move when an existing file is rewritten,
+// which is why known files are re-statted on their own.
+function dirStamp(st) { return st.mtimeMs + ":" + st.dev + ":" + st.ino }
 
 // A cursor buffers only the current unfinished line. StringDecoder carries
 // an incomplete UTF-8 code point between chunks AND between scan ticks.
@@ -448,17 +461,210 @@ export function createScanner(opts = {}) {
   const readBytes = typeof o.readSync === "function" ? o.readSync : readSync
   const statSidecar = typeof o.statSync === "function" ? o.statSync : statSync
   const procs = createProcesses()
+  const readDir = typeof o.readdirSync === "function" ? o.readdirSync : readdirSync
+  const statEntry = typeof o.scanStat === "function" ? o.scanStat : statSync
+  const watchImpl = typeof o.watch === "function" ? o.watch : o.watch === true ? watch : null
+  const discoverEvery = (() => {
+    if (Number.isFinite(o.discoverEvery) && o.discoverEvery >= 0) return o.discoverEvery
+    const n = Number(process.env.MAGPIE_AGENT_OFFICE_DISCOVER_EVERY)
+    if (Number.isFinite(n) && n >= 0) return n
+    return 15_000
+  })()
   let srcs = o.sources || sources()
   let titleCache = null
+  let discoveredAt = null
+  const tree = new Map() // source object -> listing cache and watcher
+
+  function cacheOf(src) {
+    let c = tree.get(src)
+    if (!c) {
+      c = {
+        listings: new Map(), hot: new Map(), watcher: null, watchFailed: false, closed: false,
+        dirtyDirs: new Set(), dirtyFiles: new Set(), forceFull: false,
+      }
+      tree.set(src, c)
+    }
+    return c
+  }
+  function forgetUnder(cache, dir) {
+    for (const key of [...cache.listings.keys()]) if (key === dir || isUnder(dir, key)) cache.listings.delete(key)
+    for (const key of [...cache.hot.keys()]) if (key === dir || isUnder(dir, key)) cache.hot.delete(key)
+  }
+  function namesOf(dir, depth) {
+    let ents
+    try { ents = readDir(dir, { withFileTypes: true }) } catch { return null }
+    const names = []
+    for (const e of ents) {
+      if (depth > 0) { if (e.isDirectory()) names.push(e.name) }
+      else if (e.isFile()) names.push(e.name)
+    }
+    return names
+  }
+  function consider(cache, path, since, add) {
+    let st
+    try { st = statEntry(path) } catch { cache.hot.delete(path); return }
+    if (!st.isFile() || st.mtimeMs < since) { cache.hot.delete(path); return }
+    add(fileRec(path, st))
+  }
+  function remember(cache, dir, st, names, prev) {
+    if (prev) {
+      const next = new Set(names)
+      for (const name of prev.names) if (!next.has(name)) forgetUnder(cache, join(dir, name))
+    }
+    cache.listings.set(dir, { stamp: dirStamp(st), names })
+  }
+  function walkFull(cache, dir, depth, match, since, add) {
+    let st
+    try { st = statEntry(dir) } catch { forgetUnder(cache, dir); return }
+    const names = namesOf(dir, depth)
+    if (!names) { forgetUnder(cache, dir); return }
+    remember(cache, dir, st, names, cache.listings.get(dir))
+    for (const name of names) {
+      const p = join(dir, name)
+      if (depth > 0) walkFull(cache, p, depth - 1, match, since, add)
+      else if (match(name, p)) consider(cache, p, since, add)
+    }
+  }
+  // Stamp unchanged: keep the cached names, do not readdir, do not stat cold files.
+  function refreshMtime(cache, dir, depth, match, since, add) {
+    let st
+    try { st = statEntry(dir) } catch { forgetUnder(cache, dir); return }
+    const prev = cache.listings.get(dir)
+    if (!prev || prev.stamp !== dirStamp(st)) {
+      relist(cache, dir, depth, match, since, add, st)
+      return
+    }
+    if (depth === 0) return
+    for (const name of prev.names) refreshMtime(cache, join(dir, name), depth - 1, match, since, add)
+  }
+  function relist(cache, dir, depth, match, since, add, st) {
+    const names = namesOf(dir, depth)
+    if (!names) { forgetUnder(cache, dir); return }
+    const prev = cache.listings.get(dir)
+    const prevNames = new Set(prev?.names || [])
+    remember(cache, dir, st, names, prev)
+    for (const name of names) {
+      const p = join(dir, name)
+      if (depth > 0) {
+        if (!prevNames.has(name) || !cache.listings.has(p)) walkFull(cache, p, depth - 1, match, since, add)
+        else refreshMtime(cache, p, depth - 1, match, since, add)
+      } else if (match(name, p)) consider(cache, p, since, add)
+    }
+  }
+  function remaining(src, dir) {
+    const d = relDepth(src.root, dir)
+    if (d < 0 || d > src.depth) return -1
+    return src.depth - d
+  }
+  function noteWatch(cache, root, name) {
+    if (!name) { cache.forceFull = true; return }
+    const n = String(name)
+    const abs = n === root || isUnder(root, n) ? n : join(root, n)
+    // Only the directory that contains the change. Ancestor mtimes do not
+    // move, and re-listing the source root would stat the whole tree again.
+    cache.dirtyFiles.add(abs)
+    cache.dirtyDirs.add(abs)
+    const parent = dirname(abs)
+    if (parent === root || isUnder(root, parent)) cache.dirtyDirs.add(parent)
+  }
+  function armWatch(src, cache) {
+    if (!watchImpl || cache.closed || cache.watcher || cache.watchFailed) return
+    try {
+      const w = watchImpl(src.root, { recursive: true }, (event, name) => noteWatch(cache, src.root, name))
+      w?.on?.("error", () => {
+        cache.watchFailed = true
+        try { w.close() } catch {}
+        cache.watcher = null
+      })
+      w?.unref?.()
+      cache.watcher = w
+    } catch { cache.watchFailed = true }
+  }
+  function refreshWatched(src, cache, since, add) {
+    const dirtyDirs = cache.dirtyDirs
+    const dirtyFiles = cache.dirtyFiles
+    const force = cache.forceFull
+    cache.dirtyDirs = new Set()
+    cache.dirtyFiles = new Set()
+    cache.forceFull = false
+    if (force || !cache.listings.has(src.root)) {
+      walkFull(cache, src.root, src.depth, src.match, since, add)
+      return
+    }
+    for (const p of [...cache.hot.keys()]) if (isUnder(src.root, p)) consider(cache, p, since, add)
+    const dirs = [...dirtyDirs].filter((d) => remaining(src, d) >= 0).sort((a, b) => a.length - b.length)
+    for (const dir of dirs) {
+      let st
+      try { st = statEntry(dir) } catch { forgetUnder(cache, dir); continue }
+      // A content append does not move the parent stamp. The named file is
+      // statted from dirtyFiles; relist only for a create, delete, or rename,
+      // or a directory we have never listed.
+      const prev = cache.listings.get(dir)
+      if (prev && prev.stamp === dirStamp(st)) continue
+      if (!st.isDirectory()) { forgetUnder(cache, dir); continue }
+      relist(cache, dir, remaining(src, dir), src.match, since, add, st)
+    }
+    for (const file of dirtyFiles) {
+      if (!isUnder(src.root, file)) continue
+      if (relDepth(src.root, dirname(file)) !== src.depth) continue
+      if (src.match(basename(file), file)) consider(cache, file, since, add)
+    }
+  }
+  function collect(src, since, full, out) {
+    const cache = cacheOf(src)
+    let dirSt
+    try { dirSt = statEntry(src.root) } catch { dirSt = null }
+    if (!dirSt?.isDirectory()) {
+      forgetUnder(cache, src.root)
+      try { cache.watcher?.close() } catch {}
+      cache.watcher = null
+      return
+    }
+    armWatch(src, cache)
+    const added = new Set()
+    const add = (rec) => {
+      if (added.has(rec.path)) return
+      added.add(rec.path)
+      cache.hot.set(rec.path, rec)
+      out.push(rec)
+    }
+    // A healthy watcher already reports creates. The periodic tick then
+    // checks directory stamps instead of statting every cold file. A full
+    // walk is the first listing, an unnamed watch event, or the periodic
+    // tick when nothing is watching.
+    const healthy = !!(cache.watcher && !cache.watchFailed)
+    if (!cache.listings.has(src.root) || cache.forceFull || (full && !healthy)) {
+      cache.forceFull = false
+      walkFull(cache, src.root, src.depth, src.match, since, add)
+    } else if (healthy) {
+      if (full) refreshMtime(cache, src.root, src.depth, src.match, since, add)
+      refreshWatched(src, cache, since, add)
+    } else {
+      refreshMtime(cache, src.root, src.depth, src.match, since, add)
+      for (const p of [...cache.hot.keys()]) if (isUnder(src.root, p) && !added.has(p)) consider(cache, p, since, add)
+    }
+    for (const p of [...cache.hot.keys()]) if (isUnder(src.root, p) && !added.has(p)) cache.hot.delete(p)
+  }
+  function close() {
+    for (const c of tree.values()) {
+      c.closed = true
+      try { c.watcher?.close() } catch {}
+      c.watcher = null
+    }
+  }
+  function resume() {
+    for (const c of tree.values()) c.closed = false
+  }
 
   // One pass: append-only JSONL changes reuse reader state; latest sessions first.
   function scan(now = Date.now()) {
     const since = now - o.days * 86400e3
+    const full = discoveredAt == null || now - discoveredAt >= discoverEvery
+    if (full) discoveredAt = now
     const found = []
     for (const src of srcs) {
-      if (!existsSync(src.root)) continue
       const got = []
-      walk(src.root, src.depth, src.match, since, got)
+      collect(src, since, full, got)
       for (const f of got) found.push({ ...f, src })
     }
     found.sort((a, b) => b.mtime - a.mtime)
@@ -577,5 +783,8 @@ export function createScanner(opts = {}) {
     return s
   }
 
-  return { scan, files, setSources: (x) => { srcs = x; files.clear(); titleCache = null } }
+  return {
+    scan, files, close, resume,
+    setSources: (x) => { close(); tree.clear(); srcs = x; files.clear(); titleCache = null; discoveredAt = null },
+  }
 }

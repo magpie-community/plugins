@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.7 · 2026-11-20
+
+### Fixed
+
+- The office no longer re-reads every session directory on each 1.5 s tick. A tick re-stats sessions already inside the window and re-lists a directory only when its own stamp changes. Appending to a watched file stats that file alone. While `fs.watch` is healthy, the 15 s discovery tick (`MAGPIE_AGENT_OFFICE_DISCOVER_EVERY`) uses those directory stamps too, so a new directory still shows up without statting cold files; with no healthy watcher, that tick walks the tree. Rewriting a file does not bump the parent directory's mtime on NTFS, APFS or ext4. The host schedules the next tick after the current one finishes, including when a tick throws, and `stop()` during a tick does not schedule another (`MAGPIE_AGENT_OFFICE_INTERVAL`). It does not rewrite `page/live.js` when nothing but the clock changed. The page already moves idle and "N min ago" from its own clock (#1374).
+
 ## 0.3.5 · 2026-11-10
 
 ### Added
