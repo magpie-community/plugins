@@ -506,6 +506,51 @@ const parseJsonLoose = (text) => {
   }
 }
 
+// kimi sometimes writes the tool-call JSON with literal newlines or tabs
+// INSIDE string values (a long command, say); strict JSON.parse refuses and
+// the whole call would leak to the agent as text. Only control characters
+// found inside string literals get escaped — structure outside strings is
+// untouched, and this runs only after a strict parse already failed
+function repairJsonControlChars(text) {
+  let out = ""
+  let inString = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inString && ch === "\\") {
+      out += ch + (text[i + 1] ?? "")
+      i++
+      continue
+    }
+    if (ch === '"') inString = !inString
+    if (inString && (ch === "\n" || ch === "\r" || ch === "\t")) {
+      out += ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : "\\t"
+      continue
+    }
+    out += ch
+  }
+  return parseJsonLoose(out)
+}
+
+// tool-name resolution with drift tolerance: exact (case-insensitive)
+// first; then a prefix drift — the model wrote read_file for a declared
+// read, or powershell_command for powershell. The longest declared name
+// that matches wins; two equally good matches stay unknown (ambiguous
+// beats wrong)
+function resolveToolName(rawName, tools) {
+  const wanted = String(rawName ?? "").toLowerCase()
+  if (!wanted) return null
+  const declared = tools.map(toolNameOf).filter(Boolean)
+  const exact = declared.find((n) => n.toLowerCase() === wanted)
+  if (exact) return exact
+  const matches = declared.filter((n) => {
+    const l = n.toLowerCase()
+    return l.startsWith(wanted) || wanted.startsWith(l)
+  })
+  if (matches.length === 0) return null
+  const best = matches.reduce((a, b) => (b.length > a.length ? b : a))
+  return matches.filter((n) => n.length === best.length).length === 1 ? best : null
+}
+
 // the reply text → OpenAI tool_calls. The whole reply must be the call
 // JSON — a bare object or a single fenced block; an example quoted inside
 // prose is not a call. Unknown names are dropped; a drifted name case is
@@ -519,7 +564,7 @@ function toolCallsFromText(text, tools, toolChoice) {
   if (!raw) return []
   const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
   const candidate = fenced ? fenced[1].trim() : raw
-  const parsed = parseJsonLoose(candidate)
+  const parsed = parseJsonLoose(candidate) ?? repairJsonControlChars(candidate)
   if (!parsed || typeof parsed !== "object") return []
   let items = Array.isArray(parsed)
     ? parsed
@@ -536,12 +581,11 @@ function toolCallsFromText(text, tools, toolChoice) {
       : parsed
     if ((bare.name || bare.tool) && bare.arguments !== undefined) items = [bare]
   }
-  const known = new Map(tools.map((t) => [toolNameOf(t).toLowerCase(), toolNameOf(t)]).filter(([k]) => k))
   const choice = normalizeToolChoice(toolChoice)
   const out = []
   for (const call of items) {
     const rawName = call?.name || call?.tool || call?.function?.name || ""
-    const name = known.get(String(rawName).toLowerCase())
+    const name = resolveToolName(rawName, tools)
     if (!name) continue
     if (choice.mode === "named" && name !== choice.name) continue
     let args = call?.arguments ?? call?.input ?? call?.parameters ?? call?.function?.arguments ?? {}
@@ -555,6 +599,32 @@ function toolCallsFromText(text, tools, toolChoice) {
     if (required.some((k) => args[k] === undefined)) continue
     out.push({
       id: `call_${Date.now().toString(36)}_${out.length}`,
+      type: "function",
+      function: { name, arguments: JSON.stringify(args) },
+    })
+  }
+  return out
+}
+
+// native tool_use blocks → OpenAI tool_calls. Same drop rules as the text
+// path: unknown names are dropped, params that fail to parse are dropped
+function toolCallsFromUses(uses, tools, toolChoice) {
+  if (normalizeToolChoice(toolChoice).mode === "none") return []
+  if (!Array.isArray(uses) || uses.length === 0) return []
+  const out = []
+  for (const use of uses) {
+    const name = resolveToolName(use?.name, tools)
+    if (!name) continue
+    let args
+    try {
+      const p = typeof use.params === "string" ? parseJsonLoose(use.params) : use.params
+      if (!p || typeof p !== "object") continue
+      args = p
+    } catch {
+      continue
+    }
+    out.push({
+      id: use.id || `call_${Date.now().toString(36)}_${out.length}`,
       type: "function",
       function: { name, arguments: JSON.stringify(args) },
     })
@@ -658,6 +728,10 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   let finalText = ""
   let finalReasoning = ""
   let frameCount = 0
+  // kimi-k3.1-pro intermittently skips the instructed JSON and emits
+  // NATIVE tool_use blocks instead; the latest cumulative params per
+  // toolCallId are collected here and handed out with the done event
+  const toolUses = new Map()
   // a head held as maybe the credit gate that never became it goes out
   // before the end
   function* held() {
@@ -677,7 +751,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
       const data = line.slice(5).trim()
       if (data === "[DONE]") {
         yield* held()
-        yield { done: true, text: finalText, reasoning: finalReasoning }
+        yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()] }
         return
       }
       let frame
@@ -695,6 +769,15 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
       const msg = frame.message
       if (!msg || !Array.isArray(msg.content)) continue
       for (const c of msg.content) {
+        if (c.type === "tool_use") {
+          const key = String(c.toolCallId ?? c.toolName ?? crypto.randomUUID())
+          toolUses.set(key, {
+            id: String(c.toolCallId ?? ""),
+            name: String(c.toolName ?? ""),
+            params: typeof c.toolParams === "string" ? c.toolParams : JSON.stringify(c.toolParams ?? {}),
+          })
+          continue
+        }
         if (c.type !== "text") continue
         const curText = c.text || ""
         // the credit gate (plugins#933), judged only before any text went
@@ -726,7 +809,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   // the stream ended without [DONE]
   if (finalText === "" && frameCount === 0) throw new Error("妙手 SSE 流结束但没有任何帧")
   yield* held()
-  yield { done: true, text: finalText, reasoning: finalReasoning }
+  yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()] }
 }
 
 // ── the plugin ─────────────────────────────────────────────────────────────
@@ -822,15 +905,17 @@ export async function CatPawAuthPlugin({ client } = {}) {
               const runTurn = async (messages) => {
                 let text = ""
                 let reasoning = ""
+                let toolUses = []
                 for await (const ev of runConversation(token, { ...chat, messages }, init.signal, spec?.type)) {
                   if (ev.delta) text += ev.delta
                   if (ev.reasoningDelta) reasoning += ev.reasoningDelta
                   if (ev.done) {
                     text = ev.text
                     reasoning = ev.reasoning
+                    toolUses = Array.isArray(ev.toolUses) ? ev.toolUses : []
                   }
                 }
-                return { text, reasoning }
+                return { text, reasoning, toolUses }
               }
               if (!chat.stream) {
                 // buffered: collect the whole turn, parse, retry once if a
@@ -843,7 +928,10 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   text = out.text
                   reasoning = out.reasoning
                   if (wantsTools) {
-                    calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
+                    // native tool_use blocks win; the instructed-JSON text
+                    // path stays as the fallback
+                    calls = toolCallsFromUses(out.toolUses, chat.tools, chat.tool_choice)
+                    if (!calls.length) calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
                     if (!calls.length && isToolChoiceRequired(chat.tool_choice)) {
                       // one explicit retry: the failed reply rides along as
                       // an assistant turn, since the retry line alone refers
@@ -855,7 +943,8 @@ export async function CatPawAuthPlugin({ client } = {}) {
                       ])
                       text = retried.text
                       reasoning = retried.reasoning
-                      calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
+                      calls = toolCallsFromUses(retried.toolUses, chat.tools, chat.tool_choice)
+                      if (!calls.length) calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
                     }
                   }
                 } catch (e) {
@@ -940,6 +1029,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   let committed = false // decided prose — streaming live from here
                   let fullText = ""
                   let calls = []
+                  let nativeUses = []
                   try {
                     for await (const ev of events) {
                       if (closed) return
@@ -961,10 +1051,16 @@ export async function CatPawAuthPlugin({ client } = {}) {
                           }
                         }
                       }
-                      if (ev.done) fullText = ev.text
+                      if (ev.done) {
+                        fullText = ev.text
+                        nativeUses = Array.isArray(ev.toolUses) ? ev.toolUses : []
+                      }
                     }
                     if (wantsTools && !committed) {
-                      calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
+                      // native tool_use blocks win; the instructed-JSON text
+                      // path stays as the fallback
+                      calls = toolCallsFromUses(nativeUses, chat.tools, chat.tool_choice)
+                      if (!calls.length) calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
                       if (!calls.length && forced) {
                         // nothing streamed yet, so a retry is invisible to
                         // the agent; the failed reply rides along as an
@@ -976,7 +1072,8 @@ export async function CatPawAuthPlugin({ client } = {}) {
                           { role: "user", content: forcedToolRetryMessage(chat.tool_choice) },
                         ])
                         fullText = retried.text
-                        calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
+                        calls = toolCallsFromUses(retried.toolUses, chat.tools, chat.tool_choice)
+                        if (!calls.length) calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
                       }
                     }
                     if (calls.length) {
@@ -1293,4 +1390,4 @@ export async function CatPawAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, primed, forgetLive: () => liveLists.clear() }
+export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, primed, forgetLive: () => liveLists.clear(), toolCallsFromUses, repairJsonControlChars, resolveToolName }
