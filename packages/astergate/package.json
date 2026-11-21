@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/opencode-astergate-auth",
+  "version": "0.1.0",
+  "description": "AsterGate Claude provider with model discovery and quota windows",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
+  "keywords": ["magpie", "opencode", "opencode-plugin", "astergate"],
+  "license": "MIT",
+  "magpie": { "icon": "https://beta.astergate.cc/favicon.svg" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins.git",
+    "directory": "packages/astergate"
+  }
+}
