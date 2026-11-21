@@ -155,6 +155,144 @@ const DISABLED_CORE = AGENT_ERROR_CORES[6]
 // the account is not rested as a 429 would rest it.
 const BUSY_CORE = "⚠ Our servers are experiencing high traffic right now"
 const BUSY_MARKER = "\n" + BUSY_CORE
+// agy ends a turn on a standalone upstream status line, the gRPC name and
+// the HTTP code in it: "⚠ FAILED_PRECONDITION (code 400): User location is
+// not supported for the API use." The words after the colon vary, so it is
+// matched by its shape, as a line of its own that nothing follows. A line
+// the model quotes, mid-line or with more text after it, stays the reply
+// (plugins#1416). Quota, high-traffic, and the exact markers above are
+// matched first, so a 429 stays a rate limit and a 503 busy line stays a
+// 503. The bridge speaks Anthropic /v1/messages; failing the turn here is
+// what stops a gateway from recording the banner as assistant text on HTTP 200.
+const STATUS_LINE = /^⚠ ([A-Z][A-Z0-9_]*) \(code (\d{3})\): ([\s\S]*)$/
+
+function parseStatusLine(line) {
+  const match = STATUS_LINE.exec(line)
+  return match ? { name: match[1], code: Number(match[2]), detail: match[3] } : null
+}
+
+const isBreak = (ch) => ch === "\n" || ch === "\r"
+
+function breakStart(text, at) {
+  if (at <= 0) return at
+  if (text[at - 1] === "\n") return at > 1 && text[at - 2] === "\r" ? at - 2 : at - 1
+  if (text[at - 1] === "\r") return at - 1
+  return at
+}
+
+// Tracks CommonMark fenced code blocks (``` / ~~~) across streamed chunks so a
+// status line quoted inside an unclosed code fence is never treated as agy's
+// own error banner. Uses an O(1) line state machine with no length cap, so
+// arbitrary-length fences (e.g. 65+ backticks) and info strings stay exact
+// across any chunk boundary.
+function emptyFence(char = "", len = 0, afterCr = false) {
+  return {
+    char,
+    len,
+    afterCr,
+    phase: "indent",
+    indent: 0,
+    marker: "",
+    count: 0,
+    hasBacktick: false,
+    hasNonWs: false,
+  }
+}
+
+function finishFenceLine(cur, afterCr = false) {
+  const { char, len, phase, marker, count, hasBacktick, hasNonWs } = cur
+  if (!char) {
+    if ((phase === "marker" && count >= 3) ||
+      (phase === "after" && (marker === "~" || !hasBacktick))) {
+      return emptyFence(marker, count, afterCr)
+    }
+    return emptyFence("", 0, afterCr)
+  }
+  if (marker === char && count >= len &&
+    (phase === "marker" || (phase === "after" && !hasNonWs))) {
+    return emptyFence("", 0, afterCr)
+  }
+  return emptyFence(char, len, afterCr)
+}
+
+function fenceStateAfter(state, text) {
+  if (!text) return state
+  let cur = { ...state }
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (cur.afterCr) {
+      cur.afterCr = false
+      if (ch === "\n") continue
+    }
+    if (ch === "\n" || ch === "\r") {
+      cur = finishFenceLine(cur, ch === "\r")
+      continue
+    }
+    if (cur.phase === "other") continue
+    if (cur.phase === "indent") {
+      if (ch === " ") {
+        cur.indent++
+        if (cur.indent > 3) cur.phase = "other"
+      } else if (ch === "`" || ch === "~") {
+        cur.phase = "marker"
+        cur.marker = ch
+        cur.count = 1
+      } else {
+        cur.phase = "other"
+      }
+      continue
+    }
+    if (cur.phase === "marker") {
+      if (ch === cur.marker) {
+        cur.count++
+        continue
+      }
+      if (cur.count < 3) {
+        cur.phase = "other"
+        continue
+      }
+      cur.phase = "after"
+    }
+    if (ch !== " " && ch !== "\t") {
+      cur.hasNonWs = true
+      if (ch === "`") cur.hasBacktick = true
+    }
+  }
+  return cur
+}
+
+// "full" once "⚠ NAME (code NNN): " is present. "partial" while the line can
+// still grow into that header, so a status line still streaming is held and
+// not emitted as the reply. "no" once it cannot, including a ⚠ line that is
+// only a note.
+function statusPrefix(line) {
+  if (parseStatusLine(line)) return "full"
+  const head = "⚠ "
+  if (line.length < head.length) return head.startsWith(line) && line.length > 0 ? "partial" : "no"
+  if (!line.startsWith(head)) return "no"
+  let i = head.length
+  if (i >= line.length) return "partial"
+  if (!/[A-Z]/.test(line[i])) return "no"
+  i++
+  while (i < line.length && /[A-Z0-9_]/.test(line[i])) i++
+  if (i === line.length) return "partial"
+  const tail = " (code "
+  const rest = line.slice(i)
+  if (tail.startsWith(rest)) return "partial"
+  if (!rest.startsWith(tail)) return "no"
+  let j = tail.length
+  let digits = 0
+  while (j < rest.length && digits < 3 && rest[j] >= "0" && rest[j] <= "9") {
+    digits++
+    j++
+  }
+  if (j === rest.length) return "partial"
+  if (digits !== 3) return "no"
+  const end = "): "
+  const after = rest.slice(j)
+  if (end.startsWith(after)) return "partial"
+  return "no"
+}
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
 const ATTEMPT_CORE = "⚠ API error (attempt "
@@ -1265,6 +1403,10 @@ export function streamErrorOf(error) {
   if (type === "permission_error") out.status = 403
   // Google had no capacity for the model (BUSY_CORE): try again, or elsewhere
   if (type === "overloaded_error") out.status = 503
+  // A standalone upstream status line names its own HTTP code (plugins#1416):
+  // 400 and 403 match the kinds above, and 500/INTERNAL would otherwise be
+  // the generic 502.
+  if (Number.isInteger(error?.statusCode)) out.status = error.statusCode
   if (error?.noRetry) out.noRetry = true
   return out
 }
@@ -1619,9 +1761,14 @@ class Turn {
     this.acpToolWaiters = []
     this.cancelledMcpSockets = new Set()
     this.agentError = false
+    this.statusLine = null
     this.heldText = ""
     this.textTail = ""
+    this.fence = emptyFence()
     this.openBanner = -1
+    this.bannerSep = 0
+    this.bannerSepAt = -1
+    this.bannerSepLen = 0
     this.capPending = false
     this.attemptDetail = ""
     // What the model gave since the turn began or since its last tool
@@ -1816,44 +1963,80 @@ class Turn {
     this.pushHeld(chunk)
     if (this.refusedDetail && !this.done) {
       this.heldText = ""
+      this.bannerSep = 0
       this.proc.refuseTurn(this, this.refusedDetail)
     }
+  }
+
+  holdFrom(text, at) {
+    const sepAt = this.bannerSepAt
+    const sepLen = this.bannerSepLen
+    this.bannerSepAt = -1
+    this.bannerSepLen = 0
+    if (sepAt >= 0 && at > sepAt && at < sepAt + sepLen) at = sepAt
+    if (sepAt >= 0 && at === sepAt) {
+      this.heldText = text.slice(at)
+      this.bannerSep = sepLen
+      this.emitText(text.slice(0, at))
+      return
+    }
+    this.heldText = text.slice(at)
+    this.bannerSep = 0
+    let out = text.slice(0, at)
+    if (sepAt >= 0 && sepAt + sepLen <= at) {
+      out = out.slice(0, sepAt) + out.slice(sepAt + sepLen)
+    }
+    this.emitText(out)
   }
 
   pushHeld(chunk) {
     let text = this.dropRetryBanner(this.heldText + chunk)
     this.heldText = ""
     if (this.openBanner >= 0) {
-      this.heldText = text.slice(this.openBanner)
-      this.emitText(text.slice(0, this.openBanner))
+      this.holdFrom(text, this.openBanner)
+      return
+    }
+    if (this.bannerSepAt >= 0 && this.bannerSepAt + this.bannerSepLen === text.length) {
+      this.holdFrom(text, this.bannerSepAt)
       return
     }
     for (const core of AGENT_ERROR_CORES) {
       const marker = text.lastIndexOf(core)
       if (marker >= 0 && !text.slice(marker + core.length).trim()) {
-        const start = text[marker - 1] === "\n" ? marker - 1 : marker
-        this.heldText = text.slice(start)
-        this.emitText(text.slice(0, start))
+        const lineStart = marker > 0 ? isBreak(text[marker - 1]) : this.textTail === "" || isBreak(this.textTail)
+        if (!lineStart || fenceStateAfter(this.fence, text.slice(0, marker)).char) continue
+        this.holdFrom(text, breakStart(text, marker))
         return
       }
     }
     const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE))
     if (quota >= 0) {
-      this.heldText = text.slice(quota)
-      this.emitText(text.slice(0, quota))
+      this.holdFrom(text, quota)
       return
     }
-    for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
+    const status = this.statusEnding(text)
+    if (status >= 0) {
+      this.holdFrom(text, status)
+      return
+    }
+    for (let keep = Math.min(text.length, HOLD_MAX + 1); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
-        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
-          CAP_MARKER.startsWith(tail)))) {
-        this.heldText = tail
-        text = text.slice(0, -keep)
-        break
+      const norm = tail.startsWith("\r\n")
+        ? tail.slice(1)
+        : tail.startsWith("\r") && tail.length > 1
+          ? "\n" + tail.slice(1)
+          : (keep === text.length && (this.textTail === "" || isBreak(this.textTail)) && !isBreak(tail[0])
+              ? "\n" + tail
+              : tail)
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(norm)) || QUOTA_MARKER.startsWith(norm) ||
+        BUSY_MARKER.startsWith(norm) || tail === "\r" ||
+        (norm.length > 1 && (RETRY_MARKER.startsWith(norm) || ATTEMPT_MARKER.startsWith(norm) ||
+          CAP_MARKER.startsWith(norm)))) {
+        this.holdFrom(text, text.length - keep)
+        return
       }
     }
-    this.emitText(text)
+    this.holdFrom(text, text.length)
   }
 
   // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
@@ -1863,9 +2046,28 @@ class Turn {
   quotaEnding(text, core = QUOTA_CORE) {
     const at = text.lastIndexOf(core)
     if (at < 0) return -1
-    const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
-    if (!lineStart || text.slice(at).trimEnd().includes("\n")) return -1
-    return at > 0 ? at - 1 : at
+    const lineStart = at > 0 ? isBreak(text[at - 1]) : this.textTail === "" || isBreak(this.textTail)
+    if (!lineStart || /[\r\n]/.test(text.slice(at).trimEnd())) return -1
+    if (fenceStateAfter(this.fence, text.slice(0, at)).char) return -1
+    return breakStart(text, at)
+  }
+
+  // Where a standalone upstream status line starts, with the newline before
+  // it. The last line only (matching quotaEnding / BUSY_CORE): one that more
+  // text follows, or one inside an open Markdown code fence, was the model
+  // quoting it. A line that can still grow into "⚠ NAME (code NNN): " is held
+  // too, so a split chunk is not emitted before it can be classified. -1 when
+  // the last line cannot be one, is inside a fence, or is not at a line start.
+  statusEnding(text) {
+    const trimmed = text.trimEnd()
+    if (!trimmed) return -1
+    const nl = Math.max(trimmed.lastIndexOf("\n"), trimmed.lastIndexOf("\r"))
+    const line = trimmed.slice(nl + 1)
+    if (statusPrefix(line) === "no") return -1
+    if (nl < 0 && this.textTail !== "" && !isBreak(this.textTail)) return -1
+    const before = nl >= 0 ? text.slice(0, nl + 1) : ""
+    if (fenceStateAfter(this.fence, before).char) return -1
+    return nl >= 0 ? breakStart(text, nl + 1) : 0
   }
 
   // Removes agy's retry banners, each with its leading and one trailing
@@ -1873,63 +2075,140 @@ class Turn {
   // banners, and the three-line output-cap notice (#892). Text that only
   // quotes one mid-line is kept. Until the turn's text is flushed, a banner
   // that ends the buffer is left in place and openBanner says where, so
-  // pushText holds it and its newline in the next chunk goes with it.
+  // pushText holds it and its newline in the next chunk goes with it. When a
+  // removed banner may be followed by another banner or a turn-ending error
+  // line, its leading newline is kept virtually (bannerSepAt/bannerSepLen) so
+  // line-start and fence checks still see the break, and stripped before any
+  // ordinary continuation text reaches the client.
   dropRetryBanner(text, final = false) {
     this.openBanner = -1
+    let sepAt = this.bannerSep > 0 ? 0 : -1
+    let sepLen = this.bannerSep
+    this.bannerSep = 0
     let from = 0
     for (;;) {
       if (this.capPending) {
-        const end = text.indexOf("\n", from)
-        const line = text.slice(from, end < 0 ? text.length : end)
+        const lineFrom = from === 0 && sepAt === 0 ? sepLen : from
+        const holdAt = sepAt >= 0 && sepAt + sepLen === lineFrom ? sepAt : from
+        if (lineFrom === text.length && !final) {
+          this.openBanner = holdAt
+          this.bannerSepAt = sepAt
+          this.bannerSepLen = sepLen
+          return text
+        }
+        const end = text.indexOf("\n", lineFrom)
+        const rawLine = text.slice(lineFrom, end < 0 ? text.length : end)
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
         if (CAP_RETRIES_LINE.test(line)) {
+          if (end < 0 && !final) {
+            this.openBanner = holdAt
+            this.bannerSepAt = sepAt
+            this.bannerSepLen = sepLen
+            return text
+          }
           this.capPending = false
-          text = text.slice(0, from) + text.slice(end < 0 ? text.length : end + 1)
+          text = text.slice(0, lineFrom) + text.slice(end < 0 ? text.length : end + 1)
+          from = lineFrom
           continue
         }
-        if (!final && CAP_RETRIES_CORE.startsWith(line)) {
-          this.openBanner = from
+        if (!final && end < 0 && CAP_RETRIES_CORE.startsWith(line)) {
+          this.openBanner = holdAt
+          this.bannerSepAt = sepAt
+          this.bannerSepLen = sepLen
           return text
         }
         this.capPending = false
       }
-      const at = nextBanner(text, from)
-      if (at < 0) return text
-      const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
+      let at = nextBanner(text, from)
+      if (at < 0) {
+        if (sepAt >= 0 && ((sepAt + sepLen < text.length && text[sepAt + sepLen] !== "⚠") ||
+          (final && sepAt + sepLen === text.length))) {
+          text = text.slice(0, sepAt) + text.slice(sepAt + sepLen)
+          sepAt = -1
+          sepLen = 0
+        }
+        this.bannerSepAt = sepAt
+        this.bannerSepLen = sepLen
+        return text
+      }
+      const lineStart = at > 0 ? isBreak(text[at - 1]) : this.textTail === "" || isBreak(this.textTail)
       if (!lineStart) {
         from = at + 1
         continue
       }
-      const start = at > 0 ? at - 1 : at
+      let start = breakStart(text, at)
+      if (sepAt >= 0 && sepAt < start) {
+        text = text.slice(0, sepAt) + text.slice(sepAt + sepLen)
+        at -= sepLen
+        start -= sepLen
+        from = Math.max(0, from - sepLen)
+        sepAt = -1
+        sepLen = 0
+      }
+      const prevBroken = start > 0
+        ? isBreak(text[start - 1])
+        : this.textTail === "" || isBreak(this.textTail)
       if (text.startsWith(CAP_CORE, at)) {
         const cap = capNoticeEnd(text, at, final)
         if (cap.end < 0) {
           // agy's notice is still streaming: hold it with its lines' newlines
           this.openBanner = start
+          this.bannerSepAt = sepAt
+          this.bannerSepLen = sepLen
           return text
         }
         // The notice's "Retries remaining" line is its own line, so it can
         // arrive in the next chunk after the two lines before it.
         this.capPending = cap.retries
-        text = text.slice(0, start) + text.slice(cap.end)
-        from = start
+        const hasTrailing = cap.end > at && text[cap.end - 1] === "\n"
+        const nextIsMarker = cap.end < text.length && text[cap.end] === "⚠"
+        const keepSep = at > start && !prevBroken && hasTrailing &&
+          (nextIsMarker || (!final && cap.end === text.length))
+        if (keepSep) {
+          text = text.slice(0, at) + text.slice(cap.end)
+          sepAt = start
+          sepLen = at - start
+          from = at
+        } else {
+          text = text.slice(0, start) + text.slice(cap.end)
+          sepAt = -1
+          sepLen = 0
+          from = start
+        }
         continue
       }
       const attempt = !text.startsWith(RETRY_CORE, at)
       let end = attempt ? text.indexOf("\n", at) : at + RETRY_CORE.length
       if (end < 0) end = text.length
+      if (!attempt && text[end] === "\r" && (end + 1 === text.length || text[end + 1] === "\n")) end++
       if (end === text.length && !final) {
         // agy waits before its next try with the line still open
-        const open = attempt ? ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() : ""
+        const open = attempt ? ATTEMPT_LINE.exec(text.slice(at, end).replace(/\r$/, ""))?.[1]?.trim() : ""
         if (open && refused429(open)) this.refusedDetail ||= open
         this.openBanner = start
+        this.bannerSepAt = sepAt
+        this.bannerSepLen = sepLen
         return text
       }
       if (!attempt) this.invalidOutput = this.invalidOutputSeen = true
-      if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
+      if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end).replace(/\r$/, ""))?.[1]?.trim() || this.attemptDetail
       if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
-      text = text.slice(0, start) + text.slice(end)
-      from = start
+      const hasTrailing = end > at && text[end - 1] === "\n"
+      const nextIsMarker = end < text.length && text[end] === "⚠"
+      const keepSep = at > start && !prevBroken && hasTrailing &&
+        (nextIsMarker || (!final && end === text.length))
+      if (keepSep) {
+        text = text.slice(0, at) + text.slice(end)
+        sepAt = start
+        sepLen = at - start
+        from = at
+      } else {
+        text = text.slice(0, start) + text.slice(end)
+        sepAt = -1
+        sepLen = 0
+        from = start
+      }
     }
   }
 
@@ -1937,26 +2216,49 @@ class Turn {
     if (!text) return
     if (text.trim()) this.saidSinceCall = true
     this.textTail = text.slice(-1)
+    this.fence = fenceStateAfter(this.fence, text)
     this.push({ type: "text", text })
   }
 
   // The prompt ended: a marker still held was agy's own.
   endText() {
-    const core = AGENT_ERROR_CORES.find((core) => this.heldText.includes(core))
+    const core = AGENT_ERROR_CORES.find((core) => {
+      const idx = this.heldText.lastIndexOf(core)
+      if (idx < 0 || this.heldText.slice(idx + core.length).trim()) return false
+      const lineStart = idx > 0 ? isBreak(this.heldText[idx - 1]) : this.textTail === "" || isBreak(this.textTail)
+      return lineStart && !fenceStateAfter(this.fence, this.heldText.slice(0, idx)).char
+    })
     if (core) {
       this.agentError = true
       this.agentErrorCore = core
       this.heldText = ""
+      this.bannerSep = 0
     } else if (this.quotaEnding(this.heldText) >= 0) {
       this.agentError = true
       this.agentErrorCore = QUOTA_CORE
       this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
+      this.bannerSep = 0
     } else if (this.quotaEnding(this.heldText, BUSY_CORE) >= 0) {
       this.agentError = true
       this.agentErrorCore = BUSY_CORE
       this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
+      this.bannerSep = 0
+    } else {
+      const trimmed = this.heldText.trimEnd()
+      const nl = Math.max(trimmed.lastIndexOf("\n"), trimmed.lastIndexOf("\r"))
+      const before = nl >= 0 ? trimmed.slice(0, nl + 1) : ""
+      const line = this.heldText.trim()
+      const parsed = !fenceStateAfter(this.fence, before).char && !/[\r\n]/.test(line)
+        ? parseStatusLine(line)
+        : null
+      if (parsed) {
+        this.agentError = true
+        this.statusLine = parsed
+        this.heldText = ""
+        this.bannerSep = 0
+      }
     }
   }
 
@@ -1971,8 +2273,14 @@ class Turn {
 
   flushText() {
     if (!this.heldText || this.agentError) return
-    const text = this.dropRetryBanner(this.heldText, true)
+    let text = this.dropRetryBanner(this.heldText, true)
     this.heldText = ""
+    if (this.bannerSepAt >= 0) {
+      text = text.slice(0, this.bannerSepAt) + text.slice(this.bannerSepAt + this.bannerSepLen)
+      this.bannerSepAt = -1
+      this.bannerSepLen = 0
+    }
+    this.bannerSep = 0
     this.emitText(text)
   }
 
@@ -2787,6 +3095,7 @@ class Proc {
       const logged = await logTail(this.logPath, turn.logOffset)
       return refusedError(verifyRefused(verifyLinkIn(`${turn.attemptDetail || ""}\n${logged}`)))
     }
+    if (turn.statusLine) return this.#statusLineError(turn)
     // A failed connection is in the reply's last attempt line, not the log's
     // executor error (#1136).
     const detail = await lastAgentError(this.logPath, turn.logOffset) || turn.attemptDetail ||
@@ -2795,6 +3104,45 @@ class Proc {
       return new AgentTurnError(`agy bridge: Antigravity AI credits balance is too low to continue${detail ? ": " + detail : ""}`, "rate_limit_error")
     }
     return this.#formatAgentError(detail)
+  }
+
+  // A standalone "⚠ NAME (code NNN): " line that no earlier marker claimed.
+  // The code in the line is the HTTP status. 429 and a quota name stay a
+  // retryable rate limit (or a turned-away system prompt, which
+  // #formatAgentError already prefers). 403 stays a no-retry permission
+  // error. 503 and UNAVAILABLE stay overloaded, so a client retries.
+  // 400 is invalid_request_error. Anything else keeps the upstream code
+  // instead of the generic 502, including 500 and INTERNAL.
+  #statusLineError(turn) {
+    const { name, code, detail } = turn.statusLine
+    const said = `${name} (code ${code}): ${detail}`.trim()
+    const refused = agyRefusal(said)
+    if (refused) return refusedError(refused)
+    if (code === 403 || name === "PERMISSION_DENIED") {
+      return refusedError(`Antigravity refused this request: ${said}`)
+    }
+    if (code === 429 || /QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED/i.test(name) || quotaReached(said)) {
+      const error = this.#formatAgentError(said)
+      if (error.kind === "rate_limit_error") error.statusCode = 429
+      return error
+    }
+    if (code === 503 || name === "UNAVAILABLE") {
+      return new AgentTurnError(
+        `agy bridge: Antigravity has no capacity for this model now: ${said}`,
+        "overloaded_error",
+      )
+    }
+    if (code === 400) {
+      const error = new AgentTurnError(
+        `agy bridge: Antigravity rejected the request: ${said}`,
+        "invalid_request_error",
+      )
+      error.statusCode = 400
+      return error
+    }
+    const error = new AgentTurnError(`agy bridge: agy stopped the turn because of an error: ${said}`)
+    if (code >= 400 && code <= 599) error.statusCode = code
+    return error
   }
 
   #formatAgentError(detail) {
@@ -3297,7 +3645,8 @@ async function lastAgentError(file, offset) {
 function capNoticeEnd(text, at, final) {
   const lineAt = (from) => {
     const end = text.indexOf("\n", from)
-    return { value: text.slice(from, end < 0 ? text.length : end), end }
+    const raw = text.slice(from, end < 0 ? text.length : end)
+    return { value: raw.endsWith("\r") ? raw.slice(0, -1) : raw, end }
   }
   let pos = text.indexOf("\n", at)
   if (pos < 0) return { end: final ? text.length : -1, retries: false }
@@ -3306,16 +3655,20 @@ function capNoticeEnd(text, at, final) {
   if (tail.value === CAP_TAIL_CORE) {
     if (tail.end < 0) return { end: final ? text.length : -1, retries: false }
     pos = tail.end + 1
-  } else if (!final && CAP_TAIL_CORE.startsWith(tail.value)) {
+  } else if (!final && tail.end < 0 && CAP_TAIL_CORE.startsWith(tail.value)) {
     return { end: -1, retries: false }
   } else {
     return { end: pos, retries: false }
   }
   const retries = lineAt(pos)
   if (CAP_RETRIES_LINE.test(retries.value)) {
+    if (retries.end < 0 && !final) return { end: -1, retries: false }
     return { end: retries.end < 0 ? text.length : retries.end + 1, retries: false }
   }
-  return { end: pos, retries: !final }
+  if (!final && retries.end < 0 && retries.value && CAP_RETRIES_CORE.startsWith(retries.value)) {
+    return { end: -1, retries: false }
+  }
+  return { end: pos, retries: !final && pos === text.length }
 }
 
 // Where the next retry banner of either kind starts, from `from` on.

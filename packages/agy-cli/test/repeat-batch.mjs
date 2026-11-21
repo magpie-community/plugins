@@ -1550,6 +1550,186 @@ test("the model quoting the high-traffic ending with more text after keeps it", 
   }
 })
 
+// plugins#1416: agy acp does not JSON-RPC-error a region block. It writes the
+// upstream status as an ordinary agent_message_chunk and then end_turn:
+// "⚠ FAILED_PRECONDITION (code 400): User location is not supported for the
+// API use." The bridge speaks Anthropic /v1/messages (SSE when stream isn't
+// false, one JSON message when it is); a gateway that turns that into
+// OpenAI Responses was recording output_text on HTTP 200. A standalone
+// "⚠ <GRPC_STATUS> (code <HTTP_CODE>): " line is the same failure. One the
+// model quotes, mid-line or with more text after it, stays the reply.
+const LOCATION = "⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use."
+const LOCATION_LINE = "\n" + LOCATION + "\n"
+
+test("#1416: agy's FAILED_PRECONDITION ending is an HTTP 400, not assistant text", async () => {
+  for (const [chunks, wantSaid] of [
+    [[LOCATION_LINE], ""],
+    [[LOCATION_LINE.slice(0, 10), LOCATION_LINE.slice(10, 36), LOCATION_LINE.slice(36)], ""],
+    [[LOCATION], ""],
+    [["Let me look", LOCATION_LINE.slice(0, 24), LOCATION_LINE.slice(24)], "Let me look"],
+    [["Let me look\r\n", LOCATION + "\r\n"], "Let me look"],
+    [["Done:\n```\nok\n```\n", LOCATION + "\n"], "Done:\n```\nok\n```"],
+    [["Done:\n```\nok\n```\n⚠ API error (attempt 1): EOF\n", LOCATION + "\n"], "Done:\n```\nok\n```"],
+    [["Done:\n```\nok\n```\n⚠ API error (attempt 1): EOF\n" + LOCATION + "\n"], "Done:\n```\nok\n```"],
+    [["Done:\n```\nok\n```\n⚠ API error (attempt 1): EOF\n⚠ API error (attempt 2): EOF\n", LOCATION + "\n"], "Done:\n```\nok\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n⚠ Model produced invalid output.\r\n", LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n⚠ Model produced invalid output.\r", "\n" + LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n⚠ API error (attempt 1): EOF\r\n", LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n" + CAP_NOTICE.trimStart().replaceAll("\n", "\r\n"), LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n" + (CAP_HEAD + CAP_TAIL).trimStart().replaceAll("\n", "\r\n"), "Retries remaining: 10.\r\n" + LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\r\n```\r\nok\r\n```\r\n" + (CAP_HEAD + CAP_TAIL).trimStart().replaceAll("\n", "\r\n") + "Retries remaining: 1", "0.\r\n" + LOCATION + "\r\n"], "Done:\r\n```\r\nok\r\n```"],
+    [["Done:\n" + "`".repeat(65) + "\nok\n" + "`".repeat(64), "`\n", LOCATION + "\n"], "Done:\n" + "`".repeat(65) + "\nok\n" + "`".repeat(65)],
+    [["```" + "x".repeat(70), "`\n", LOCATION + "\n"], "```" + "x".repeat(70) + "`"],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "precondition-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get("x-should-retry"), null)
+      assert.equal(error.type, "invalid_request_error")
+      assert.equal(error.status, 400)
+      assert.notEqual(error.noRetry, true)
+      assert.equal(error.message, "agy bridge: Antigravity rejected the request: " + LOCATION.slice(2))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      const emitted = [...text.matchAll(/"type":"text_delta","text":("(?:\\.|[^"\\])*")/g)]
+        .map((m) => JSON.parse(m[1]))
+        .join("")
+      assert.equal(emitted, wantSaid)
+      if (!wantSaid) assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+  for (const [chunks, kind, wantSaid] of [
+    [["partial\r\n⚠ Individual qu", "ota reached. Resets in 1h.\r\n"], "rate_limit_error", "partial"],
+    [["partial\r\n⚠ Verifi", "cation Required\r\n"], "permission_error", "partial"],
+    [["text\r⚠ Verification Required"], "permission_error", "text"],
+    [["partial\r\n⚠ RESOURCE_EXHAU", "STED (code 429): Resource has been exhausted (e.g. check quota).\r\n"], "rate_limit_error", "partial"],
+    [["⚠ Verifi", "cation Required\r\n"], "permission_error", ""],
+    [["⚠ Individual qu", "ota reached. Resets in 1h.\r\n"], "rate_limit_error", ""],
+    [["⚠ Our servers", " are experiencing high traffic right now. (UNAVAILABLE (code 503): no capacity)\r\n"], "overloaded_error", ""],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "crlf-split-banner" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      const emitted = [...text.matchAll(/"type":"text_delta","text":("(?:\\.|[^"\\])*")/g)]
+        .map((m) => JSON.parse(m[1]))
+        .join("")
+      assert.equal(error.type, kind)
+      assert.equal(emitted, wantSaid, "no orphan CR or prefix leaked before split banner")
+      assert.ok(!text.includes("⚠"))
+    })
+  }
+  for (const [chunks, want] of [
+    [["Done:\r\n```\r\nok\r\n```\r\n" + (CAP_HEAD + CAP_TAIL).replaceAll("\n", "\r\n") + "Retries remaining: 10.\r", "\nafter"], "Done:\r\n```\r\nok\r\n```\r\nafter"],
+    [["Done:\r\n```\r\nok\r\n```\r\n" + (CAP_HEAD + CAP_TAIL).trimStart().replaceAll("\n", "\r\n") + "Retries remaining: 10.\r", "\nafter"], "Done:\r\n```\r\nok\r\n```after"],
+    [["Let me expl" + CAP_NOTICE + "ain the rest"], "Let me explain the rest"],
+    [["Let me expl" + CAP_NOTICE, "ain the rest"], "Let me explain the rest"],
+    [["Para one.\n" + CAP_NOTICE + "Para two."], "Para one.\nPara two."],
+    [["Para one.\n" + CAP_NOTICE, "Para two."], "Para one.\nPara two."],
+    [["Reading\n⚠ API error (attempt 1): EOF\n the file"], "Reading the file"],
+    [["Reading\n⚠ API error (attempt 1): EOF\n", " the file"], "Reading the file"],
+    [["Reading\n⚠ API error (attempt 1): EOF\n⚠ API error (attempt 2): EOF\n the file"], "Reading the file"],
+    [["Step 1 done.\n⚠ Model produced invalid output.\nStep 2."], "Step 1 done.Step 2."],
+    [["Step 1 done.\n⚠ Model produced invalid output.\n", "Step 2."], "Step 1 done.Step 2."],
+    [["Let me expl\n⚠ API error (attempt 1): EOF\n⚠ Note: ok"], "Let me expl⚠ Note: ok"],
+    [["Let me expl\n⚠ API error (attempt 1): EOF\n", "⚠", " Note: ok"], "Let me expl⚠ Note: ok"],
+    [["⚠ Model produced ", "invalid output.\r\nhello"], "hello"],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "crlf-retry-keep" },
+        messages: [{ role: "user", content: "hello" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), want)
+    })
+  }
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", LOCATION_LINE])
+    const response = await kit.request(baseBody({ metadata: { user_id: "precondition-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 400)
+    assert.equal(response.headers.get("x-should-retry"), null)
+    assert.equal(body.error.type, "invalid_request_error")
+    assert.equal(body.error.status, 400)
+    assert.notEqual(body.error.noRetry, true)
+    assert.match(body.error.message, /FAILED_PRECONDITION \(code 400\): User location is not supported for the API use\./)
+    assert.ok(!JSON.stringify(body).includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("#1416: a standalone upstream status line uses its HTTP code, and quota, busy and 403 keep theirs", async () => {
+  const cases = [
+    ["⚠ INVALID_ARGUMENT (code 400): request was rejected", 400, "invalid_request_error", null, /rejected the request: INVALID_ARGUMENT \(code 400\)/],
+    ["⚠ INVALID_ARGUMENT (code 400): found ⚠ Verification Required in log", 400, "invalid_request_error", null, /rejected the request: INVALID_ARGUMENT \(code 400\): found ⚠ Verification Required in log/],
+    ["⚠ PERMISSION_DENIED (code 403): The caller does not have permission", 403, "permission_error", "false", /PERMISSION_DENIED \(code 403\): The caller does not have permission/],
+    ["⚠ PERMISSION_DENIED (code 403): individual quota reached", 403, "permission_error", "false", /PERMISSION_DENIED \(code 403\): individual quota reached/],
+    ["⚠ RESOURCE_EXHAUSTED (code 429): a different quota sentence", 429, "rate_limit_error", null, /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\): a different quota sentence/],
+    ["⚠ UNAVAILABLE (code 503): No capacity available for model gemini-4-argon-low on the server", 503, "overloaded_error", null, /no capacity for this model now: UNAVAILABLE \(code 503\)/],
+    ["⚠ INTERNAL (code 500): backend exploded", 500, "api_error", null, /stopped the turn because of an error: INTERNAL \(code 500\): backend exploded/],
+  ]
+  for (const [line, status, kind, retry, message] of cases) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, ["\n" + line + "\n"])
+      const response = await kit.request(baseBody({ metadata: { user_id: "status-line-" + status },
+        messages: [{ role: "user", content: "hello" }], stream: false }))
+      const body = await response.json()
+      assert.equal(response.status, status, line)
+      assert.equal(response.headers.get("x-should-retry"), retry, line)
+      assert.equal(body.error.type, kind, line)
+      assert.equal(body.error.status, status, line)
+      assert.equal(body.error.noRetry, retry === "false" ? true : undefined, line)
+      assert.match(body.error.message, message, line)
+      assert.ok(!JSON.stringify(body).includes(line), line)
+    })
+    await withKit({}, async (kit) => {
+      markerAgent(kit, ["\n" + line.slice(0, 12), line.slice(12) + "\n"])
+      const response = await kit.request(baseBody({ metadata: { user_id: "status-sse-" + status },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(response.status, 200, line)
+      assert.equal(response.headers.get("x-should-retry"), null, line)
+      assert.equal(error.type, kind, line)
+      assert.equal(error.status, status, line)
+      assert.equal(error.noRetry, retry === "false" ? true : undefined, line)
+      assert.ok(!text.includes(line), line)
+      assert.ok(!text.includes("text_delta"), line)
+    })
+  }
+})
+
+test("#1416: the model quoting an upstream status banner keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use.\n", "That line is agy's, not mine."],
+    ["agy prints `⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use.` when the region is blocked."],
+    ["The log ends with:\n\n```\n⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use.\n```\n\nThat line comes from agy."],
+    ["The log ends with:\n\n```\n⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use."],
+    ["The log ends with:\n\n```\n", "⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use."],
+    ["The log ends with:\n\n```\nok\n```" + " ".repeat(70), "not-a-close\n", "⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use."],
+    ["The log ends with:\n\n```\n", "⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota)."],
+    ["```\r", "⚠ Verification Required"],
+    ["```\r⚠ Verification Required"],
+    ["⚠ Note: a FAILED_PRECONDITION (code 400) is a region block, not your bug."],
+    ["⚠ WARN", "ING: this is a normal note, not an upstream status."],
+    ["\n⚠ FAILED_PRECONDITION (code 400): User location is not supported for the API use.\n", "and then the model kept talking."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "status-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
 // agy 1.5.10, a banned account (seen on a real one, 11-18): Google's
 // sentence without the "PERMISSION_DENIED (code 403):" 1.5.9 put before it,
 // and the whole reply was that line, a 200.
