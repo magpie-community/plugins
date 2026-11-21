@@ -157,6 +157,12 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
   const baseTemplate = options.baseTemplate ?? CF_API_BASE_TEMPLATE;
   const fetchImpl = options.fetchImpl ?? fetch;
   const discoveryTTL = options.discoveryTTLMs ?? DEFAULT_DISCOVERY_TTL_MS;
+  // plan is the plan the user declares for this account: "free", "paid", or
+  // empty to leave it to Cloudflare's answer. Cloudflare's account response
+  // often carries no plan at all, and only a confirmed Free plan lets the
+  // free Neurons window count for routing; without this such a key stays
+  // "unknown" to routing forever, however well its usage is read.
+  const planDeclared = String(options.plan ?? "").trim().toLowerCase();
 
   // accountId is optional at init: it is provided per account at sign-in time
   // (metadata.accountId) or via plugin options. Do not fail the plugin load.
@@ -398,6 +404,15 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
           }
         } catch {
           /* token scope not enough or network issue — keep unknown */
+        }
+        // what the user declared wins over a best-effort answer: a token that
+        // is told no plan would otherwise never count its free allowance.
+        if (planDeclared === "free") {
+          plan = "Workers Free";
+          planIsFree = true;
+        } else if (planDeclared === "paid") {
+          plan = "Workers Paid";
+          planIsFree = false;
         }
         const nextMidnight = nextUtcMidnight();
         let used = null;
