@@ -44,6 +44,20 @@ test('候选表覆盖三平台，且认 Edge / Chromium / Brave', () => {
   expect(linux).toContain('/usr/bin/chromium')
 })
 
+test('transport:"pipe" 排除 Edge（实测 Edge 不支持 --remote-debugging-pipe）', () => {
+  const win = browserCandidates({ platform: 'win32', env: { PROGRAMFILES: 'C:/PF', LOCALAPPDATA: 'C:/LA' }, transport: 'pipe' })
+  expect(win.some((p) => p.endsWith('msedge.exe'))).toBe(false)
+  expect(win.some((p) => p.endsWith('chrome.exe'))).toBe(true)
+
+  const mac = browserCandidates({ platform: 'darwin', env: {}, transport: 'pipe' })
+  expect(mac.some((p) => p.includes('Microsoft Edge.app'))).toBe(false)
+  expect(mac.some((p) => p.includes('Google Chrome.app'))).toBe(true)
+
+  const linux = browserCandidates({ platform: 'linux', env: {}, transport: 'pipe' })
+  expect(linux).not.toContain('/usr/bin/microsoft-edge')
+  expect(linux).toContain('/usr/bin/chromium')
+})
+
 test('候选为空 → 报错且只此一份文案，不宣称窗口已弹出', async () => {
   let caught
   try {

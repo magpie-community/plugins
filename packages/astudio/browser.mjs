@@ -235,25 +235,47 @@ function launch(executable, args, { timeout = 30000 } = {}) {
 
 // ---------------------------------------------------------------- 浏览器定位
 
-export async function browserExecutable() {
-  const override = process.env.ASTUDIO_CHROME_PATH
-  if (override) return resolve(override.startsWith("~") ? join(homedir(), override.slice(2)) : override)
-  const candidates = process.platform === "win32"
+/** 各平台 Chromium 内核浏览器候选（按优先级）。只驱动自己 spawn 的浏览器，
+ *  所以不查 PATH、不用系统默认浏览器。platform/env 可注入，测试不必依赖
+ *  测试机装了什么浏览器。
+ *  `transport: "pipe"` 排除 Edge：本机实测（2026-11-21，Edge 158.0.4370.33）
+ *  Edge 带 --remote-debugging-pipe 启动即退（exit 0），而 --remote-debugging-port
+ *  能正常握手——Edge 只支持 port。本插件登录走 pipe，所以 select prompt 必须
+ *  用 transport:"pipe" 把 Edge 排除，否则用户选了 Edge 会「启动即退」。 */
+export function browserCandidates({ platform = process.platform, env = process.env, transport } = {}) {
+  const candidates = platform === "win32"
     ? [
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
+      env.PROGRAMFILES && join(env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+      env["PROGRAMFILES(X86)"] && join(env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+      env["PROGRAMFILES(X86)"] && join(env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.PROGRAMFILES && join(env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
     ].filter(Boolean)
-    : process.platform === "darwin"
+    : platform === "darwin"
       ? [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         join(homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
       ]
-      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"]
+      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium", "/usr/bin/microsoft-edge"]
+  return transport === "pipe" ? candidates.filter((p) => !/edge/i.test(p)) : candidates
+}
+
+export async function browserExecutable(explicit) {
+  // 用户在 select prompt 里选的浏览器（完整路径）优先，先于环境变量与候选表。
+  if (typeof explicit === "string" && explicit.trim()) {
+    const path = resolve(explicit.trim().startsWith("~") ? join(homedir(), explicit.trim().slice(2)) : explicit.trim())
+    try { await access(path); return path } catch {}
+    throw new Error(`你选择的浏览器不存在或不可执行：${path}。请换一个，或用 ASTUDIO_CHROME_PATH 指向 Chrome / Chromium / Brave 的可执行文件。`)
+  }
+  const override = process.env.ASTUDIO_CHROME_PATH
+  if (override) return resolve(override.startsWith("~") ? join(homedir(), override.slice(2)) : override)
+  // 自动探测用 pipe 语义（排除 Edge）：本插件登录走 pipe，Edge 实测不支持。
+  const candidates = browserCandidates({ transport: "pipe" })
   for (const path of candidates) {
     try { await access(path); return path } catch {}
   }
@@ -263,8 +285,9 @@ export async function browserExecutable() {
 // ---------------------------------------------------------------- 打开/收割
 
 /** 用专属 profile 开浏览器（登录用 headless: false，用户手动操作窗口）。
+ *  `browser` 是用户在 select prompt 里选的浏览器路径，优先于自动探测。
  *  返回 { browser, page, profilePath, release }：release() 在 close() 之后调用才放锁。 */
-export async function openBrowser({ headless = false, startUrl = "about:blank", profilePath = freshSigninProfile() } = {}) {
+export async function openBrowser({ headless = false, startUrl = "about:blank", profilePath = freshSigninProfile(), browser } = {}) {
   const release = await claimProfileLock(profilePath)
   try {
     await mkdir(profilePath, { recursive: true, mode: 0o700 })
@@ -283,7 +306,7 @@ export async function openBrowser({ headless = false, startUrl = "about:blank", 
       "--crash-dumps-dir=" + tmpdir(),
       startUrl,
     ]
-    const started = await launch(await browserExecutable(), args)
+    const started = await launch(await browserExecutable(browser), args)
     return { ...started, profilePath, release }
   } catch (error) {
     await release()
@@ -331,7 +354,7 @@ export async function harvestAstronSession(browser) {
  *  release, close }。abort() 随时可调（宿主取消）；成功/失败/取消/超时都删掉
  *  profile 目录——会话已进账号 metadata，浏览器目录不留第二份凭据。
  *  removeProfileImpl 只为测试能观测清理动作，生产不传。 */
-export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePath = freshSigninProfile(), open = openBrowser, removeProfileImpl = removeProfile } = {}) {
+export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePath = freshSigninProfile(), open = openBrowser, removeProfileImpl = removeProfile, browser } = {}) {
   const harvest = { promise: undefined, abort: async () => {} }
   harvest.promise = (async () => {
     let aborted = false
@@ -349,16 +372,16 @@ export function startBrowserHarvest({ deadlineMs = 600_000, startUrl, profilePat
       await removeProfileImpl(usedPath)
     }
     try {
-      const { browser, profilePath: used, release } = await open({ headless: false, startUrl, profilePath })
-      opened = { browser, release }
+      const { browser: b, profilePath: used, release } = await open({ headless: false, startUrl, profilePath, browser })
+      opened = { browser: b, release }
       usedPath = used
       if (aborted) throw new Error("登录已取消")
       const deadline = Date.now() + deadlineMs
       for (;;) {
         if (aborted) throw new Error("登录已取消")
-        if (browser.connection.closed) throw new Error("浏览器被关闭，登录中断")
-        const found = await harvestAstronSession(browser).catch(() => undefined)
-        if (found) return { ...found, profilePath: used, release, close: () => browser.close() }
+        if (b.connection.closed) throw new Error("浏览器被关闭，登录中断")
+        const found = await harvestAstronSession(b).catch(() => undefined)
+        if (found) return { ...found, profilePath: used, release, close: () => b.close() }
         if (Date.now() >= deadline) throw timeoutError(`登录超时（${durationLabel(deadlineMs)}内没有检测到 AStudio 登录）`)
         await sleep(1500)
       }

@@ -1059,7 +1059,10 @@ test("web login is the recommended oauth method, listed first", () => {
   assert.equal(method.type, "oauth")
   assert.match(method.label, /推荐/)
   assert.match(method.label, /多账号/)
-  assert.equal(method.prompts, undefined)
+  // 浏览器登录方法带一个 select prompt（选浏览器）；本机无 pipe 可用浏览器时
+  // options 为空，仍允许直接登录（自动探测）。
+  assert.equal(Array.isArray(method.prompts), true)
+  assert.equal(method.prompts.some((p) => p.type === "select" && p.key === "browser"), true)
   assert.equal(plugin.auth.methods[0], method)
 })
 
