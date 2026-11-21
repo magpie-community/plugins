@@ -1,4 +1,11 @@
 (() => {
+  const staticRefresh = document.getElementById('magpie-static-service-refresh');
+  if (staticRefresh) {
+    // Removing a parsed meta refresh alone does not cancel its scheduled navigation.
+    window.stop();
+    staticRefresh.remove();
+  }
+
   const messages = {
     en: {
       title: 'Fingerprint',
@@ -8,6 +15,13 @@
       invalidPort: 'Invalid Fingerprint service port.',
       failed: 'Could not connect',
       fallback: 'If the page does not open, copy this address into a browser on this computer:',
+      copyAddress: 'Copy address',
+      copied: 'Address copied.',
+      copyFallback: 'Address selected. Copy it and open it in a browser on this computer.',
+      staticHelp:
+        'If this page stays open, open the service directly in a browser on this computer:',
+      staticPortNote:
+        'This link uses the default port, 4388. If you configured another port, replace 4388 with it.',
     },
     'zh-Hans': {
       title: '模型指纹',
@@ -16,6 +30,11 @@
       invalidPort: '模型指纹服务端口无效。',
       failed: '连接失败',
       fallback: '如果页面未打开，请将此地址复制到本机浏览器：',
+      copyAddress: '复制地址',
+      copied: '地址已复制。',
+      copyFallback: '已选中地址，请复制后在本机浏览器中打开。',
+      staticHelp: '如果此页面仍停留在这里，请在本机浏览器中直接打开服务：',
+      staticPortNote: '此链接使用默认端口 4388。如果配置了其他端口，请将 4388 替换为该端口。',
     },
     'zh-Hant': {
       title: '模型指紋',
@@ -24,6 +43,11 @@
       invalidPort: '模型指紋服務連接埠無效。',
       failed: '連線失敗',
       fallback: '如果頁面未開啟，請將此網址複製到本機瀏覽器：',
+      copyAddress: '複製網址',
+      copied: '網址已複製。',
+      copyFallback: '已選取網址，請複製後在本機瀏覽器中開啟。',
+      staticHelp: '如果此頁面仍停留在這裡，請在本機瀏覽器中直接開啟服務：',
+      staticPortNote: '此連結使用預設連接埠 4388。如果設定了其他連接埠，請將 4388 替換為該連接埠。',
     },
     ja: {
       title: 'モデル指紋',
@@ -34,6 +58,13 @@
       failed: '接続できませんでした',
       fallback:
         'ページが開かない場合は、このアドレスをこのコンピューターのブラウザーにコピーしてください：',
+      copyAddress: 'アドレスをコピー',
+      copied: 'アドレスをコピーしました。',
+      copyFallback: 'アドレスを選択しました。このコンピューターのブラウザーに貼り付けてください。',
+      staticHelp:
+        'このページにとどまる場合は、このコンピューターのブラウザーでサービスを直接開いてください：',
+      staticPortNote:
+        'このリンクは既定のポート 4388 を使用します。別のポートを設定した場合は、4388 をその番号に置き換えてください。',
     },
     de: {
       title: 'Modell-Fingerabdruck',
@@ -44,6 +75,13 @@
       failed: 'Verbindung fehlgeschlagen',
       fallback:
         'Falls sich die Seite nicht öffnet, diese Adresse im Browser auf diesem Computer öffnen:',
+      copyAddress: 'Adresse kopieren',
+      copied: 'Adresse kopiert.',
+      copyFallback: 'Adresse ausgewählt. Kopieren und im Browser auf diesem Computer öffnen.',
+      staticHelp:
+        'Falls diese Seite geöffnet bleibt, öffnen Sie den Dienst direkt in einem Browser auf diesem Computer:',
+      staticPortNote:
+        'Dieser Link verwendet den Standardport 4388. Falls Sie einen anderen Port festgelegt haben, ersetzen Sie 4388 durch diesen Port.',
     },
   };
   let text = messages.en;
@@ -65,13 +103,15 @@
     document.title = text.title;
     document.getElementById('title').textContent = text.title;
     status.textContent = text.connecting;
+    document.getElementById('static-help').textContent = text.staticHelp;
+    document.getElementById('static-port-note').textContent = text.staticPortNote;
   }
   return (async () => {
     const theme = await window.magpie?.ready;
     followLanguage(theme);
     window.magpie?.onTheme?.(followLanguage);
     const config = (await window.magpie?.options?.get?.()) || {};
-    const port = Number(config.port ?? 3488);
+    const port = Number(config.port ?? 4388);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(text.invalidPort);
     let service = window.magpie?.service;
     let localFallback = '';
@@ -114,7 +154,20 @@
         status.textContent = text.fallback;
         const field = document.getElementById('service-url');
         field.value = localFallback;
-        field.onclick = () => field.select();
+        const copy = document.getElementById('copy-service-url');
+        copy.textContent = text.copyAddress;
+        copy.onclick = async () => {
+          try {
+            const clipboard = window.navigator?.clipboard;
+            if (!clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await clipboard.writeText(localFallback);
+            status.textContent = text.copied;
+          } catch {
+            field.focus();
+            field.select();
+            status.textContent = text.copyFallback;
+          }
+        };
         document.getElementById('fallback').hidden = false;
       }, 4000);
     }

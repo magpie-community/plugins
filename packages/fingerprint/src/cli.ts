@@ -2,7 +2,7 @@ import { startServer } from './server';
 const argv = process.argv.slice(2);
 if (argv.includes('--help')) {
   console.log(
-    'Magpie Fingerprint\n  bun start [--demo] [--port 3488]\nEnvironment: MAGPIE_FINGERPRINT_GATEWAY, MAGPIE_FINGERPRINT_API_KEY, MAGPIE_FINGERPRINT_DATA_DIR, MAGPIE_FINGERPRINT_BANK_SOURCE',
+    'Magpie Fingerprint\n  bun start [--demo] [--port 4388]\nEnvironment: MAGPIE_FINGERPRINT_GATEWAY, MAGPIE_FINGERPRINT_API_KEY, MAGPIE_FINGERPRINT_DATA_DIR, MAGPIE_FINGERPRINT_BANK_SOURCE',
   );
   process.exit(0);
 }

@@ -3,7 +3,7 @@
 ## Plugin contract
 
 The package is a Magpie page plugin. Its manifest declares `page.file` as
-`page/index.html`, a local service on port `3488` (configurable through the
+`page/index.html`, a local service on port `4388` (configurable through the
 `port` option), and one provider-menu action named `fingerprint`. Magpie sends
 the action as `{ id, provider: { id, name } }` to the page frame. The page boot
 document captures this event before navigating to the service, so the selected
@@ -21,14 +21,25 @@ WebKitGTK, magpie's Linux window, matches nothing to it there, so a policy of
 `'self'` alone loads no script and the page stays blank. The launcher origin changes
 only the document policy; the API bearer token and Host/Origin checks still apply.
 
-On Windows, port 3488 can be in an excluded TCP range. Check
+On Windows, a TCP port can be in an excluded range. Check
 `netsh interface ipv4 show excludedportrange protocol=tcp` and the Magpie
-plugin host log if the service cannot bind; configure the plugin's `port`
-option to an available port, such as 4388. If the launcher remains on
-"Connecting" after its handshake, it shows the local service address for
-opening in a browser. Magpie's "page didn't answer" message instead means the
-page did not complete the initial host handshake; inspect the host log and
+plugin host log if the service cannot bind. `EADDRINUSE` means another process
+already owns the port; `EACCES` or `EPERM` can indicate that Windows reserved
+or excluded it. Configure the plugin's `port` option to an available port.
+If the launcher remains on "Connecting" after its handshake, the page shows
+the local service address and a copy action after four seconds. Magpie's
+plugin iframe currently has no popup or top-level navigation permission, so
+opening the system browser requires an upstream native bridge. Magpie's "page
+didn't answer" message instead means the page did not complete the initial
+host handshake; inspect the host log and
 page loading errors to identify its cause.
+
+If the launcher scripts cannot load at all, static HTML attempts to open the
+default loopback service after six seconds and also shows a manual recovery
+link. This path cannot read plugin options: change `4388` in the link if you
+configured another port. When `boot.js` does load, it cancels this static
+navigation before waiting for the bridge, so a slow handshake cannot override
+a custom port or Magpie's remote service URL.
 
 ## UI integration
 
@@ -59,6 +70,69 @@ gateway request to one account id or signed-in user, but is only meaningful to
 Magpie and is never forwarded upstream. A header value is ASCII, so a user that
 isn't (`北冥`) is sent percent-encoded (`encodeURIComponent`), which Magpie
 v0.1.2658 and later read back; an ASCII user is sent as it is.
+
+## Custom request headers
+
+Under **Run settings → Advanced settings**, enter one `Name: value` per line.
+For example:
+
+```text
+User-Agent: my-client/1.0
+X-Client-Name: fingerprint
+```
+
+These headers apply to every sample in that batch, across Chat Completions,
+Responses and Messages. They are not sent to the model catalog, account reads,
+route metadata or reference downloads. Only header names are recorded in job
+history and exports; values remain in memory for the run and are not saved by
+the page. A later batch without custom headers uses the normal defaults.
+
+For API-key providers, Magpie normally forwards the client's `User-Agent`.
+Provider/model fixed headers or the provider's Magpie User-Agent setting can
+override it. To explicitly forward a header, add its name to that provider's
+`passHeaders` setting in Magpie; other custom headers such as `X-Client-Name`
+require this list. Passed-through headers take precedence over fixed
+provider/model headers. Subscription-account integrations may supply their own
+headers instead. The plugin does not change provider settings.
+
+Authentication, routing and transport headers remain managed by Magpie:
+`Authorization`, `X-API-Key`, cookies, `Host`, `Content-*`, `Proxy-*`, `Sec-*`,
+`X-Magpie-*` and connection-framing headers cannot be overridden here.
+Use at most 24 headers and 8 KiB total, with printable ASCII values of at most
+2048 characters each; duplicate names are rejected case-insensitively.
+
+### Client identity presets
+
+The preset menu fills the same editable header field. Selecting a preset replaces
+its contents; editing the text returns the menu to **Custom**. Successful batch
+submission clears both. The page also lists the exact header names to put in
+the target Magpie provider's `passHeaders` setting, including `User-Agent` when
+you need to override a fixed provider/model UA. Presets do not change the
+selected API protocol or provider configuration, and loading them makes no
+network request.
+
+The following snapshots were checked on **2026-11-17**. Codex and OpenCode use
+the product/version prefix of their real UA, omitting machine, terminal and
+SDK-generated suffixes.
+
+| Preset                 | Snapshot | Prefilled headers                                                                                         | Evidence and scope                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------- | -------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Codex CLI              | 0.169.0  | `User-Agent: codex_cli_rs/0.169.0`; `originator: codex_cli_rs`                                            | [Released client defaults and UA](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/login/src/auth/default_client.rs#L152-L175), release `rust-v0.169.0`. There is no separate stable `version` header.                                                                                                                                                                                                           |
+| Claude Code (headless) | 2.1.326  | `User-Agent: claude-cli/2.1.326 (external, sdk-cli)`; `x-app: cli`                                        | Observed from the [official 2.1.326 binary package](https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/2.1.326), running `-p` against an isolated localhost Messages stub with a dummy key. This is the headless entry point.                                                                                                                                                                                                           |
+| OpenCode               | 1.19.6   | `User-Agent: opencode/1.19.6`; `originator: opencode`                                                     | [Released OpenAI-provider hook](https://github.com/anomalyco/opencode/blob/f4e363c8295fa90a03dddc451882fffe8fbce357/packages/opencode/src/plugin/openai/codex.ts#L559-L568). Other providers have the UA but do not universally set `originator`.                                                                                                                                                                                                      |
+| Cline                  | 4.1.26   | `User-Agent: Cline/4.1.26`; `HTTP-Referer: https://cline.bot`; `X-Title: Cline`                           | [First-party provider header builder](https://github.com/cline/cline/blob/4cdfb19a5e897b9e75827cbb4f280f322e27e44a/sdk/packages/llms/src/providers/request-headers.ts#L78-L101), with the [VS Code host version](https://github.com/cline/cline/blob/4cdfb19a5e897b9e75827cbb4f280f322e27e44a/apps/vscode/src/sdk/cline-session-factory.ts#L177-L185). This profile is for Cline's own API; its direct OpenRouter path does not add this identity set. |
+| Roo Code               | 3.53.0   | `User-Agent: RooCode/3.53.0`; `HTTP-Referer: https://github.com/RooVetGit/Roo-Cline`; `X-Title: Roo Code` | [Header constants](https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/api/providers/constants.ts#L3-L7), used by its [OpenRouter handler](https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/api/providers/openrouter.ts#L151-L155).                                                                                                                                       |
+
+Session/thread/request IDs, account fields, SDK runtime claims and protocol
+capability flags are excluded. In particular, Claude Code's `anthropic-beta`
+set depends on its entry point and capabilities; its API version and SDK headers
+are not client-identity presets. See Anthropic's [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol).
+
+Gemini CLI was also checked. Its [native UA](https://github.com/google-gemini/gemini-cli/blob/4fa64e71b9b4e1bb65a86cc2863574f561b82340/packages/core/src/core/contentGenerator.ts#L242-L283)
+contains version, model, platform and surface data; its SDK supplies
+`x-goog-api-client`. Its native GenAI/Vertex/Code Assist transport is outside
+this plugin's three supported protocols, so it is not offered as a protocol
+profile.
 
 ## Job files
 
@@ -103,14 +177,25 @@ Keep the API key in the service environment when possible. `MAGPIE_FINGERPRINT_D
 overrides persistence; `MAGPIE_FINGERPRINT_BANK_SOURCE` can point to a local bank
 directory for fully offline scoring. Each batch retains its loaded detector instance.
 
-Opening/refreshing the page reads only the configured gateway and local history.
-`POST /api/bank/download` is the explicit download/refresh action; a valid
-`POST /api/jobs` also loads data if none is usable. Cached snapshots have no
-background refresh, including after the SDK default 24-hour TTL. Downloads use
-`https://lm.ikale.io/data/`, falling back to
-`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client IP
-but receive no provider credentials, model ids, prompts or replies. A custom
-`bankSource` replaces these defaults.
+When the page opens, it requests `POST /api/bank/check`. The service compares
+the cached detector SHA-256 with `bundle.json` and downloads the new snapshot
+when they differ. The service checks the downloaded detector against the
+manifest hash before replacing the cache and skips snapshots older than the
+active one. While the page stays open, it repeats this check every 24 hours.
+A manual check uses `POST /api/bank/check?force=1`. The check is
+single-flight and throttled to once per 24 hours per service process, with a
+15-minute retry after a failure. The service loads a usable cached snapshot
+before checking remotely and keeps it active if the update fails. A valid `POST /api/jobs` also loads
+data when the service has not loaded a snapshot yet.
+
+The default sources are `https://lm.ikale.io/data/` and, as fallback,
+`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. Checks request only each
+source's `bundle.json`; changed data is fetched through the pinned SDK. These
+hosts see the client IP but receive no provider credentials, model ids,
+prompts or replies. A custom HTTP(S) `bankSource` replaces these defaults. A
+local `bankSource` is read from disk on open and can be reloaded from the page. The
+bundled SDK's own stale-while-revalidate setting stays disabled so update
+checks and detector replacement use one coordinated path.
 
 Jobs are stored as atomic JSON files with owner-only permissions. The current limit
 is 200 batches, 24 targets per batch, three concurrent targets and three concurrent

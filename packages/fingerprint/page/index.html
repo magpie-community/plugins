@@ -3,6 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- Last resort for windows where this page's own scripts can never load:
+         Magpie's WebView2 window serves plugin pages from a virtual host, and a
+         sandboxed frame that runs out of process cannot fetch its subresources,
+         so boot.js never runs and the frame is killed at 10 s with "page didn't
+         answer" (yetone/magpie#2787, magpie-fingerprint#2). A meta refresh is
+         the only navigation available without JavaScript. When boot.js loads,
+         it stops the pending navigation and removes this refresh before waiting
+         for Magpie. Static HTML cannot read custom ports, so this targets the
+         manifest default and the page explains how to change it manually. -->
+    <meta
+      id="magpie-static-service-refresh"
+      http-equiv="refresh"
+      content="6;url=http://127.0.0.1:4388/?uiOrigin=http://127.0.0.1:4388"
+    />
     <title>Fingerprint</title>
     <style>
       :root {
@@ -33,14 +47,33 @@
         width: 100%;
         padding: 6px;
       }
+      button {
+        margin-top: 8px;
+        padding: 6px 10px;
+      }
     </style>
   </head>
   <body>
     <main>
       <strong id="title">Fingerprint</strong>
-      <p id="status">Connecting to Fingerprint…</p>
+      <p id="status" aria-live="polite">Connecting to Fingerprint…</p>
+      <section id="static-fallback" aria-label="Manual recovery">
+        <p id="static-help">
+          If this page stays open, open the service directly in a browser on this computer:
+        </p>
+        <p>
+          <a id="static-service-link" href="http://127.0.0.1:4388/?uiOrigin=http://127.0.0.1:4388">
+            http://127.0.0.1:4388/
+          </a>
+        </p>
+        <p id="static-port-note">
+          This link uses the default port, 4388. If you configured another port, replace 4388 with
+          it.
+        </p>
+      </section>
       <div id="fallback" hidden>
         <input id="service-url" readonly aria-label="Fingerprint service URL" />
+        <button id="copy-service-url" type="button">Copy address</button>
       </div>
     </main>
     <script src="_magpie/bridge.js"></script>

@@ -9,6 +9,7 @@
 - 一批最多选择 24 个模型，共用三个挑战，便于横向比较。
 - 实时显示采样数量与状态，支持取消、总超时和并发设置。
 - 保存实际路由、原始回答、推理参数与参考库版本。
+- 高级设置提供 Codex CLI、Claude Code、OpenCode、Cline、Roo Code 的可编辑请求头预设，也支持手动填写；额外头需在 Magpie 供应商中配置 `passHeaders`。
 - 展示候选排名、模型家族和部分样本等状态。
 - 复用 Magpie 原生页面桥接、控件样式与设计变量，主题和语言跟随宿主。
 - 本地历史、JSON 导出与复制；紧凑列表、键盘切换与窄屏布局。
@@ -36,7 +37,9 @@ bun start
 
 `rebuild` 在隔离副本中使用 `--frozen-lockfile --ignore-scripts` 安装，完成类型检查、测试和构建，再复制 `dist/` 回来并清理临时目录，避免 Bun 使用父级 monorepo 的 workspace 配置。
 
-页面服务默认监听 `3488`，通过 `http://127.0.0.1:3425` 使用 Magpie 网关。打开、刷新页面不会下载参考库，也没有后台刷新。点击「下载参考数据」会下载新快照；启动检测时仅在没有可用缓存时下载。主源为 `https://lm.ikale.io/data/`，备用源为 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`。这两个域名会看到客户端 IP；下载请求不携带 provider 凭证、模型标识、提示词或回答。仅主动开始任务才会通过网关发送采样提示。网关认证、`magpie web`、环境变量和离线数据源见 [integration.md](integration.md)。
+页面服务默认监听 `4388`，通过 `http://127.0.0.1:3425` 使用 Magpie 网关。打开页面时自动检查指纹参考库，页面持续打开时每 24 小时检查一次。发现新版后在后台下载并安装，没有缓存时自动下载初始快照。检查或下载失败时继续使用可用的旧缓存，也可以点击「检查更新」立即重试。
+
+主源为 `https://lm.ikale.io/data/`，备用源为 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`。这些站点会看到客户端 IP，检查和下载请求均不携带提供商凭证、模型标识、提示词或回答。仅主动开始任务才会通过网关发送采样提示。网关认证、`magpie web`、环境变量和离线数据源见 [integration.md](integration.md)。
 
 ## 范围与限制
 

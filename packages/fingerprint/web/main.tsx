@@ -22,7 +22,17 @@ import {
   Trash,
   WarningCircle,
 } from '@phosphor-icons/react';
-import type { Bootstrap, Job, Model, RunConfig, Target, TargetResult } from '../src/types';
+import type {
+  BankCheckResponse,
+  Bootstrap,
+  Job,
+  Model,
+  RunRequest,
+  Target,
+  TargetResult,
+} from '../src/types';
+import { parseRequestHeaders } from '../src/request-headers';
+import { headerPresets, presetHeaderText } from '../src/header-presets';
 import { embedded, subscribeTheme } from './magpie';
 import { AppMenu } from './AppMenu';
 import { localeFor, type Locale } from './locale';
@@ -254,6 +264,16 @@ function App() {
   const [provider, setProvider] = useState('all');
   const [selected, setSelected] = useState<string[]>([]);
   const [account, setAccount] = useState('');
+  const [headerText, setHeaderText] = useState('');
+  const [headerPresetId, setHeaderPresetId] = useState('');
+  const headerPreset = headerPresets.find((preset) => preset.id === headerPresetId);
+  const headerConfig = useMemo(() => {
+    try {
+      return { headers: parseRequestHeaders(headerText), error: '' };
+    } catch (error) {
+      return { headers: {}, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, [headerText]);
   const [config, setConfig] = useState({
     api: 'auto',
     effort: '',
@@ -266,7 +286,10 @@ function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [downloadingBank, setDownloadingBank] = useState(false);
+  const [checkingBank, setCheckingBank] = useState(false);
+  const bankCheckInFlight = useRef(false);
+  const bankCheckTimer = useRef<number>(undefined);
+  const pageMounted = useRef(false);
   const configValid =
     integerInRange(config.targetParallel, 1, 3) &&
     integerInRange(config.sampleParallel, 1, 3) &&
@@ -312,6 +335,34 @@ function App() {
       }),
     [],
   );
+  const checkBank = async (force = false) => {
+    if (!pageMounted.current || bankCheckInFlight.current) return;
+    window.clearTimeout(bankCheckTimer.current);
+    bankCheckInFlight.current = true;
+    setCheckingBank(true);
+    let checkAgainInMs: number | null = 15 * 60 * 1000;
+    try {
+      const result = await api<BankCheckResponse>(`api/bank/check${force ? '?force=1' : ''}`, {
+        method: 'POST',
+      });
+      const { checkAgainInMs: delay, ...bank } = result;
+      checkAgainInMs = delay;
+      setBoot((current) => current && { ...current, ...bank, bankError: undefined });
+    } catch (e) {
+      setBoot(
+        (current) =>
+          current && {
+            ...current,
+            bankUpdate: { state: 'failed', error: String(e) },
+          },
+      );
+    } finally {
+      bankCheckInFlight.current = false;
+      setCheckingBank(false);
+      if (pageMounted.current && checkAgainInMs !== null)
+        bankCheckTimer.current = window.setTimeout(() => void checkBank(), checkAgainInMs + 100);
+    }
+  };
   const load = async () => {
     setError('');
     try {
@@ -322,38 +373,18 @@ function App() {
       if (window.__FINGERPRINT__?.initialProvider)
         setProvider(window.__FINGERPRINT__.initialProvider);
       setError(b.gateway.error || '');
+      if (!b.demo) void checkBank();
     } catch (e) {
       setError(String(e));
-    }
-  };
-  const downloadBank = async () => {
-    if (downloadingBank) return;
-    setDownloadingBank(true);
-    setError('');
-    try {
-      const result = await api<Pick<Bootstrap, 'bank' | 'bankStatus'> & { error?: string }>(
-        'api/bank/download',
-        { method: 'POST' },
-      );
-      setBoot((current) =>
-        current
-          ? {
-              ...current,
-              bank: result.bank,
-              bankStatus: result.bankStatus,
-              bankError: result.error,
-            }
-          : current,
-      );
-      if (result.error) setError(result.error);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setDownloadingBank(false);
     }
   };
   useEffect(() => {
-    load();
+    pageMounted.current = true;
+    void load();
+    return () => {
+      pageMounted.current = false;
+      window.clearTimeout(bankCheckTimer.current);
+    };
   }, []);
   useEffect(() => {
     if (!job || terminal(job.state)) return;
@@ -426,7 +457,7 @@ function App() {
     );
   const setField = (k: string, v: any) => setConfig((c: any) => ({ ...c, [k]: v }));
   const start = async () => {
-    if (!selected.length || starting) return;
+    if (!selected.length || starting || headerConfig.error) return;
     if (account && new Set(selectedModels.map((m) => m.provider)).size > 1) {
       setError(
         localize(
@@ -440,7 +471,7 @@ function App() {
     }
     setStarting(true);
     setError('');
-    const cfg: RunConfig = {
+    const cfg: RunRequest = {
       targets: selected.map((model) => ({ model, ...(account ? { account } : {}) })),
       api: config.api,
       effort,
@@ -449,9 +480,12 @@ function App() {
       targetParallel: Number(config.targetParallel),
       sampleParallel: Number(config.sampleParallel),
       deadlineSeconds: Number(config.deadlineSeconds),
+      ...(Object.keys(headerConfig.headers).length ? { headers: headerConfig.headers } : {}),
     };
     try {
       const j = await api<Job>('api/jobs', { method: 'POST', body: JSON.stringify(cfg) });
+      setHeaderText('');
+      setHeaderPresetId('');
       setJob(j);
       setHistory((h) => [j, ...h.filter((x) => x.id !== j.id)]);
       setExpanded(j.results[0]?.id || null);
@@ -655,32 +689,58 @@ function App() {
                   </span>
                 ) : (
                   <span>
-                    {boot?.bankStatus?.state === 'cached'
-                      ? localize(
-                          t,
-                          '参考数据已缓存，将在运行时读取',
-                          '參考資料已快取，執行時讀取',
-                          'Reference data cached; it will be read when a run starts',
-                        )
-                      : localize(
-                          t,
-                          '参考数据未下载',
-                          '參考資料尚未下載',
-                          'Reference data not downloaded',
-                        )}
+                    {boot?.bankStatus.state === 'cached'
+                      ? localize(t, '参考库已缓存', '參考庫已快取', 'Reference data cached')
+                      : localize(t, '参考库未加载', '參考庫尚未載入', 'Reference data not loaded')}
                   </span>
                 )}
-                <button
-                  className="ghost-button bank-download"
-                  type="button"
-                  onClick={downloadBank}
-                  disabled={!boot || downloadingBank || starting}
-                >
-                  <DownloadSimple size={14} />
-                  {downloadingBank
-                    ? localize(t, '下载中…', '下載中…', 'Downloading…')
-                    : localize(t, '下载参考数据', '下載參考資料', 'Download reference data')}
-                </button>
+                {boot && !boot.demo && (
+                  <button
+                    className="ghost-button bank-download"
+                    type="button"
+                    onClick={() => void checkBank(true)}
+                    disabled={checkingBank || starting}
+                  >
+                    {checkingBank ? (
+                      <CircleNotch size={14} className="spin" />
+                    ) : (
+                      <ArrowClockwise size={14} />
+                    )}
+                    {boot.localBank
+                      ? checkingBank
+                        ? localize(t, '正在读取…', '正在讀取…', 'Loading…')
+                        : localize(t, '重新读取参考库', '重新讀取參考庫', 'Reload reference data')
+                      : checkingBank
+                        ? localize(t, '正在检查…', '正在檢查…', 'Checking…')
+                        : localize(t, '检查更新', '檢查更新', 'Check for updates')}
+                  </button>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'updated' && (
+                  <span role="status">
+                    {localize(t, '参考库已更新', '參考庫已更新', 'Reference data updated')}
+                  </span>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'current' && (
+                  <span role="status">
+                    {localize(t, '参考库已是最新', '參考庫已是最新', 'Reference data is current')}
+                  </span>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'failed' && (
+                  <span className="bank-error" role="status" title={boot.bankUpdate.error}>
+                    {localize(
+                      t,
+                      boot.bank
+                        ? '检查失败，继续使用当前参考库。'
+                        : '参考库检查或下载失败，请重试。',
+                      boot.bank
+                        ? '檢查失敗，繼續使用目前參考庫。'
+                        : '參考庫檢查或下載失敗，請重試。',
+                      boot.bank
+                        ? 'Update check failed. The current reference data remains active.'
+                        : 'Reference data check or download failed. Please retry.',
+                    )}
+                  </span>
+                )}
                 {boot?.bankError && (
                   <span className="bank-error" role="alert">
                     {boot.bankError}
@@ -688,14 +748,16 @@ function App() {
                 )}
               </div>
             </div>
-            <p className="source-note">
-              {localize(
-                t,
-                '默认参考源：lm.ikale.io，备用 cdn.jsdmirror.com。仅主动下载或无缓存时启动检测才会连接；来源站点会看到 IP，不接收凭证、提示词或模型回答。',
-                '預設參考來源：lm.ikale.io，備用 cdn.jsdmirror.com。僅主動下載或無快取時開始檢測才會連線；來源網站會看到 IP，不接收憑證、提示詞或模型回答。',
-                'Default reference sources: lm.ikale.io, with cdn.jsdmirror.com as fallback. Contacted only on download or an uncached run; these hosts see your IP, but receive no credentials, prompts or replies.',
-              )}
-            </p>
+            {boot && !boot.demo && !boot.localBank && (
+              <p className="source-note">
+                {localize(
+                  t,
+                  '默认参考源：lm.ikale.io，备用 cdn.jsdmirror.com。打开插件后会自动检查更新，发现新版本会后台更新；来源站点会看到 IP，不接收凭证、提示词或模型回答。',
+                  '預設參考來源：lm.ikale.io，備用 cdn.jsdmirror.com。打開插件後會自動檢查更新，發現新版本會在背景更新；來源網站會看到 IP，不接收憑證、提示詞或模型回答。',
+                  'Default reference sources: lm.ikale.io, with cdn.jsdmirror.com as fallback. The plugin checks for updates when opened and updates the cache when a new snapshot is available; these hosts see your IP, but receive no credentials, prompts or replies.',
+                )}
+              </p>
+            )}
             {boot?.demo && (
               <div className="notice demo">
                 <Lightning size={15} />
@@ -878,10 +940,113 @@ function App() {
                   onClick={() => setShowAdvanced(!showAdvanced)}
                 >
                   {showAdvanced ? '−' : '+'}{' '}
-                  {localize(t, '高级并行与超时', '進階並行與逾時', 'Concurrency & deadline')}
+                  {localize(t, '高级设置', '進階設定', 'Advanced settings')}
                 </button>
                 {showAdvanced && (
                   <div className="advanced" id="run-advanced">
+                    <label>
+                      {localize(t, '客户端标识预设', '用戶端識別預設', 'Client identity preset')}
+                      <AppMenu
+                        label={localize(t, '请求头预设', '請求標頭預設', 'Request header preset')}
+                        value={headerPresetId}
+                        disabled={starting}
+                        options={[
+                          { value: '', label: localize(t, '自定义', '自訂', 'Custom') },
+                          ...headerPresets.map((preset) => ({
+                            value: preset.id,
+                            label: preset.name,
+                          })),
+                        ]}
+                        onChange={(id) => {
+                          setHeaderPresetId(id);
+                          const preset = headerPresets.find((candidate) => candidate.id === id);
+                          if (preset) setHeaderText(presetHeaderText(preset));
+                        }}
+                      />
+                    </label>
+                    <p className="muted-line">
+                      {headerPreset && `${headerPreset.name} ${headerPreset.version} · `}
+                      {localize(
+                        t,
+                        '选择预设会替换下方内容，填入后仍可编辑。预设只设置客户端标识，不改变 API 协议。',
+                        '選擇預設會取代下方內容，填入後仍可編輯。預設只設定用戶端識別，不變更 API 協定。',
+                        'Selecting a preset replaces the text below; you can then edit it. Presets set client identity, not the API protocol.',
+                      )}
+                    </p>
+                    {headerPreset?.scope === 'openai' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自 OpenCode 的 OpenAI 连接；User-Agent 使用产品与版本前缀。',
+                          '此預設來自 OpenCode 的 OpenAI 連線；User-Agent 使用產品與版本前綴。',
+                          'This preset is from OpenCode’s OpenAI integration; its User-Agent uses the product/version prefix.',
+                        )}
+                      </p>
+                    )}
+                    {headerPreset?.scope === 'openrouter' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自该客户端的 OpenRouter 连接。',
+                          '此預設來自該用戶端的 OpenRouter 連線。',
+                          'This preset comes from the client’s OpenRouter integration.',
+                        )}
+                      </p>
+                    )}
+                    {headerPreset?.scope === 'cline' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自 Cline 自营 API 连接，不是其直连 OpenRouter 的默认请求头。',
+                          '此預設來自 Cline 自營 API 連線，不是其直連 OpenRouter 的預設標頭。',
+                          'This preset is from Cline’s first-party API, not its direct OpenRouter connection.',
+                        )}
+                      </p>
+                    )}
+                    <label htmlFor="request-headers">
+                      {localize(t, '自定义请求头', '自訂請求標頭', 'Custom request headers')}
+                      <textarea
+                        id="request-headers"
+                        rows={3}
+                        disabled={starting}
+                        spellCheck={false}
+                        autoComplete="off"
+                        placeholder={'User-Agent: my-client/1.0\nX-Client-Name: fingerprint'}
+                        value={headerText}
+                        aria-invalid={!!headerConfig.error}
+                        aria-describedby="request-headers-help request-headers-error"
+                        onChange={(event) => {
+                          setHeaderText(event.target.value);
+                          setHeaderPresetId('');
+                        }}
+                      />
+                    </label>
+                    <p className="muted-line" id="request-headers-help">
+                      {localize(
+                        t,
+                        '每行一个 Name: value，仅用于本批采样。请求头的值不写入历史或导出；认证与路由沿用 Magpie 配置。',
+                        '每行一個 Name: value，僅用於本批取樣。標頭值不寫入歷史或匯出；驗證與路由沿用 Magpie 設定。',
+                        'One Name: value per line, for this batch only. Values are not saved in history or exports; Magpie manages authentication and routing.',
+                      )}
+                    </p>
+                    <p className="muted-line">
+                      {localize(
+                        t,
+                        '普通 API 供应商通常会转发 User-Agent；其他头名需加入该供应商的 passHeaders 列表。订阅账号可能使用固定请求头。',
+                        '一般 API 供應商通常會轉送 User-Agent；其他標頭名稱需加入該供應商的 passHeaders 清單。訂閱帳號可能使用固定標頭。',
+                        'API providers normally forward User-Agent. Add other header names to the provider’s passHeaders list. Subscription accounts may use fixed headers.',
+                      )}
+                      {!headerConfig.error && Object.keys(headerConfig.headers).length > 0 && (
+                        <code className="header-forwarding-names">
+                          passHeaders: {Object.keys(headerConfig.headers).join(', ')}
+                        </code>
+                      )}
+                    </p>
+                    {headerConfig.error && (
+                      <p className="muted-line" id="request-headers-error" role="alert">
+                        {headerConfig.error}
+                      </p>
+                    )}
                     <label>
                       {t.tier}
                       <AppMenu
@@ -954,6 +1119,7 @@ function App() {
                     disabled={
                       !selected.length ||
                       !configValid ||
+                      !!headerConfig.error ||
                       starting ||
                       history.some((j) => !terminal(j.state))
                     }
