@@ -112,7 +112,10 @@ droid's own dates for it hold. A promotion that has ended is no discount at
 all.
 
 Gemini's requests go to Factory's generate route with the model in the
-body, droid's line opening the system instruction. Gemini 4 Argon is behind
+body, droid's line opening the system instruction. The client's prompt,
+user turns and tool descriptions are adapted there as on Factory's other
+routes, so Codex or pi on a Gemini model reads to Factory as it does on
+GPT or Claude. Gemini 4 Argon is behind
 a Factory feature flag in droid 0.241.1, so an account it isn't on for may
 be refused it.
 

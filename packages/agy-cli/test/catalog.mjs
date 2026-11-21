@@ -901,3 +901,19 @@ test("canlee886 app 的 gateway 关着、读不成 JSON 时各按关、开处理
     assert.equal(kit.module.appGatewayOn(kit.home), false)
   })
 })
+
+// The provider is named as the plugin's row is, not by its id (agy-cli), on
+// magpie's Providers row; a name the user gave it stays.
+test("config names the provider, keeping the user's own name", async () => {
+  await withKit({ agyPath: null }, async (kit) => {
+    const cfg = {}
+    await kit.plugin.config(cfg)
+    assert.equal(cfg.provider["agy-cli"].name, "Antigravity (local agy CLI)")
+    const registry = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../../../registry.json"), "utf8"))
+    const row = registry.plugins.find((p) => p.providers?.includes("agy-cli"))
+    assert.equal(cfg.provider["agy-cli"].name, row.name)
+    const own = { provider: { "agy-cli": { name: "My agy", options: { x: 1 } } } }
+    await kit.plugin.config(own)
+    assert.deepEqual(own.provider["agy-cli"], { name: "My agy", options: { x: 1 } })
+  })
+})

@@ -785,8 +785,12 @@ function geminiBody(model, body) {
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
   delete si.role
+  // the client's prompt, its user turns and its tools' descriptions are
+  // adapted as on Factory's other routes (droidBody, anthropicBody):
+  // magpie hands a Responses, chat or Messages request for a Gemini model
+  // here, and Factory's policy check reads it the same on this route
   const parts = Array.isArray(si.parts) ? si.parts.map((part) =>
-    part && typeof part.text === "string" ? { ...part, text: zcodeRuntimeContext(part.text) } : part) : []
+    part && typeof part.text === "string" ? { ...part, text: promptText(part.text) } : part) : []
   si.parts = parts
   if (!(typeof parts[0]?.text === "string" && parts[0].text.startsWith(DROID_LINE))) {
     const texts = []
@@ -799,6 +803,8 @@ function geminiBody(model, body) {
     si.parts = [{ text: joined.trim() === "" ? DROID_LINE : DROID_LINE + "\n" + joined }, ...rest]
   }
   m.systemInstruction = si
+  geminiTurns(m.contents)
+  if (Array.isArray(m.tools)) for (const t of m.tools) if (t && typeof t === "object") toolDescriptions(t.functionDeclarations)
   // Gemini's route has no tool-output adaptation: escape every refused
   // phrase in its parts (functionResponse, systemInstruction) here.
   escapeDeep(m, REFUSED_PHRASES)
@@ -806,6 +812,22 @@ function geminiBody(model, body) {
   for (const k of GEMINI_ORDER) if (m[k] !== undefined) ordered[k] = m[k]
   for (const [k, v] of Object.entries(m)) if (!(k in ordered)) ordered[k] = v
   return JSON.stringify(ordered)
+}
+
+// geminiTurns adapts the text parts of contents' user turns as
+// promptOpenings adapts a Responses or chat user message's: pi's summary,
+// Claude Code's reminders, Codex's AGENTS.md and environment blocks. The
+// model's turns, function calls and responses stay as they are (a
+// functionResponse is escaped with the rest of the body).
+function geminiTurns(contents) {
+  if (!Array.isArray(contents)) return
+  for (const c of contents) {
+    if (!c || typeof c !== "object" || c.role !== "user" || !Array.isArray(c.parts)) continue
+    for (const p of c.parts) {
+      if (!p || typeof p !== "object" || typeof p.text !== "string" || p.thought) continue
+      p.text = userText(piSummary(p.text))
+    }
+  }
 }
 
 // ---- request size -------------------------------------------------------------
@@ -1215,7 +1237,8 @@ function harnessText(text) {
 
 // toolDescriptions puts each tool's description, and its schema's
 // descriptions, through harnessText: Anthropic's tools[].description and
-// input_schema, chat's tools[].function, Responses' tools[]. False when
+// input_schema, chat's tools[].function, Responses' tools[], Gemini's
+// functionDeclarations (parameters or parametersJsonSchema). False when
 // nothing changed.
 function schemaDescriptions(schema, depth = 0) {
   if (!schema || typeof schema !== "object" || depth > 32) return false
@@ -1240,7 +1263,7 @@ function toolDescriptions(tools) {
       const adapted = harnessText(fn.description)
       if (adapted !== fn.description) (fn.description = adapted), (changed = true)
     }
-    for (const key of ["input_schema", "parameters"]) if (schemaDescriptions(fn[key])) changed = true
+    for (const key of ["input_schema", "parameters", "parametersJsonSchema"]) if (schemaDescriptions(fn[key])) changed = true
   }
   return changed
 }
