@@ -153,7 +153,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     (0.2.31).
   - After the answer the plugin reads Trae's commercial session usage
     (`/api/v1/commercial/get_session_usage`) for that turn. Its settled
-    `credits_float` goes on the response as `usage.credits`, and its
+    `credits_float` goes on the response as `usage.credit` (and `usage.credits`):
+    magpie's ledger reads the singular `credit`, as kiro reports it
+    (yetone/magpie#4328), and its
     `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
     named no cache read (0.2.47). A cache count the stream did name wins;
     a failed lookup leaves the answer unchanged. The host is

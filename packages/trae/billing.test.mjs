@@ -50,6 +50,7 @@ test("a body's usage carries the settled credits and the real cache read", async
     completion_tokens: 300,
     total_tokens: 12300,
     prompt_tokens_details: { cached_tokens: 4096 },
+    credit: 0.12, // magpie's ledger reads `credit` (yetone/magpie#4328)
     credits: 0.12,
   })
 })
@@ -64,6 +65,7 @@ test("a stream's usage carries the settled credits and the real cache read", asy
     completion_tokens: 300,
     total_tokens: 12300,
     prompt_tokens_details: { cached_tokens: 4096 },
+    credit: 0.12,
     credits: 0.12,
   })
 })
@@ -79,6 +81,7 @@ test("a cache the stream named is not overwritten by the commercial record", asy
   const res = await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] })
   const usage = (await res.json()).usage
   expect(usage.cache_read_input_tokens).toBe(8192)
+  expect(usage.credit).toBe(0.12)
   expect(usage.credits).toBe(0.12)
 })
 
@@ -96,6 +99,7 @@ test("a turn names itself as the session the billing record is read by", async (
   })
   const res = await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] })
   const usage = (await res.json()).usage
+  expect(usage.credit).toBe(0.12)
   expect(usage.credits).toBe(0.12)
   expect(usage.prompt_tokens_details.cached_tokens).toBe(4096)
 })
@@ -105,6 +109,7 @@ test("a commercial record that cannot be read leaves the answer alone", async ()
   routes(json({ code: 40001, message: "invalid session" }))
   const res = await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] })
   const usage = (await res.json()).usage
+  expect(usage.credit).toBeUndefined()
   expect(usage.credits).toBeUndefined()
   expect(usage.magpie_cache_unknown).toBe(true)
 })

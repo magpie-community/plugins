@@ -3120,7 +3120,13 @@ function failure(site, status, code, message, ctx = "") {
 // named wins; the commercial count is only used when the stream gave none.
 function withBilling(usage, bill) {
   if (!usage || !bill) return usage
-  if (bill.credits != null) usage.credits = bill.credits
+  // magpie's ledger reads the settled charge as `credit` (singular) on the
+  // usage object (yetone/magpie#4328, as kiro reports it). Keep `credits`
+  // beside it for clients that name it that way.
+  if (bill.credits != null) {
+    usage.credit = bill.credits
+    usage.credits = bill.credits
+  }
   if (bill.cacheRead != null && !usage.prompt_tokens_details?.cached_tokens && !usage.cache_read_input_tokens) {
     usage.prompt_tokens_details = { ...(usage.prompt_tokens_details ?? {}), cached_tokens: bill.cacheRead }
     delete usage.magpie_cache_unknown
