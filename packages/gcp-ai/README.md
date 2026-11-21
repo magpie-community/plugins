@@ -4,7 +4,7 @@
 - **Inference**: requests speak Gemini's own protocol (`@ai-sdk/google`) to the project's Vertex endpoint, signed with your local gcloud / ADC credentials and billed to your own project.
 - **Credits**: the quota panel can show your Google Cloud promotional credit balance and its expiry date.
 
-You sign in once with your own Google account. No service accounts, no JSON keys, no extra packages: the plugin uses the Chrome you already have.
+You sign in once with your own Google account. No service accounts, no JSON keys, no extra packages: the plugin uses the Chrome or Edge you already have.
 
 ## Token caching and request latency
 
@@ -12,7 +12,7 @@ With an `authorized_user` ADC, the access token is cached per account until 60 s
 
 ## Requirements
 
-- Google Chrome or Chromium (set `VERTEX_CHROME_PATH` if it is somewhere unusual)
+- Google Chrome, Chromium or Microsoft Edge (set `VERTEX_CHROME_PATH` if it is somewhere unusual)
 - Google Cloud CLI (`gcloud`), already working — on Windows the `gcloud.cmd` the installer puts on `PATH` is used
 - A Google Cloud project with Vertex AI enabled
 - To read credits: permission to view the project's billing account (usually `billing.viewer`)

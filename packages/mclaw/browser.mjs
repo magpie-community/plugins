@@ -255,8 +255,18 @@ export class Browser {
   }
 }
 
+// Edge on Windows may relaunch itself through its compatibility layer
+// (msRelaunchNoCompatLayer); the new process does not inherit the CDP fds 3/4
+// the launcher handed to the first one, so the pipe closes at once. Playwright
+// carries the same switch for the same reason (chromiumSwitches.ts): the
+// relaunch is switched off and the fds stay valid, which makes Edge work over
+// the pipe exactly as Chrome does.
+const EDGE_RE = /msedge|microsoft[- ]edge/i
+export const edgeCompatArgs = (executable) =>
+  EDGE_RE.test(String(executable ?? '')) ? ['--edge-skip-compat-layer-relaunch'] : []
+
 function launch(executable, args, { timeout = 30000 } = {}) {
-  const child = spawn(executable, [...args, '--remote-debugging-pipe'], {
+  const child = spawn(executable, [...args, ...edgeCompatArgs(executable), '--remote-debugging-pipe'], {
     stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
     detached: false,
   })
@@ -284,8 +294,10 @@ function launch(executable, args, { timeout = 30000 } = {}) {
 
 /** 各平台的 Chromium 内核浏览器候选（按优先级）。只驱动自己 spawn 的浏览器，
  *  所以不查 PATH、不用系统默认浏览器：Edge / Brave / Chromium 与 Chrome 同一套
- *  --remote-debugging-pipe flags 即可工作，都列进来。platform/env 可注入，测试
- *  不必依赖测试机装了什么浏览器。 */
+ *  --remote-debugging-pipe flags 即可工作（Edge 在 Windows 上会做兼容层重启并
+ *  丢 fd 3/4，launch 对它自动加 --edge-skip-compat-layer-relaunch 禁掉，见
+ *  edgeCompatArgs），都列进来。platform/env 可注入，测试不必依赖测试机装了
+ *  什么浏览器。 */
 export function browserCandidates({ platform = process.platform, env = process.env } = {}) {
   const pf = env.PROGRAMFILES
   const pf86 = env['PROGRAMFILES(X86)']
@@ -325,42 +337,58 @@ const noBrowserMessage = '找不到可用的 Chrome / Edge / Chromium。MClaw �
 /** 唯一的浏览器定位入口：authorize 预检、登录、续期都走它，文案只此一份，
  *  不会在多处漂移。override 会先校验存在/可执行，写错路径给专属报错而不是
  *  误导性的「找不到 Chrome」。返回可执行文件路径，找不到就抛。
- *  candidates 是测试缝：注入后不依赖测试机装了什么浏览器。 */
-export async function requireBrowser({ platform = process.platform, env = process.env, candidates } = {}) {
+ *  candidates 是测试缝：注入后不依赖测试机装了什么浏览器。
+ *  `explicit` 是用户在 select prompt 里选的浏览器（完整路径）：优先级最高，
+ *  先于 MCLAW_CHROME_PATH 与候选表——用户明确点名，就该尊重。 */
+export async function requireBrowser({ platform = process.platform, env = process.env, candidates, explicit } = {}) {
+  const mode = platform === 'win32' ? constants.F_OK : constants.X_OK
+  const probe = async (path) => {
+    try { await access(path, mode); return path } catch { return undefined }
+  }
+  // 用户选的浏览器路径（来自 select prompt）优先；其次环境变量覆盖；最后候选表。
+  if (explicit) {
+    const path = resolve(explicit.startsWith('~') ? join(homedir(), explicit.slice(2)) : explicit)
+    const found = await probe(path)
+    if (found) return found
+    throw new Error(`你选择的浏览器不存在或不可执行：${path}。请换一个，或设置 MCLAW_CHROME_PATH 指向 Chrome / Edge / Chromium 的可执行文件。`)
+  }
   const override = env.MCLAW_CHROME_PATH
   // Windows 上 X_OK 等同 F_OK（可执行位无意义），别用它误判。
-  const mode = platform === 'win32' ? constants.F_OK : constants.X_OK
   if (override) {
     const path = resolve(override.startsWith('~') ? join(homedir(), override.slice(2)) : override)
     try { await access(path, mode); return path } catch {}
     throw new Error(`MCLAW_CHROME_PATH 指向的浏览器不存在或不可执行：${path}。请改成 Chrome / Edge / Chromium 的可执行文件，或 unset 该变量让插件自动探测。`)
   }
   for (const path of candidates ?? browserCandidates({ platform, env })) {
-    try { await access(path, mode); return path } catch {}
+    const found = await probe(path)
+    if (found) return found
   }
   throw new Error(noBrowserMessage)
 }
 
-/** 兼容入口：openMclawBrowser（登录与 headless 续期）用它拿真实环境的浏览器。 */
-export const chromeExecutable = () => requireBrowser()
+/** 兼容入口：openMclawBrowser（登录与 headless 续期）用它拿真实环境的浏览器。
+ *  `explicit` 透传：用户在 select prompt 里选的浏览器路径优先。 */
+export const chromeExecutable = (explicit) => requireBrowser({ explicit })
 
 /** 登录（有头窗口）的前提检查：Linux 无图形界面先明确拒绝，再查浏览器。
  *  只在 authorize 里调用——续期是 headless，没有界面也能跑，不该被这条挡住。
- *  candidates 透传给 requireBrowser，方便测试注入。 */
-export async function assertBrowserSigninPrerequisites({ platform = process.platform, env = process.env, candidates } = {}) {
+ *  candidates 透传给 requireBrowser，方便测试注入；`explicit` 是用户在 select
+ *  prompt 里选的浏览器路径，同样透传。返回选定的浏览器可执行文件路径。 */
+export async function assertBrowserSigninPrerequisites({ platform = process.platform, env = process.env, candidates, explicit } = {}) {
   if (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
     throw new Error('当前 Linux 会话没有图形界面（未设置 DISPLAY / WAYLAND_DISPLAY），MClaw 的浏览器登录无法弹出窗口；请在有图形界面的本地会话里运行 magpie。')
   }
-  return requireBrowser({ platform, env, candidates })
+  return requireBrowser({ platform, env, candidates, explicit })
 }
 
 // ---------------------------------------------------------------- 打开/收割
 
 /** 用专属 profile 开 Chrome。登录用 headless: false（用户手动操作窗口），
  *  续期用 headless: true（后台跑完就关）。profilePath 缺省用老共享目录
- *  （只服务于 metadata 里没存 profile 的老账号续期）。返回 { browser, page,
+ *  （只服务于 metadata 里没存 profile 的老账号续期）。`browser` 是用户
+ *  在 select prompt 里选的浏览器路径，优先于自动探测。返回 { browser, page,
  *  profilePath, release }：release() 在浏览器 close() 之后调用才放锁。 */
-export async function openMclawBrowser({ headless = true, startUrl = 'about:blank', profilePath } = {}) {
+export async function openMclawBrowser({ headless = true, startUrl = 'about:blank', profilePath, browser } = {}) {
   profilePath ||= defaultProfile()
   const release = await claimProfileLock(profilePath)
   try {
@@ -380,7 +408,7 @@ export async function openMclawBrowser({ headless = true, startUrl = 'about:blan
       '--crash-dumps-dir=' + tmpdir(),
       startUrl,
     ]
-    const started = await launch(await chromeExecutable(), args)
+    const started = await launch(await chromeExecutable(browser), args)
     return { ...started, profilePath, release }
   } catch (error) {
     release()
@@ -408,7 +436,7 @@ export async function harvestYunAuth(browser) {
  *  close }。abort() 随时可调（宿主取消）：Chrome 还没开起来时先记标记，开出来
  *  立即收尾；已开出则关浏览器、放锁。失败/取消/超时的路径还会删掉 profile 目录
  *  ——没人认领的登录态不该留在盘上（成功则归账号所有，绝不删）。 */
-export function startBrowserHarvest({ deadlineMs = 600_000, profilePath = freshSigninProfile() } = {}) {
+export function startBrowserHarvest({ deadlineMs = 600_000, profilePath = freshSigninProfile(), browser } = {}) {
   const session = { promise: undefined, abort: async () => {} }
   session.promise = (async () => {
     let aborted = false
@@ -423,19 +451,19 @@ export function startBrowserHarvest({ deadlineMs = 600_000, profilePath = freshS
       }
     }
     try {
-      const { browser, page, profilePath: used, release } = await openMclawBrowser({
-        headless: false, startUrl: 'https://yun.139.com/', profilePath,
+      const { browser: b, page, profilePath: used, release } = await openMclawBrowser({
+        headless: false, startUrl: 'https://yun.139.com/', profilePath, browser,
       })
-      opened = { browser, release }
+      opened = { browser: b, release }
       if (aborted) throw new Error('登录已取消')
       const deadline = Date.now() + deadlineMs
       for (;;) {
         if (aborted) throw new Error('登录已取消')
-        if (browser.connection.closed) throw new Error('浏览器被关闭，登录中断')
-        const cookie = await harvestYunAuth(browser).catch(() => undefined)
+        if (b.connection.closed) throw new Error('浏览器被关闭，登录中断')
+        const cookie = await harvestYunAuth(b).catch(() => undefined)
         if (cookie?.value) {
           resolved = true // 目录归账号所有（metadata.profile），abort 不许删
-          return { cookie, profilePath: used, release, close: () => browser.close() }
+          return { cookie, profilePath: used, release, close: () => b.close() }
         }
         if (Date.now() >= deadline) throw timeoutError(`登录超时（${Math.round(deadlineMs / 60000)} 分钟内没有检测到移动云登录）`)
         await sleep(1500)

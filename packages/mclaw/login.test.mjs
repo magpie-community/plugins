@@ -103,12 +103,16 @@ test('llm key 自动获取失败（网络抖动）→ 登录失败并提示重�
   expect(fb.state.released).toBe(1)
 })
 
-test('authorize 不需要任何输入：无 prompts，直接开登', async () => {
+test('authorize 无需输入也能开登；登录方法带一个浏览器选择 prompt', async () => {
   f = fakeUpstream()
   fb = fakeBrowserModule({ ticket: TICKET_A })
   const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
   const method = oauthMethod(plugin)
-  expect(method.prompts).toBeUndefined()
+  // 浏览器选择 prompt：type select，key browser。候选为空（本机没有 pipe 可用
+  // 浏览器，如只有 Edge）时 options 是空数组，仍允许直接开登（自动探测）。
+  expect(Array.isArray(method.prompts)).toBe(true)
+  const select = method.prompts.find((p) => p.type === 'select' && p.key === 'browser')
+  expect(select).toBeTruthy()
   const flow = await method.authorize()
   expect(flow.opened).toBe(true)
   fb.module.deliverHarvest()
