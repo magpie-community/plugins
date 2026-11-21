@@ -5236,6 +5236,30 @@ function appendSchemaHint(node, hint) {
   }
 }
 
+function plainSchemaMap(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+}
+
+// agy rejects every extra key on an object whose properties map is missing
+// or empty when additionalProperties is left out (plugins#1332). JSON Schema
+// allows those keys. An explicit additionalProperties, a restrictive
+// unevaluatedProperties, a non-empty properties map, and a non-empty
+// patternProperties map stay as declared.
+function emptyObjectIsOpen(node) {
+  const resolved = typeof node.type === "string"
+    ? node.type
+    : Array.isArray(node.type)
+      ? node.type.find((item) => item !== "null") || null
+      : null
+  const implicitObject = node.type === undefined && plainSchemaMap(node.properties)
+  if (resolved !== "object" && !implicitObject) return false
+  if (node.additionalProperties !== undefined) return false
+  if (node.unevaluatedProperties !== undefined && node.unevaluatedProperties !== true) return false
+  if (plainSchemaMap(node.patternProperties) && Object.keys(node.patternProperties).length > 0) return false
+  if (node.properties !== undefined && !plainSchemaMap(node.properties)) return false
+  if (plainSchemaMap(node.properties) && Object.keys(node.properties).length > 0) return false
+  return true
+}
 
 // Sanitize JSON Schema constructs that agy's ACP -> Google Code Assist translator
 // converts into invalid Schema protos (e.g. union types leaving stale array/object
@@ -5354,6 +5378,9 @@ function sanitizeInputSchema(schema) {
   // ECMA-262. Translate or drop those patterns here; tool-call arguments in
   // the response are plain JSON and do not need a reverse transform.
   sanitizePatternFields(out)
+  // After patterns: a map whose keys were all dropped is no longer a
+  // patternProperties object. Say the remaining empty object is open.
+  if (emptyObjectIsOpen(out)) out.additionalProperties = true
   return out
 }
 
