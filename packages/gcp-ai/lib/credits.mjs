@@ -58,6 +58,16 @@ const isoDate = (value) => {
   return new Date(ms).toISOString()
 }
 
+// Which money a credit row is: the welcome credit of a free trial, the monthly
+// benefit of a paid plan, or something else (a promotion, a refund). The
+// Console names both in the row itself — FreeTrial:… and FreeTrialUpgrade:…
+// for the trial's grant, CREDIT_TYPE_MONTHLY for the monthly one — so the kind
+// is read from the credits page that was already loaded, and the billing
+// account's overview page is never visited for it.
+export const creditKind = (credit) => /^FreeTrial(?:Upgrade)?:/i.test(credit.id ?? "") || /welcome credit|free trial/i.test(credit.name ?? "") ? "welcome"
+  : /CREDIT_TYPE_MONTHLY/i.test(credit.id ?? "") || /monthly|premium benefit/i.test(credit.name ?? "") ? "monthly"
+    : "other"
+
 // Column names are read from the rendered table, not token offsets or the
 // unrelated dollar amounts in overview widgets and expired-credit tooltips.
 export function parseCreditTables(tables, { now = Date.now(), currency = "USD", billingAccount } = {}) {
@@ -98,7 +108,7 @@ export function parseCreditTables(tables, { now = Date.now(), currency = "USD", 
       const start = isoDate(cell("start date"))
       const end = isoDate(cell("end date"))
       const eligible = (usable.includes(status) || expiring) && !(start && Date.parse(start) > now) && !(end && Date.parse(end) <= now)
-      credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / unit, original: original / unit, start, end, scope: cell("usage scope"), eligible })
+      credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / unit, original: original / unit, start, end, scope: cell("usage scope"), eligible, kind: creditKind({ id, name: cell("credit name") }) })
     }
   }
   // A table with rows whose columns aren't the English ones is a page in
@@ -108,16 +118,30 @@ export function parseCreditTables(tables, { now = Date.now(), currency = "USD", 
     throw new Error(`The Cloud Console credits table's columns are not the English ones this plugin reads (it found: ${unread[0].slice(0, 6).join(", ")}); the page may have been translated or shown in another language. Turn off translation for console.cloud.google.com in the plugin's Chrome profile and retry`)
   }
   if (!recognized || !credits.size) throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed")
-  const active = [...credits.values()].filter((credit) => credit.eligible)
-  const remaining = active.reduce((sum, credit) => sum + Math.round(credit.remaining * unit), 0)
-  const original = active.reduce((sum, credit) => sum + Math.round(credit.original * unit), 0)
-  const ends = active.filter((credit) => credit.remaining > 0 && credit.end).map((credit) => credit.end).sort()
+  const all = [...credits.values()]
+  // A welcome credit Google has not converted into a paid one (a
+  // FreeTrialUpgrade: row) means the account is still on its free trial. On
+  // such an account a monthly credit is not an allowance it can plan on, so
+  // it is left out of the balance; the welcome credit is the trial's money and
+  // is counted as usual. A paid account counts both.
+  const upgraded = all.some((credit) => /^FreeTrialUpgrade:/i.test(credit.id))
+  const hasWelcome = all.some((credit) => credit.kind === "welcome")
+  const billingStatus = upgraded || !hasWelcome ? "paid" : "trial"
+  const active = all.filter((credit) => credit.eligible)
+  const counted = billingStatus === "trial" ? active.filter((credit) => credit.kind !== "monthly") : active
+  const remaining = counted.reduce((sum, credit) => sum + Math.round(credit.remaining * unit), 0)
+  const original = counted.reduce((sum, credit) => sum + Math.round(credit.original * unit), 0)
+  const ends = counted.filter((credit) => credit.remaining > 0 && credit.end).map((credit) => credit.end).sort()
   const soonest = ends[0]
+  const ofKind = (kind) => active.filter((credit) => credit.kind === kind)
+  const sumOf = (kind) => ofKind(kind).reduce((sum, credit) => sum + Math.round(credit.remaining * unit), 0) / unit
   return {
-    currency, remaining: remaining / unit, original: original / unit, used: (original - remaining) / unit,
+    currency, billingStatus, remaining: remaining / unit, original: original / unit, used: (original - remaining) / unit,
     usedPercent: original > 0 ? ((original - remaining) * 100) / original : 100,
-    ...(soonest ? { runsOutAt: soonest, runsOut: active.filter((c) => c.end === soonest).reduce((s, c) => s + Math.round(c.remaining * unit), 0) / unit } : {}),
-    credits: [...credits.values()], fetchedAt: new Date(now).toISOString(), cached: false,
+    welcomeCredit: sumOf("welcome"),
+    monthlyCredit: billingStatus === "trial" ? 0 : sumOf("monthly"),
+    ...(soonest ? { runsOutAt: soonest, runsOut: counted.filter((c) => c.end === soonest).reduce((s, c) => s + Math.round(c.remaining * unit), 0) / unit } : {}),
+    credits: all, fetchedAt: new Date(now).toISOString(), cached: false,
   }
 }
 
@@ -237,6 +261,13 @@ const currencyOf = (currencies, billingAccount) => currencies.get(String(billing
 const TRANSLATED = "The Cloud Console page was translated by Chrome, so its credits table can't be read; turn off translation for console.cloud.google.com in the plugin's Chrome profile and retry"
 const translated = (page) => page.evaluate(() => location.origin === "https://console.cloud.google.com" && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? ""))
 
+// The page's own sign that it has started answering: the credits table's
+// header, a sign-in page, or Chrome's translation mark. It is only a hint —
+// what decides a read is the session check and the table's own wait below.
+const hinted = (page, wait) => page.waitForFunction(() => location.hostname === "accounts.google.com" || /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? "") || [...document.querySelectorAll("th, [role='columnheader']")].some((cell) => cell.innerText.trim() === "Remaining value"), undefined, { timeout: wait(45000) }).catch(() => {})
+
+const EMPTY = "Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed"
+
 async function readPage(page, options) {
   // How long the Console is given to show the credits table. The first wait is
   // only a hint that the page has started answering: what decides the read is
@@ -248,16 +279,61 @@ async function readPage(page, options) {
   const source = `https://console.cloud.google.com/billing/${account}/credits/all?hl=en${consoleAccount ? `&authuser=${encodeURIComponent(consoleAccount)}` : ""}`
   const currency = currencyOf(options.currencies ?? billingCurrenciesOf(options.billingCurrencies), account)
   await safeGoto(page, source)
-  await page.waitForFunction(() => location.hostname === "accounts.google.com" || /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? "") || [...document.querySelectorAll("th, [role='columnheader']")].some((cell) => cell.innerText.trim() === "Remaining value"), undefined, { timeout: wait(45000) }).catch(() => {})
+  await hinted(page, wait)
+  // The Console sometimes renders the credits page, starts loading it, and
+  // then reloads it itself — it adds organizationId=… to the URL when the
+  // billing account is opened outside an organization context — so a table
+  // read across that reload is an empty frame. That is an empty answer about
+  // the page, not about the account, and it is the one that used to reach the
+  // row as "Allowance unavailable" while the same account read fine a moment
+  // later. A fresh load is asked for once before the empty answer is
+  // reported, and the reported failure says it is momentary.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await readConsolePage(page, { ...options, account, consoleAccount, source, currency, wait })
+    } catch (error) {
+      const empty = /Credits table was not found or is empty/.test(error.message)
+      if (!empty || attempt > 1) {
+        if (empty) error.transient = true
+        throw error
+      }
+      // Load what the Console settled on — its URL holds the organization
+      // context the second load needs — and only go back to the credits URL
+      // when the first load left the page somewhere else (a sign-in page).
+      const settled = await page.url().catch(() => undefined)
+      const again = settled?.toLowerCase().includes(`/billing/${account.toLowerCase()}/credits/all`) ? settled : source
+      await safeGoto(page, again)
+      await hinted(page, wait)
+    }
+  }
+}
+
+async function readConsolePage(page, options) {
+  const { wait, consoleAccount, account, source, currency } = options
   if (await translated(page)) throw new Error(TRANSLATED)
   await assertConsoleSession(page, { timeout: wait(20000) })
   // The table is the read: a page that never shows one is not a balance, and
   // the error says which of the two waits ran out. A row is ready when its
   // cells hold a number, in whatever currency: waiting for a "$" left a yen
-  // account waiting out the whole timeout before its currency was named.
+  // account waiting out the whole timeout before its currency was named. The
+  // row has to belong to a table that has columns, though — a number anywhere
+  // else on the page (a billing widget, an empty-state row) is not the
+  // balance, and passing on one is how an empty table reached the parser and
+  // was reported as an account that had failed. The columns are counted, not
+  // named, so a Console in another language still reaches the parser, which
+  // names the columns it found.
   await page.waitForFunction(() => /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement?.className ?? "")
-    || [...document.querySelectorAll("tbody tr, [role='row']")].some((row) => row.querySelector("td, [role='gridcell'], [role='cell']") && /\d/.test(row.innerText)), undefined, { timeout: wait(30000) })
-    .catch(() => { throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed") })
+    || [...document.querySelectorAll("table, [role='grid'], [role='table']")].some((table) =>
+      table.querySelectorAll("thead th, [role='columnheader']").length >= 3
+      && [...table.querySelectorAll("tbody tr, [role='row']")].some((row) => row.querySelector("td, [role='gridcell'], [role='cell']") && /\d/.test(row.innerText))), undefined, { timeout: wait(30000) })
+    .catch((cause) => {
+      // A table that has not appeared within the wait is a fact about this
+      // moment as often as about the account: the Console builds the table
+      // after it answers, and a read a minute later may see it. Remembering
+      // it for twenty minutes is how one slow load becomes twenty minutes of
+      // "Allowance unavailable", so the error says it is momentary.
+      throw Object.assign(new Error(EMPTY), { transient: true, cause })
+    })
   if (await translated(page)) throw new Error(TRANSLATED)
   const confirmed = await confirmAccount(page, consoleAccount, options.googleSubject)
   const tables = []
@@ -374,7 +450,11 @@ export async function fetchCredits(options = {}) {
   // (no billing.viewer, an expired session, a layout change) are kept that long.
   const transientTtl = Number(options.transientTtl ?? process.env.VERTEX_CREDITS_TRANSIENT_TTL ?? 60)
   if (!Number.isFinite(transientTtl) || transientTtl < 0) throw new Error("VERTEX_CREDITS_TRANSIENT_TTL must be a nonnegative number of seconds")
-  const transient = (data) => NETWORK_FAILURE.test(String(data?.error ?? ""))
+  // A failure is about this moment either because the error says so (a wait
+  // that ran out while the page loaded) or because its text reads as the
+  // network; both are asked again a minute later instead of being remembered
+  // for twenty.
+  const transient = (data) => data?.transient === true || NETWORK_FAILURE.test(String(data?.error ?? ""))
   const save = async (data) => {
     const temp = `${file}.${process.pid}.tmp`
     try {
@@ -405,7 +485,7 @@ export async function fetchCredits(options = {}) {
       try {
         result = await scrape(settings)
       } catch (error) {
-        await save({ error: error.message, failedAt: new Date().toISOString() })
+        await save({ error: error.message, failedAt: new Date().toISOString(), ...(error.transient ? { transient: true } : {}) })
         throw error
       }
       await save(result)
