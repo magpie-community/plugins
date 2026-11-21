@@ -70,6 +70,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import * as browserDefault from './browser.mjs'
+import { existsSync } from 'node:fs'
 
 const PROVIDER = 'mclaw'
 const DEFAULT_BASE = 'https://ai.yun.139.com/api/llm/102001'
@@ -641,7 +642,10 @@ export const MclawAuthPlugin = async (_input, options) => {
   const browserSelectOptions = (() => {
     try {
       const list = browserDefault.browserCandidates?.()
-      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+      if (Array.isArray(list) && list.length) {
+        // Filter to only browsers that actually exist on disk
+        return list.filter(existsSync).map((p) => ({ label: p, value: p }))
+      }
     } catch {
       /* no candidate list -> no options; the prerequisites error is the real message */
     }
@@ -716,7 +720,7 @@ export const MclawAuthPlugin = async (_input, options) => {
             // chosenBrowser 同源（显式选择优先），harvest 直接拿 chosenBrowser，
             // 免得两处各找一遍出现分歧。
             try {
-              if (typeof signinPrerequisites === 'function') await signinPrerequisites(chosenBrowser)
+              if (typeof signinPrerequisites === 'function') await signinPrerequisites({ explicit: chosenBrowser })
             } catch (error) {
               return { type: 'failed', error: error?.message ?? String(error) }
             }
