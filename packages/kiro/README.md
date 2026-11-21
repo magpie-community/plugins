@@ -192,7 +192,7 @@ request:
   events (streamed) or one message. The reply includes text, thinking,
   tool calls and usage. When Kiro reports only how full the context is,
   input tokens are estimated from that.
-- Claude models and Auto use prompt thinking budgets of low 10k, medium 20k, high 30k, and xhigh/max 50k when their catalog has no native adaptive settings. Models whose catalog advertises adaptive thinking receive `additionalModelRequestFields.thinking.type: "adaptive"` and the selected effort under `output_config.effort` or `reasoning.effort`. Claude thinking requires `thinking.type` to be `enabled` or `adaptive`. GPT and Grok models that advertise `reasoning.effort` receive that field directly, with the levels from their catalog. GPT thinking disabled maps to `none` when the model offers it. Cold request-time catalog lookups are optional and shared by account and region for ten minutes, including failures and missing models. A failed lookup does not block chat. Request-time native settings are cached separately for each account and region, and a failed refresh retains that account's last successful settings.
+- Claude models and Auto use prompt thinking budgets when their catalog has no native adaptive settings. The levels are low 10k and medium, high, xhigh and max 12288. Kiro ends a single turn at about 16k output tokens, so a budget of 20k–50k spent the turn thinking and stopped `max_tokens` with no text and no tool call. 12288 leaves 4096 tokens of that turn for the answer and tool calls. A catalog `maxOutputTokens` smaller than 16k is the cap instead, and thinking is fitted inside it with the same room left over. An explicit `thinking.budget_tokens`, when no effort level is named, is kept when it already fits and brought down to that room when it does not. Models whose catalog advertises adaptive thinking receive `additionalModelRequestFields.thinking.type: "adaptive"` and the selected effort under `output_config.effort` or `reasoning.effort`, and no budget. Claude thinking requires `thinking.type` to be `enabled` or `adaptive`. GPT and Grok models that advertise `reasoning.effort` receive that field directly, with the levels from their catalog. GPT thinking disabled maps to `none` when the model offers it. Cold request-time catalog lookups are optional and shared by account and region for ten minutes, including failures and missing models. A failed lookup does not block chat. Request-time native settings are cached separately for each account and region, and a failed refresh retains that account's last successful settings.
 - Anthropic's hosted web search is answered with Kiro's own web search
   (see [Web search](#web-search)).
 - Kiro's failures keep their meaning:
@@ -203,6 +203,7 @@ request:
   - no capacity → 503
   - usage limit → 429
   - throttling → "rate limited"
+  - content filtering, including a mid-stream error that says "Output blocked by content filtering policy" (`error` or `response.failed` on CreateResponse, or an exception on generateAssistantResponse) → the message ends with stop reason `refusal`. A stream error that is not a content filter stays an error.
 
 ## Web search
 
@@ -284,7 +285,10 @@ the `provider.models` hook replaces it with the account's own list from
 context window, output limit and whether it takes images, and its credit
 multiplier as `rate` (Kiro's `rateMultiplier` when `rateUnit` is `Credit`:
 1.3 for claude-sonnet-4.5, 0.4 for claude-haiku-4.5), which magpie shows
-beside the model. Claude models and Auto have thinking budget variants. Models with native `reasoning.effort` have the effort levels from their catalog.
+beside the model. When Kiro omits `maxOutputTokens`, the output limit is
+16384, the single-turn cap, so a client is not told `max_output_tokens` of
+1048576. A `maxOutputTokens` Kiro does advertise is kept, including one
+larger than a turn. Claude models and Auto have thinking budget variants. Models with native `reasoning.effort` have the effort levels from their catalog.
 
 ## Usage in magpie
 
