@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.18 · 2026-11-21
+
+The rules of the release of the standalone plugin are stricter once more: both jobs
+of the publishing workflow run on the same Node, the guard asks which workflow is
+running, and a pre-release is held by a test. Nothing in this package changed.
+
+> 独立插件发版的规则又严了一点：两个活用同一个 Node，守卫会问「这次运行的是哪个工作
+> 流」，预发布那条路也有了测试。这个包里的东西一个都没变；版本号跟着独立插件走。
+
+### Changed
+
+- **Both jobs run on the same Node.** The job that checks the release now runs on
+  the Node the package is packed with, and the version of npm is looked at in the
+  job that really publishes.
+- **The guard asks which workflow is running.** A run that does not say which
+  workflow it is does not pass any more: the rule about the workflow of the run
+  was skipped silently before, and it is a reason to refuse now.
+- **A pre-release is held by a test.** The line that keeps a pre-release out of
+  npm was not held by any test, so it could have been deleted without one single
+  red test; it is held now.
+- **Nothing in the package changed.** The code here is the code of the standalone
+  plugin, and that code did not move in 0.4.18. There is nothing to update on the
+  computer and nothing to run again on the phone.
+
 ## 0.4.17 · 2026-11-21
 
 The rules that decide whether a release may go out are stronger now: the guard
