@@ -1370,11 +1370,32 @@ export async function CatPawAuthPlugin({ client } = {}) {
           authorize: async (inputs) => {
             const token = String(inputs?.token ?? "").trim()
             if (!token) return { type: "failed", error: "token 必填" }
+            // current-user fills uid/name, like the web sign-in; failing it
+            // does not fail the sign-in (the token itself is already in
+            // hand). It also gives every pasted account a distinct identity:
+            // the host derives each account's storage slot from
+            // accountId/uid, so without this a second paste — same
+            // hardcoded "手动粘贴", no uid — overwrites the first.
+            let accountId = "手动粘贴"
+            let uid = ""
+            try {
+              const res = await fetch(`${passportBase()}/api/gateway/passport/current-user`, {
+                headers: { Accept: "application/json", "X-Auth-Token": token },
+                signal: AbortSignal.timeout(10_000),
+              })
+              const payload = await res.json().catch(() => null)
+              const data = payload?.data
+              if (data) {
+                uid = String(data.userId ?? "") === "null" ? "" : String(data.userId ?? "")
+                if (data.userName) accountId = data.userName
+              }
+            } catch {}
+            if (!uid) uid = `manual-${token.slice(-8)}`
             return {
               url: "",
               instructions: "已取到粘贴的 token，确认即完成登录。",
               method: "auto",
-              callback: async () => ({ type: "success", refresh: "", access: token, expires: 0, accountId: "手动粘贴", source: "manual" }),
+              callback: async () => ({ type: "success", refresh: "", access: token, expires: 0, accountId, uid, source: "manual" }),
             }
           },
         },
