@@ -469,7 +469,9 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           // A refused key calls nothing; a failed read keeps the known set.
           if (e?.refused || e?.status === 401 || e?.status === 403) return {}
           log("warn", `inkstone: keeping the declared models (${e?.message ?? e})`)
-          return declared
+          // not the account's list: magpie keeps the one it had, and the
+          // models picked from it, over these (Symbol.for("magpie.fellBack"))
+          return Object.defineProperty({ ...declared }, Symbol.for("magpie.fellBack"), { value: true })
         }
       },
     },

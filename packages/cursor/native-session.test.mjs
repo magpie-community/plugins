@@ -430,7 +430,7 @@ test("native protocol: a step silent after its first call fails at idle, before 
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call (try again)" })
+  expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call; stream timed out (try again)" })
   expect(Date.now() - started).toBeLessThan(1000)
 })
 
@@ -472,7 +472,7 @@ test("native protocol: a quiet Run's error says its checkpoint was a repeat, its
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #2 of the Run, number 2 of step 1, 2 in a row, after thinking ×2, text (try again)")
+  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #2 of the Run, number 2 of step 1, 2 in a row, after thinking ×2, text; stream timed out (try again)")
 })
 
 test("native protocol: a checkpoint after the caller's results is the first of the next step (plugins#550)", async () => {
@@ -485,7 +485,7 @@ test("native protocol: a checkpoint after the caller's results is the first of t
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #4 of the Run, the first of step 2, after nothing else (try again)")
+  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #4 of the Run, the first of step 2, after nothing else; stream timed out (try again)")
 })
 
 test("native protocol: Wire trace writes a failed Run, never a cancelled one, and only while on (plugins#550)", async () => {

@@ -4,6 +4,7 @@
 // exit every agy is ended with its tree, and its workspace is removed.
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { windowsNcBuild, windowsTreeKill } from "../platform.mjs"
@@ -84,7 +85,7 @@ test("Windows sessions dial a shared nc.exe built once, never nc.cmd", async () 
     const dir = agyPathDir(kit, 0)
     assert.match(path.basename(dir), /^magpie-agy-bridge-nc-[0-9a-f]{16}$/)
     assert.equal(agyPathDir(kit, 1), dir)
-    assert.deepEqual(fs.readdirSync(dir), ["nc.exe"])
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["nc.exe", "runtime"])
     assert.ok(!fs.readdirSync(kit.tmp).some((name) => name.startsWith("magpie-agy-bridge-bin-") || name.startsWith("magpie-agy-bridge-ncbuild-")))
 
     // A later host with the same runtime and server reuses the exe.
@@ -97,6 +98,84 @@ test("Windows sessions dial a shared nc.exe built once, never nc.cmd", async () 
     } finally {
       await later.dispose()
     }
+  } finally {
+    await kit.dispose()
+  }
+})
+
+// #1097: Bun's compile can't read its own path when it holds non-ASCII
+// characters (a Chinese user name): it fails with "failed to copy bun
+// executable into temporary file: ENOENT". The build runs a copy of the
+// runtime in an ASCII-only folder, removed after.
+test("a runtime under a non-ASCII folder builds nc.exe from an ASCII copy", async () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-nonascii-"))
+  const runtimeDir = path.join(outside, "\u6d4b\u8bd5")
+  fs.mkdirSync(runtimeDir)
+  const runtime = path.join(runtimeDir, "magpie-bun.exe")
+  fs.writeFileSync(runtime, "MZ fake bun")
+  const seen = []
+  const kit = await windowsKit({
+    execPath: runtime,
+    onSpawn: (file, args) => {
+      if (args[0] === "build") seen.push({ file, copied: fs.existsSync(file) && fs.readFileSync(file, "utf8") })
+      return writeOutfile(file, args)
+    },
+  })
+  try {
+    await turn(kit, "hi")
+    const builds = buildsOf(kit)
+    assert.equal(builds.length, 1)
+    assert.notEqual(builds[0].file, runtime)
+    assert.match(builds[0].file, /^[\x20-\x7e]+$/)
+    assert.equal(path.basename(builds[0].file), "magpie-bun.exe")
+    assert.deepEqual(seen, [{ file: builds[0].file, copied: "MZ fake bun" }])
+    const dir = agyPathDir(kit)
+    assert.match(path.basename(dir), /^magpie-agy-bridge-nc-[0-9a-f]{16}$/)
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["nc.exe", "runtime"])
+    // The copy goes with the build dir.
+    for (let i = 0; i < 1000 && fs.existsSync(builds[0].file); i++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(fs.existsSync(builds[0].file), false)
+    assert.ok(!fs.readdirSync(kit.tmp).some((name) => name.startsWith("magpie-agy-bridge-ncbuild-")))
+  } finally {
+    await kit.dispose()
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+// #1097 (Hy1an): each nc dir holds a whole Bun runtime (~115MB) and its key
+// changes with mcp-server.mjs, so plugin updates piled them up for a week. A
+// build drops this runtime's older dirs at once; another runtime's dirs, and
+// ones from before the marker, keep the week.
+test("a new nc.exe build removes this runtime's older nc dirs and keeps others", async () => {
+  const first = await windowsKit()
+  let marker
+  try {
+    await turn(first, "one")
+    marker = fs.readFileSync(path.join(agyPathDir(first), "runtime"), "utf8")
+    assert.match(marker, /^[0-9a-f]{16}$/)
+  } finally {
+    await first.dispose()
+  }
+  const kit = await windowsKit()
+  try {
+    const plant = (name, runtime) => {
+      const dir = path.join(kit.tmp, "magpie-agy-bridge-nc-" + name)
+      fs.mkdirSync(dir)
+      fs.writeFileSync(path.join(dir, "nc.exe"), "MZ old")
+      if (runtime) fs.writeFileSync(path.join(dir, "runtime"), runtime)
+      return dir
+    }
+    const older = plant("aaaaaaaaaaaaaaaa", marker)
+    const foreign = plant("bbbbbbbbbbbbbbbb", "0123456789abcdef")
+    const legacy = plant("cccccccccccccccc", null)
+    await turn(kit, "two")
+    assert.equal(buildsOf(kit).length, 1)
+    const current = agyPathDir(kit)
+    for (let i = 0; i < 1000 && fs.existsSync(older); i++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(fs.existsSync(older), false, "this runtime's older nc dir stayed")
+    assert.ok(fs.existsSync(path.join(foreign, "nc.exe")), "another runtime's nc dir was removed")
+    assert.ok(fs.existsSync(path.join(legacy, "nc.exe")), "an unmarked nc dir was removed before its week")
+    assert.ok(fs.existsSync(path.join(current, "nc.exe")))
   } finally {
     await kit.dispose()
   }

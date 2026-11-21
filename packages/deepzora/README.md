@@ -26,8 +26,11 @@ The descriptor writes `~/.deepzora/magpie-agent.json`. The host bridges it into
 provider and default model. The assigned gateway key goes into
 `~/.deepzora/.env` as `MAGPIE_DEEPZORA_API_KEY`, never into TOML or logs.
 Deepzora sends requests to Magpie; Magpie handles upstream credentials and
-protocol conversion. Known context/output sizes and image support follow the
-chosen model. Existing providers and unrelated settings are kept.
+protocol conversion. The selected model is the default. All models Magpie
+offers this agent are imported, with their own names, context/output sizes
+and image support. Magpie catalog changes update this connection; manual
+providers and existing session selections are kept. After upgrading from a
+single-model version, reselect the current model once to refresh the catalog.
 
 Choose the Agent's default to disconnect, wait for the bridge, then restart
 Deepzora. Normal plugin-host exit flushes a pending disconnect, including

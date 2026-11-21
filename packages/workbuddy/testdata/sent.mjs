@@ -70,6 +70,9 @@ export async function sentBy(mod, freeOnly = false) {
   globalThis.fetch = async (url, init) => {
     const u = String(url)
     if (u.endsWith("/v3/config")) return Response.json(CONFIG)
+    // the activity reports a WorkBuddy AI chat is followed by since 0.2.35
+    // (#691) aren't the chat; report.test.mjs holds them
+    if (u.endsWith("/v2/report")) return Response.json({ code: 0, msg: "OK" })
     const h = new Headers(init?.headers)
     const text = unz(init?.body)
     let s = typeof text === "string" ? text : new TextDecoder().decode(text)

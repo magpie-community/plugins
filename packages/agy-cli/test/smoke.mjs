@@ -45,11 +45,15 @@ function windowsAclPrivate(file) {
 fs.writeFileSync(fakeAgy, String.raw`
 import { spawn } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import readline from "node:readline"
 
 const argv = process.argv.slice(2)
-const log = value => fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify(value) + "\n")
+// where agy's home is (HOME, USERPROFILE on Windows) and whether it keeps
+// its sign-in in a file there (SSH_CONNECTION: agy reads it as SSH)
+const where = { home: os.homedir(), ssh: process.env.SSH_CONNECTION ?? null }
+const log = value => fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ ...where, ...value }) + "\n")
 const send = value => process.stdout.write(JSON.stringify(value) + "\n")
 
 if (argv.includes("--version")) {
@@ -71,10 +75,26 @@ if (argv[0] === "acp" && argv.includes("--login")) {
   log({ type: "login-code", code: line })
   if (/^(good-code|https:\/\/antigravity\.google\/oauth-callback\?code=good-code(&.*)?)$/.test(line.trim())) {
     if (!fs.existsSync(path.join(process.env.FAKE_AGY_STATE, "login-keeps-signed-out"))) fs.rmSync(signedOut, { force: true })
+    // agy with no keyring to use keeps the sign-in in a file in its home
+    if (process.env.FAKE_AGY_FILE_EMAIL && where.ssh) {
+      const dir = path.join(where.home, ".gemini", "antigravity-cli")
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, "antigravity-oauth-token"), JSON.stringify({
+        token: { access_token: "ya29.fake", token_type: "Bearer", refresh_token: "1//fake", expiry: "2099-01-01T00:00:00Z" },
+        auth_method: "consumer", id_token_email: process.env.FAKE_AGY_FILE_EMAIL,
+      }))
+    }
     process.stdout.write("Logged in as test@example.com.\n")
     process.exit(0)
   }
   process.stderr.write('couldn\'t log in: token exchange failed: oauth2: "invalid_grant" "Bad Request"\n')
+  process.exit(1)
+}
+// an account home whose token file Google turned away (a revoked sign-in)
+const homeToken = path.join(where.home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+if (argv.includes("models") && where.ssh && fs.existsSync(homeToken) && fs.readFileSync(homeToken, "utf8").includes("1//revoked")) {
+  log({ type: "models", revoked: true })
+  process.stderr.write('Error: oauth2: "invalid_grant" "Token has been expired or revoked."\n')
   process.exit(1)
 }
 if (argv.includes("models") && fs.existsSync(signedOut)) {
@@ -86,6 +106,11 @@ if (argv.includes("models") && fs.existsSync(signedOut)) {
 if (argv.includes("models")) {
   log({ type: "models", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE })
   process.stdout.write("gemini-test-medium\tGemini Test (Medium)\ngemini-test-high\tGemini Test (High)\ngemini-test-low\tGemini Test (Low)\nclaude-test-medium\tClaude Test (Medium)\n")
+  process.exit(0)
+}
+if (argv[0] === "acp" && argv.includes("--help")) {
+  log({ type: "acpHelp" })
+  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n  --disable-telemetry\n    \tdisable telemetry (default false)\n")
   process.exit(0)
 }
 if (argv[0] !== "acp") {
@@ -297,11 +322,14 @@ async function prompt(params) {
     return { stopReason: "end_turn" }
   }
   if (text.includes("PERMISSION")) {
+    const titled = /PERMISSION_TITLE\[(.*?)\]/.exec(text)
     const outcome = await new Promise(resolve => {
       pendingClient.set("perm", resolve)
       send({ jsonrpc: "2.0", id: "perm", method: "session/request_permission", params: {
         sessionId: session.id,
-        toolCall: { toolCallId: "call_perm", title: "Run run_command?", rawInput: { CommandLine: "printf SHOULD_NOT_RUN" } },
+        toolCall: titled
+          ? { toolCallId: "call_perm", title: titled[1], rawInput: { text: "hi" } }
+          : { toolCallId: "call_perm", title: "Run run_command?", rawInput: { CommandLine: "printf SHOULD_NOT_RUN" } },
         options: [
           { optionId: "allow", name: "Allow once", kind: "allow_once" },
           { optionId: "always", name: "Allow always", kind: "allow_always" },
@@ -375,7 +403,10 @@ async function prompt(params) {
     // Like agy 1.5.3: a call is checked against the tools listed before this
     // prompt began; a tools/list_changed during the prompt does not reach it.
     const known = new Set(tools.map(tool => tool.name))
-    if (!text.includes("<conversation_history>")) await invoke("ToolSearch", { query: "select:loaded_tool" })
+    if (!text.includes("<conversation_history>")) {
+      const result = await invoke("ToolSearch", { query: "select:loaded_tool" })
+      if (result?.isError) return finish("ToolSearch failed")
+    }
     if (!known.has("loaded_tool")) {
       log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
       chunk('Encountered error in tool validation: unknown tool: "loaded_tool" — check spelling\n')
@@ -469,7 +500,7 @@ async function handle(message) {
       model = "gemini-test-medium"
       await connectIde()
       log({
-        type: "init", pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
+        type: "init", args: argv, pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
         cwd: process.cwd(), addDir, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
         tools, idePort,
       })
@@ -543,7 +574,7 @@ if (process.platform === "win32") {
 fs.chmodSync(wrapper, 0o755)
 process.env.AGY_PATH = wrapper
 
-const { default: pluginDefault } = await import("../index.mjs")
+const { default: pluginDefault, IMAGE_FOLLOWS } = await import("../index.mjs")
 const plugin = await pluginDefault.server({ client: null, directory: os.tmpdir() }, {})
 const loader = await plugin.auth.loader(async () => ({ key: "agy" }))
 let failures = 0
@@ -693,9 +724,11 @@ const legacyModel = "agy-cli/gemini-test-low"
 
 {
   const usage = await plugin.auth.usage(async () => ({ key: "agy" }), {})
-  check("auth.usage exposes measured CLI quota", usage.windows?.[0]?.used === 40 && usage.windows[0].name === "Gemini · 7 days")
-  check("auth.usage preserves explicit cadence and reset", usage.windows?.[0]?.span === 604800 && usage.windows[0].resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.[0]?.aside === true && usage.signIn === "kept")
+  // the pool's own window, beside any model's in it
+  const pw = usage.windows?.find(w => !w.model)
+  check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
+  check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
+  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
@@ -742,11 +775,123 @@ const legacyModel = "agy-cli/gemini-test-low"
   const before = logs().filter(event => event.type === "models").length
   const result = await plugin.auth.methods[0].authorize()
   const probes = logs().filter(event => event.type === "models").slice(before)
-  check("sign-in is agy's Google sign-in, an oauth way", plugin.auth.methods.length === 1 && plugin.auth.methods[0].type === "oauth")
+  check("sign-in is agy's Google sign-in, an oauth way, and a way to add another account", plugin.auth.methods.length === 2 && plugin.auth.methods.every(m => m.type === "oauth"))
   check("signed in to agy already, the sign-in opens nothing", result.url === "" && result.method === "auto")
   check("signed in to agy already, the sign-in saves agy", (await result.callback())?.type === "success")
   check("authorize login probe disables auto update", probes.length === 1 && probes[0].update === "true")
   check("signed in already, agy's sign-in isn't started", !logs().some(event => event.type === "login"))
+}
+
+{
+  // tongzhenbao on X: more than one account, each with its own usage, as
+  // the old plugin had. agy keeps one sign-in where it looks for it, so the
+  // second way signs another Google account in to an agy whose home is the
+  // account's own, beside agy's own sign-in. It opens Google's link even
+  // while agy is signed in (Archivemylife on X: "Sign in again" changed
+  // nothing).
+  const savedState = process.env.XDG_STATE_HOME
+  const xdg = path.join(stateDir, "xdg-state")
+  process.env.XDG_STATE_HOME = xdg
+  process.env.FAKE_AGY_FILE_EMAIL = "second@example.com"
+  try {
+    const adder = plugin.auth.methods[1]
+    check("the second way adds another Google account", adder.type === "oauth" && /another Google account/.test(adder.label) && !/one\)/.test(adder.label), adder.label)
+    check("more than one account may be signed in", plugin.auth.single !== true)
+    const before = logs().filter(event => event.type === "login").length
+    const a = await adder.authorize()
+    check("signed in already, adding an account still opens Google's link", /^https:\/\/accounts\.google\.com\//.test(a.url ?? "") && a.method === "code", JSON.stringify(a))
+    const login = logs().filter(event => event.type === "login")
+    check("adding an account runs agy's own sign-in", login.length === before + 1)
+    const accounts = path.join(xdg, "magpie-agy-bridge", "accounts")
+    const home = login.at(-1)?.home ?? ""
+    check("the added account's agy signs in with a home of its own", path.dirname(home) === accounts, home)
+    check("the added account's agy keeps its sign-in in a file there, not the keyring", login.at(-1)?.ssh === "127.0.0.1 0 127.0.0.1 0", login.at(-1)?.ssh)
+    const good = await a.callback("good-code")
+    check("the added account is saved beside agy's own, named by its Google account",
+      good?.type === "success" && good.key !== "agy" && good.metadata?.email === "second@example.com" && good.metadata?.agyHome === path.basename(home), JSON.stringify(good))
+    const second = { type: "api", key: good?.key, metadata: good?.metadata }
+
+    const usageBefore = logs().filter(event => event.type === "usage").length
+    const usage = await plugin.auth.usage(async () => second, {})
+    const usageRuns = logs().filter(event => event.type === "usage").slice(usageBefore)
+    check("the added account's usage is its own agy's", usage.windows?.length > 0 && usageRuns.length === 1 && usageRuns[0].home === home && !!usageRuns[0].ssh, JSON.stringify(usageRuns))
+
+    const secondLoader = await plugin.auth.loader(async () => second)
+    const initsBefore = inits().length
+    await readSSE(await secondLoader.fetch("agy://local/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "the second account " + Date.now() }] }),
+    }))
+    const secondInit = inits().slice(initsBefore).find(event => event.args.includes("--agent"))
+    check("the added account's requests run agy in its home", secondInit?.home === home && !!secondInit.ssh && !secondInit.args.includes("--gemini-dir"), JSON.stringify(secondInit && { home: secondInit.home, ssh: secondInit.ssh, args: secondInit.args }))
+
+    const firstBefore = inits().length
+    await readSSE(await callFetch({ model, messages: [{ role: "user", content: "the first account " + Date.now() }] }))
+    const firstInit = inits().slice(firstBefore).find(event => event.args.includes("--agent"))
+    check("agy's own account still runs in the user's home", firstInit?.home === os.homedir() && firstInit.ssh !== "127.0.0.1 0 127.0.0.1 0", JSON.stringify(firstInit && { home: firstInit.home, ssh: firstInit.ssh }))
+    const firstUsageBefore = logs().filter(event => event.type === "usage").length
+    await plugin.auth.usage(async () => ({ key: "agy" }), {})
+    const firstUsage = logs().filter(event => event.type === "usage").slice(firstUsageBefore)
+    check("agy's own account's usage is read in the user's home", firstUsage.length === 1 && firstUsage[0].home === os.homedir(), JSON.stringify(firstUsage))
+
+    // a sign-in that fails leaves no home behind
+    const c = await adder.authorize()
+    const failedHome = logs().filter(event => event.type === "login").at(-1)?.home ?? ""
+    const bad = await c.callback("4/wrong-code")
+    check("a failed added sign-in saves nothing and leaves no home", bad?.type === "failed" && failedHome !== home && !fs.existsSync(failedHome), JSON.stringify(bad))
+  } finally {
+    delete process.env.FAKE_AGY_FILE_EMAIL
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = savedState
+  }
+}
+
+{
+  // tongzhenbao on X: the retired Antigravity plugin's accounts move here
+  // in one go. Its sign-ins were made with Antigravity's own Google client,
+  // the one agy signs in with, so each becomes an account home whose token
+  // file is that sign-in, kept once agy lists its models with it.
+  const savedState = process.env.XDG_STATE_HOME
+  const xdg = path.join(stateDir, "xdg-import")
+  process.env.XDG_STATE_HOME = xdg
+  const accounts = path.join(xdg, "magpie-agy-bridge", "accounts")
+  try {
+    check("accounts can be brought in from a file", typeof plugin.auth.import === "function" && /Antigravity/.test(plugin.auth.importFrom) && !!plugin.auth.importFroms?.zh)
+    const old = {
+      antigravity: { type: "oauth", refresh: "1//moved-a|proj-a", access: "ya29.a", expires: 1700000000000, accountId: "moved-a@example.com" },
+      "antigravity#2": { type: "oauth", refresh: "1//revoked|proj-b", access: "", expires: 0, accountId: "revoked@example.com" },
+    }
+    const got = await plugin.auth.import([JSON.stringify(old), JSON.stringify({ type: "oauth", refresh: "1//moved-a|proj-a", accountId: "moved-a@example.com" })])
+    check("each account is tried once", Array.isArray(got) && got.length === 2, JSON.stringify(got))
+    const [moved, revoked] = got
+    check("a moved sign-in is kept as an account home, named by its email",
+      moved?.type === "success" && moved.key === `agy:${moved.metadata?.agyHome}` && moved.metadata?.email === "moved-a@example.com", JSON.stringify(moved))
+    const home = path.join(accounts, moved?.metadata?.agyHome ?? "none")
+    const file = path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    const kept = JSON.parse(fs.readFileSync(file, "utf8"))
+    check("its token file is agy's own shape, with the plugin's refresh token and no project",
+      kept.token?.refresh_token === "1//moved-a" && kept.token.access_token === "ya29.a" && kept.token.expiry === new Date(1700000000000).toISOString() && kept.auth_method === "consumer" && kept.id_token_email === "moved-a@example.com", JSON.stringify(kept))
+    if (process.platform !== "win32") check("the token file is the user's alone", (fs.statSync(file).mode & 0o077) === 0)
+    const probe = logs().filter(event => event.type === "models" && event.home === home)
+    check("agy was asked with it in the account's home, from the file", probe.length >= 1 && probe.every(event => event.ssh === "127.0.0.1 0 127.0.0.1 0"), JSON.stringify(probe))
+    check("a sign-in agy can't use is turned away and leaves no home",
+      revoked?.type === "failed" && revoked.accountId === "revoked@example.com" && /invalid_grant/.test(revoked.error) && fs.readdirSync(accounts).length === 1, JSON.stringify(revoked))
+
+    const again = await plugin.auth.import([JSON.stringify(old.antigravity)])
+    check("moved twice, an account is named again, not added twice",
+      again?.[0]?.type === "success" && again[0].key === moved.key && fs.readdirSync(accounts).length === 1, JSON.stringify(again))
+
+    const agyOwn = JSON.stringify({ token: { access_token: "ya29.c", refresh_token: "1//own-c", expiry: "2026-01-01T00:00:00Z", token_type: "Bearer" }, auth_method: "consumer", id_token_email: "own-c@example.com" })
+    const fromFile = await plugin.auth.import(["go-keyring-base64:" + Buffer.from(agyOwn).toString("base64")])
+    check("agy's own stored sign-in is taken too", fromFile?.[0]?.type === "success" && fromFile[0].metadata?.email === "own-c@example.com", JSON.stringify(fromFile))
+
+    const other = await plugin.auth.import([JSON.stringify({ refresh_token: "1//someone-else", client_id: "x.apps.googleusercontent.com" }), "1//bare-token"])
+    check("a refresh token that may be another client's isn't taken", other?.type === "failed" && /no Antigravity sign-in/.test(other.error), JSON.stringify(other))
+  } finally {
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = savedState
+  }
 }
 
 {
@@ -864,9 +1009,22 @@ async function launchedModel(body) {
   check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false"].every(line => init.agentConfig.includes(line)), init.agentConfig)
   check("agy keeps its own prompt components by default", !init.agentConfig.includes("excludeDefaultComponents"), init.agentConfig)
   check("ACP client names itself, not an editor", init.clientInfo?.name === "opencode-agy-cli-auth" && init.clientInfo?.version === JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, JSON.stringify(init.clientInfo))
-  check("client system prompt is appended to the session instructions", init.systemAppend?.includes("SYSTEM-PROMPT-MARKER"))
-  check("fresh prompt carries only the user text", user.text === "hello world", JSON.stringify(user.text))
+  // bzs_1 on X (11-15): Antigravity turns away agents' prompts appended to
+  // agy's own with a bare 429, so they go in the first user turn by default.
+  check("client system prompt is not appended to agy's own", init.systemAppend === null, JSON.stringify(init.systemAppend))
+  check("client system prompt goes in the first user turn",
+    user.text.startsWith("<external_system_instructions>\nSYSTEM-PROMPT-MARKER\n</external_system_instructions>") &&
+    user.text.includes("<current_turn>\nhello world"), JSON.stringify(user.text))
   check("client tools are served through the ide-tools port", !!init.idePort && !logs().some(event => event.type === "ncExit"))
+}
+
+{
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  await readSSE(await callFetch({ model, system: "APPEND-OPT-IN-MARKER", messages: [{ role: "user", content: "hello append" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  check("AGY_BRIDGE_SYSTEM_APPEND=1 appends the client system prompt to the session instructions",
+    inits().at(-1).systemAppend?.includes("APPEND-OPT-IN-MARKER"), JSON.stringify(inits().at(-1).systemAppend))
+  check("an appended system prompt leaves the prompt the user text alone", lastOf("user").text === "hello append", JSON.stringify(lastOf("user").text))
 }
 
 {
@@ -944,7 +1102,8 @@ for (const [name, system, headers, expectedDir, named] of [
   const final = (await readSSE(await callFetch(body, headers))).events
   const init = inits().at(-1)
   check(`${name} uses only an available absolute add-dir`, stopOf(final) === "end_turn" && init.addDir === expectedDir)
-  check(`${name} identifies where client tools run`, init.systemAppend?.includes(JSON.stringify(named)) && init.systemAppend.includes("where every tool runs"))
+  const told = lastOf("user").text
+  check(`${name} identifies where client tools run`, told.includes(JSON.stringify(named)) && told.includes("where every tool runs"), told)
   check(`${name} keeps agent configuration isolated`, init.cwd !== expectedDir && init.cwd.includes("magpie-agy-bridge-"))
 }
 
@@ -1154,12 +1313,6 @@ let nativeConv
   const mixed = continuation(bodyA, eventsA.events, "must-not-deliver")
   mixed.messages.at(-1).content.push(continuation(bodyB, eventsB.events, "must-not-deliver").messages.at(-1).content[0])
   check("mixed-conversation batch is rejected", (await callFetch(mixed)).status === 409)
-  const wrongArgs = continuation(bodyA, eventsA.events, "must-not-deliver")
-  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
-  renamed.id = "TU-wrong-arguments"
-  renamed.input.text = "different-arguments"
-  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
-  check("ID remapping cannot ignore changed arguments", (await callFetch(wrongArgs)).status === 409)
   const [resultA, resultB] = await Promise.all([
     readSSE(await callFetch(continuation(bodyA, eventsA.events, "result-A"))),
     readSSE(await callFetch(continuation(bodyB, eventsB.events, "result-B"))),
@@ -1168,6 +1321,25 @@ let nativeConv
   check("concurrent conversations keep tool results isolated", delivered.includes("result-A") && delivered.includes("result-B"))
   check("concurrent conversations use independent sessions", inits().length === before + 2)
   check("both concurrent conversations complete", stopOf(resultA.events) === "end_turn" && stopOf(resultB.events) === "end_turn")
+}
+
+{
+  // A renamed call whose arguments changed is never fed to the live call: the
+  // client's own round, as it says it ran, is replayed in a new session.
+  const body = { model, metadata: { user_id: "renamed-changed-args" }, messages: [{ role: "user", content: "TOOL renamed changed" }], tools: [echoTool] }
+  const pending = (await readSSE(await callFetch(body))).events
+  const before = inits().length
+  const wrongArgs = continuation(body, pending, "must-not-deliver")
+  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
+  renamed.id = "TU-wrong-arguments"
+  renamed.input.text = "different-arguments"
+  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
+  const response = await callFetch(wrongArgs)
+  const replayed = response.status === 200 ? (await readSSE(response)).events : []
+  // (the fake agy answers a replay whose history says TOOL with another call)
+  check("ID remapping cannot ignore changed arguments", response.status === 200 && stopOf(replayed) &&
+    inits().length === before + 1, `got ${response.status} ${stopOf(replayed)} ${inits().length - before}`)
+  check("changed arguments never reach the live call", !logs().some(event => event.type === "mcpResult" && event.result?.content?.[0]?.text === "must-not-deliver"))
 }
 
 {
@@ -1317,6 +1489,19 @@ for (const change of ["tools", "model"]) {
   check("a denied built-in tool does not fail the turn", stopOf(events) === "end_turn")
 }
 
+for (const [title, tools, want, name] of [
+  ["mcp(ide-tools/echo)", [echoTool], "allow", "a client tool on ide-tools is allowed once (#1082)"],
+  ["mcp_ide-tools_echo", [echoTool], "allow", "a client tool named as agy's function is allowed once (#1082)"],
+  ["mcp(ide-tools/run_shell)", [echoTool], "deny", "an ide-tools tool the client did not declare is denied"],
+  ["Run command: echo mcp(ide-tools/echo)", [echoTool], "deny", "a title that only contains an ide-tools name is denied"],
+  ["mcp(other/echo)", [echoTool], "deny", "another MCP server's tool is denied"],
+]) {
+  const response = await callFetch({ model, messages: [{ role: "user", content: `PERMISSION_TITLE[${title}]` }], tools })
+  const { events } = await readSSE(response)
+  const permission = lastOf("permission")
+  check(name, permission?.outcome?.outcome === "selected" && permission.outcome.optionId === want && stopOf(events) === "end_turn", JSON.stringify(permission))
+}
+
 {
   const opening = { model, messages: [{ role: "user", content: "before the upstream error" }] }
   const openingEvents = (await readSSE(await callFetch(opening))).events
@@ -1337,7 +1522,29 @@ for (const change of ["tools", "model"]) {
   check("split error marker and quota map to rate_limit_error", error?.type === "rate_limit_error" && error.message.includes("quota exhausted") && textOf(events) === "", JSON.stringify({ error, text: textOf(events) }))
 }
 
-// #980: the system lines Antigravity turns away are broken up before agy
+// #1151 (KevinXC5; niyezaimenglima on X, Windows): Claude Code's own
+// opening lines, its CLI's and its Agent SDK's, got a 429 with quota left.
+// By default none of it reaches agy's system instruction, and in the first
+// turn no line Antigravity turns away goes as written.
+{
+  const { turnsAway } = await import("../cloak.mjs")
+  const heads = {
+    cli: "You are Claude Code, Anthropic's official CLI for Claude.",
+    sdk: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  }
+  for (const [name, head] of Object.entries(heads)) {
+    const system = `x-anthropic-billing-header: cc_version=2.1.325; cc_entrypoint=cli; cch=1;\n${head}\n\nYou are an interactive agent that helps users with software engineering tasks. CC-${name}`
+    await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: `claude code ${name} turn` }] }))
+    const init = inits().at(-1)
+    const text = lastOf("user").text
+    check(`#1151 Claude Code's ${name} prompt stays out of agy's system instruction`, init.systemAppend == null, JSON.stringify(init.systemAppend))
+    check(`#1151 Claude Code's ${name} prompt goes in the turn with no line Antigravity turns away`,
+      text.includes(`CC-${name}`) && text.includes("You're Claude Code, Anthropic's official CLI for Claude") &&
+      !text.includes("x-anthropic-billing-header") && !turnsAway(text), JSON.stringify(text))
+  }
+}
+
+// #980: the system lines Antigravity turns away are reworded before agy
 // sends them, in the session instructions, in the prompt when agy can't take
 // them, and in a later system message; a 429 to such a prompt is not a quota.
 {
@@ -1345,19 +1552,24 @@ for (const change of ["tools", "model"]) {
   const rfc = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
   const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
   const system = `${rfc}\nx-anthropic-billing-header: cc_version=2.1.0; cch=1;\n${sdk}\nCLOAK-MARKER`
-  const plain = (text) => String(text ?? "").replaceAll(zw, "")
+  // omp's line goes as RFC 2119's own "key words", the billing line not at
+  // all, the Agent SDK's line reworded; no zero-width space, which Google's
+  // check reads past since 11-14
+  const sdkSaid = "You are a Claude agent, built on the Claude Agent SDK by Anthropic."
+  const want = `${rfc.replace("keywords", "key words")}\n${sdkSaid}\nCLOAK-MARKER`
   const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const events = (await readSSE(await callFetch(body))).events
   const init = inits().at(-1)
   const sent = init.systemAppend ?? ""
-  check("#980 a turned-away line is broken up in the session instructions",
-    sent.includes("CLOAK-MARKER") && !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes("Claude Agent SDK") &&
-    sent.includes("R" + zw + "F" + zw + "C 2" + zw + "1" + zw + "19") && sent.includes("C" + zw + "l" + zw + "aude A" + zw + "g" + zw + "ent S" + zw + "D" + zw + "K") &&
-    plain(sent).includes(system), JSON.stringify(sent))
+  check("#980 a turned-away line is reworded in the session instructions",
+    !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes(sdk) && !sent.includes(zw) &&
+    sent.includes(want), JSON.stringify(sent))
   const convId = init.convId
   const before = inits().length
   await readSSE(await callFetch(nextTurn(body, events, "cloak second turn")))
-  check("#980 the broken-up instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  check("#980 the reworded instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
     JSON.stringify({ inits: inits().length - before, user: lastOf("user") }))
 
   const later = { model, system: "CLOAK-LATER", messages: [{ role: "user", content: "cloak later system" }] }
@@ -1366,7 +1578,7 @@ for (const change of ["tools", "model"]) {
   next.messages.splice(next.messages.length - 1, 0, { role: "system", content: sdk })
   await readSSE(await callFetch(next))
   const laterText = lastOf("user").text
-  check("#980 a later system message is broken up too", !laterText.includes("Claude Agent SDK") && plain(laterText).includes(sdk), JSON.stringify(laterText))
+  check("#980 a later system message is reworded too", !laterText.includes(sdk) && laterText.includes(sdkSaid), JSON.stringify(laterText))
 
   const user = { model, system: "CLOAK-USER", messages: [{ role: "user", content: `user wrote ${sdk}` }] }
   await readSSE(await callFetch(user))
@@ -1375,19 +1587,72 @@ for (const change of ["tools", "model"]) {
   process.env.FAKE_AGY_APPEND = "0"
   await readSSE(await callFetch({ model, system: system + " NOAPPEND", messages: [{ role: "user", content: "cloak in the prompt" }] }))
   const prompted = lastOf("user").text
-  check("#980 a turned-away line is broken up in <external_system_instructions>",
-    inits().at(-1).systemAppend === null && prompted.includes("<external_system_instructions>") && prompted.includes("CLOAK-MARKER") &&
-    !prompted.includes(rfc) && !prompted.includes("Claude Agent SDK") && plain(prompted).includes(system), JSON.stringify(prompted))
+  check("#980 a turned-away line is reworded in <external_system_instructions>",
+    inits().at(-1).systemAppend === null && prompted.includes("<external_system_instructions>") &&
+    !prompted.includes(rfc) && !prompted.includes(sdk) && !prompted.includes(zw) && prompted.includes(want), JSON.stringify(prompted))
   delete process.env.FAKE_AGY_APPEND
 
+  // in agy's session instructions the reworded prompt is still turned away
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
   const turnedError = turned.find(event => event.event === "error")?.data?.error
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
     turnedError?.type === "invalid_request_error" && turnedError.message.includes("answered 429 to this system prompt") &&
     turnedError.message.includes("RFC 2119") && !/quota or rate limit reached/.test(turnedError.message), JSON.stringify(turnedError))
+  // plugins#1151: magpie reads a stream error's status from its own status
+  // field before its words, which quote Antigravity's "code 429"
+  check("#1151 the turned-away error names status 400, so the client doesn't retry it as a 429",
+    turnedError?.status === 400, JSON.stringify(turnedError))
+  const turnedWhole = await callFetch({ model, system: system + " T429W", stream: false, messages: [{ role: "user", content: "TURNED429 whole" }] })
+  const turnedWholeBody = await turnedWhole.json()
+  check("#1151 a turned-away prompt asked for a whole reply is a 400",
+    turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  // HadStash on X (11-17): reworded in the first user turn, where it goes by
+  // default, Antigravity answers it, so a 429 there is a rate limit
+  const inTurn = (await readSSE(await callFetch({ model, system: system + " T429U", messages: [{ role: "user", content: "TURNED429 in turn" }] }))).events
+  const inTurnError = inTurn.find(event => event.event === "error")?.data?.error
+  check("HadStash a 429 to the reworded prompt in the user turn is a rate limit, not a prompt rejection",
+    inTurnError?.type === "rate_limit_error" && !inTurnError.message.includes("answered 429 to this system prompt") &&
+    inTurnError.status === undefined, JSON.stringify(inTurnError))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
-  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error", JSON.stringify(quotaError))
+  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
+}
+
+// antigravity #1028: DeepSeek Harness's @-path paragraph reaches agy
+// reworded, as the antigravity plugin sends it, in the session
+// instructions, in <external_system_instructions> and in a later system
+// message.
+{
+  const dsh = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
+  const reworded = "When the user writes @ followed by a path, they are pointing at that file or folder."
+  const system = `You are DeepSeek Harness.\n\n${dsh}\n\nDSH-MARKER`
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: "dsh session instructions" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  const sent = inits().at(-1).systemAppend ?? ""
+  check("#1028 DSH's @-path paragraph goes reworded in the session instructions",
+    sent.includes("DSH-MARKER") && !sent.includes("Tokens prefixed with @") && sent.includes(reworded), JSON.stringify(sent))
+
+  process.env.FAKE_AGY_APPEND = "0"
+  await readSSE(await callFetch({ model, system: system + " NOAPPEND", messages: [{ role: "user", content: "dsh in the prompt" }] }))
+  const prompted = lastOf("user").text
+  check("#1028 DSH's @-path paragraph goes reworded in <external_system_instructions>",
+    prompted.includes("<external_system_instructions>") && prompted.includes("DSH-MARKER") && !prompted.includes("Tokens prefixed with @") && prompted.includes(reworded),
+    JSON.stringify(prompted))
+  delete process.env.FAKE_AGY_APPEND
+
+  const later = { model, system: "DSH-LATER", messages: [{ role: "user", content: "dsh later system" }] }
+  const laterEvents = (await readSSE(await callFetch(later))).events
+  const next = nextTurn(later, laterEvents, "after the dsh note")
+  next.messages.splice(next.messages.length - 1, 0, { role: "system", content: dsh })
+  await readSSE(await callFetch(next))
+  const laterText = lastOf("user").text
+  check("#1028 a later system message with the paragraph goes reworded", !laterText.includes("Tokens prefixed with @") && laterText.includes(reworded), JSON.stringify(laterText))
+
+  await readSSE(await callFetch({ model, system: "DSH-USER", messages: [{ role: "user", content: `user wrote ${dsh}` }] }))
+  check("#1028 what the user wrote goes as written", lastOf("user").text.includes(dsh), JSON.stringify(lastOf("user").text))
 }
 
 {
@@ -1610,6 +1875,22 @@ for (const location of ["inline", "system", "developer", "user"]) {
   await readSSE(await again.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited) }))
   check("a changed history is not resumed", inits().at(-1).resumed === false)
 
+  // A session opened with its instructions appended keeps them in agy's own
+  // system instruction, where they are turned away, so it is not resumed
+  // once they go in the first user turn.
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  const appended = { model, system: "APPENDED-PARKED-MARKER", messages: [{ role: "user", content: "MEMORY appended before restart" }] }
+  const appendedEvents = (await readSSE(await callFetch(appended))).events
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  const appendedInit = inits().at(-1)
+  const { default: thirdDefault } = await import("../index.mjs?restart-3")
+  const third = await (await thirdDefault.server({ client: null, directory: os.tmpdir() }, {})).auth.loader(async () => ({ key: "agy" }))
+  await readSSE(await third.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextTurn(appended, appendedEvents, "MEMORY appended after restart")) }))
+  const reopened = inits().at(-1)
+  check("a session parked with appended instructions is not resumed", appendedInit.systemAppend?.includes("APPENDED-PARKED-MARKER") &&
+    reopened.resumed === false && reopened.systemAppend === null && lastOf("user").text.includes("APPENDED-PARKED-MARKER"),
+    JSON.stringify({ reopened, text: lastOf("user").text }))
+
   const crashFirst = { model, messages: [{ role: "user", content: "MEMORY before mid-turn crash" }] }
   const crashFirstEvents = (await readSSE(await callFetch(crashFirst))).events
   const crashTarget = inits().at(-1)
@@ -1639,7 +1920,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     u1.text.includes("<system-reminder>\nSessionStart hook additional context: ok") &&
     !u1.text.includes("<conversation_history>"), u1.text)
   check("caller working directory is recognized from initial trailing system message",
-    init1.systemAppend?.includes('"/remote-wsl/project"'), init1.systemAppend)
+    u1.text.includes('"/remote-wsl/project"'), u1.text)
 
   const turn2 = {
     ...turn1,
@@ -1803,9 +2084,9 @@ for (const location of ["inline", "system", "developer", "user"]) {
     mcpText.includes("# Environment update") &&
     mcpText.includes("hasn't heard from you") &&
     !mcpText.includes("hook success: Success"), mcpText)
-  check("#980 a turned-away line in a system notice beside a tool result is broken up",
+  check("#980 a turned-away line in a system notice beside a tool result is reworded",
     !mcpText.includes("You are Codex, a coding agent based on GPT-5") &&
-    mcpText.replaceAll("\u200b", "").includes("You are Codex, a coding agent based on GPT-5."), mcpText)
+    mcpText.includes("You are Codex, a coding agent built on GPT-5."), mcpText)
 }
 
 {
@@ -1901,13 +2182,54 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const final = (await readSSE(response)).events
   const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === convId).at(-1)
   const content = delivered?.result?.content || []
-  const texts = content.filter(part => part.type === "text").map(part => part.text).join("\n")
-  check("image dimension companion, teammate-message, and loop notice continue live turn",
+  const steer = lastOf("user")
+  // agy offloads an MCP image to a file its model can't open (distinceeeee
+  // on X): the call gets the text, and the image goes in the next prompt
+  // of the same session, as an ACP image.
+  check("a tool result's image goes to agy as a prompt image in the same session, not over MCP",
     response.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
-    content[0]?.type === "image" &&
-    texts.includes("Multiply coordinates by 1.71") &&
-    texts.includes("worker-1") &&
-    texts.includes("prior /loop wakeups"), JSON.stringify(content))
+    !content.some(part => part.type === "image") &&
+    content.some(part => part.text === IMAGE_FOLLOWS) &&
+    steer.convId === convId &&
+    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.text.includes("Multiply coordinates by 1.71") &&
+    steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
+
+  // OpenCode's read tool: the image sits inside the tool_result, beside its text.
+  const readFirst = { model, messages: [{ role: "user", content: "TOOL opencode read image" }], tools: [echoTool] }
+  const readEvents = (await readSSE(await callFetch(readFirst))).events
+  const readConv = inits().at(-1).convId
+  const readBefore = inits().length
+  const readSecond = continuation(readFirst, readEvents, [
+    { type: "text", text: "Image read successfully" },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+  ])
+  const readResponse = await callFetch(readSecond)
+  const readFinal = (await readSSE(readResponse)).events
+  const readDelivered = logs().filter(event => event.type === "mcpResult" && event.convId === readConv).at(-1)?.result?.content || []
+  const readSteer = lastOf("user")
+  check("an image inside a tool_result goes to agy as a prompt image, its text over MCP",
+    readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
+    JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
+    readSteer.convId === readConv && readSteer.images === 1 &&
+    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
+
+  // Claude Code's Read of a PDF: the tool_result holds the file as a base64
+  // document. agy can't take it, so the model is told so and the turn goes on.
+  const pdfReadFirst = { model, messages: [{ role: "user", content: "TOOL claude code read pdf" }], tools: [echoTool] }
+  const pdfReadEvents = (await readSSE(await callFetch(pdfReadFirst))).events
+  const pdfReadConv = inits().at(-1).convId
+  const pdfReadBefore = inits().length
+  const pdfReadResponse = await callFetch(continuation(pdfReadFirst, pdfReadEvents, [
+    { type: "document", title: "paper.pdf", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" } },
+  ]))
+  const pdfReadFinal = (await readSSE(pdfReadResponse)).events
+  const pdfReadDelivered = JSON.stringify(logs().filter(event => event.type === "mcpResult" && event.convId === pdfReadConv).at(-1)?.result?.content || [])
+  check("a PDF inside a tool_result reaches agy as a note to read it another way, and the turn goes on",
+    pdfReadResponse.status === 200 && stopOf(pdfReadFinal) === "end_turn" && inits().length === pdfReadBefore &&
+    pdfReadDelivered.includes("paper.pdf") && pdfReadDelivered.includes("a PDF that could not be attached") &&
+    !pdfReadDelivered.includes("JVBERi0xLjQK"), pdfReadDelivered)
 
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const searchFirst = { model, messages: [{ role: "user", content: "TOOLSEARCHCALL load WebFetch" }], tools: [searchTool] }
@@ -2167,7 +2489,31 @@ for (const location of ["inline", "system", "developer", "user"]) {
       content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" } }],
     }],
   })
-  check("binary PDF document block returns HTTP 400", pdfRes.status === 400)
+  const pdfError = await pdfRes.json()
+  check("binary PDF document block returns HTTP 400 that says what to do",
+    pdfRes.status === 400 && /PDF attached as a document is not supported/.test(pdfError.error?.message) &&
+    /Paste the document's text/.test(pdfError.error?.message), JSON.stringify(pdfError))
+
+  // A client's URL document (daoche_wuzui on X) and a base64 text file go
+  // to agy as text, instead of turning the request away.
+  const urlDocRes = await callFetch({
+    model,
+    stream: false,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "document", title: "spec", source: { type: "url", url: "https://example.com/spec.pdf" } },
+        { type: "document", title: "notes.txt", source: { type: "base64", media_type: "text/plain", data: Buffer.from("NOTES_MARKER_77").toString("base64") } },
+        { type: "text", text: "summarise the URL document" },
+      ],
+    }],
+  })
+  const urlDocBody = await urlDocRes.text()
+  const urlDocUser = lastOf("user")
+  check("a URL document goes as its URL, and a base64 text document as its text",
+    urlDocRes.status === 200 && urlDocUser.text.includes("https://example.com/spec.pdf") &&
+    urlDocUser.text.includes("not attached") && urlDocUser.text.includes("NOTES_MARKER_77"),
+    JSON.stringify({ status: urlDocRes.status, body: urlDocBody, text: urlDocUser?.text }))
 
   const refusalRes = await callFetch({ model, stream: false, messages: [{ role: "user", content: "REFUSAL_CLEAN" }] })
   const refusalMsg = await refusalRes.json()
@@ -2649,20 +2995,51 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const retryable = await callFetch(partial)
   check("partial matches retain upstream 409 without a no-retry header", retryable.status === 409 && retryable.headers.get("x-should-retry") === null)
   await retryable.text()
-  const unmatched = { ...body, messages: [...body.messages,
-    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
-      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
-  ] }
-  const live = await callFetch(unmatched)
-  check("unmatched results alone cannot supersede an unexpired tool owner", live.status === 409 && live.headers.get("x-should-retry") === null && inits().length === before)
-  await live.text()
   const conflict = nextTurn(body, pending, "no result for this pending call")
   const response = await callFetch(conflict)
   const error = await response.json()
   check("a request carrying the pending call without its result is terminal", response.status === 400 && response.headers.get("x-should-retry") === "false" && error.error?.code === "tool_state_conflict")
   const done = await drive(body, pending, "real result after conflict")
   check("terminal lineage conflicts leave the original tool turn usable", inits().length === before && stopOf(done.events) === "end_turn")
+}
+
+{
+  // A whole tool round of the client's own that no live call waits for, while
+  // the conversation's turn waits on a call: the client has moved past that
+  // call (X: tmr11235's 409), so its round is replayed, not refused.
+  const body = { model, metadata: { user_id: "unmatched-round" },
+    messages: [{ role: "user", content: "TOOL pending ownership" }], tools: [echoTool] }
+  await readSSE(await callFetch(body))
+  const before = inits().length
+  const unmatched = { ...body, messages: [...body.messages,
+    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
+      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
+  ] }
+  const live = await callFetch(unmatched)
+  const events = live.status === 200 ? (await readSSE(live)).events : []
+  check("unmatched results replay the request's own round instead of 409", live.status === 200 && stopOf(events) &&
+    inits().length === before + 1, `got ${live.status} ${stopOf(events)} ${inits().length - before}`)
+}
+
+{
+  // #1208: the client answered the pending call, then wrote a notice of its own
+  // and a new prompt, so the result is in history, not the trailing.
+  const body = { model, metadata: { user_id: "buried-result" },
+    messages: [{ role: "user", content: "TOOL buried result" }], tools: [echoTool] }
+  const pending = (await readSSE(await callFetch(body))).events
+  const answered = continuation(body, pending, "buried result text")
+  const buried = { ...answered, messages: [...answered.messages,
+    { role: "assistant", content: "This turn did not complete. Some actions may already have run; verify their effects before resending." },
+    { role: "user", content: "continue after the notice" }] }
+  const response = await callFetch(buried)
+  const final = response.status === 200 ? (await readSSE(response)).events : []
+  if (response.status !== 200) console.error("buried result:", response.status, await response.text())
+  check("a result buried under a client notice continues instead of tool_state_conflict", response.status === 200 && final.length > 0)
+  check("the replay carries the buried result and the new prompt", lastOf("user").text.includes("buried result text") && lastOf("user").text.includes("continue after the notice"))
+  // The replayed opening still says TOOL, so the fake asks for a tool again.
+  const done = await drive(buried, final)
+  check("the conversation after a buried result runs to its end", stopOf(done.events) === "end_turn")
 }
 
 {
@@ -2738,6 +3115,14 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
 }
 
+{
+  // the bridge's sessions; the bare `agy acp` model probe only lists models
+  const sessions = inits().filter(event => event.args.includes("--agent"))
+  const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
+  check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
+  const talkative = sessions.filter(event => !event.args.includes("--disable-telemetry"))
+  check("an agy whose acp --help lists it starts with telemetry off (#896)", sessions.length > 0 && talkative.length === 0, JSON.stringify(talkative.map(event => event.args)))
+}
 check("all ACP children disable auto update when the user set nothing", inits().length > 0 && inits().every(event => event.update === "true"))
 check("child launches never mutate the parent's update setting", process.env.AGY_CLI_DISABLE_AUTO_UPDATE === undefined)
 if (originalAutoUpdate === undefined) delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE

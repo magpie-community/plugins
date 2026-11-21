@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-atomcode-auth",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AtomCode (AtomGit CodingPlan) for Magpie and OpenCode: browser OAuth or local CLI sign-in, signed requests, persistent diagnostics, native plan claim, live models and quota windows",
   "type": "module",
   "main": "./opencode.mjs",

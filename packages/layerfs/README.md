@@ -177,9 +177,12 @@ serves its chat page:
 - **The installed page only jumps.** `page/index.html` does one
   thing: it reads the port from the plugin's options
   (`pagePort`, default 43717) and `location.replace`s its frame to
-  `http://127.0.0.1:<port>/`. The install's folder is never
-  renamed, linked, or written into. A user with no store gets no
-  service and nothing written anywhere.
+  `http://127.0.0.1:<port>/`, or, when magpie forwards the service
+  on its own address (`magpie.page.service`; a browser on another
+  computer, magpie in Docker), to that forward. The install's folder is never
+  renamed, linked, or written into. The service starts when the
+  host loads, store or no store; a user with no store gets the
+  page's empty state and nothing written anywhere.
 - **The service returns the page with its data inside.** Each
   request rebuilds `backend.trajectory()` on demand and answers one
   route, GET /, as HTML: the trajectory UI with the recording
@@ -187,18 +190,17 @@ serves its chat page:
   the page reads from the DOM — never by fetch. The page reloads
   itself every few seconds, keeping its view across each reload (the
   project, the scroll, and the replay position ride in
-  `location.hash`), so the picture stays live. With no store there
-  is no service at all, so the frame shows the browser's
-  refused-to-connect page until the first project is provisioned;
-  a store with no recorded checkpoints yet shows the page's honest
-  empty state.
+  `location.hash`), so the picture stays live. With no store, or a
+  store with no recorded checkpoints yet, the page shows its empty
+  state and keeps reloading, so the first provision appears on its
+  own.
 - **The service recovers after a host handover.** A retired plugin
   host may still hold the page port while finishing a request. The
   replacement retries a failed bind automatically, starting after
   one second and backing off to at most 30 seconds. A closed listener
   is retried too; concurrent tool calls share one startup attempt.
-  Retries begin only after a project store exists, write no extra
-  checkpoints, and do not keep an otherwise finished host alive.
+  Retries write nothing and do not keep an otherwise finished host
+  alive.
   An already refused frame may need a reload after the listener
   recovers; neither the gateway nor an agent task needs restarting.
 - **The service is closed to other sites.** It emits no CORS
@@ -236,6 +238,30 @@ node tools/gen-trajectory.mjs   # regenerate the page's bundled sample trajector
 
 Zero runtime dependencies; the arguments are JSON Schema, like the other
 tools packages. MIT.
+
+## Changes in 0.10.3
+
+The page now opens in a browser on another computer (`magpie web`,
+magpie in Docker). It used to send its frame to `127.0.0.1:43717`,
+which there is the viewing computer, so the frame said "refused to
+connect" (#1228). The package now declares `magpie.page.service`
+(port 43717, moved by `pagePort`), and the page goes to the forward
+magpie gives it on its own address. The service still listens on
+127.0.0.1 only, and its Host and Origin checks are unchanged: the
+forward sends the service's own Host and no Origin. With an older
+magpie that gives no forward, the page jumps to 127.0.0.1 as before.
+
+## Changes in 0.10.2
+
+The page no longer hangs on "Connecting to the local trajectory
+service…" before the first project. Up to 0.10.1 the service started
+only once a store existed, so the page's jump to it was refused; a
+WebKit frame (magpie on macOS and Linux) keeps the old document when
+its jump is refused, so the page said Connecting for good. The service
+now starts when the host loads. With no store it serves the page's
+empty state without building the backend, so nothing is written under
+~ until a tool call makes the first project, and the empty page
+reloads itself every 5 seconds until that project appears.
 
 ## Changes in 0.10.1
 

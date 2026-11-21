@@ -687,3 +687,45 @@ test("bridge request path delivers expanded schemas to MCP tools/list without in
     await kit.dispose()
   }
 })
+
+// plugins#1140: agy drops whole tools, the largest first, past its 20,000
+// customization tokens (ceil(UTF-8 bytes / 3)). Over the bridge, a catalog
+// larger than that comes back to agy whole, with shorter descriptions.
+test("bridge tools/list keeps every tool of a catalog over agy's budget, within it", async () => {
+  const kit = await createBridgeKit()
+  try {
+    let listed = null
+    kit.prompts.push(async (agent) => {
+      listed = await agent.listTools()
+      await agent.text("checked tools")
+    })
+    const prose = (n) => "Runs the step it names and says what it did. ".repeat(n) + "Examples: step('a'), step('b')."
+    const tools = Array.from({ length: 100 }, (_, i) => ({
+      name: `big_tool_${i}`,
+      description: prose(8),
+      input_schema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: prose(6) },
+          mode: { type: "string", enum: ["fast", "safe"], description: "How." },
+        },
+        required: ["path"],
+      },
+    }))
+    const tokens = (list) => list.reduce((n, t) => n + Math.ceil(Buffer.byteLength(JSON.stringify(t), "utf8") / 3), 0)
+    const res = await kit.request(baseBody({ tools }))
+    await readSse(res)
+    const mcpTools = listed?.result?.tools ?? []
+    assert.deepEqual(mcpTools.map((t) => t.name), tools.map((t) => t.name))
+    assert.ok(tokens(tools) > 20000, `the catalog is over agy's budget (${tokens(tools)})`)
+    assert.ok(tokens(mcpTools) <= 18000, `what agy is given fits (${tokens(mcpTools)})`)
+    for (const t of mcpTools) {
+      assert.deepEqual(t.inputSchema.required, ["path"])
+      assert.deepEqual(t.inputSchema.properties.mode.enum, ["fast", "safe"])
+      assert.equal(t.inputSchema.properties.mode.description, "How.")
+      assert.equal(t._meta?.["antigravity/alwaysLoad"], true)
+    }
+  } finally {
+    await kit.dispose()
+  }
+})

@@ -15,7 +15,7 @@ process.env.AGY_BRIDGE_STATE_FILE = path.join(workspace, "sessions.json")
 process.env.HOME = workspace
 fs.writeFileSync(
   path.join(workspace, "bridge.mjs"),
-  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, instructionsIdentity };\n",
+  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, parked, instructionsIdentity, digest, Turn };\n",
 )
 const {
   conversationKey,
@@ -27,7 +27,10 @@ const {
   historyKey,
   takeParked,
   park,
+  parked,
   instructionsIdentity,
+  digest,
+  Turn,
 } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
@@ -363,6 +366,33 @@ test("takeParked uses the same instruction stripping, so a clock change still re
     instructionsIdentity("Rules.\nCurrent date: 2026-11-10\n"),
     instructionsIdentity("Rules.\nCurrent date: 2026-11-11\n"),
   )
+})
+
+test("#1151: a parked session is keyed on the instructions as agy was sent them", () => {
+  // A session agy opened before a line was reworded keeps the line, so a
+  // version that rewords it must not resume that session.
+  const convKey = "test-parked-sent"
+  const history = [{ role: "user", content: STABLE }, { role: "assistant", content: "ok" }]
+  const instructions = "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.\nRules.\n"
+  const proc = {
+    convKey,
+    sessionId: "sess-sent",
+    expectedMessages: history,
+    instructions,
+    workDir: "/tmp/agy-park-test",
+    hasSentFirstTurn: true,
+    historyInvalid: false,
+    turn: null,
+    dead: false,
+    canPark() { return true },
+  }
+  park(proc)
+  const entry = JSON.parse(fs.readFileSync(process.env.AGY_BRIDGE_STATE_FILE, "utf8")).entries.find((e) => e.key === convKey)
+  const sent = "You're a coding agent running in the Codex CLI, a terminal-based coding assistant.\nRules.\n"
+  assert.equal(entry.instructionsHash, digest(instructionsIdentity(sent)))
+  assert.notEqual(entry.instructionsHash, digest(instructionsIdentity(instructions)))
+  const resumed = takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions, history })
+  assert.equal(resumed?.sessionId, "sess-sent", "the same instructions still resume")
 })
 
 async function withKit(options, fn) {
@@ -721,5 +751,116 @@ test("a reused flattened session keeps a new document on the grown first message
     assert.equal(text.includes("step two is longer than four chars"), true, `missing new turn: ${JSON.stringify(text)}`)
     assert.equal(text.includes("document body unique-xyz"), true, `dropped the new document: ${JSON.stringify(text)}`)
     assert.equal(text.includes("step one"), false, `resent the opening: ${JSON.stringify(text)}`)
+  })
+})
+
+// plugins#1137: a tool loop of screenshots kept every request body and
+// copied each image whole into the history key on every round-trip.
+function screenshotHistory(data) {
+  return [
+    { role: "user", content: "look" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "view_image", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [
+      { type: "text", text: "shot" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data } },
+    ] }] },
+  ]
+}
+
+test("historyKey keys a tool_result image by its hash, not its bytes", () => {
+  const data = "A".repeat(200_000)
+  const key = historyKey(screenshotHistory(data))
+  assert.ok(key.length < 2_000, `key is ${key.length} chars`)
+  assert.ok(!key.includes("AAAAAAAAAAAAAAAA"))
+  assert.notEqual(key, historyKey(screenshotHistory("B".repeat(200_000))))
+  assert.equal(key, historyKey(screenshotHistory(data)))
+})
+
+test("a turn lets go of each earlier request body once the next one arrives", () => {
+  const proc = { estimatePromptTokens: () => 100 }
+  const turn = new Turn(proc, [{ role: "user", content: "hi" }])
+  const bodies = [1, 2, 3].map((n) => ({ messages: screenshotHistory("C".repeat(n)) }))
+  const steps = bodies.map((body) => {
+    const step = turn.registerResponse(body)
+    step.contentSnapshot = () => []
+    return step
+  })
+  assert.equal(steps[0].body, null)
+  assert.equal(steps[0].contentSnapshot, null)
+  assert.equal(steps[1].body, null)
+  assert.equal(steps[2].body, bodies[2], "the current step keeps its body for a late prompt")
+  assert.equal(typeof steps[2].contentSnapshot, "function")
+  assert.equal(turn.responseSteps.length, 3)
+})
+
+test("a session parked before a user's turn was cloaked is not resumed", () => {
+  // agy keeps the user's turns it was sent; one with Codex's GPT-5 line as
+  // written is turned away on every later turn.
+  const convKey = "test-parked-user-cloak"
+  const history = [{ role: "user", content: STABLE }, { role: "assistant", content: "ok" }]
+  const proc = {
+    convKey, sessionId: "sess-user-cloak", expectedMessages: history, instructions: "Rules.\n",
+    workDir: "/tmp/agy-park-test", hasSentFirstTurn: true, historyInvalid: false, turn: null, dead: false,
+    canPark() { return true },
+  }
+  park(proc)
+  const file = process.env.AGY_BRIDGE_STATE_FILE
+  const state = JSON.parse(fs.readFileSync(file, "utf8"))
+  const saved = state.entries.find((e) => e.key === convKey)
+  assert.ok(saved.userCloak, "a parked session says its prompts were cloaked")
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history })?.sessionId, "sess-user-cloak")
+  // the same entry as an older version wrote it
+  park(proc)
+  delete parked.get(convKey).userCloak
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
+})
+
+test("a session parked with its instructions appended to agy's is resumed only while they still go there", () => {
+  // bzs_1 on X (11-15): agy keeps appended instructions in its own system
+  // instruction, which Antigravity turns away, so a session opened that way
+  // is not resumed once they go in the first user turn.
+  const convKey = "test-parked-append"
+  const history = [{ role: "user", content: STABLE }, { role: "assistant", content: "ok" }]
+  const proc = {
+    convKey, sessionId: "sess-append", expectedMessages: history, instructions: "Rules.\n", instructionsInSession: true,
+    workDir: "/tmp/agy-park-test", hasSentFirstTurn: true, historyInvalid: false, turn: null, dead: false,
+    canPark() { return true },
+  }
+  park(proc)
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
+  park(proc)
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  try {
+    assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history })?.sessionId, "sess-append")
+  } finally {
+    delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  }
+  // the same entry as an older version wrote it, when instructions were appended
+  park({ ...proc, instructionsInSession: false })
+  delete parked.get(convKey).instructionsInSession
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
+})
+
+test("a user's turn goes to agy with Codex's GPT-5 lines reworded", async () => {
+  await withKit({}, async (kit) => {
+    const sent = []
+    kit.defaultPrompt = async (agent) => {
+      sent.push(agent.prompt.map((p) => p.type === "text" ? p.text : "").join(""))
+      await agent.text("ok")
+      return { stopReason: "end_turn" }
+    }
+    const agents = "# AGENTS.md\nYou are Codex, a coding agent based on GPT-5.\nYou are Hermes Agent, built by Nous Research."
+    const first = [{ role: "user", content: agents + "\n\nlist the files" }]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "user-cloak" }, messages: first })))
+    assert.equal(parsed.error, null)
+    const second = [...first, { role: "assistant", content: "ok" },
+      { role: "user", content: "<system-reminder>\nYou are Codex, an agent based on GPT-5.\n</system-reminder>\nand now?" }]
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "user-cloak" }, messages: second })))
+    assert.equal(sent.length, 2)
+    const all = sent.join("\n")
+    assert.ok(!/based on GPT-5/i.test(all), all)
+    assert.ok(all.includes("You are Codex, a coding agent built on GPT-5."), all)
+    assert.ok(all.includes("You are Codex, an agent built on GPT-5."), all)
+    assert.ok(all.includes("You are Hermes Agent, built by Nous Research."), "other lines go as written in a user's turn")
   })
 })

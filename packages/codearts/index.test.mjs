@@ -244,13 +244,16 @@ test("a dated model only the agent lists keeps its date, named or not (#677)", a
   assert.equal(names["deepseek-v4.1-flash-0930"], "Deepseek V4.1 Flash 0930")
 })
 
-test("stop goes as the string the gateway takes, and an empty one not at all (magpie#6342)", () => {
+test("stop never reaches the mainland gateway, which refuses any (#1120, magpie#6342)", () => {
   const stop = (v) => x.prepareChatBody({ model: "GLM-5.2", messages: [], stop: v }).body
-  assert.equal(stop(["\n\n"]).stop, "\n\n")
-  assert.equal(stop(["", "###", "Observation:"]).stop, "###")
-  assert.equal(stop("###").stop, "###")
-  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in stop(v), false, JSON.stringify(v))
+  for (const v of [["\n\n"], ["", "###", "Observation:"], "###", "x", "</block>", [], [""], [null, 3], "", null, 7])
+    assert.equal("stop" in stop(v), false, JSON.stringify(v))
   assert.equal("stop" in x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body, false)
+  // the international station takes a list only (#998)
+  const intl = (v) => x.prepareChatBody({ model: "GLM-5.1", messages: [], stop: v }, { station: "international" }).body
+  assert.deepEqual(intl("zzz").stop, ["zzz"])
+  assert.deepEqual(intl(["", "###", 3, "Observation:"]).stop, ["###", "Observation:"])
+  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in intl(v), false, JSON.stringify(v))
 })
 
 test("prepareChatBody reshapes a chat into what the gateway accepts and meters", () => {
@@ -542,6 +545,29 @@ test("buildOAuthLoginUrl matches the real IDE parameters", () => {
   assert.equal(q.get("plugin-name"), "snap_AIIDE")
   // The real plugin never sends auth_callback_url (portal derives it from port).
   assert.equal(q.has("auth_callback_url"), false)
+  assert.equal(q.get("locale"), "zh-cn")
+})
+
+test("the international sign-in opens Huawei Cloud's international login, then its portal (#1090)", () => {
+  const login = new URL(x.buildOAuthLoginUrl(12345, { codeChallenge: "CH" }, "TICKET", x.STATIONS.international))
+  assert.equal(login.origin + login.pathname, "https://auth.huaweicloud.com/authui/login")
+  assert.equal(login.searchParams.get("site"), "intl")
+  assert.equal(login.searchParams.get("locale"), "en-us")
+  const service = new URL(login.searchParams.get("service"))
+  assert.equal(service.origin + service.pathname, "https://codearts.ap-southeast-1.huaweicloud.com/portal/authorize")
+  assert.equal(service.searchParams.get("locale"), "en-us")
+  assert.equal(service.searchParams.get("port"), "12345")
+  assert.equal(service.searchParams.get("code_challenge"), "CH")
+  assert.equal(service.searchParams.get("ticket_id"), "TICKET")
+  assert.equal(service.searchParams.get("client_id"), "codearts-agent")
+  assert.equal(
+    x.buildPortalLoginResultUrl(true, x.STATIONS.international),
+    "https://codearts.ap-southeast-1.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=en-us",
+  )
+  assert.equal(
+    x.buildPortalLoginResultUrl(true),
+    "https://codearts.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=zh-cn",
+  )
 })
 
 test("usageFromStatistics maps credit metrics to windows with real numbers", () => {
@@ -902,8 +928,9 @@ test("plugin exposes config, provider.models, and an oauth auth method", async (
   assert.equal(typeof plugin.config, "function")
   assert.equal(plugin.provider.id, "codearts")
   assert.equal(plugin.auth.provider, "codearts")
-  assert.equal(plugin.auth.methods.length, 1)
+  assert.ok(plugin.auth.methods.length >= 2)
   assert.equal(plugin.auth.methods[0].type, "oauth")
+  assert.equal(plugin.auth.methods.at(-1).type, "oauth")
   assert.equal(typeof plugin.auth.checkin, "function")
   assert.equal(plugin.auth.maxConcurrency, x.ACCOUNT_MAX_INFLIGHT)
 
@@ -1674,6 +1701,52 @@ test("a spent refresh token marks the sign-in and stops calling the vendor", asy
   assert.equal(chats, 1)
 })
 
+
+test("a body APIG can't sign is a 413 that keeps the sign-in, never a renewal (#1121)", async () => {
+  const cred = await makeCred()
+  const tooLarge = '{"error_msg":"Incorrect IAM authentication information: calc ak sk signature fail:body too large","error_code":"APIG.0301","request_id":"r"}'
+  let chats = 0
+  let renewals = 0
+  const fetcher = async (url) => {
+    if (String(url) === x.STS_TOKEN_ENDPOINT) {
+      renewals += 1
+      return new Response("{}", { status: 500 })
+    }
+    chats += 1
+    return new Response(tooLarge, { status: 401 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  // under the 12 MB the plugin checks, the gateway's own answer is read
+  const big = "x".repeat(2 * 1024 * 1024)
+  for (const send of [
+    () => loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: big }] })),
+    () => loaded.fetch("https://snap-access.cn-north-4.myhuaweicloud.com/api/v1/embeddings", { method: "POST", body: JSON.stringify({ input: big }) }),
+  ]) {
+    const res = await send()
+    assert.equal(res.status, 413)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    assert.match(await res.text(), /12 MB/)
+  }
+  assert.equal(chats, 2)
+  assert.equal(renewals, 0, "a body too large is not a stale credential")
+  // the sign-in is still usable: the next request goes out
+  await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [] }))
+  assert.equal(chats, 3)
+})
+
+test("a body over 12 MB is refused before it is signed or sent (#1121)", async () => {
+  const cred = await makeCred()
+  let calls = 0
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => { calls += 1; return new Response("{}") } })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  const image = "data:image/png;base64," + "A".repeat(13 * 1024 * 1024)
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] }))
+  assert.equal(res.status, 413)
+  assert.equal(res.headers.get("x-magpie-sign-in"), null)
+  assert.match(await res.text(), /13\.0 MB/)
+  assert.equal(calls, 0)
+})
 test("a 403 is a sign-in the account no longer has, on chats and other requests alike", async () => {
   const cred = await makeCred()
   const denied = '{"error_code":"APIG.0305","error_msg":"access denied"}'
@@ -2010,6 +2083,19 @@ test("auth.refresh exchanges the refresh token for fresh credentials", async () 
   assert.equal(parsed.access_key_id, "AK2")
   assert.equal(next.refresh, "R2")
   assert.equal(next.expires, Date.parse("2031-01-01T00:00:00Z"))
+})
+
+test("a refresh keeps an international credential on its station (#1090)", async () => {
+  const cred = { ...(await makeCred()), station: "international" }
+  const fetcher = async () => new Response(JSON.stringify({
+    credentials: { access_key_id: "AK2", secret_access_key: "SK2", security_token: "ST2", expiration: "2031-01-01T00:00:00Z" },
+    refresh_token: "R2",
+  }), { status: 200 })
+  const next = await x.refreshCredential(cred, fetcher)
+  assert.equal(next.access_key_id, "AK2")
+  assert.equal(next.station, "international")
+  const mainland = await x.refreshCredential(await makeCred(), fetcher)
+  assert.equal("station" in mainland, false)
 })
 
 /** Check a token request's DPoP proof: it verifies against the stored key, for POST to the STS endpoint. */
@@ -2408,6 +2494,115 @@ test("checkin claims and confirms the daily benefit the way the IDE does", async
   assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 1)
 })
 
+test("checkin claims both daily check-ins, and leaves a contest's one-time sign-up gift alone", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 42, type: "USER_LOGIN", title: "Skill创新赛报名礼", claimable: true, status: "ELIGIBLE", benefitAmount: 2000 },
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+    { campaignId: 4, type: "NEW_USER_REGISTER", claimable: false, status: "CONSUMED" },
+  ]
+  const calls = []
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    calls.push({ url: u, method: init.method, body })
+    const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId + 1000, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+
+  const { grants, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 1100, message: "+1100 积分" })
+  assert.deepEqual(grants.map((g) => [g.campaignId, g.credit]), [[40, 1000], [34, 100]])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CLAIM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CONFIRM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(
+    [items[0].claimable, items[0].status],
+    [true, "ELIGIBLE"],
+    "the one-time sign-up gift is not claimed",
+  )
+
+  // Later the same day: both are in, and neither is claimed again.
+  assert.equal((await x.dailyCheckin(cred, fetcher)).outcome, "done")
+  assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 2)
+})
+
+test("a contest check-in the account has not joined is skipped, and the official one still claims", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: false, status: "ENTRY", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [34], "the contest campaign is not claimed")
+})
+
+test("a contest check-in refused for not having signed up is ineligible, not a failed day", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      if (body.campaignId === 40) {
+        return new Response(JSON.stringify({ code: 40001, message: "该活动类型需要先通过触发接口激活" }), { status: 200 })
+      }
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [40, 34])
+})
+
 test("a claimed check-in is kept, and the usage card says when those credits run out", async () => {
   const cred = await makeCred()
   const ledgerPath = path.join(ledgerDir, "integrated.json")
@@ -2561,7 +2756,7 @@ test("a confirm that failed is made by the next check-in, in another magpie too,
   }
   assert.equal((await checkin()).outcome, "failed")
   const kept = JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed
-  assert.deepEqual(Object.values(kept).map((v) => [v.campaignId, v.day]), [[1, x.beijingDay()]])
+  assert.deepEqual(Object.values(kept).map((v) => [v.claims?.[0]?.campaignId, v.day]), [[1, x.beijingDay()]])
   assert.deepEqual(await checkin(), { outcome: "claimed", credit: 1000, message: "+1000 积分" })
   assert.equal(confirms, 2)
   assert.deepEqual(JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed, {}, "confirmed, so forgotten")
@@ -3323,16 +3518,51 @@ test("a failed rates read keeps the last good table; one that never read it fall
   const after = await plugin.provider.models(cfg.provider.officeace, { auth: first.record })
   assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort())
 
-  // an account that never read a rates table gets the static list, never the registry
+  // an account that never read a rates table gets the catalog cut to the
+  // known-callable ids: never the registry, and never a fallback id the
+  // catalog has dropped (#1197)
   const fresh = await officeAceAuthRecord({}, "iam::d1:user:hw0201")
-  const { fetcher: downFetcher } = oaFetcher((url) =>
+  const { fetcher: downFetcher, seen: downSeen } = oaFetcher((url) =>
     url.endsWith("/v2/models") ? new Response(JSON.stringify(oaCatalogBody()), { status: 200 }) : undefined,
   )
   const other = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: downFetcher })
   const cfg2 = { provider: {} }
   await other.config(cfg2)
   const fallback = await other.provider.models(cfg2.provider.officeace, { auth: fresh.record })
-  assert.deepEqual(Object.keys(fallback).sort(), Object.keys(oa.OA_FALLBACK_MODELS).sort())
+  assert.deepEqual(Object.keys(fallback).sort(), ["glm-5.3", "kimi-k3"])
+  for (const id of Object.keys(fallback)) assert.ok(Object.hasOwn(oa.OA_FALLBACK_MODELS, id))
+  // with no table to keep, a failed read was tried a second time
+  assert.ok(downSeen.filter((c) => c.url.includes("/v1/model-token-rates")).length >= 2)
+})
+
+test("a rates read that fails once at start-up is tried again, and the account gets its own list (#1197)", async () => {
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0202")
+  let ratesCalls = 0
+  const { fetcher } = oaFetcher((url) => {
+    if (url.endsWith("/v2/models")) return new Response(JSON.stringify(oaCatalogBody()), { status: 200 })
+    if (url.includes("/v1/model-token-rates")) {
+      ratesCalls++
+      return ratesCalls === 1 ? new Response("blip", { status: 502 }) : new Response(JSON.stringify(oaRatesBody()), { status: 200 })
+    }
+    return undefined
+  })
+  // one read, as the catalog makes it: the blip is tried again inside it
+  const rates = await oa.fetchOfficeAceTokenRates(oa.officeAceCredentialOf(record), fetcher)
+  assert.equal(rates.size, 5)
+  assert.equal(ratesCalls, 2)
+  // and the listing that follows is the account's own, from the table now held
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const cfg = { provider: {} }
+  await plugin.config(cfg)
+  const models = await plugin.provider.models(cfg.provider.officeace, { auth: record })
+  assert.deepEqual(Object.keys(models).sort(), ["deepseek-v4.1-flash-0930", "glm-5.3", "kimi-k3"])
+  assert.equal(ratesCalls, 2)
+})
+
+test("the fallback list holds no id OfficeAce has dropped (#1197)", () => {
+  for (const id of ["deepseek-v4", "deepseek-v4.1", "qwen3-30b", "qwen3-32b", "kimi-k2.6", "pangu-2.0-pro", "pangu-2.0-flash"]) {
+    assert.equal(Object.hasOwn(oa.OA_FALLBACK_MODELS, id), false, id)
+  }
 })
 
 test("before a sign-in the OfficeAce provider still lists its models", async () => {
@@ -3470,6 +3700,47 @@ test("a CodeArts sign-in writes only its own record", async () => {
   // No OfficeAce record: a Huawei Cloud refresh token is spent once, so a
   // second record holding it would sign this card out at its next renewal.
   assert.equal(calls.some((c) => c.path?.id?.startsWith("officeace")), false, "no record for the other card")
+})
+
+test("the international browser sign-in gives an international credential, with no mainland reads (#1090)", async () => {
+  oa.seenProviderAccounts.clear()
+  oa.renewalGates.clear()
+  const calls = []
+  const asked = []
+  const fetcher = async (url) => {
+    asked.push(String(url))
+    if (String(url) === x.STS_TOKEN_ENDPOINT) return new Response(stsBody("AK-INTL", oaRefreshToken()), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: oaClient(calls) }, { fetch: fetcher })
+  const method = plugin.auth.methods.at(-1)
+  assert.equal(method.label, "Sign in with Huawei Cloud (International)")
+  assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the mainland one keeps its place")
+  const a = await method.authorize()
+  const service = new URL(new URL(a.url).searchParams.get("service"))
+  const port = service.searchParams.get("port")
+  const done = a.callback()
+  const res = await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  assert.match(res.headers.get("location"), /^https:\/\/codearts\.ap-southeast-1\.huaweicloud\.com\/portal\/login\?login_succeed=true/)
+  const out = await done
+  assert.equal(out.type, "success")
+  const cred = JSON.parse(out.access)
+  assert.equal(cred.access_key_id, "AK-INTL")
+  assert.equal(cred.station, "international")
+  assert.equal(x.stationOf(cred).id, "international")
+  assert.equal(asked.some((u) => u.includes("iam.cn-north-4")), false, "no mainland IAM read")
+  assert.equal(asked.some((u) => u.includes("client-permission-validate")), false, "no OfficeAce MaaS read")
+})
+
+test("a mainland browser sign-in's credential carries no station, as before (#1090)", async () => {
+  const flow = await x.startOAuthFlow(async (url) => String(url) === x.STS_TOKEN_ENDPOINT
+    ? new Response(stsBody("AK-CN", oaRefreshToken()), { status: 200 })
+    : new Response("{}", { status: 200 }))
+  const port = new URL(flow.loginUrl).searchParams.get("port")
+  await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  const out = await flow.result
+  assert.equal("station" in JSON.parse(out.access), false)
+  await flow.close()
 })
 
 test("the OfficeAce sign-in writes only its own record", async () => {
@@ -4428,15 +4699,17 @@ test("readIdeCredential: missing, unreadable, half-written or empty is unknown, 
 
 test("the CodeArts Agent sign-in is offered only while its state file is there", async () => {
   const none = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: path.join(os.tmpdir(), `no-ide-${process.pid}`, "state.vscdb") })
-  assert.equal(none.auth.methods.length, 1)
+  assert.equal(none.auth.methods.length, 2)
+  assert.match(none.auth.methods[1].label, /International/)
   const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: file })
-  assert.equal(plugin.auth.methods.length, 2)
+  assert.equal(plugin.auth.methods.length, 3)
   assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the browser one keeps its place")
+  assert.match(plugin.auth.methods[2].label, /International/)
   assert.equal(plugin.auth.methods[1].type, "oauth")
   assert.match(plugin.auth.methods[1].label, /CodeArts Agent/)
   fs.rmSync(file)
-  assert.equal(plugin.auth.methods.length, 1, "read again each time")
+  assert.equal(plugin.auth.methods.length, 2, "read again each time")
 })
 
 async function ideSignIn(plugin) {
@@ -4618,6 +4891,8 @@ test("an international account chats, reads and renews on its own station only",
       // the first goes with a credential the vendor calls expired
       if (chats === 1) return new Response(JSON.stringify({ error_code: "APIG.0602", error_msg: "the security token has expired" }), { status: 400 })
       assert.match(auth, /Access=IDEAK2,/)
+      // the station's own shape of stop: a list (#998)
+      assert.deepEqual(JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)).stop, ["zzz"])
       return sseResponse(okStream)
     }
     if (u.includes("/statistics/plugin")) return new Response(JSON.stringify(intlStatistics), { status: 200 })
@@ -4631,7 +4906,7 @@ test("an international account chats, reads and renews on its own station only",
   assert.equal(loaded.baseURL, `${INTL}/api/v2`)
   await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2" })))
   // the config's mainland `api` is taken to the account's station
-  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true }))
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true, stop: "zzz" }))
   assert.equal(res.status, 200)
   assert.equal(chats, 2)
   assert.equal(JSON.parse(sets.at(-1).body.access).access_key_id, "IDEAK2")

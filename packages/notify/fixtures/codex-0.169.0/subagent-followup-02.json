@@ -1,0 +1,100 @@
+{
+ "session": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c",
+ "headers": {
+  "originator": "codex-tui",
+  "x-client-request-id": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c",
+  "x-codex-window-id": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c:0",
+  "x-codex-beta-features": "remote_compaction_v2",
+  "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c\",\"thread_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f9-914f-7623-b7bd-201a0cfd2666\",\"window_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f9-912f-7302-94bc-f17bd03aebdf\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1e2f9-914f-7623-b7bd-201a0cfd2666\",\"thread_source\":\"thread_title\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794809368914,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}"
+ },
+ "body": {
+  "model": "gpt-5.1-codex",
+  "stream": true,
+  "tools": [],
+  "input": [
+   {
+    "type": "message",
+    "id": "msg_af3787d1-ef88-57e9-ad72-d04a57411918",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project \n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f9-9153-7692-b5f5-0cc828f3c366",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-onl\n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f9-9153-7692-b5f5-0cd723329e67",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <current_date>2026-11-16</current_date>\n  <timezone>Etc/UTC</timezone>\n</environment_context>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f9-9154-77b1-8ebd-22ee09ee4568",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\nCX_NOWAIT please"
+     }
+    ]
+   }
+  ],
+  "client_metadata": {
+   "root_turn_id": "01a1e2f9-914f-7623-b7bd-201a0cfd2666",
+   "session_id": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c",
+   "x-codex-window-id": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c:0",
+   "thread_id": "01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c",
+   "turn_id": "01a1e2f9-914f-7623-b7bd-201a0cfd2666",
+   "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c\",\"thread_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f9-914f-7623-b7bd-201a0cfd2666\",\"window_id\":\"01a1e2f9-912c-77b3-8f0d-0b3d50e4ca1c:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f9-912f-7302-94bc-f17bd03aebdf\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1e2f9-914f-7623-b7bd-201a0cfd2666\",\"thread_source\":\"thread_title\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1794809368914,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}"
+  }
+ },
+ "reply": {
+  "id": "resp_2",
+  "object": "response",
+  "status": "completed",
+  "output": [
+   {
+    "type": "message",
+    "id": "msg_2",
+    "role": "assistant",
+    "status": "completed",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "Side answer",
+      "annotations": []
+     }
+    ]
+   }
+  ],
+  "usage": {
+   "input_tokens": 1000,
+   "output_tokens": 50,
+   "total_tokens": 1050,
+   "input_tokens_details": {
+    "cached_tokens": 0
+   },
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  }
+ }
+}

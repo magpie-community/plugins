@@ -461,12 +461,16 @@ export async function CloudflareWorkersAIPlugin(_input, options = {}) {
         // Name-flag the models Cloudflare serves only behind Workers Paid / AI
         // Gateway credits. No `free` flag: shared daily Neurons allowance is not
         // the same thing as a free model.
-        return Object.fromEntries(
+        const out = Object.fromEntries(
           Object.entries(models).map(([id, m]) => [
             id,
             PAID_ONLY_MODELS.has(id) ? { ...m, name: paidName(id, m.name) } : m,
           ]),
         );
+        // a list kept from before a failed read says so still, so magpie
+        // keeps the account's last good list and the models picked from it
+        if (models[Symbol.for("magpie.fellBack")] === true) out[Symbol.for("magpie.fellBack")] = true;
+        return out;
       },
     },
   };

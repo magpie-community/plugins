@@ -133,7 +133,8 @@ export class Quiet {
   fire() {
     const gap = Date.now() - this.since
     const what = this.heard + gap >= this.limits.quiet ? `${this.heartbeats} heartbeats and nothing else for ${Math.round((this.heard + gap) / 1000)} s` : `no message for ${Math.round(gap / 1000)} s`
-    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""} (try again)`
+    // Pi classifies streamed errors by message after the HTTP status is lost.
+    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""}; stream timed out (try again)`
     this.trace?.event("quiet", { heard: this.heard + gap, heartbeats: this.heartbeats })
     this.gone?.()
     this.stop({ status: 502, message: this.why })
@@ -565,6 +566,7 @@ export class StepCalls {
     this.started = new Set()
     this.execs = new Set() // the short strings of each exec's args: its tool_call_id among them
     this.partial = new Set() // calls the model is writing in this step
+    this.mcp = new Set() // MCP calls announced by a partial or started update
     this.byCursor = new Set()
     this.listedAfter = false // whether tool_requests_listed came after the latest call/update
   }
@@ -577,6 +579,8 @@ export class StepCalls {
     this.listedAfter = false
     const id = str(uf, 1)
     if (!id) return false
+    const call = field(uf, 2)
+    if (n !== 3 && call && this.parse(call.data).some((f) => f.num === 15)) this.mcp.add(id)
     if (n === 2) this.started.add(id)
     if (n === 7) this.partial.add(id)
     if (n !== 3) return false
@@ -606,6 +610,13 @@ export class StepCalls {
   get completed() {
     return this.byCursor.size
   }
+  // Announced MCP calls still awaiting an exec or a Cursor-side completion.
+  // A checkpoint can omit them while their execs are still on the way.
+  get pendingMcp() {
+    let n = 0
+    for (const id of this.mcp) if (!this.execs.has(id) && !this.byCursor.has(id)) n++
+    return n
+  }
   // writing is how many calls the step wrote (7) that are neither started
   // on the client, sent as an exec, nor completed by Cursor: a call of
   // Cursor's own still running, or one still to be sent
@@ -617,6 +628,7 @@ export class StepCalls {
   // nextStep starts the next step's count
   nextStep() {
     this.partial.clear()
+    this.mcp.clear()
     this.byCursor.clear()
     this.listedAfter = false
   }
@@ -1232,10 +1244,11 @@ class NativeSession {
   // When the count was sent before or between the step's calls, a mid-batch
   // checkpoint after an early call has only the calls sent so far in
   // pending_tool_calls and must not seal the batch early before the
-  // remaining calls arrive.
+  // remaining calls arrive. Even a count after a partial/started MCP update
+  // can precede its exec: a checkpoint omitting that call must wait for it.
   waitedOn(data) {
     const s = this.segment
-    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter) return
+    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter || this.stepCalls.pendingMcp) return
     if (pendingCalls(data) !== s.calls.length) return
     s.waitedOn = true
     this.sealBatch()

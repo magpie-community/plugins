@@ -8,6 +8,7 @@
 // stays as the last file had it; a search that fails writes nothing.
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve, posix } from "node:path"
+import { READ, entryOf, kindOf, named } from "./tagged-kind.mjs"
 
 const TOPIC = "magpie-plugin"
 const pkgName = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
@@ -18,8 +19,12 @@ if (!process.argv[2] || !existsSync(out)) {
 }
 const file = join(out, "tagged.json")
 let last = []
+// a file read another way (READ) is read again whole
+let lastRead = 0
 try {
-  last = JSON.parse(readFileSync(file, "utf8")).plugins ?? []
+  const was = JSON.parse(readFileSync(file, "utf8"))
+  last = was.plugins ?? []
+  lastRead = was.read ?? 1
 } catch {}
 const before = new Map(last.map((t) => [t.repo.toLowerCase(), t]))
 
@@ -75,22 +80,6 @@ const repoOf = (v) => {
   const m = /^https:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/#]+)/.exec(s)
   return m ? `${m[1]}/${m[2]}` : ""
 }
-const named = (e) => !!e && (typeof e !== "object" || Object.keys(e).length > 0)
-const pkgEntry = (exports, main) => {
-  const pick = (v) => {
-    if (typeof v === "string") return v
-    if (v && typeof v === "object") {
-      if ("." in v) return pick(v["."])
-      for (const k of ["bun", "import", "default", "node", "require"]) {
-        const s = pick(v[k])
-        if (s) return s
-      }
-    }
-    return ""
-  }
-  return pick(exports) || main || "index.js"
-}
-
 // the repository as magpie lists it, or null when it isn't a plugin magpie
 // could install; throws when GitHub or npm didn't answer
 async function read(it) {
@@ -113,12 +102,8 @@ async function read(it) {
   t.version = pj.version ?? ""
   const icon = ownIcon(pj.magpie?.icon)
   if (icon) t.icon = icon
-  const mg = pj.magpie ?? {}
-  if (!pj.main && !named(pj.exports)) {
-    if (String(mg.middleware ?? "").trim()) t.kind = "middleware"
-    else if (String(mg.agent ?? "").trim()) t.kind = "agent"
-    else if (String(mg.page?.file ?? "").trim()) t.kind = "page"
-  }
+  const kind = kindOf(pj)
+  if (kind) t.kind = kind
   // published to npm from this repository: npm's copy is installed
   let npmNames = false
   try {
@@ -134,10 +119,7 @@ async function read(it) {
   // installed from the repository, or from an npm copy that names no file,
   // the file it loads must be in the repository
   if (t.spec.startsWith("github:") || !npmNames) {
-    let entry = mg.middleware
-    if (t.kind === "agent") entry = mg.agent
-    else if (t.kind === "page") entry = mg.page?.file
-    else if (t.kind !== "middleware") entry = t.spec.startsWith("github:") ? pkgEntry(pj.exports, pj.main) : pkgEntry(null, "")
+    const entry = entryOf(pj, kind, t.spec.startsWith("github:"))
     if (posix.extname(entry ?? "") !== "") {
       try {
         await get(raw(posix.normalize("/" + entry).replace(/^\//, "")))
@@ -157,7 +139,7 @@ async function worker() {
   for (let it; (it = queue.shift()); ) {
     const was = before.get(it.full_name.toLowerCase())
     // read again only when pushed to; stars and the rest are the search's
-    if (was && was.pushed === it.pushed_at) {
+    if (was && was.pushed === it.pushed_at && lastRead === READ) {
       plugins.push({ ...was, stars: it.stargazers_count, description: it.description ?? "", ownerAvatar: it.owner.avatar_url })
       continue
     }
@@ -227,5 +209,5 @@ const sweep = (dir, rel) => {
 sweep(readmes, "")
 
 const same = JSON.stringify(last.map((t) => t.repo).sort()) === JSON.stringify(plugins.map((t) => t.repo).sort())
-writeFileSync(file, JSON.stringify({ version: 1, generated: new Date().toISOString(), plugins }))
+writeFileSync(file, JSON.stringify({ version: 1, read: READ, generated: new Date().toISOString(), plugins }))
 console.log(`${plugins.length} plugins, ${failed} unread${same ? "" : ", list changed"}`)

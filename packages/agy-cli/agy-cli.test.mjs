@@ -8,7 +8,7 @@ const dir = path.join(import.meta.dir, "test")
 const hook = path.join(dir, "cp-hook.mjs")
 
 function run(args, timeout) {
-  const result = Bun.spawnSync({ cmd: [process.execPath, ...args], cwd: dir, env: { ...process.env }, stdout: "pipe", stderr: "pipe", timeout })
+  const result = Bun.spawnSync({ cmd: [process.execPath, ...args], cwd: dir, env: { ...process.env, AGY_BRIDGE_STORED_SIGNIN: "skip" }, stdout: "pipe", stderr: "pipe", timeout })
   const output = result.stdout.toString() + result.stderr.toString()
   if (result.exitCode !== 0) console.error(output)
   return { code: result.exitCode, output }
@@ -19,14 +19,21 @@ for (const [name, mocks] of [
   ["compat.mjs", true],
   ["prefill.mjs", false],
   ["usage.mjs", true],
+  ["signin.mjs", false],
   ["catalog.mjs", false],
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
+  ["tool-summary.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
+  ["dropped-call.mjs", false],
   ["repeat-batch.mjs", false],
+  ["unmatched-results.mjs", false],
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
+  ["spare.mjs", false],
+  ["tools-listed.mjs", false],
+  ["concurrent-convs.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
@@ -52,6 +59,12 @@ test("test/smoke.mjs against a fake agy", () => {
 
 test("test/array-items-unit.mjs", () => {
   const { code, output } = run([path.join(dir, "array-items-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)
+
+test("test/documents-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "documents-unit.mjs")], 60_000)
   expect(output).toMatch(/ALL OK/)
   expect(code).toBe(0)
 }, 70_000)

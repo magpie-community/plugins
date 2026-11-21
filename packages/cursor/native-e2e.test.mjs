@@ -1874,7 +1874,11 @@ for (const path of ["native", "stateless"]) {
     const sse = await sseOf(response)
     expect(Date.now() - started).toBeLessThan(1000)
     expect(sse).toContain("native planning one")
-    expect(sse).toContain("Cursor went quiet: no message for 0 s, its last message thinking (try again)")
+    expect(sse).toContain("Cursor went quiet: no message for 0 s, its last message thinking; stream timed out (try again)")
+    const errors = sse.split("\n\n").filter((s) => s.startsWith("data: {")).map((s) => JSON.parse(s.slice(6)).error).filter(Boolean)
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toMatch(piRetries)
+    expect(errors[0].message).toMatch(magpiePassing)
     expect(sse).not.toContain("[DONE]")
     await until(() => a.closedStreams === 1)
   })
@@ -1889,6 +1893,11 @@ for (const path of ["native", "stateless"]) {
     const sse = await sseOf(response)
     const [, beats] = sse.match(/Cursor went quiet: (\d+) heartbeats and nothing else for \d+ s, its last message thinking/) ?? []
     expect(Number(beats)).toBeGreaterThan(0)
+    const errors = sse.split("\n\n").filter((s) => s.startsWith("data: {")).map((s) => JSON.parse(s.slice(6)).error).filter(Boolean)
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toMatch(piRetries)
+    expect(errors[0].message).toMatch(magpiePassing)
+    expect(sse).not.toContain("[DONE]")
     await until(() => a.closedStreams === 1)
   })
 }
@@ -1912,8 +1921,8 @@ for (const path of ["native", "stateless"]) {
       const chat = initial({ stream: true, messages: [{ role: "user", content: "prompt " + secret }] })
       const sse = await sseOf(await a.ask(account, chat, { input }))
       expect(sse).toMatch(path === "native"
-        ? /Cursor went quiet: \d+ heartbeats and nothing else for \d+ s, its last message checkpoint #1 of the Run, the first of step 1, after blob request ×2, thinking \(try again\)/
-        : /Cursor went quiet: \d+ heartbeats and nothing else for \d+ s, its last message checkpoint #1 of the Run, after blob request ×2, thinking \(try again\)/)
+        ? /Cursor went quiet: \d+ heartbeats and nothing else for \d+ s, its last message checkpoint #1 of the Run, the first of step 1, after blob request ×2, thinking; stream timed out \(try again\)/
+        : /Cursor went quiet: \d+ heartbeats and nothing else for \d+ s, its last message checkpoint #1 of the Run, after blob request ×2, thinking; stream timed out \(try again\)/)
       await until(() => a.closedStreams === 1)
       const files = readdirSync(join(dir, "cursor-traces"))
       expect(files).toHaveLength(1)

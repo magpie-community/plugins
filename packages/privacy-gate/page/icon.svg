@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="ShyPie — complete pie holding a shield with a gold chevron">
+  <rect width="1024" height="1024" fill="#EAF7F0"/>
+  <g>
+  <path d="M 512 212 Q 574.82 196.19 626.81 234.84 Q 690.89 244.27 724.13 299.87 Q 779.73 333.11 789.16 397.19 Q 827.81 449.18 812 512 Q 827.81 574.82 789.16 626.81 Q 779.73 690.89 724.13 724.13 Q 690.89 779.73 626.81 789.16 Q 574.82 827.81 512 812 Q 449.18 827.81 397.19 789.16 Q 333.11 779.73 299.87 724.13 Q 244.27 690.89 234.84 626.81 Q 196.19 574.82 212 512 Q 196.19 449.18 234.84 397.19 Q 244.27 333.11 299.87 299.87 Q 333.11 244.27 397.19 234.84 Q 449.18 196.19 512 212 Z" fill="#F2B35A" stroke="#0D4B4E" stroke-width="18" stroke-linejoin="round"/>
+  <circle cx="512" cy="512" r="250" fill="#FFF2D8" stroke="#0D4B4E" stroke-width="14"/>
+  <g fill="none" stroke="#0D4B4E" stroke-width="18" stroke-linecap="round">
+    <path d="M 395 426 C 410 452 442 452 458 426"/>
+    <path d="M 566 426 C 582 452 614 452 630 426"/>
+  </g>
+  <ellipse cx="335" cy="470" rx="36" ry="21" fill="#F08074"/>
+  <ellipse cx="689" cy="470" rx="36" ry="21" fill="#F08074"/>
+  <path d="M 512 486 L 700 520 C 724 640 646 742 512 810 C 378 742 300 640 324 520 Z" fill="#0D4B4E" stroke="#08383B" stroke-width="18" stroke-linejoin="round"/><path d="M 360 585 L 512 645 L 664 585 L 664 635 L 512 695 L 360 635 Z" fill="#F2B35A" stroke="#08383B" stroke-width="12" stroke-linejoin="round"/>
+  <g fill="#FFF2D8" stroke="#0D4B4E" stroke-width="14" stroke-linejoin="round">
+    <path d="M 310 610 C 275 620 265 670 292 695 C 318 718 350 704 354 675 C 357 654 345 635 330 622 Z"/>
+    <path d="M 714 610 C 749 620 759 670 732 695 C 706 718 674 704 670 675 C 667 654 679 635 694 622 Z"/>
+  </g>
+  
+ </g>
+</svg>

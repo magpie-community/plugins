@@ -1,12 +1,13 @@
 {
   "name": "@magpie-community/opencode-gumloop-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Gumloop (gumloop.com) with your API key and user id in OpenCode and magpie: per-account models, and a credit estimate Gumloop's API doesn't give",
   "homepage": "https://www.gumloop.com/",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { ".": "./opencode2.mjs" },
   "files": [
+    "proc.mjs",
     "index.mjs",
     "gumloop.mjs",
     "opencode.mjs",

@@ -12,6 +12,7 @@ function fakeJwt(claims) {
 
 let server = null
 let tempDir = null
+let topDir = null
 
 // No test may reach the real network: a test that starts no server points at a
 // port nothing listens on.
@@ -19,6 +20,9 @@ let tempDir = null
 // depend on the network — review #486, point 1.)
 beforeEach(() => {
   process.env.RACCOON_MAIN_SITE_URL = "http://127.0.0.1:9"
+  // the top balance a past host saw is kept on disk: never the real ~/.config
+  topDir = mkdtempSync(join(tmpdir(), "raccoon-top-"))
+  process.env.RACCOON_TOP_BALANCE_FILE = join(topDir, "raccoon-top-balance.json")
 })
 
 afterEach(() => {
@@ -30,6 +34,10 @@ afterEach(() => {
   }
   delete process.env.RACCOON_MAIN_SITE_URL
   delete process.env.RACCOON_BOX_AGENT_CONFIG_DIR
+  delete process.env.RACCOON_TOP_BALANCE_FILE
+  if (topDir) rmSync(topDir, { recursive: true, force: true })
+  topDir = null
+  _internal.topBalance.clear()
   _internal.renewed.clear()
   _internal.renewing.clear()
 })
@@ -343,13 +351,25 @@ test("usage reports Credits window when unexpired bills account for total grante
     expires: Date.now() + 3600_000,
   }))
   expect(u.balance).toBeUndefined()
-  expect(u.windows.length).toBe(1)
+  // the daily pool (daily_points: 519) is reported on its own line first,
+  // the aggregate beside it, display-only
+  expect(u.windows.length).toBe(2)
   expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 1581,
+    limit: 2100,
+    display: "1581 / 2100",
+    unit: "credits",
+    runsOutAt: "2029-10-17T15:59:59.000Z",
+    runsOut: 300,
+  })
+  expect(u.windows[1]).toMatchObject({
     name: "Credits",
     amount: 81,
     limit: 9600,
     display: "81 / 9600",
     unit: "credits",
+    aside: true,
     runsOutAt: "2029-10-17T15:59:59.000Z",
     runsOut: 300,
   })
@@ -381,6 +401,93 @@ test("usage asks for income bills so a busy account keeps its Credits window", a
   expect(u.balance).toBeUndefined()
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 1200, limit: 6300, display: "1200 / 6300" })
   expect(asked).toEqual([{ type: "income", limit: 200 }])
+})
+
+test("the daily pool reads used / limit like the aggregate, and a swept-late grant shows in it", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const now = Date.now()
+  startServer({
+    // daily_points (1,956) also holds remainders of grants past expire_at
+    // that the vendor has not swept yet; the bills only know about the live ones
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({
+        code: 0,
+        data: { available_points: 9500, daily_points: 1956, reward_points: 9000, monthly_points: 0, topup_points: 0 },
+      }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d2", biz_type: "daily_grant", points: 300, expire_at: iso(now + day) },
+            { bill_id: "d1", biz_type: "daily_grant", points: 300, expire_at: iso(now - day) },
+            { bill_id: "r1", biz_type: "reward_grant", points: 9000 },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  // remaining 1,956 of 2,100: 144 used, same direction as the Credits line
+  expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 144,
+    limit: 2100,
+    display: "144 / 2100",
+    unit: "credits",
+    runsOutAt: new Date(Date.parse(iso(now + day))).toISOString(),
+    runsOut: 300,
+  })
+})
+
+test("a daily_points over 2,100 raises the pool's limit instead of reading negative", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    // a vendor granting 500/day (2,500 after 5 days) would break a hard 2,100
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({
+        code: 0,
+        data: { available_points: 9500, daily_points: 2500, reward_points: 9000, monthly_points: 0, topup_points: 0 },
+      }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d1", biz_type: "daily_grant", points: 500, expire_at: iso(Date.now() + day) },
+            { bill_id: "r1", biz_type: "reward_grant", points: 9000 },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 0,
+    limit: 2500,
+    display: "0 / 2500",
+  })
+})
+
+test("no daily_points in the balance keeps the card as it was (Credits only, no aside)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 9519 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: { items: [{ bill_id: "r1", biz_type: "reward_grant", points: 9600 }] },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.windows.length).toBe(1)
+  expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 81, limit: 9600 })
+  expect(u.windows[0].aside).toBeUndefined()
 })
 
 test("usage falls back to paged bills when the vendor refuses type=income (plugins #223)", async () => {
@@ -446,7 +553,11 @@ test("setting_info's balance fills the Credits window the bills account for (plu
   const hooks = await RaccoonAuthPlugin({ client: {} })
   const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
   expect(u.plan).toBe("Free")
+  // the fallback path has no daily_points: Credits stays the only window and
+  // keeps its routing weight (no aside)
+  expect(u.windows.length).toBe(1)
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 81, limit: 9600 })
+  expect(u.windows[0].aside).toBeUndefined()
 })
 
 // The balance in plugins #936's screenshot (9,623 credits) is more than the
@@ -579,6 +690,54 @@ test("spending under a balance over every grant counts as used (plugins #1030)",
   grants.unshift({ bill_id: "g7", biz_type: "daily_grant", points: 300, expire_at: "2099-11-18T23:59:59+08:00" })
   avail = 10240
   expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 10240 })
+})
+
+// plugins #1182: what was spent read 0 again after every restart, since the
+// highest balance seen was kept in memory only.
+test("what was spent survives a restart (plugins #1182)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  let avail = 9965
+  const grants = [
+    { bill_id: "g2", biz_type: "daily_grant", points: 300, expire_at: "2099-11-17T23:59:59+08:00" },
+    { bill_id: "g1", biz_type: "reward_grant", points: 9600 },
+  ]
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: avail } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: grants } }),
+  })
+  const read = async (accountId = "Raccoon-1182") => {
+    const hooks = await RaccoonAuthPlugin({ client: {} })
+    return hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId }))
+  }
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 9965 })
+  avail = 9940
+  expect((await read()).windows[0]).toMatchObject({ amount: 25, limit: 9965 })
+  _internal.topBalance.clear() // the host restarts
+  expect((await read()).windows[0]).toMatchObject({ amount: 25, limit: 9965, display: "25 / 9965" })
+  // another account is still counted on its own
+  expect((await read("Raccoon-other")).windows[0]).toMatchObject({ amount: 0, limit: 9940 })
+  // a new grant starts the count again, on disk too
+  grants.unshift({ bill_id: "g3", biz_type: "daily_grant", points: 300, expire_at: "2099-11-18T23:59:59+08:00" })
+  avail = 10240
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 10240 })
+  avail = 10230
+  _internal.topBalance.clear()
+  expect((await read()).windows[0]).toMatchObject({ amount: 10, limit: 10240 })
+})
+
+test("an unreadable top-balance file starts from the balance read (plugins #1182)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(process.env.RACCOON_TOP_BALANCE_FILE, "{not json")
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 9965 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({ code: 0, data: { items: [{ bill_id: "g1", biz_type: "reward_grant", points: 9900 }] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId: "A" }))
+  expect(u.windows[0]).toMatchObject({ amount: 0, limit: 9965 })
 })
 
 test("a readable balance asks setting_info nothing (plugins #520)", async () => {
@@ -1390,4 +1549,31 @@ test("a desktop seat's refresh gives nothing, even when user_info answers a phon
     expires: Date.now() + 1_000,
   })
   expect(got).toBeUndefined()
+})
+
+// bitssly on X: a list the vendor didn't give for the account is marked as
+// fallen back, so magpie never routes by the plugin's defaults as if they
+// were the account's plan (they lack sn-kimi-k3-1-pro).
+test("a model list the vendor refused is marked fallen back", async () => {
+  startServer({
+    "/api/web/llm/v2/model_catalog": () => Response.json({ code: 200001, message: "forbidden" }, { status: 403 }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const given = { "sn-kimi-k3": { id: "sn-kimi-k3" } }
+  const tok = fakeJwt({ iss: "74350b", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const got = await hooks.provider.models({ models: given }, { auth: { type: "oauth", access: tok, refresh: "r", expires: Date.now() + 3_600_000 } })
+  expect(Object.keys(got)).toEqual(["sn-kimi-k3"])
+  expect(got[Symbol.for("magpie.fellBack")]).toBe(true)
+})
+
+test("a model list the vendor gave is the account's own", async () => {
+  startServer({
+    "/api/web/llm/v2/model_catalog": () =>
+      Response.json({ code: 0, data: { categories: [{ type: "chat", models: [{ name: "sn-kimi-k3-1-pro", description: "Kimi-K3.1-Pro", billing_multiplier: 1 }] }] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const tok = fakeJwt({ iss: "74350b", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const got = await hooks.provider.models({ models: {} }, { auth: { type: "oauth", access: tok, refresh: "r", expires: Date.now() + 3_600_000 } })
+  expect(Object.keys(got)).toContain("sn-kimi-k3-1-pro")
+  expect(got[Symbol.for("magpie.fellBack")]).toBeUndefined()
 })

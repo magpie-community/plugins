@@ -476,11 +476,19 @@
 
   // ---- the day menu: the days that had calls, newest first ----
   const menu = $("menu");
-  function openMenu() {
+  let menuOpening = 0;
+  async function openMenu() {
     const d = state.day;
     if (!d) return;
-    const days = (d.days || []).slice().reverse().slice(0, 120);
-    if (!days.some((x) => x.date === d.today)) days.unshift({ date: d.today, tokens: 0 });
+    // a day or span in the past knows only the days up to it: the days
+    // after it come from a read of today's
+    let latest = d.days;
+    if (d.date !== d.today) {
+      const n = ++menuOpening;
+      try { latest = (await magpie.read("usage:day", { date: "", tz: zone })).days; } catch { latest = null; }
+      if (n !== menuOpening || state.day !== d) return;
+    }
+    const days = V.menuDays(d.days, d.today, latest);
     menu.replaceChildren(...days.map((x) => {
       const li = document.createElement("li");
       li.setAttribute("role", "option");
@@ -501,6 +509,7 @@
     menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }
   function closeMenu() {
+    menuOpening++;
     if (menu.hidden) return;
     $("date").setAttribute("aria-expanded", "false");
     menu.classList.add("closing");
@@ -637,7 +646,19 @@
       img.alt = "";
       img.src = state.bg.image;
       b.append(img);
-      list.push(b);
+      // the reader's picture can go again: a badge at its corner, shown on
+      // hover or focus, and always where there is no hover (netube99 on X)
+      const own = document.createElement("span");
+      own.className = "sw-own";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "sw-del";
+      del.id = "bg-del";
+      del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg>';
+      del.setAttribute("aria-label", t.removeImage);
+      del.title = t.removeImage;
+      own.append(b, del);
+      list.push(own);
     }
     const add = document.createElement("button");
     add.type = "button";
@@ -682,6 +703,10 @@
   function openPop() {
     if (!grid.childElementCount) buildGrid();
     pop.hidden = false;
+    // the menu hangs from the button's right edge; where the toolbar wrapped
+    // and the button sits at the left, that runs off the page, so it hangs
+    // from the button's left edge instead
+    pop.classList.toggle("left", $("bg").getBoundingClientRect().right < pop.offsetWidth + 8);
     pop.classList.remove("closing");
     pop.classList.add("opening");
     $("bg").setAttribute("aria-expanded", "true");
@@ -698,6 +723,13 @@
     if (pop.hidden || pop.classList.contains("closing")) openPop(); else closePop();
   });
   grid.addEventListener("click", (e) => {
+    if (e.target.closest("#bg-del")) {
+      // the grid is drawn again under the click, so it isn't read as a
+      // click outside the menu
+      e.stopPropagation();
+      dropPicture();
+      return;
+    }
     const b = e.target.closest(".sw");
     if (!b) return;
     if (b.id === "bg-add") $("file").click();
@@ -742,6 +774,12 @@
     } catch (e) {
       status(`${V.text(lang).imageFailed}: ${e?.message || e}`, true);
     }
+  }
+  // the picture leaves the saved options; a card drawn on it goes back to
+  // the default backdrop (norm), and focus stays in the menu
+  function dropPicture() {
+    pick({ image: "" });
+    buildGrid().then(() => $("bg-add")?.focus());
   }
   $("file").addEventListener("change", (e) => {
     usePicture(e.target.files?.[0]);
