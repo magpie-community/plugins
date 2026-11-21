@@ -242,6 +242,26 @@ export async function accountOf(token, request = fetch) {
 const PROJECT_CONCURRENCY = 6
 const PROJECT_TIMEOUT = 15000
 
+// Distinguish positive "ENABLED" and "DISABLED" verdicts from "UNKNOWN"
+// (403/429/5xx, timeout, or missing state) so an explicit --project is refused
+// only when Service Usage positively reports DISABLED, while shared/auto
+// candidates still require ENABLED. The token and body stay out of errors.
+async function vertexServiceState(token, projectId, request = fetch) {
+  try {
+    const probe = await request(
+      `https://serviceusage.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/services/aiplatform.googleapis.com`,
+      { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(PROJECT_TIMEOUT) },
+    )
+    if (!probe.ok) return "UNKNOWN"
+    const service = await probe.json()
+    if (service?.state === "ENABLED") return "ENABLED"
+    if (service?.state === "DISABLED") return "DISABLED"
+    return "UNKNOWN"
+  } catch {
+    return "UNKNOWN"
+  }
+}
+
 async function usableProjects(token, request = fetch) {
   const response = await request("https://cloudresourcemanager.googleapis.com/v1/projects", {
     headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(PROJECT_TIMEOUT),
@@ -259,17 +279,11 @@ async function usableProjects(token, request = fetch) {
     while (next < active.length) {
       const index = next++
       const project = active[index]
-      const enabled = await request(
-        `https://serviceusage.googleapis.com/v1/projects/${encodeURIComponent(project.projectId)}/services/aiplatform.googleapis.com`,
-        { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(PROJECT_TIMEOUT) },
-      )
-        .then((probe) => (probe.ok ? probe.json() : undefined))
-        .then((service) => service?.state === "ENABLED")
-        .catch(() => false)
+      const state = await vertexServiceState(token, project.projectId, request)
       usable[index] = {
         projectId: project.projectId,
         name: typeof project.name === "string" && project.name ? project.name : project.projectId,
-        vertexEnabled: enabled === true,
+        vertexEnabled: state === "ENABLED",
       }
     }
   }
@@ -401,10 +415,13 @@ export function tokenProvider(options = {}, run = runGcloud, request = fetch) {
 // nothing to poll and nothing to guess at.
 export async function beginAdcLogin(options = {}, run = spawn) {
   // The project is handed over as gcloud's own --project, which it writes to
-  // ADC as the quota project, so later calls bill the project this plugin
-  // serves rather than whatever gcloud last had active. --quiet is left off:
-  // it is what suppresses the consent URL that is read here.
-  const project = options.project || process.env.GOOGLE_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT
+  // ADC as the quota project. Only an explicit per-invocation project is
+  // passed. A provider-wide row project and GOOGLE_VERTEX_PROJECT /
+  // GOOGLE_CLOUD_PROJECT are shared candidates, chosen after the account is
+  // known; writing them here would stamp one account's project into another's
+  // application_default_credentials.json. --quiet is left off: it is what
+  // suppresses the consent URL that is read here.
+  const project = typeof options.project === "string" && options.project ? options.project : undefined
   const args = ["auth", "application-default", "login"]
   if (project) args.push(`--project=${project}`, `--billing-project=${project}`)
   // gcloud writes ADC before it looks for a quota project, and that lookup
@@ -641,27 +658,60 @@ const consoleUrl = (account, project) => "https://console.cloud.google.com/?hl=e
 // There is nothing to save, and the message is what they are shown.
 const stopped = (message) => Object.assign(new Error(message), { stopped: true })
 
-// The project a new ADC will serve. Magpie cannot ask the person anything once
-// authorize() has started, and the project list only exists after consent, so
-// there is nowhere to ask and nothing to ask with: the first project the
-// account already has Vertex AI turned on in is taken as it is. The order is
-// Cloud Resource Manager's, which keeps the answer stable between two sign-ins
-// of the same account.
+// A value the caller actually set. Empty is unset. Anything else, including a
+// numeric project number, is checked: an invalid id fails the sign-in instead
+// of being skipped and filed under some other project.
+function configuredProject(value) {
+  if (value === undefined || value === "") return undefined
+  return validateProject(value)
+}
+
+// Invalid project ids fail before gcloud or Chrome run, so a bad id leaves no
+// staged ADC directory. An explicit project, the provider row's project, and
+// each machine-wide variable that is set are all checked: a variable that is
+// not the one this sign-in will use is still configuration, and a bad one is
+// not ignored.
+function assertConfiguredProjects(options) {
+  configuredProject(options.project)
+  configuredProject(options.rowProject)
+  configuredProject(process.env.GOOGLE_VERTEX_PROJECT)
+  configuredProject(process.env.GOOGLE_CLOUD_PROJECT)
+}
+
+// Shared by every account on the machine, in the order they are tried. They
+// are not collapsed to one string first: a GOOGLE_VERTEX_PROJECT this account
+// cannot use still leaves GOOGLE_CLOUD_PROJECT to be tried. Each entry is
+// validated, so a non-string or a display name fails the sign-in.
+function sharedProjectIds(options) {
+  const ids = []
+  for (const value of [options.rowProject, process.env.GOOGLE_VERTEX_PROJECT, process.env.GOOGLE_CLOUD_PROJECT]) {
+    const project = configuredProject(value)
+    if (project) ids.push(project)
+  }
+  return ids
+}
+
+// The project a new ADC will serve. Magpie cannot ask once authorize() has
+// started, and the project list only exists after consent, so the choice is
+// made here. The order of that list is Cloud Resource Manager's, which keeps
+// the same account on the same project across two sign-ins.
 //
-// An explicit project wins and needs no list. `picked` tells the caller the
-// sign-in chose this one itself, which is what the editor's field then shows.
-function chooseProject({ projects, who, options = {} }) {
-  const explicit = options.project || process.env.GOOGLE_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT
-  if (explicit) {
-    const project = validateProject(explicit)
-    // A configured project needs no list, but a list that was read may say the
-    // API is off. Refusing then is the same clear verdict as the empty case;
-    // a project the list does not mention is not second-guessed.
-    const listed = (projects ?? []).find((candidate) => candidate.projectId === project)
-    if (listed && listed.vertexEnabled !== true) {
-      throw stopped(`${project} does not have Vertex AI enabled, so nothing was registered. Enable the Vertex AI API (aiplatform.googleapis.com) in ${project} in Cloud Console, then sign in again`)
+// The provider row's project and the machine-wide variables are tried in order
+// and kept only when this account can use Vertex there. One that belongs to
+// another account is skipped, and the sign-in continues with the next candidate
+// or with this account's own first Vertex project. It does not abort the sign-in.
+async function chooseProject({ projects, who, options = {}, token, request = fetch }) {
+  for (const candidate of sharedProjectIds(options)) {
+    const listed = (projects ?? []).find((project) => project.projectId === candidate)
+    if (listed) {
+      if (listed.vertexEnabled === true) return candidate
+      continue
     }
-    return project
+    // Resource Manager can answer 200 with no projects: a least-privilege
+    // account, or an organization past the first page. The project may still
+    // be one this account serves. Accept it only when Service Usage itself
+    // says Vertex is enabled; 403, 404 and DISABLED are the next candidate.
+    if (await vertexServiceState(token, candidate, request) === "ENABLED") return candidate
   }
   const account = who ? ` for ${who}` : ""
   const usable = (projects ?? []).filter((project) => project.vertexEnabled === true)
@@ -733,6 +783,10 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
   const timer = setTimeout(() => { void close().catch(() => {}) }, limit)
   timer.unref?.()
   const result = (async () => {
+    // A bad project id stops the sign-in before gcloud, Chrome, or a staged
+    // ADC directory. The row's project and each set machine-wide variable are
+    // checked too, not only the one this invocation will keep.
+    assertConfiguredProjects(options)
     const account = options.account
     const pinned = Boolean(options.cloudsdkConfig && !account)
     const creating = wanted !== "gcloud" && !pinned
@@ -757,7 +811,14 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
     // selection failed. It neither adds another ADC nor needs another consent
     // window; the host can save its project once the caller supplies it.
     if (pinned && wanted !== "gcloud") {
-      const found = await resolveIdentity({ ...options, authMode: "adc" })
+      // A pinned import is not a new account, so the row's project is still
+      // this invocation's project. A fresh sign-in treats that row as shared.
+      const named = options.project ?? options.rowProject
+      const found = await resolveIdentity({
+        ...options,
+        authMode: "adc",
+        ...(named !== undefined && named !== "" ? { project: named } : {}),
+      })
       const owner = await identityOf(await tokenProvider(found)())
       if (!owner?.subject) throw stopped("The existing ADC was kept, but its Google subject could not be confirmed; no account was recorded")
       return { ...found, ...owner, creditsSession: "unavailable", warning: "Existing ADC imported; the Chrome Console session was not checked" }
@@ -773,7 +834,9 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
         await mkdir(root, { recursive: true, mode: 0o700 })
         directory = await mkdtemp(join(root, ".adc-pending-"))
         createdDirectory = true
-        login = await beginAdcLogin({ ...options, cloudsdkConfig: directory })
+        // Quota project is only an explicit --project. rowProject and the
+        // machine-wide variables are decided below, once the account is known.
+        login = await beginAdcLogin({ ...options, project: options.project, cloudsdkConfig: directory })
       }
       const consentUrl = login ? await login.url : undefined
       if (cancelled) throw stopped("Google sign-in was stopped; no new account was saved")
@@ -843,29 +906,40 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
           throw stopped(`The consent page approved ${adcEmail}, not ${account}; no new account or ADC was saved. Sign in again and choose ${account} on Google's consent page.`)
         }
       }
-      // A new ADC arrives with no project to serve yet. The one it is filed
-      // with is the first of the account's projects with Vertex AI already
-      // turned on; an account with none is not registered at all, and the
-      // window closes on the way out as it does on every other failure.
+      // A new ADC arrives with no project to serve yet. An explicit --project
+      // is probed directly via Service Usage (without scanning unrelated CRM
+      // projects) and refused only when Service Usage positively reports
+      // DISABLED; 403/429/5xx/timeouts still keep the explicit project. Without
+      // --project, Cloud Resource Manager lists this account's projects, and
+      // shared candidates (row project, GOOGLE_VERTEX_PROJECT,
+      // GOOGLE_CLOUD_PROJECT) are kept only when this account can use Vertex
+      // there (or when CRM cannot be read).
       let project
       if (creating) {
-        const named = options.project || process.env.GOOGLE_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT
         try {
-          if (named) {
-            // Nothing to ask and no list worth reading: an explicit project is
-            // the answer, whether or not its API probe would have agreed.
-            project = validateProject(named)
-          } else {
-            const token = await tokenProvider({ authMode: "adc", cloudsdkConfig: directory })()
+          const token = await tokenProvider({ authMode: "adc", cloudsdkConfig: directory })()
+          if (cancelled) throw stopped("Google sign-in was stopped; no new account was saved")
+          const explicit = configuredProject(options.project)
+          if (explicit) {
+            const state = await vertexServiceState(token, explicit)
             if (cancelled) throw stopped("Google sign-in was stopped; no new account was saved")
+            if (state === "DISABLED") {
+              throw stopped(`${explicit} does not have Vertex AI enabled, so nothing was registered. Enable the Vertex AI API (aiplatform.googleapis.com) in ${explicit} in Cloud Console, then sign in again`)
+            }
+            project = explicit
+          } else {
             const { projects, error } = await listUsableProjects(token)
             if (cancelled) throw stopped("Google sign-in was stopped; no new account was saved")
-            if (!projects.some((project) => project.vertexEnabled) && error) {
-              // An unreadable list is not an empty one: saying "create a
-              // project" would be advice about a list this run never saw.
-              throw stopped(`The Google Cloud projects for ${adcEmail} could not be listed (${error}), so nothing was registered. Sign in again, or set the project explicitly with GOOGLE_VERTEX_PROJECT`)
+            if (error) {
+              // An unreadable list is not an empty one. Try shared candidates in
+              // the same order as a readable list so a token that cannot call
+              // Resource Manager still signs in.
+              const shared = sharedProjectIds(options)
+              if (shared.length) project = shared[0]
+              else throw stopped(`The Google Cloud projects for ${adcEmail} could not be listed (${error}), so nothing was registered. Sign in again, or set the project explicitly with GOOGLE_VERTEX_PROJECT`)
+            } else {
+              project = await chooseProject({ projects, who: adcEmail, options, token })
             }
-            project = chooseProject({ projects, who: adcEmail, options })
           }
         } catch (failure) {
           // Nothing was registered: undo exactly what this run wrote.
@@ -881,11 +955,17 @@ export async function startLogin(options = {}, openWindow = openSignInWindow) {
         directory = own
       }
       try {
+        // A new account takes the project just chosen. A pinned import or an
+        // explicit gcloud sign-in has no such choice: its own --project wins,
+        // and the provider row's project fills that only when this invocation
+        // did not name one. A fresh sign-in must not do that, or a row another
+        // account cannot use would be filed as this account's project.
+        const named = project || (creating ? undefined : (options.project ?? options.rowProject))
         found = await resolveIdentity({
           ...options,
           // The chosen project is this sign-in's answer, so it is handed to the
           // resolver rather than guessed at from Console or gcloud.
-          ...(project ? { project } : {}),
+          ...(named !== undefined && named !== "" ? { project: named } : {}),
           ...(creating ? { authMode: "adc", account: adcEmail } : {}),
           ...(directory ? { cloudsdkConfig: directory } : {}),
         })
