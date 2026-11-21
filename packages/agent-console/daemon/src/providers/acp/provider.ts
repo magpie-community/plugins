@@ -99,7 +99,7 @@ export function createAcpProvider(cfg: AcpProviderConfig): Provider {
         return { available: false, reason: r.reason, installHint: cfg.installHint };
       }
       let version: string | undefined;
-      const versionArgs = cfg.id === "devin" ? ["version"] : ["cursor", "opencode"].includes(cfg.id) ? ["--version"] : null;
+      const versionArgs = cfg.id === "devin" ? ["version"] : ["cursor", "opencode", "trae"].includes(cfg.id) ? ["--version"] : null;
       try {
         if (versionArgs) {
           // Only the internal prefix: the user's extra args are meant for the ACP command, not for --version

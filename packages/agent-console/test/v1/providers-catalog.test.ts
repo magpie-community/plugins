@@ -5,7 +5,7 @@ import { isProviderEnabled } from "../../daemon/src/providers/enabled.js";
 import type { Settings } from "../../daemon/src/store/settings.js";
 
 describe("provider catalog (phase one)", () => {
-  it("fixed set of 8 Providers", () => {
+  it("fixed set of 9 Providers (trae experimental)", () => {
     expect(PROVIDER_CATALOG.map((p) => p.id)).toEqual([
       "claude",
       "codex",
@@ -15,8 +15,10 @@ describe("provider catalog (phase one)", () => {
       "pi",
       "devin",
       "dsh",
+      "trae",
     ]);
-    expect(PROVIDER_CATALOG.every((p) => p.status === "verified")).toBe(true);
+    expect(PROVIDER_CATALOG.filter((p) => p.status === "verified")).toHaveLength(8);
+    expect(PROVIDER_CATALOG.find((p) => p.id === "trae")?.status).toBe("experimental");
   });
 
   it("initProviders registers every catalog entry", () => {
@@ -32,6 +34,8 @@ describe("provider catalog (phase one)", () => {
     expect(isProviderEnabled(none, "cursor")).toBe(true);
     expect(isProviderEnabled(none, "devin")).toBe(true);
     expect(isProviderEnabled(none, "mock")).toBe(true);
+    // trae is experimental: off until the user turns it on
+    expect(isProviderEnabled(none, "trae")).toBe(false);
     const s = { providerEnabled: { claude: false, devin: true } } as unknown as Settings;
     expect(isProviderEnabled(s, "claude")).toBe(false);
     expect(isProviderEnabled(s, "devin")).toBe(true);
