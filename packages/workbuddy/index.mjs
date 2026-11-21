@@ -3703,6 +3703,16 @@ function usageOf(sum, plan, site) {
   }
   const total = mine.total + extra.total
   if (bags > 0 && (total === 0 || left > 0)) out.windows.push({ name: "Prepaid credits", balance: left, display: `${compact(left)} credits`, unit: "credits" })
+  // Local customization: report Total credits first. Stable sort keeps every
+  // other window in the order this function produced it.
+  {
+    const order = ["Total credits", "Credits", "Extra credits", "Prepaid credits"]
+    const rank = (w) => {
+      const i = order.indexOf(w?.name)
+      return i < 0 ? order.length : i
+    }
+    out.windows.sort((a, b) => rank(a) - rank(b))
+  }
   return out
 }
 
@@ -4888,6 +4898,18 @@ function makePlugin(site) {
               const w = rows && freeWindowOf(rows, account, Date.now(), win)
               if (w) out.windows.push(w)
             }
+          }
+          // Local customization: put the whole-account total first, so the
+          // Usage card and its curve open on "Total credits" when the UI
+          // follows the plugin's window order. Stable sort keeps every other
+          // window in the order the plugin produced it.
+          {
+            const order = ["Total credits", "Credits", "Extra credits", "Prepaid credits"]
+            const rank = (w) => {
+              const i = order.indexOf(w?.name)
+              return i < 0 ? order.length : i
+            }
+            out.windows.sort((a, b) => rank(a) - rank(b))
           }
           return { ...out, signIn: said }
         } catch (e) {
