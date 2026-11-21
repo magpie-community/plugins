@@ -4,7 +4,7 @@
 
 npm 包名：[`opencode-claude-code-ua`](https://www.npmjs.com/package/opencode-claude-code-ua)。供应商 ID：`ua-pro`。无 npm 运行依赖。
 
-> GitHub 版 **0.3.13** 新增 `Claude Code @2（CLI 2.1.329）`。要安装这个精确版本，在 Magpie 手动添加框填写 `github:1466109846/ua-pro#v0.3.13`。管理页侧栏显示实际运行的插件版本。[更新日志](CHANGELOG.md)
+> GitHub 版 **0.3.14** 修复独立供应商移除后仍占用面板的问题，支持原生登录时选择 Web 模板版本，并兼容 AnyRouter 签到。要安装此版本，在 Magpie 手动添加框填写 `github:1466109846/ua-pro#v0.3.14`。管理页侧栏显示实际运行的插件版本。[更新日志](CHANGELOG.md)
 
 ## 操作入口索引
 
@@ -31,7 +31,7 @@ magpie plugin add opencode-claude-code-ua
 magpie plugin login ua-pro
 ```
 
-首次配置时，点击插件的 **登录**，选择 **连接上游 API key**填写地址和 Key，或选择 **打开 UA PRO 管理**进入连接和模板管理页。
+首次配置时，点击插件的 **登录 → 连接上游 API key**，按顺序填写上游地址、API key，再选择请求模板。列表从 Web 管理页的**模板库**读取，包含自定义模板和已保存的版本。选择具体版本会将它绑定到这次登录的账号。要沿用插件的默认规则，选择 **自动**。
 
 ### 已登录后再次管理或添加账号
 
@@ -39,7 +39,7 @@ magpie plugin login ua-pro
 
 1. 打开 Magpie **模型 → 供应商**，点击 **UA PRO**。
 2. 在账号区域点击 **添加另一个 UA PRO 账号**（添加账号入口）。
-3. 选择 **打开 UA PRO 管理**，可管理已有连接、模板或添加新连接；选择 **连接上游 API key**，则直接填写另一个账号的地址和 Key。
+3. 选择 **打开 UA PRO 管理**可管理已有连接和模板。选择 **连接上游 API key**可为新账号填写地址和 Key，再选择已保存的模板版本。所选模板支持多种协议时，接着选择这次连接使用的上游协议。
 
 “打开 UA PRO 管理”是打开管理页的登录方式，不代表必须重复填写已有 Key。也可以随时在终端执行 `magpie plugin login ua-pro`，再选择同一管理方式。
 
@@ -48,6 +48,25 @@ magpie plugin login ua-pro
 概览中的 **宿主账号与连接对应关系**分别列出宿主账号数和 WebUI 连接数。宿主原生 Key 账号与 WebUI 保存的连接是两种来源；失效登录引用会明确标为未关联，不会当作可用 Key。只有确认后才可移除失效引用，其他账号、模板和签到记录保留。
 
 若连接由独立 `node setup.mjs` 保存，需从 Magpie 打开管理页，点击 **同步到宿主**，再刷新供应商的模型列表。只有勾选独立显示才会有单独供应商；新增独立站点保存后，需要重载 UA PRO 插件。
+
+### 移除独立供应商
+
+在 **模型 → 供应商** 中点开目标站点，例如 **UA PRO · Gemini**，点击底部的 **移除** 并确认。Magpie 将它移出活动列表，保留登录和连接设置。之后可以在 **已移除** 中点击 **加回来**。
+
+要同时删除保存的连接，从 **打开 UA PRO 管理 → 管理连接** 编辑目标连接，点击 **删除连接**。同一独立站点有多个账号时，其他账号仍可用。最后一个连接删除后，该独立供应商也从活动列表移除。
+
+如果曾在旧版点过「移除」，升级后该站点会继续隐藏。只有想找回该站点、且「已移除」里也找不到它时，才需要下面的一次性恢复。打开已登录的 **Magpie Web 面板**，在浏览器开发者工具的控制台执行以下命令。`id` 使用移除时的完整标识，大小写与当时一致。这里以 `ua-pro-Gemini` 为例。
+
+```js
+const restored = await fetch('/api/provider/show', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ id: 'ua-pro-Gemini' })
+})
+if (restored.ok) location.reload()
+```
+
+恢复后，列表显示一条 **UA PRO · Gemini**，可以继续使用原有账号和模型。
 
 也支持 GitHub 源码来源。在 Magpie 的手动添加框填写，或使用终端：
 
@@ -165,7 +184,13 @@ UA PRO 中已配置的连接可以复用模型 Key 查询站点支持的用量�
 | NewAPI | 站点根地址、数字用户 ID、登录 Cookie 或有签到权限的系统访问令牌 |
 | AgentRouter | 站点地址、登录用户名和密码；用户 ID 可留空，由成功登录确认 |
 
-NewAPI 使用站点签到接口。AgentRouter 通过登录领取每日额度；成功返回的 session 仅保存在本机，用于之后的余额查询。模型 API key 不能替代签到账号凭据。
+NewAPI 账号可以在账号编辑页或连接内的「在此添加 Cookie / 令牌」选择签到协议：
+
+- **自动**（默认）：`https://anyrouter.top` 使用 AnyRouter 签到，其他站点使用标准 New API 签到月历。现有账号自动采用这条规则。
+- **标准 New API**：先查站点月历，仅在站点确认当天尚未签到时提交。站点省略余额统计字段时仍可核对用户 ID 并签到。
+- **AnyRouter**：使用 `/api/user/sign_in` 的兼容站点可手动选此项。认证方式选 **Cookie**，填写站点数字用户 ID 和含 `session` 的登录 Cookie。可直接粘贴浏览器请求中的整行 `Cookie:`。站点要求验证时，在站点页面完成验证并核对当日记录。
+
+AgentRouter 通过登录领取每日额度，成功返回的 session 仅保存在本机，用于之后的余额查询。模型 API key 不能替代签到账号凭据。
 
 添加账号后：
 
