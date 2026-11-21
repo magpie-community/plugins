@@ -76,10 +76,10 @@ test('every piece of the page the script reaches for is on the page', async () =
 
 test('the small widget picker offers the accounts covered by the display selection', async () => {
   const script = await read('ui/app.js');
-  const renderer = script.match(/  const renderWidgetSettings = [\s\S]*?\n  \};/)[0];
+  const renderer = script.match(/  const renderWidgetCard = [\s\S]*?\n  \};/)[0];
   const list = { children: [], replaceChildren() { this.children = []; }, append(row) { this.children.push(row); } };
   const document = { createElement: () => ({ children: [], append(...children) { this.children.push(...children); } }) };
-  const render = new Function('document', 'element', 'node', `${renderer}\nreturn renderWidgetSettings;`)(document, () => list, document.createElement);
+  const render = new Function('document', 'element', 'node', 'saveState', `${renderer}\nreturn renderWidgetCard;`)(document, () => list, document.createElement, () => {});
   const subscriptions = ['codex@alpha', 'codex@beta', 'glm'].map(id => ({ id, provider: id.split('@')[0] }));
   const offered = selected => {
     render({ subscriptions, display: { subscriptions: selected } });
@@ -193,8 +193,10 @@ test('the widget is set up on the plugin side', async () => {
   const script = await read('ui/app.js');
   const widget = await read('scriptable/UsageWidget.js');
   // The console has the choice: the direction of the numbers and the card of
-  // the small widget.
-  assert.match(page, /id="widgetSettings"/);
+  // the small widget. They are two blocks of their own, so that it is clear
+  // which choice belongs to which one.
+  assert.match(page, /id="widgetMode"/);
+  assert.match(page, /id="widgetCard"/);
   assert.match(script, /widgetMode/);
   assert.match(script, /widgetCard/);
   // The phone reads that choice; the Scriptable parameter may still change
@@ -202,6 +204,76 @@ test('the widget is set up on the plugin side', async () => {
   assert.match(widget, /data\.display/);
   assert.match(widget, /plugin\.widgetMode/);
   assert.match(widget, /plugin\.widgetCard/);
+});
+
+test('the two choices of the widget are two blocks of their own', async () => {
+  const page = await read('ui/index.html');
+  const script = await read('ui/app.js');
+  // The direction of the numbers is for every size of the widget, and the
+  // card is for the small one only. One list of radios for both of them
+  // could not be read: which of the two a choice belonged to was not written
+  // down anywhere.
+  assert.match(page, /<h3>显示内容<\/h3>/);
+  assert.match(page, /<h3>小号组件显示哪一张<\/h3>/);
+  assert.match(page, /id="widgetMode" class="checks"/);
+  assert.match(page, /id="widgetCard" class="checks"/);
+  // The two lists are drawn by two renderers, and the radios of the two are
+  // two groups of their own.
+  assert.match(script, /const renderWidgetMode = /);
+  assert.match(script, /const renderWidgetCard = /);
+  assert.match(script, /input\.name = 'widget-mode'/);
+  assert.match(script, /input\.name = field/);
+  // Each block says for itself what it is for.
+  assert.match(script, /三种尺寸的组件下一次刷新就跟着变/);
+  assert.match(script, /小号组件下一次刷新就跟着变/);
+  // The old list of both of them is gone.
+  assert.doesNotMatch(page, /id="widgetSettings"/);
+  assert.doesNotMatch(script, /renderWidgetSettings/);
+});
+
+test('a change is saved at once, and the page says what happened', async () => {
+  const page = await read('ui/index.html');
+  const script = await read('ui/app.js');
+  // The console saves by itself, so the user has to be able to see that it
+  // did. Every block that can be changed has a line of its own for it.
+  assert.match(script, /const saveState = /);
+  assert.match(page, /id="subNote"/);
+  assert.match(page, /id="widgetModeNote"/);
+  assert.match(page, /id="widgetCardNote"/);
+  // The line says that it is saving, and that it is done.
+  assert.match(script, /saveState\('subNote', 'busy', '保存中…'\)/);
+  assert.match(script, /saveState\('subNote', 'ok'/);
+  // A change that did not go through is not lost: it is written down, and it
+  // can be tried again. This is where the button belongs: on the failure and
+  // not on every change.
+  assert.match(script, /saveState\('subNote', 'bad'[^;]*\(\) => \{ void save\(input\); \}\)/);
+  assert.match(script, /saveState\('widgetModeNote', 'bad'[^;]*\(\) => \{ void apply\(value\); \}\)/);
+  assert.match(script, /node\('button', 'quiet', '重试'\)/);
+  // The page says that nothing has to be pressed.
+  assert.match(page, /改完是直接记下的，不用再点哪里/);
+});
+
+test('the name of a subscription is saved while it is written', async () => {
+  const script = await read('ui/app.js');
+  // The name is written out while it is typed, so that the user sees at once
+  // that the name is taken. The wait is short, and the field that is left is
+  // written out at once.
+  assert.match(script, /rename\.addEventListener\('input', schedule\)/);
+  assert.match(script, /field\.timer = setTimeout\(/);
+  assert.match(script, /rename\.addEventListener\('change'/);
+  // Two names that travel at the same time would each carry a map of its own,
+  // and the second one would take the name of the first one with it: the
+  // service keeps the map it is given. One name waits for the one before it.
+  assert.match(script, /nameQueue = nameQueue\.then\(send, send\)/);
+  // The rows are not drawn again when a change is saved: the order on the
+  // page is the order that was sent, and drawing them again would take the
+  // name that is being written out of its field.
+  const save = script.match(/    const save = async \(input\) => \{[\s\S]*?\n    \};/)[0];
+  assert.doesNotMatch(save, /renderSubscriptions/);
+  // The last subscription cannot be left out: the widget would have nothing
+  // to show, so the checkbox is put back.
+  assert.match(save, /if \(input\) input\.checked = true;/);
+  assert.match(save, /至少要留一家订阅/);
 });
 
 test('the phone page keeps the token on the phone', async () => {
@@ -350,11 +422,15 @@ test('a subscription can be given a name of its own', async () => {
   assert.match(page, /const rename = document\.createElement\('input'\)/);
   assert.match(page, /rename\.type = 'text'/);
   assert.match(page, /rename\.maxLength = 32/);
-  assert.match(page, /rename\.value = \(state\.display\?\.names \|\| \{\}\)\[subscription\.id\] \|\| ''/);
+  // The field holds the name that was given to this subscription, and the name
+  // is kept in the page as well, so that it is not lost when the rows are
+  // drawn again.
+  assert.match(page, /const stored = \(state\.display\?\.names \|\| \{\}\)\[subscription\.id\] \|\| ''/);
+  assert.match(page, /rename\.value = field\.value/);
   // The name goes to the service with the other choices of the page. An empty
   // field means the name of the software is used again.
   assert.match(page, /body: JSON\.stringify\(\{ names \}\)/);
-  assert.match(page, /delete names\[subscription\.id\]/);
+  assert.match(page, /delete names\[id\]/);
   // A change of the name must not be taken for a change of the selection.
   assert.match(page, /if \(event\.target && event\.target\.type === 'text'\) return;/);
   assert.match(styles, /\.checks \.sub-name/);

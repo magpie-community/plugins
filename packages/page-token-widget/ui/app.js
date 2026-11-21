@@ -21,6 +21,22 @@ import { pairingLeft, remainingText } from './timing.mjs';
 
   const mono = (value) => node('span', 'mono', value);
 
+  // The page saves by itself, so the user has to be able to see that it did.
+  // Every block that can be changed says what happened to the last change,
+  // and when the change did not go through it offers to try again.
+  const saveState = (id, tone, message, retry) => {
+    const holder = element(id);
+    if (!holder) return;
+    holder.replaceChildren();
+    holder.append(node('span', 'state ' + tone, message));
+    if (retry) {
+      const again = node('button', 'quiet', '重试');
+      again.type = 'button';
+      again.addEventListener('click', retry);
+      holder.append(again);
+    }
+  };
+
   const api = async (path, options = {}) => {
     const response = await fetch(path, {
       ...options,
@@ -490,6 +506,11 @@ import { pairingLeft, remainingText } from './timing.mjs';
     );
   };
 
+  // The names the user gives to the subscriptions. They are kept here and not
+  // only in the fields of the page, so that a name that is being written is
+  // not lost when the rows are drawn again.
+  const nameFields = new Map();
+
   const renderSubscriptions = (state) => {
     const list = element('subscriptions');
     if (!list) return;
@@ -537,24 +558,47 @@ import { pairingLeft, remainingText } from './timing.mjs';
       }
       return next;
     };
-    const save = async () => {
+    // The names are sent one after another. Two names that travel at the
+    // same time would each carry a map of its own, and the second one would
+    // take the name of the first one with it: the service keeps the map it
+    // is given, so a name that is not in it is gone. One name waits for the
+    // one before it, and each one starts from what the last one was given.
+    let nameQueue = Promise.resolve();
+    const sendName = (id, value) => {
+      const send = async () => {
+        const names = { ...(state.display?.names || {}) };
+        if (value) names[id] = value;
+        else delete names[id];
+        const result = await api('api/v1/console/options', {
+          method: 'POST',
+          body: JSON.stringify({ names }),
+        });
+        state.display = result.display;
+      };
+      nameQueue = nameQueue.then(send, send);
+      return nameQueue;
+    };
+    const save = async (input) => {
       const next = collect();
       if (!next.length) {
-        text('subNote', '至少要留一家订阅，中号和大号组件才有内容。');
+        // Nothing would be left on the widget, so the last one is put back.
+        if (input) input.checked = true;
+        saveState('subNote', 'bad', '至少要留一家订阅，中号和大号组件才有内容。');
         return;
       }
+      saveState('subNote', 'busy', '保存中…');
       try {
         const result = await api('api/v1/console/options', {
           method: 'POST',
           body: JSON.stringify({ subscriptions: next }),
         });
         state.display = result.display;
-        text('subNote', '已经记下，手机上的组件下一次刷新就会跟着变。');
-        // The rows are drawn again, so what is on the page is the order that
-        // was really saved.
-        renderSubscriptions(state);
+        // The rows are not drawn again: the order on the page is the order
+        // that was sent, and drawing them again would take the name that is
+        // being written out of its field.
+        saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
       } catch {
-        text('subNote', '没有存上，请再试一次。');
+        saveState('subNote', 'bad', '没有存上，请再试一次。', () => { void save(input); });
       }
     };
     for (const subscription of ordered) {
@@ -630,30 +674,49 @@ import { pairingLeft, remainingText } from './timing.mjs';
         void save();
       });
       // The name of the subscription, the one the user gives it. It is saved
-      // when the field is left, and it is the name the card carries on the
-      // phone and in the widget.
+      // while it is written, so that the user sees at once that the name is
+      // taken. It is the name the card carries on the phone and in the
+      // widget.
+      const stored = (state.display?.names || {})[subscription.id] || '';
+      const field = nameFields.get(subscription.id) || { value: stored, saved: stored, timer: 0 };
+      nameFields.set(subscription.id, field);
       const rename = document.createElement('input');
       rename.type = 'text';
       rename.className = 'sub-name';
       rename.maxLength = 32;
       rename.placeholder = '自定义名称（留空就用软件里的名字）';
       rename.title = '手机上显示的名字，留空就用软件里的名字';
-      rename.value = (state.display?.names || {})[subscription.id] || '';
-      rename.addEventListener('change', async () => {
-        const names = { ...(state.display?.names || {}) };
-        const given = String(rename.value || '').trim();
-        if (given) names[subscription.id] = given;
-        else delete names[subscription.id];
+      rename.value = field.value;
+      const write = async (value) => {
+        saveState('subNote', 'busy', '保存中…');
         try {
-          const result = await api('api/v1/console/options', {
-            method: 'POST',
-            body: JSON.stringify({ names }),
-          });
-          state.display = result.display;
-          text('subNote', '已经记下，手机上的组件下一次刷新就会跟着变。');
+          await sendName(subscription.id, value);
+          field.saved = value;
+          saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
         } catch {
-          text('subNote', '没有存上，请再试一次。');
+          saveState('subNote', 'bad', '没有存下这个名字，请再试一次。', () => { void write(value); });
         }
+      };
+      // The wait is short enough not to be in the way and long enough not to
+      // send a request for every letter.
+      const schedule = () => {
+        field.value = rename.value;
+        clearTimeout(field.timer);
+        field.timer = setTimeout(() => {
+          const value = String(field.value || '').trim();
+          if (value === field.saved) return;
+          void write(value);
+        }, 400);
+      };
+      rename.addEventListener('input', schedule);
+      // The field that is left is written out at once: the user does not have
+      // to wait for the timer to say that the name is taken.
+      rename.addEventListener('change', () => {
+        clearTimeout(field.timer);
+        field.value = rename.value;
+        const value = String(field.value || '').trim();
+        if (value === field.saved) return;
+        void write(value);
       });
       row.append(label, rename);
       list.append(row);
@@ -661,18 +724,66 @@ import { pairingLeft, remainingText } from './timing.mjs';
     list.onchange = (event) => {
       // The name of a subscription is saved by its own field.
       if (event.target && event.target.type === 'text') return;
-      void save();
+      void save(event.target);
     };
   };
 
   // The direction of the numbers and the card of the small widget are chosen
   // here, on the plugin side. The Scriptable parameter may still say
   // otherwise, so one widget on the phone can differ from the others.
-  const renderWidgetSettings = (state) => {
-    const list = element('widgetSettings');
+  // They are two blocks of their own: the direction is for every size of the
+  // widget, and the card is for the small one only. One list of radios for
+  // both of them could not be read: which of the two a choice belonged to
+  // was not written anywhere.
+  const renderWidgetMode = (state) => {
+    const list = element('widgetMode');
     if (!list) return;
     list.replaceChildren();
     const display = state.display || {};
+    const current = display.widgetMode || 'remaining';
+    const choice = (value, label) => {
+      const wrapper = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'widget-mode';
+      input.value = value;
+      input.checked = value === current;
+      wrapper.append(input, node('span', 'name', label));
+      list.append(wrapper);
+    };
+    choice('remaining', '剩余：还有多少');
+    choice('used', '已用：用了多少');
+    const apply = async (value) => {
+      saveState('widgetModeNote', 'busy', '保存中…');
+      try {
+        const result = await api('api/v1/console/options', {
+          method: 'POST',
+          body: JSON.stringify({ widgetMode: value }),
+        });
+        state.display = result.display;
+        // The rows are drawn again, so the radio stands where the service
+        // really keeps it.
+        renderWidgetMode(state);
+        saveState('widgetModeNote', 'ok', '已经记下，三种尺寸的组件下一次刷新就跟着变。');
+      } catch {
+        saveState('widgetModeNote', 'bad', '没有存上，请再试一次。', () => { void apply(value); });
+        // Nothing was saved, so the radio is put back where it was.
+        renderWidgetMode(state);
+      }
+    };
+    list.onchange = (event) => {
+      const input = event.target;
+      if (!input || input.type !== 'radio') return;
+      void apply(input.value);
+    };
+  };
+
+  const renderWidgetCard = (state) => {
+    const list = element('widgetCard');
+    if (!list) return;
+    list.replaceChildren();
+    const display = state.display || {};
+    const current = display.widgetCard || '';
     // Only the cards that are really shown are offered: a card that is not
     // projected would leave the small widget saying "not found".
     const wanted = new Set(display.subscriptions || []);
@@ -686,36 +797,42 @@ import { pairingLeft, remainingText } from './timing.mjs';
       input.type = 'radio';
       input.name = field;
       input.value = value;
-      const current = field === 'widget-mode' ? (display.widgetMode || 'remaining') : (display.widgetCard || '');
       input.checked = value === current;
       wrapper.append(input, node('span', 'name', label));
       if (hint) wrapper.append(node('span', 'tag param', hint));
       list.append(wrapper);
     };
-    choice('widget-mode', 'remaining', '剩余：还有多少');
-    choice('widget-mode', 'used', '已用：用了多少');
-    choice('widget-card', '', '小号组件：跟着第一个有数的');
+    choice('widget-card', '', '跟着第一个有数的');
     for (const subscription of items) {
       const id = subscription.id || subscription.provider;
       if (!id) continue;
       // An account the gateway did not report today has no number to show;
       // the widget would only have a dash for it.
       const hint = subscription.hasToday === false ? id + ' · 今天没数' : id;
-      choice('widget-card', id, `小号组件：${subscription.label || id}`, hint);
+      choice('widget-card', id, subscription.label || id, hint);
     }
-    list.onchange = async (event) => {
+    const apply = async (value) => {
+      saveState('widgetCardNote', 'busy', '保存中…');
+      try {
+        const result = await api('api/v1/console/options', {
+          method: 'POST',
+          body: JSON.stringify({ widgetCard: value }),
+        });
+        state.display = result.display;
+        // The rows are drawn again, so the radio stands where the service
+        // really keeps it.
+        renderWidgetCard(state);
+        saveState('widgetCardNote', 'ok', '已经记下，小号组件下一次刷新就跟着变。');
+      } catch {
+        saveState('widgetCardNote', 'bad', '没有存上，请再试一次。', () => { void apply(value); });
+        // Nothing was saved, so the radio is put back where it was.
+        renderWidgetCard(state);
+      }
+    };
+    list.onchange = (event) => {
       const input = event.target;
       if (!input || input.type !== 'radio') return;
-      const body = input.name === 'widget-mode' ? { widgetMode: input.value } : { widgetCard: input.value };
-      try {
-        const result = await api('api/v1/console/options', { method: 'POST', body: JSON.stringify(body) });
-        state.display = result.display;
-        text('widgetNote', '已经记下，手机上的组件下一次刷新就会跟着变。');
-      } catch {
-        // Nothing was saved, so the radio is put back where it was.
-        text('widgetNote', '没有存上，请再试一次。');
-        renderWidgetSettings(state);
-      }
+      void apply(input.value);
     };
   };
 
@@ -766,7 +883,8 @@ import { pairingLeft, remainingText } from './timing.mjs';
     renderRefresh(state);
     renderAdvanced(state);
     renderSubscriptions(state);
-    renderWidgetSettings(state);
+    renderWidgetMode(state);
+    renderWidgetCard(state);
   };
 
   // A pairing code that has run out is of no use to anybody. A new one is

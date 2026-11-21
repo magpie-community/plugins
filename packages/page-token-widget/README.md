@@ -46,7 +46,10 @@ magpie plugin add @magpie-community/page-token-widget
   "MiniMax (China)", the names the software shows as well.
 - The plugin page also chooses what the **small** widget shows: the quota that
   is left or the quota that is used, and which subscription the small widget
-  follows. A widget parameter may still override both, for that one widget.
+  follows. The settings are two blocks of their own — "what it shows", which
+  every size of the widget follows, and "which card the small one shows" —
+  and every change says below it whether it went through. A widget parameter
+  may still override both, for that one widget.
 - The service only reads the local API of Magpie. It opens on this computer
   only, the phone comes in through the forwarding of Tailscale, and the token
   stays in the directory of Magpie.

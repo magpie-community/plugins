@@ -7,6 +7,7 @@
   --line: #e4e8e1;
   --soft: #f0f3ee;
   --accent: #4c544a;
+  --bad: #b4544a;
 }
 [data-theme="dark"] {
   --bg: #1f221e;
@@ -16,6 +17,7 @@
   --line: #2f342d;
   --soft: #262b24;
   --accent: #b9c8b0;
+  --bad: #e08b80;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -26,6 +28,7 @@
     --line: #2f342d;
     --soft: #262b24;
     --accent: #b9c8b0;
+    --bad: #e08b80;
   }
 }
 * {
@@ -115,6 +118,40 @@ h2 {
   font-size: 13px;
   font-weight: 600;
   margin: 0 0 9px;
+}
+/* A block of the page that is changed on its own. The two choices of the
+   widget are apart, so that it is written down which one a choice belongs
+   to. */
+.block {
+  margin-top: 12px;
+}
+.block:first-of-type {
+  margin-top: 0;
+}
+h3 {
+  font-size: 11.5px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+/* The line that says what happened to the last change. The page saves by
+   itself, so the user has to be able to see that it did. */
+.note.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 17px;
+}
+.state.busy {
+  color: var(--muted);
+}
+.state.bad {
+  color: var(--bad);
+}
+.note.state button {
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 .lead {
   margin: 0 0 10px;

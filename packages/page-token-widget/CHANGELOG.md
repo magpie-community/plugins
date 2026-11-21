@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.15 · 2026-11-21
+
+The widget settings of the plugin page are two blocks of their own now, and
+every change says whether it went through.
+
+> 插件页的「小组件」分成两块了：第一块「显示内容」管数字是剩余还是已用，三种尺寸的组件都听它；
+> 第二块「小号组件显示哪一张」只管小号组件看哪张卡，中号和大号组件显示的是上面「显示哪些订阅」
+> 里勾出来的那些。以前这两组选项挤在同一个列表里，页面上没写哪一组是哪一组，得靠猜；现在各在一块
+> 里，各有各的说明。插件页的改动本来就是直接记下的（勾一下、拖一下、名字打出来都直接落盘），页面
+> 上却没有一处说这件事；现在每一块下面都有一行小字写着这一下有没有存上（保存中／已经记下／没有存上），
+> 存不上的时候那行字后面跟着一个「重试」，点一下再试。名字改成边打边存（停手半秒就写），并且修了两个
+> 真会被咬到的问题：改完名字点别处时整张订阅表会被重画，正在输入的另一个名字会被冲掉、光标也跑了；
+> 两个名字一起改时，服务端收下的是一整张表，后一个会把前一个顶掉——现在名字是一个一个排队发的。
+> 最后一家订阅是勾不掉的：全勾掉组件就没有内容了，这时把最后那个勾放回去。
+
+### Changed
+
+- **The widget settings are two blocks of their own.** The first, "what it
+  shows", holds whether the numbers are what is left or what is used, and
+  every size of the widget follows it. The second, "which card the small one
+  shows", holds the card of the small widget; the medium and the large widget
+  show the subscriptions that are ticked under "which subscriptions". The two
+  groups of choices used to sit in one list, and the page did not say which
+  group was which — you had to guess. Each is in a block of its own now, with
+  its own note.
+- **Whether a change went through is visible.** The plugin page always saved
+  on the spot (a tick, a drag, a name typed in), but nowhere on the page said
+  so. Every block now has a line of its own below it: saving / it is written
+  down / it did not go through. When it did not go through, a "try again" sits
+  next to that line.
+- **A name is saved while it is written.** A name used to be written down only
+  when the field was left, so nothing seemed to happen while it was typed. It
+  is written down half a second after you stop, and at once when the field is
+  left.
+- **Two real bugs are fixed.**
+  - **A name could be lost.** Clicking away after naming a subscription drew
+    the whole list of subscriptions again, which wiped the name being typed in
+    another row and took the cursor away. The list is left alone now.
+  - **Two names could push each other out.** The service takes the names as
+    one whole table, so a name that had not landed yet was gone when the next
+    one arrived with its own table. The names now travel one after another,
+    each one continuing from the result of the one before it.
+- **The last subscription cannot be ticked out.** Ticking everything off would
+  leave the widget with nothing to show, so the last one is put back, with a
+  word about why.
+- Three new tests guard all of this: the two choices of the widget are two
+  blocks and not one list, a change says whether it went through, and a name is
+  saved while it is written and does not push another one out. All three are
+  red on 0.4.14.
+- On the computer this release changed the plugin page only, so the plugin has
+  to be updated and reloaded. The script on the phone did not change, so
+  there is no need to run the installer (`SetupUsageWidget.js`) again.
+
 ## 0.4.14 · 2026-11-21
 
 The cards carry the names the software gives the vendors, a subscription can be
