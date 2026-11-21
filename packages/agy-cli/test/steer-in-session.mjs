@@ -612,4 +612,88 @@ test("steerInSession: deferred self-poll commit wait, foreign ACP tool isolation
   })
 })
 
+test("#1371: tool_search adding new tools mid-turn keeps the live ACP session and refreshes tools before next prompt", async () => {
+  const searchTool = {
+    name: "tool_search",
+    description: "Discover deferred tools",
+    input_schema: { type: "object", properties: { query: { type: "string" } } },
+  }
+  const loadedTool = {
+    name: "discovered_tool",
+    description: "Loaded mid-turn",
+    input_schema: { type: "object", properties: { value: { type: "string" } } },
+  }
+  await withKit({ env: { AGY_BRIDGE_MCP_COMMIT_WAIT_MS: "1500" } }, async (kit) => {
+    let searchReply = null
+    let loadedReply = null
+    const seenPrompts = []
+    kit.prompts.push(async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c_search", status: "in_progress" })
+      searchReply = await agent.tool("tool_search", { query: "discovered_tool" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "c_search", status: "completed" })
+      await agent.waitCancel()
+      return { stopReason: "cancelled", usage: USAGE }
+    })
+    kit.prompts.push(async (agent) => {
+      seenPrompts.push(agent.prompt)
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c_loaded", status: "in_progress" })
+      loadedReply = await agent.tool("discovered_tool", { value: "ok" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "c_loaded", status: "completed" })
+      await agent.text("done with discovered_tool")
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    const firstBody = {
+      ...baseBody(),
+      tools: [searchTool],
+    }
+    const first = await readSse(await kit.request(firstBody))
+    assert.equal(first.stopReason, "tool_use")
+    const firstCalls = first.content.filter((block) => block.type === "tool_use")
+    assert.equal(firstCalls[0]?.name, "tool_search")
+
+    const secondBody = {
+      ...continueWithToolResults(firstBody, first, () => "Loaded tool: discovered_tool"),
+      tools: [searchTool, loadedTool],
+    }
+    const second = await readSse(await kit.request(secondBody))
+    assert.equal(second.stopReason, "tool_use")
+    const secondCalls = second.content.filter((block) => block.type === "tool_use")
+    assert.equal(secondCalls[0]?.name, "discovered_tool")
+    assert.equal(kit.acpSpawns.length, 1, "same ACP session must be reused when tools grow")
+    assert.equal(searchReply?.result?.content?.[0]?.text, "Loaded tool: discovered_tool")
+    assert.equal(seenPrompts.length, 1)
+    assert.ok(!JSON.stringify(seenPrompts[0]).includes("<conversation_history>"), "must not fall back to cold replay")
+
+    const thirdBody = continueWithToolResults(secondBody, second, () => "discovered-result")
+    const third = await readSse(await kit.request(thirdBody))
+    assert.equal(third.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.equal(loadedReply?.result?.content?.[0]?.text, "discovered-result")
+  })
+
+  // Fallback: if steerInSession cannot commit (e.g. ACP commit wait expires), replay in a replacement session.
+  await withKit({ env: { AGY_BRIDGE_MCP_COMMIT_WAIT_MS: "50" } }, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c_stuck", status: "in_progress" })
+      await agent.tool("tool_search", { query: "discovered_tool" })
+      await sleep(300)
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("replayed cleanly")
+      return { stopReason: "end_turn", usage: USAGE }
+    }
+    const firstBody = { ...baseBody(), tools: [searchTool] }
+    const first = await readSse(await kit.request(firstBody))
+    assert.equal(first.stopReason, "tool_use")
+    const secondBody = {
+      ...continueWithToolResults(firstBody, first, () => "Loaded tool: discovered_tool"),
+      tools: [searchTool, loadedTool],
+    }
+    const second = await readSse(await kit.request(secondBody))
+    assert.equal(second.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "uncommitted steer must still fall back to a replacement session")
+  })
+})
+
 

@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { after, test } from "node:test"
-import { baseBody, createBridgeKit, readSse } from "./testkit.mjs"
+import { baseBody, continueWithToolResults, createBridgeKit, readSse } from "./testkit.mjs"
 
 // Expose private seams from an isolated copy, without adding production exports.
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agy-convkey-test-"))
@@ -15,7 +15,7 @@ process.env.AGY_BRIDGE_STATE_FILE = path.join(workspace, "sessions.json")
 process.env.HOME = workspace
 fs.writeFileSync(
   path.join(workspace, "bridge.mjs"),
-  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, parked, instructionsIdentity, digest, Turn };\n",
+  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, parked, instructionsIdentity, digest, Turn, isEphemeralSideSample };\n",
 )
 const {
   conversationKey,
@@ -31,6 +31,7 @@ const {
   instructionsIdentity,
   digest,
   Turn,
+  isEphemeralSideSample,
 } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
@@ -862,5 +863,264 @@ test("a user's turn goes to agy with Codex's GPT-5 lines reworded", async () => 
     assert.ok(all.includes("You are Codex, a coding agent built on GPT-5."), all)
     assert.ok(all.includes("You are Codex, an agent built on GPT-5."), all)
     assert.ok(all.includes("You are Hermes Agent, built by Nous Research."), "other lines go as written in a user's turn")
+  })
+})
+
+const CODEX_PREDICTION_PROMPT =
+  "Predict the next message the user will send in this conversation. Reply with only that message, written as the user would type it, in under 20 words. Do not use tools. If there is no clear next step, reply with nothing."
+
+test("#1369 isEphemeralSideSample matches prompt-suggestion side samples only", () => {
+  const prior = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "hi" },
+  ]
+  assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, []), true)
+  assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: [{ type: "text", text: "[SUGGESTION MODE: Predict the next input.]" }] }] }, []), true)
+  // Mid-conversation developer updates (e.g. refreshed <skills_instructions>) wrapped in <system-reminder>
+  // or Codex <environment_context> injected ahead of the prediction prompt.
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>\n## Skills\n</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "<system-reminder>\n<skills_instructions>list</skills_instructions>\n</system-reminder>" },
+        { type: "text", text: "<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>" },
+        { type: "text", text: CODEX_PREDICTION_PROMPT },
+      ],
+    }],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: `<system-reminder source="codex">\n<skills_instructions>mentions <system-reminder> and </system-reminder></skills_instructions>\n</system-reminder>\n${CODEX_PREDICTION_PROMPT}` }],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>literal </system-reminder> text</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "user", content: "<system-reminder>\n<skills_instructions>literal <system-reminder> text</skills_instructions>\n</system-reminder>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [
+      { role: "developer", content: "<skills_instructions>...</skills_instructions>" },
+      { role: "user", content: CODEX_PREDICTION_PROMPT },
+    ],
+  }, []), true)
+
+  // Negative cases: fresh turns, tool results, real user text, attachments, assistant prefill.
+  assert.equal(isEphemeralSideSample({ history: [], messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, []), false)
+  assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }] }, [{ type: "tool_result", tool_use_id: "t1", content: "ok" }]), false)
+  assert.equal(isEphemeralSideSample({ history: prior, messages: [{ role: "user", content: "continue with the fix" }] }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: "<system-reminder>A</system-reminder>\nreal user prompt\n<system-reminder>B</system-reminder>" }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+        { type: "text", text: CODEX_PREDICTION_PROMPT },
+      ],
+    }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: CODEX_PREDICTION_PROMPT }, { role: "assistant", content: "prefill" }],
+  }, []), false)
+  assert.equal(isEphemeralSideSample({
+    history: prior,
+    messages: [{ role: "user", content: "real user prompt" }, { role: "user", content: CODEX_PREDICTION_PROMPT }],
+  }, []), false)
+})
+
+test("#1369 Codex/T3 prompt prediction preceded by system-reminder and environment_context keeps the main ACP session", async () => {
+  await withKit({}, async (kit) => {
+    const headers = { "x-magpie-session": "sess-codex-predict-envelopes" }
+    kit.defaultPrompt = async (agent) => {
+      const text = agent.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+      if (text.includes("Predict the next message")) {
+        await agent.text("ship it")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("main reply")
+      return { stopReason: "end_turn" }
+    }
+
+    const turn1 = baseBody({
+      metadata: { user_id: "user-predict-env" },
+      messages: [{ role: "user", content: "start the task" }],
+    })
+    const res1 = await readSse(await kit.request(turn1, { headers }))
+    assert.equal(res1.stopReason, "end_turn")
+
+    const history = [...turn1.messages, { role: "assistant", content: res1.content }]
+    const prediction = {
+      ...turn1,
+      messages: [
+        ...history,
+        { role: "user", content: "<system-reminder>\n<skills_instructions>\n## Skills\n</skills_instructions>\n</system-reminder>" },
+        { role: "user", content: "<environment_context>\n  <cwd>/tmp/repo</cwd>\n</environment_context>" },
+        { role: "user", content: CODEX_PREDICTION_PROMPT },
+      ],
+    }
+    const predRes = await readSse(await kit.request(prediction, { headers }))
+    assert.equal(predRes.stopReason, "end_turn")
+    await new Promise((resolve) => setTimeout(resolve, 25))
+
+    const turn2 = {
+      ...turn1,
+      messages: [...history, { role: "user", content: "actual next step" }],
+    }
+    const res2 = await readSse(await kit.request(turn2, { headers }))
+    assert.equal(res2.stopReason, "end_turn")
+    const prompts = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(prompts.length, 3)
+    assert.notEqual(prompts[1].params.sessionId, prompts[0].params.sessionId)
+    assert.equal(prompts[2].params.sessionId, prompts[0].params.sessionId)
+    const followUpPrompt = prompts[2].params.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+    assert.ok(!followUpPrompt.includes("<conversation_history>"), "main follow-up must not cold-replay")
+  })
+})
+
+test("#1369 Codex/T3 prompt prediction preserves the main ACP session on completion and cancellation", async () => {
+  await withKit({}, async (kit) => {
+    const headers = { "x-magpie-session": "sess-codex-predict" }
+    kit.defaultPrompt = async (agent) => {
+      const text = agent.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+      if (text.includes("Predict the next message")) {
+        await agent.text("run the tests")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("main reply")
+      return { stopReason: "end_turn" }
+    }
+
+    const turn1 = baseBody({
+      metadata: { user_id: "user-predict" },
+      messages: [{ role: "user", content: "start the task" }],
+    })
+    const res1 = await readSse(await kit.request(turn1, { headers }))
+    assert.equal(res1.stopReason, "end_turn")
+
+    const history = [...turn1.messages, { role: "assistant", content: res1.content }]
+    const prediction = {
+      ...turn1,
+      messages: [...history, { role: "user", content: CODEX_PREDICTION_PROMPT }],
+    }
+    const predRes = await readSse(await kit.request(prediction, { headers }))
+    assert.equal(predRes.stopReason, "end_turn")
+
+    // Wait a tick for ephemeral finalizeTurn cleanup, then verify only the main proc remains live
+    // and parked state still points at the main session rather than the prediction session.
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    const promptsAfterPred = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(promptsAfterPred.length, 2)
+    const mainSessionId = promptsAfterPred[0].params.sessionId
+    const predSessionId = promptsAfterPred[1].params.sessionId
+    assert.notEqual(predSessionId, mainSessionId)
+    const liveNonSpares = () => [...kit.module.__agyTestAllProcs].filter((proc) => !proc.spareKey)
+    assert.equal(kit.module.__agyTestPool.size, 1)
+    assert.deepEqual(liveNonSpares().map((proc) => proc.sessionId), [mainSessionId])
+    const stateFile = path.join(kit.tmp, "state", "magpie-agy-bridge", "sessions.json")
+    const savedState = JSON.parse(fs.readFileSync(stateFile, "utf8"))
+    const parkedIds = (savedState.entries || []).map((entry) => entry.sessionId)
+    assert.ok(parkedIds.includes(mainSessionId))
+    assert.ok(!parkedIds.includes(predSessionId))
+
+    // Ordinary follow-up omitting the prediction must reuse the main ACP session without cold replay.
+    const turn2 = {
+      ...turn1,
+      messages: [...history, { role: "user", content: "actual next step" }],
+    }
+    const res2 = await readSse(await kit.request(turn2, { headers }))
+    assert.equal(res2.stopReason, "end_turn")
+    const promptsAfterTurn2 = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(promptsAfterTurn2.length, 3)
+    assert.equal(promptsAfterTurn2[2].params.sessionId, mainSessionId)
+    const followUpPrompt = promptsAfterTurn2[2].params.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+    assert.ok(!followUpPrompt.includes("<conversation_history>"), "main follow-up must not cold-replay")
+
+    // Cancelled prediction mid-flight must also leave the main ACP session intact.
+    const history2 = [...turn2.messages, { role: "assistant", content: res2.content }]
+    kit.prompts.push(async (agent) => {
+      await agent.waitCancel()
+      return { stopReason: "cancelled" }
+    })
+    const abort = new AbortController()
+    const cancelReq = kit.request(
+      { ...turn1, messages: [...history2, { role: "user", content: CODEX_PREDICTION_PROMPT }] },
+      { headers, signal: abort.signal },
+    )
+    setTimeout(() => abort.abort(), 30)
+    const cancelRes = await cancelReq
+    try { await cancelRes.text() } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    const turn3 = {
+      ...turn1,
+      messages: [...history2, { role: "user", content: "third real turn" }],
+    }
+    const res3 = await readSse(await kit.request(turn3, { headers }))
+    assert.equal(res3.stopReason, "end_turn")
+    const promptsAfterTurn3 = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(promptsAfterTurn3.at(-1).params.sessionId, mainSessionId)
+    assert.equal(kit.module.__agyTestPool.size, 1)
+    assert.deepEqual(liveNonSpares().map((proc) => proc.sessionId), [mainSessionId])
+  })
+})
+
+test("#1369 prompt prediction arriving during a pending tool call leaves the main tool turn intact", async () => {
+  await withKit({}, async (kit) => {
+    const headers = { "x-magpie-session": "sess-codex-predict-tool" }
+    const tool = { name: "read_file", description: "Read a file", input_schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }
+    kit.defaultPrompt = async (agent) => {
+      const text = agent.prompt.map((part) => (part.type === "text" ? part.text : "")).join("")
+      if (text.includes("Predict the next message")) {
+        await agent.text("check the output")
+        return { stopReason: "end_turn" }
+      }
+      const result = await agent.tool("read_file", { path: "/tmp/demo.txt" })
+      await agent.text(`done:${result?.result?.content?.[0]?.text || ""}`)
+      return { stopReason: "end_turn" }
+    }
+
+    const turn1 = { ...baseBody({ metadata: { user_id: "user-predict-tool" } }), tools: [tool] }
+    const res1 = await readSse(await kit.request(turn1, { headers }))
+    assert.equal(res1.stopReason, "tool_use")
+
+    const prediction = {
+      ...turn1,
+      messages: [
+        ...turn1.messages,
+        { role: "assistant", content: res1.content },
+        { role: "user", content: CODEX_PREDICTION_PROMPT },
+      ],
+    }
+    const predRes = await readSse(await kit.request(prediction, { headers }))
+    assert.equal(predRes.stopReason, "end_turn")
+
+    const turn2 = continueWithToolResults(turn1, res1, () => "file-contents")
+    const res2 = await readSse(await kit.request(turn2, { headers }))
+    assert.equal(res2.stopReason, "end_turn")
+    assert.equal(res2.content.filter((b) => b.type === "text").map((b) => b.text).join(""), "done:file-contents")
+    const prompts = kit.acpLog.filter((entry) => entry.method === "session/prompt")
+    assert.equal(prompts.length, 2, "main tool turn must continue in-place without spawning a replay")
   })
 })
