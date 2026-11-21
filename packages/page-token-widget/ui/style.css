@@ -335,6 +335,18 @@ dd {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* The first row of the subscription list: the whole list of Magpie, followed.
+   It stands apart from the rows below it, which are the ones that are picked
+   one by one. */
+.checks label.follow {
+  background: var(--card);
+  outline: 1px solid var(--line);
+}
+/* A row that is not the one that decides: while the whole list is followed,
+   the rows below it only show what is there. */
+.checks input:disabled {
+  opacity: 0.55;
+}
 ol {
   margin: 0;
   padding-left: 18px;

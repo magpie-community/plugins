@@ -518,6 +518,15 @@ import { pairingLeft, remainingText } from './timing.mjs';
     const chosen = new Set(state.display?.subscriptions || []);
     const all = chosen.has('*');
     const items = state.subscriptions || [];
+    // The note says which of the two ways is in use, so that a subscription
+    // that does not show up is not a mystery.
+    const modeNote = following => {
+      const mode = element('subMode');
+      if (!mode) return;
+      mode.textContent = following
+        ? '现在跟着 Magpie 的订阅列表走：在 Magpie 里新增的订阅，下一次刷新就出现；删掉的也自己消失。'
+        : '现在只显示勾上的这几家：在 Magpie 里新增的订阅不会自己出现，要在这里勾上才显示；勾上第一行的「全部订阅」就能让它跟着 Magpie 走。';
+    };
     // Every account knows the vendor it belongs to. A vendor that is chosen
     // as a whole stands at the place of its first account.
     const familyOf = new Map(items.map(subscription => [subscription.id, subscription.provider || subscription.id]));
@@ -548,12 +557,15 @@ import { pairingLeft, remainingText } from './timing.mjs';
     const collect = () => {
       const checked = new Set(
         [...list.querySelectorAll('input')]
-          .filter((input) => input.checked)
+          // The first row is the whole list, not one of the subscriptions.
+          .filter((input) => input.checked && !input.classList.contains('follow'))
           .map((input) => input.value)
       );
       const next = [];
       for (const row of list.querySelectorAll('label')) {
-        const id = row.querySelector('input').value;
+        const input = row.querySelector('input');
+        if (!input || input.classList.contains('follow')) continue;
+        const id = input.value;
         if (checked.has(id)) next.push(id);
       }
       return next;
@@ -579,7 +591,13 @@ import { pairingLeft, remainingText } from './timing.mjs';
       return nameQueue;
     };
     const save = async (input) => {
-      const next = collect();
+      // The first row is the whole list: the subscriptions of Magpie are
+      // followed, so one that is added shows up and one that is removed goes
+      // away by itself. The rows below it are the ones that are picked.
+      const follow = list.querySelector('input.follow');
+      // The star says "and everything else", and the subscriptions that are
+      // written down after it keep the order the user has given them.
+      const next = follow && follow.checked ? ['*', ...collect()] : collect();
       if (!next.length) {
         // Nothing would be left on the widget, so the last one is put back.
         if (input) input.checked = true;
@@ -595,12 +613,41 @@ import { pairingLeft, remainingText } from './timing.mjs';
         state.display = result.display;
         // The rows are not drawn again: the order on the page is the order
         // that was sent, and drawing them again would take the name that is
-        // being written out of its field.
+        // being written out of its field. Only the rows that changed their
+        // meaning are touched: the whole list is followed, or it is not.
+        if (input && input.classList.contains('follow')) {
+          const following = Boolean(follow && follow.checked);
+          for (const row of list.querySelectorAll('label.sub')) {
+            const box = row.querySelector('input');
+            if (!box || box.classList.contains('follow')) continue;
+            box.disabled = following;
+            if (following) box.checked = true;
+            const grip = row.querySelector('.grip');
+            if (!grip) continue;
+            grip.draggable = !following;
+            grip.title = following ? '全部订阅时，顺序跟着写下来的那几行走' : '拖着换顺序';
+          }
+          // The note says which of the two ways is in use. It is written
+          // again here: the rows are not drawn again, so it would still
+          // speak of the way that was left behind.
+          modeNote(following);
+        }
         saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
       } catch {
         saveState('subNote', 'bad', '没有存上，请再试一次。', () => { void save(input); });
       }
     };
+    // The first row: the whole list of Magpie, followed. It is the way the
+    // plugin is meant to be used, so it is the first thing the user sees.
+    const followRow = document.createElement('label');
+    followRow.className = 'sub follow';
+    const followInput = document.createElement('input');
+    followInput.type = 'checkbox';
+    followInput.className = 'follow';
+    followInput.value = '*';
+    followInput.checked = all;
+    followRow.append(followInput, node('span', 'name', '全部订阅（跟着 Magpie 走）'));
+    list.append(followRow);
     for (const subscription of ordered) {
       const family = subscription.provider || subscription.id;
       // The name the user gives the subscription is his own: it is what the
@@ -613,12 +660,15 @@ import { pairingLeft, remainingText } from './timing.mjs';
       const grip = document.createElement('span');
       grip.className = 'grip';
       grip.textContent = '⠿';
-      grip.title = '拖着换顺序';
-      grip.draggable = true;
+      grip.title = all ? '全部订阅时，顺序跟着写下来的那几行走' : '拖着换顺序';
+      grip.draggable = !all;
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.value = subscription.id;
       input.checked = all || chosen.has(family) || chosen.has(subscription.id);
+      // While the whole list is followed, the rows below it do not decide
+      // anything: they only show what is there.
+      input.disabled = all;
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = subscription.label || subscription.id;
@@ -721,6 +771,7 @@ import { pairingLeft, remainingText } from './timing.mjs';
       row.append(label, rename);
       list.append(row);
     }
+    modeNote(all);
     list.onchange = (event) => {
       // The name of a subscription is saved by its own field.
       if (event.target && event.target.type === 'text') return;

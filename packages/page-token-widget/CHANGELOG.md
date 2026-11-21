@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.19 · 2026-11-22
+
+The list of vendors leaves the plugin: every subscription Magpie knows is a subscription
+the widget shows. Add one in Magpie and it shows up at the next refresh; remove one and
+it goes away by itself. The widget itself did not change.
+
+> 订阅的名单从插件里拿走了：Magpie 里有哪家订阅，组件就显示哪家。在 Magpie 里新加一门
+> （比如 Qoder），它下一次刷新就出现；删掉一门，它也自己消失。组件本身一个像素都没变。
+
+### Changed
+
+- **A vendor that is not written down in the plugin is a vendor of its own.** It carries
+  the name Magpie gives it and its plan is shown as it is. A subscription that is removed
+  in Magpie no longer comes back from the reading that was stored.
+- **Following Magpie is the default.** The first row of "which subscriptions" in the
+  plugin page is "all subscriptions (follow Magpie)"; the order you have given stays, and
+  the page says which of the two ways is in use.
+- **The tokens of today and the ranking of the vendors know a new vendor too.** The usage
+  carries the stable id of the vendor, so the card finds its number, and the ranking on
+  the phone says the name of the software instead of "Unknown".
+- **Quota windows that carry the same name are numbered.** Three windows called "Quota"
+  become "Quota 1", "Quota 2" and "Quota 3".
+- **A few edges are fixed as well**: a vendor id may carry a dot or an underscore, a plan
+  may be written with capitals and a space, a vendor whose name is a word of the
+  prototype is counted like any other, and an address of the user that holds a dollar
+  sign does not break the script of the phone.
+
 ## 0.4.18 · 2026-11-21
 
 The rules of the release of the standalone plugin are stricter once more: both jobs

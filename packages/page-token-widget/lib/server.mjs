@@ -558,7 +558,10 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     const body = paired
       ? source.replace(
         'let PAIRED = null;',
-        `let PAIRED = { baseURL: ${JSON.stringify(serviceURL())}, code: ${JSON.stringify(code)} };`,
+        // The address is the one the user has written down, and it may hold
+        // a dollar sign. In a replacement string a dollar sign means
+        // something else, so the text is put back as it is.
+        () => `let PAIRED = { baseURL: ${JSON.stringify(serviceURL())}, code: ${JSON.stringify(code)} };`,
       )
       : source;
     response.writeHead(200, {
@@ -1057,7 +1060,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       } catch {
         return text(response, 404, 'Not found');
       }
-      body = body.replace('__SERVICE_TOKEN__', state.consoleToken);
+      body = body.replace('__SERVICE_TOKEN__', () => state.consoleToken);
       body = body.replace('__THEME__', url.searchParams.get('theme') === 'dark' ? 'dark' : 'light');
       response.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',

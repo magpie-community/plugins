@@ -249,6 +249,20 @@ export class Collector {
     this.addresses = fresh;
   }
 
+  // The name that Magpie gives each vendor. The reading of the usage carries
+  // the id of a vendor and not its name, and a vendor that is not written
+  // down in the plugin has no name of its own there: the name of the
+  // software is used, so that the ranking says the same thing as the card of
+  // the subscription.
+  vendorNames(cards = []) {
+    const names = {};
+    for (const card of cards) {
+      if (!card?.provider || !card?.vendor) continue;
+      names[String(card.provider).toLowerCase()] = card.vendor;
+    }
+    return names;
+  }
+
   // The reading of today: the totals, the hours, the vendors and the accounts
   // all come with one answer of the gateway.
   //
@@ -285,7 +299,7 @@ export class Collector {
     }
     this.todayMode = 'new';
     this.todayModeAt = this.clock();
-    return normalizeUsageSummary(answer);
+    return normalizeUsageSummary(answer, this.vendorNames(cards));
   }
 
   // The way of the older Magpie: the totals of the day come from the requests
@@ -318,14 +332,18 @@ export class Collector {
         cache_write: one.cache_write,
       });
     }
-    const { metrics, trend, providers } = normalizeUsage(raw);
-    return { metrics, trend, providers, accounts: normalizeUsageSummary({ ...raw, accounts }).accounts };
+    const names = this.vendorNames(cards);
+    const { metrics, trend, providers } = normalizeUsage(raw, names);
+    return { metrics, trend, providers, accounts: normalizeUsageSummary({ ...raw, accounts }, names).accounts };
   }
 
   // The reading of the week keeps the answer of the requests, because it is
   // the one that carries the models, the agents and the computers.
   async weekUsage() {
-    return normalizeUsage(await this.request('/v1/magpie/usage/requests?period=7d&limit=1'));
+    // The reading of the week is asked for at the same time as the quota, so
+    // the names of the vendors are the ones of the reading that was before.
+    const cards = this.snapshot?.parts?.quotas?.data || [];
+    return normalizeUsage(await this.request('/v1/magpie/usage/requests?period=7d&limit=1'), this.vendorNames(cards));
   }
 
   // The usage of an account belongs to the account it was taken for: the

@@ -436,6 +436,27 @@ test('a subscription can be given a name of its own', async () => {
   assert.match(styles, /\.checks \.sub-name/);
 });
 
+test('the console offers to follow the subscriptions of Magpie', async () => {
+  const page = await read('ui/index.html');
+  const script = await read('ui/app.js');
+  // The first row of the list is the whole list: the subscriptions of Magpie
+  // are followed, so one that is added shows up and one that is removed goes
+  // away by itself.
+  assert.match(script, /followInput\.value = '\*'/);
+  assert.match(script, /全部订阅（跟着 Magpie 走）/);
+  // The list that is sent is the whole one when that row is ticked, and the
+  // rows below it only decide when it is not. The subscriptions that are
+  // written down after the star keep the order the user has given them.
+  assert.match(script, /follow && follow\.checked \? \['\*', \.\.\.collect\(\)\] : collect\(\)/);
+  // The first row is not a subscription of its own: it is not written down
+  // with the others.
+  assert.match(script, /!input\.classList\.contains\('follow'\)/);
+  // The page says which of the two ways is in use, so that a subscription
+  // that does not show up is not a mystery.
+  assert.match(page, /id="subMode"/);
+  assert.match(script, /element\('subMode'\)/);
+});
+
 test('the phone says goodbye to its row on the list', async () => {
   const page = await read('mobile/app.js');
   assert.match(page, /api\/v1\/device\/forget/);

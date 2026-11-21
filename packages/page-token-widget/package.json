@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/page-token-widget",
-  "version": "0.4.18",
-  "description": "在 iPhone 主屏上放一个额度小组件：扫一次码，Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量就在手边。A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM.",
+  "version": "0.4.19",
+  "description": "在 iPhone 主屏上放一个额度小组件：扫一次码，Magpie 里每一家订阅的剩余额度、重置倒计时和真实 Token 用量就在手边。A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of every subscription Magpie knows.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -47,8 +47,8 @@
   "magpie": {
     "name": "iPhone Quota Widget",
     "summary": {
-      "en": "A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM. Unlike the usage pages listed above, the numbers land on another device, and the quota stays the quota window of the subscription rather than a per-model split of tokens; the phone reaches the local service over your Tailscale tailnet.",
-      "zh": "把额度组件放到 iPhone 桌面：扫一次码，组件显示 Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量。和上面那些用量页面不同，数字落在另一台设备上；额度保持订阅本身的额度窗口，而不是按模型摊开的 token；手机通过 Tailscale 尾网连进本机服务。"
+      "en": "A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of every subscription Magpie knows. Unlike the usage pages listed above, the numbers land on another device, and the quota stays the quota window of the subscription rather than a per-model split of tokens; the phone reaches the local service over your Tailscale tailnet.",
+      "zh": "把额度组件放到 iPhone 桌面：扫一次码，组件显示 Magpie 里每一家订阅的剩余额度、重置倒计时和真实 Token 用量。和上面那些用量页面不同，数字落在另一台设备上；额度保持订阅本身的额度窗口，而不是按模型摊开的 token；手机通过 Tailscale 尾网连进本机服务。"
     },
     "icon": "page/icon.svg",
     "page": {

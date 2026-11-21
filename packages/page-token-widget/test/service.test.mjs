@@ -135,6 +135,27 @@ test('the widget of the phone carries the pairing code', async () => {
   assert.equal(denied.status, 403);
 });
 
+test('an address with a dollar sign in it does not break the script of the phone', async () => {
+  // In a replacement string a dollar sign means something else, and the
+  // address of the user may hold one: the name of a host may carry a dollar
+  // sign and an ampersand.
+  const address = 'https://a$&b.example';
+  const answer = await post('/api/v1/console/options', { externalURL: address }, { [TOKEN_HEADER]: state.consoleToken });
+  assert.equal(answer.status, 200);
+  const rotated = await post('/api/v1/console/pair', {}, { [TOKEN_HEADER]: state.consoleToken });
+  const consoleState = await rotated.json();
+  const response = await fetch(base + '/scriptable/UsageWidget.js?code=' + consoleState.pairingCode);
+  assert.equal(response.status, 200);
+  const source = await response.text();
+  // The address is put back before anything is said about it, so that the
+  // tests that follow are not about an address of a host that does not
+  // exist.
+  await post('/api/v1/console/options', { externalURL: '' }, { [TOKEN_HEADER]: state.consoleToken });
+  // The address is put in as it is, and the line of the pairing is still a
+  // line of the script.
+  assert.match(source, /let PAIRED = \{ baseURL: "https:\/\/a\$&b\.example", code: "[^"]+" \};/);
+});
+
 test('a phone that installs by hand gets the widget with its token', async () => {
   // The setup script of the phone knows the token, not the pairing code.
   const response = await fetch(base + '/scriptable/UsageWidget.js', {

@@ -72,7 +72,10 @@ test('the service starts with sensible defaults', async () => {
   const state = await (await fetch(base + '/api/v1/console/state', { headers: { [TOKEN_HEADER]: token } })).json();
   assert.equal(state.refresh.strategy, 'smart');
   assert.ok(state.refresh.label);
-  assert.deepEqual(state.display.subscriptions, ['codex', 'minimax', 'glm']);
+  // Every subscription the gateway knows is shown. The list of the vendors is
+  // not written down in the code, so a subscription that is added to Magpie
+  // shows up without being ticked.
+  assert.deepEqual(state.display.subscriptions, ['*']);
   assert.equal(state.port > 0, true);
   // The phone side has a port of its own, and it is not the console.
   assert.equal(state.phonePort > 0, true);
@@ -111,10 +114,10 @@ test('the choice of the subscriptions is checked', async () => {
   const token = await consoleToken();
   // A list that is empty falls back to the default.
   const empty = await post(base, '/api/v1/console/options', { subscriptions: [] }, { [TOKEN_HEADER]: token });
-  assert.equal((await empty.json()).display.subscriptions.length, 3);
+  assert.deepEqual((await empty.json()).display.subscriptions, ['*']);
   // A name that is not a name is not taken.
   const wrong = await post(base, '/api/v1/console/options', { subscriptions: ['<script>'] }, { [TOKEN_HEADER]: token });
-  assert.deepEqual((await wrong.json()).display.subscriptions, ['codex', 'minimax', 'glm']);
+  assert.deepEqual((await wrong.json()).display.subscriptions, ['*']);
   // A real choice is kept.
   const good = await post(base, '/api/v1/console/options', { subscriptions: ['codex'] }, { [TOKEN_HEADER]: token });
   assert.deepEqual((await good.json()).display.subscriptions, ['codex']);

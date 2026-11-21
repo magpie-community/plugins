@@ -1,14 +1,28 @@
-const PROVIDERS = {
-  codex: { id: 'codex', label: 'Codex', plan: 'ChatGPT' },
-  'minimax-cn': { id: 'minimax', label: 'MiniMax', plan: 'Coding Plan' },
-  minimax: { id: 'minimax', label: 'MiniMax', plan: 'Coding Plan' },
-  zhipu: { id: 'glm', label: 'GLM', plan: 'Coding Plan' },
-};
+// The vendors the widget knows by heart: the id Magpie uses, the family they
+// belong to, the name a card carries and the plan it shows.
+//
+// A vendor that is not written down here is not refused. It is a vendor of its
+// own, and the name Magpie gives it is the name its card carries. A vendor
+// that is added to Magpie tomorrow therefore shows up without a new release
+// of this plugin: the list of vendors is read from the gateway, not from a
+// table that is written down here.
+const KNOWN_PROVIDERS = new Map([
+  ['codex', { id: 'codex', label: 'Codex', plan: 'ChatGPT' }],
+  ['minimax-cn', { id: 'minimax', label: 'MiniMax', plan: 'Coding Plan' }],
+  ['minimax', { id: 'minimax', label: 'MiniMax', plan: 'Coding Plan' }],
+  ['zhipu', { id: 'glm', label: 'GLM', plan: 'Coding Plan' }],
+]);
 // Canonical display order of the known subscription families.
 const PROVIDER_ORDER = ['codex', 'minimax', 'glm'];
-// The display name of each family, used to match a subscription with the usage
-// row of the same vendor.
-const FAMILY_LABELS = { codex: 'Codex', minimax: 'MiniMax', glm: 'GLM' };
+// A provider id is a short name in lower case. Anything else is not a
+// provider and is not shown. A dot and an underscore are part of a name
+// like any other letter, so a vendor whose id carries one is a vendor like
+// any other.
+const PROVIDER_ID = /^[a-z][a-z0-9._-]{0,19}$/;
+// The name of a vendor as the plugin knows it. A name that is not written
+// down is not looked for on the prototype either: the table is read with
+// "hasOwn", so a vendor called "constructor" is a vendor like any other.
+const providerLabel = id => (Object.hasOwn(PROVIDER_LABELS, id) ? PROVIDER_LABELS[id] : '');
 // The name Magpie itself gives a vendor ("Zhipu GLM", "MiniMax (China)").
 // The component says the same name, so that the software and the widget are
 // one thing and not two. It is text of the upstream, so it is cleaned before
@@ -22,13 +36,36 @@ const vendorName = value => {
   if (!text || text.length > 40 || text.includes('·')) return '';
   return text;
 };
-// The family an upstream provider id belongs to, or null when it is unknown.
-export const providerFamily = id => PROVIDERS[id]?.id || null;
+// The family an upstream provider id belongs to, or null when it is not a
+// provider at all. A vendor that is not written down above is a family of its
+// own, named by its own id.
+export const providerFamily = id => {
+  const text = typeof id === 'string' ? id.trim().toLowerCase() : '';
+  if (!text) return null;
+  const known = KNOWN_PROVIDERS.get(text);
+  if (known) return known.id;
+  return PROVIDER_ID.test(text) ? text : null;
+};
+// What a card of a vendor shows: the family, the name and the plan. A vendor
+// that is not known by heart has no plan of its own; the plan the gateway
+// sends is used when it is a plain word.
+const providerOf = id => {
+  const text = typeof id === 'string' ? id.trim().toLowerCase() : '';
+  const known = KNOWN_PROVIDERS.get(text);
+  if (known) return known;
+  const family = providerFamily(text);
+  return family ? { id: family, label: providerLabel(family) || family, plan: '' } : null;
+};
 export const iso = value => typeof value === 'string' && Number.isFinite(Date.parse(value))
   ? new Date(value).toISOString() : null;
 export const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 // Labels are typed metadata, never arbitrary upstream text.
 const plans = /^(?:ChatGPT|Coding Plan|Free|Go|Plus|Pro|Team|Business|Enterprise|Starter|Lite|Basic|Standard|Max|Ultra)$/i;
+// A vendor may name its plan in its own words ("personal_professional",
+// "Pro Plan"). The name is shown as it is, as long as it is a plain line of
+// letters, digits, spaces, dots and underscores: it is a label, never a text
+// of the upstream.
+const planWord = /^[A-Za-z][A-Za-z0-9 ._-]{0,31}$/;
 const windows = /^(?:\d{1,3}\s*(?:h|hours?|d|days?|minutes?|weeks?|months?|小时|天|周|月)|weekly|daily|monthly|yearly|tokens?|requests?|search|mcp|total)$/i;
 // A window of a provider that is not a span of time has a name of its own:
 // the image quota of Codex is one of them. The name is written in the
@@ -41,11 +78,29 @@ const NAMED_WINDOWS = new Map([['image generation', '图片生成']]);
 // stored reading is fed in again with the name it was stored under, and the
 // name of ours stays the name of ours.
 const OWN_WINDOW_NAMES = new Set(NAMED_WINDOWS.values());
+// A window that has no name of its own is called "Quota". Several of them on
+// one card are numbered, so that they can be told apart. The number is ours,
+// and it comes back out of the cache as the name it was stored under.
+const OWN_NUMBERED_WINDOW = /^Quota [1-9]\d*$/;
 const windowLabel = name => {
   const text = typeof name === 'string' ? name.trim() : '';
   if (!text) return 'Quota';
-  if (windows.test(text) || OWN_WINDOW_NAMES.has(text)) return text;
+  if (windows.test(text) || OWN_WINDOW_NAMES.has(text) || OWN_NUMBERED_WINDOW.test(text)) return text;
   return NAMED_WINDOWS.get(text.toLowerCase()) || 'Quota';
+};
+// Several windows of one card can carry the same plain name, for instance
+// when a vendor has three kinds of credits and calls them all the same.
+// They are numbered in the order they come, so that the bars can be read
+// one after another.
+const numberPlainWindows = list => {
+  const plain = list.filter(window => window.label === 'Quota').length;
+  if (plain < 2) return list;
+  let index = 0;
+  return list.map(window => {
+    if (window.label !== 'Quota') return window;
+    index += 1;
+    return { ...window, label: 'Quota ' + index };
+  });
 };
 const modelFamily = /^(?:gpt[-.]?\d|o[1-9](?:-|$)|codex(?:-|$)|claude[-.](?:opus|sonnet|haiku|\d)|minimax-m\d|glm[-.]?\d|gemini[-.]?\d|qwen\d|deepseek[-.]?(?:v\d|r\d|chat|reasoner)|kimi[-.]?(?:k\d|latest)|grok[-.]?\d|mistral[-.]|llama[-.]?\d)/i;
 // Keys are stable upstream ids. The display name is registered as an alias as well,
@@ -61,6 +116,20 @@ for (const [id, label] of Object.entries(PROVIDER_LABELS)) {
   providerNames.set(id, label);
   providerNames.set(label.toLowerCase(), label);
 }
+// The name of a vendor: the one that is written down here, or the one that
+// Magpie gives it. A vendor that is not written down keeps the name of the
+// software, so that the ranking and the card of a subscription say the same
+// thing. A name that is neither keeps the id of the vendor: an id is a name
+// like any other, and "Unknown" says less than the name does.
+const providerLabelOf = (value, names = {}) => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return 'Unknown';
+  const known = providerNames.get(text.toLowerCase());
+  if (known) return known;
+  const given = names[text.toLowerCase()];
+  if (given) return given;
+  return PROVIDER_ID.test(text) ? text : 'Unknown';
+};
 // Agents are identified by a stable upstream id (claude, codex, gemini-cli...);
 // the id is registered as its own alias so stored labels survive restarts.
 // The list is every agent Magpie knows (its internal/agent registry), so an
@@ -99,7 +168,7 @@ for (const [id, label] of Object.entries(AGENT_LABELS)) {
 function typedLabel(value, type, index) {
   if (typeof value !== 'string') return type === 'computer' ? 'Device ' + (index + 1) : 'Unknown';
   if (type === 'computer') return /^[a-z0-9][a-z0-9_-]{0,62}$/i.test(value) ? value : 'Device ' + (index + 1);
-  if (type === 'provider') return providerNames.get(value.toLowerCase()) || 'Unknown';
+  if (type === 'provider') return providerLabelOf(value);
   if (type === 'agent') {
     const known = agentNames.get(value.toLowerCase());
     if (known) return known;
@@ -169,12 +238,15 @@ export const accountKey = (family, value) => {
 };
 export function normalizeQuotas(raw, cache = {}) {
   if (!raw || !Array.isArray(raw.data)) throw new Error('Invalid quota response');
-  const counts = {};
+  // The counter of every family. It is a Map and not an object: a family
+  // called "constructor" is a family like any other, and it must not find
+  // something on the prototype.
+  const counts = new Map();
   // How many cards a family has: one account keeps the plain name, several are
   // named after their own identity so they never swap places.
   const familySize = new Map();
   for (const card of raw.data) {
-    const family = PROVIDERS[card?.provider]?.id;
+    const family = providerFamily(card?.provider);
     if (!family) continue;
     // The gateway may know more accounts of a vendor than the rows that are
     // read now: a broken row is still an account, and a vendor with several
@@ -206,14 +278,18 @@ export function normalizeQuotas(raw, cache = {}) {
     return first < second ? -1 : first > second ? 1 : 0;
   });
   return ordered.flatMap(card => {
-    const provider = PROVIDERS[card?.provider];
+    const provider = providerOf(card?.provider);
     if (!provider || !Array.isArray(card.windows)) return [];
-    const index = counts[provider.id] = (counts[provider.id] || 0) + 1;
+    const index = (counts.get(provider.id) || 0) + 1;
+    counts.set(provider.id, index);
     const account = accountName(card?.user ?? card?.account);
     const alias = aliasName(card?.alias);
     // A cached reading belongs to the account it was taken for, so two accounts
     // of one vendor never borrow each other's timestamp.
-    const cached = (cachedByProvider.get(card.provider) || []).filter(item =>
+    // The cache is indexed by the vendor as Magpie writes it down, and the
+    // family is tried as well: a vendor that Magpie calls "minimax-cn" and
+    // one it calls "minimax" are one family and one reading.
+    const cached = [...(cachedByProvider.get(card.provider) || []), ...(cachedByProvider.get(provider.id) || [])].filter(item =>
       !account || accountName(item.quota.user) === account);
     const singleAccount = familySize.get(provider.id) === 1;
     // A card without an identity only inherits a reading of a vendor that has
@@ -261,9 +337,10 @@ export function normalizeQuotas(raw, cache = {}) {
       // How many accounts of this vendor are known: a card of a vendor with
       // several accounts never shows the total of the vendor.
       accounts: familySize.get(provider.id) || 1,
-      plan: typeof card.plan === 'string' && plans.test(card.plan) ? card.plan : provider.plan, updatedAt,
+      plan: typeof card.plan === 'string' && (plans.test(card.plan) || planWord.test(card.plan))
+        ? card.plan : provider.plan, updatedAt,
       stale: card.stale === true,
-      windows: card.windows.filter(window => window && typeof window === 'object').map(window => {
+      windows: numberPlainWindows(card.windows.filter(window => window && typeof window === 'object').map(window => {
         const known = typeof window.used === 'number' && Number.isFinite(window.used) && window.used >= 0;
         const usedPercent = known ? Math.min(100, window.used) : null;
         return {
@@ -273,12 +350,18 @@ export function normalizeQuotas(raw, cache = {}) {
           amount: typeof window.amount === 'number' ? number(window.amount) : null,
           limit: typeof window.limit === 'number' ? number(window.limit) : null,
         };
-      }),
+      })),
     }];
   }).sort((a, b) => {
-    // Known families keep their canonical order; anything else sorts last instead of first.
+    // Known families keep their canonical order; anything else sorts last
+    // instead of first, and the families that are not known are ordered by
+    // their own id, so that the cards of one vendor stay together.
     const ai = PROVIDER_ORDER.indexOf(a.provider), bi = PROVIDER_ORDER.indexOf(b.provider);
-    return (ai < 0 ? PROVIDER_ORDER.length : ai) - (bi < 0 ? PROVIDER_ORDER.length : bi);
+    const left = ai < 0 ? PROVIDER_ORDER.length : ai;
+    const right = bi < 0 ? PROVIDER_ORDER.length : bi;
+    if (left !== right) return left - right;
+    if (left < PROVIDER_ORDER.length) return 0;
+    return a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0;
   });
 }
 // Select complete provider groups instead of guessing which anonymous API row
@@ -289,7 +372,7 @@ export function resolveQuotas(raw, cache = {}, previous = [], cachedIdentities =
   const group = rows => {
     const groups = new Map();
     for (const row of rows) {
-      const provider = PROVIDERS[row?.provider]?.id;
+      const provider = providerFamily(row?.provider);
       if (!provider) continue;
       const account = accountName(row?.user ?? row?.account) || '';
       const key = provider + '|' + account;
@@ -328,16 +411,41 @@ export function resolveQuotas(raw, cache = {}, previous = [], cachedIdentities =
     const family = key.split('|')[0];
     known.set(family, (known.get(family) || 0) + 1);
   }
-  for (const provider of PROVIDER_ORDER) {
+  // The answer of the gateway holds something: it knows of at least one
+  // subscription, and it is the list of the subscriptions that exist. A
+  // vendor it does not mention is gone.
+  // A row that is not read at all is not a subscription this plugin can
+  // show, so it does not count: when the gateway says nothing that can be
+  // read, the reading that was stored is shown instead of nothing.
+  const answered = api.size > 0;
+  // The vendors that are looked at: the ones the widget knows by heart first,
+  // in the order they have, and then the ones that are not written down here,
+  // in the order of their own id. A vendor that Magpie adds later is a vendor
+  // of its own and is looked at as well.
+  const families = new Set();
+  for (const source of [api, disk, history]) {
+    for (const key of source.keys()) families.add(key.split('|')[0]);
+  }
+  const ordered = [
+    ...PROVIDER_ORDER.filter(family => families.has(family)),
+    ...[...families].filter(family => !PROVIDER_ORDER.includes(family)).sort(),
+  ];
+  for (const provider of ordered) {
     const prefix = provider + '|';
     const of = source => [...source.entries()].filter(([key]) => key.startsWith(prefix));
     const live = of(api), familyCached = of(disk).flatMap(([, rows]) => rows),
       familySaved = of(history).flatMap(([, rows]) => rows);
     const accounts = known.get(provider) || 0;
     if (!live.length) {
-      // No live reading at all: the cached accounts are the ones on screen. The
-      // source that knows more accounts wins, so a cache that lost an account
-      // never hides the one the history still knows.
+      // The vendor is not in the answer of the gateway. When the answer holds
+      // something, the gateway knows which subscriptions exist, and a vendor
+      // it does not mention is gone: it is not brought back from the reading
+      // that was stored.
+      // When the answer holds nothing at all, the gateway is quiet. Then the
+      // reading that was stored is the one that is shown: the source that
+      // knows more accounts wins, so a cache that lost an account never hides
+      // the one the history still knows.
+      if (answered) continue;
       const fallback = familyCached.length >= familySaved.length ? familyCached : familySaved;
       if (fallback === familyCached) cachedIdentities.push(...familyCached);
       const rows = readings(fallback);
@@ -396,17 +504,24 @@ function mergeModels(rows) {
   }
   return [...groups.values()];
 }
-function ranking(rows, type) {
+function ranking(rows, type, names = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const entries = type === 'model'
     ? mergeModels(list).map(group => ({ label: group.label, row: group.row }))
-    : list.map((row, i) => ({ label: typedLabel(labelSource(row, type), type, i), row }));
+    : list.map((row, i) => ({
+      label: type === 'provider' ? providerLabelOf(labelSource(row, type), names) : typedLabel(labelSource(row, type), type, i),
+      row,
+    }));
   return entries.map((entry, i) => ({
     id: type + '-' + (i + 1), label: entry.label, ...metrics(entry.row),
+    // The family of the vendor travels with the row. It is the stable name of
+    // the vendor, and the card of the subscription is found by it: a vendor
+    // that has no name of its own yet still has this one.
+    ...(type === 'provider' ? { family: entry.row.family || providerFamily(labelSource(entry.row, type)) } : {}),
   })).sort((a, b) => b.totalTokens - a.totalTokens).map((entry, i) => ({ ...entry, id: type + '-' + (i + 1) }))
     .slice(0, RANKING_CAP);
 }
-export function normalizeUsage(raw) {
+export function normalizeUsage(raw, names = {}) {
   if (!raw || !['input', 'output', 'cache_read', 'cache_write', 'calls'].every(key =>
     typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0)) throw new Error('Invalid usage response');
   return {
@@ -415,7 +530,7 @@ export function normalizeUsage(raw) {
       at: iso(item.time), label: iso(item.time) ? shanghaiDay(Date.parse(item.time)) : 'Day ' + (index + 1), ...metrics(item),
     })),
     models: ranking(raw.by?.model, 'model'),
-    providers: ranking(raw.by?.provider, 'provider'),
+    providers: ranking(raw.by?.provider, 'provider', names),
     agents: ranking(raw.by?.agent, 'agent'),
     computers: ranking(raw.computers, 'computer'),
   };
@@ -425,15 +540,15 @@ export function normalizeUsage(raw) {
 // vendors and the accounts in one answer. The vendors are gathered from the
 // keys of the vendors and from the accounts, so a vendor whose calls come
 // from an account it holds is counted once.
-export function normalizeUsageSummary(raw) {
+export function normalizeUsageSummary(raw, names = {}) {
   if (!raw || !['input', 'output', 'cache_read', 'cache_write', 'calls'].every(key =>
     typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0)) throw new Error('Invalid usage response');
   const groups = new Map();
   const gather = (provider, row) => {
     if (typeof provider !== 'string' || !provider) return;
-    const family = PROVIDERS[provider]?.id || provider;
+    const family = providerFamily(provider) || provider;
     const group = groups.get(family) || {
-      id: provider, calls: 0, errors: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0,
+      id: provider, family, calls: 0, errors: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0,
     };
     for (const field of ['calls', 'errors', 'input', 'output', 'cache_read', 'cache_write', 'reasoning']) {
       group[field] += number(row?.[field]);
@@ -446,7 +561,7 @@ export function normalizeUsageSummary(raw) {
     .filter(row => row && typeof row.provider === 'string' && typeof row.account === 'string' && row.account.includes('@'))
     .map(row => ({
       provider: row.provider,
-      family: PROVIDERS[row.provider]?.id || null,
+      family: providerFamily(row.provider),
       account: row.account.trim(),
       ...metrics(row),
     }));
@@ -455,10 +570,21 @@ export function normalizeUsageSummary(raw) {
     trend: (Array.isArray(raw.series) ? raw.series : []).map((item, index) => ({
       at: iso(item.time), label: iso(item.time) ? shanghaiDay(Date.parse(item.time)) : 'Day ' + (index + 1), ...metrics(item),
     })),
-    providers: ranking([...groups.values()], 'provider'),
+    providers: ranking([...groups.values()], 'provider', names),
     accounts,
   };
 }
+// A row that is read from the disk carries the label it was stored under.
+// The name of a vendor that is not written down is the one Magpie gave it,
+// and that name is ours: it is kept as it is. The name of a vendor that is
+// written down is looked up again, so that a name that was changed is the
+// new one.
+const cleanCachedRows = (rows, type) => (rows || []).map((row, index) => {
+  if (type === 'provider' && row.family && !providerNames.has(String(row.family).toLowerCase())) {
+    return { ...row, label: typeof row.label === 'string' && row.label.trim() ? row.label : 'Unknown' };
+  }
+  return { ...row, label: typedLabel(row.label, type, index) };
+});
 export function sanitizeCachedLabels(data, key) {
   if (key === 'quotas') return normalizeQuotas({ data: data.map(card => ({
     provider: card.provider === 'glm' ? 'zhipu' : card.provider, plan: card.plan, readAt: card.updatedAt, stale: card.stale === true,
@@ -472,7 +598,7 @@ export function sanitizeCachedLabels(data, key) {
     accounts: card.accounts,
     windows: card.windows.map(window => ({ ...window, name: window.label, used: window.usedPercent })),
   })) });
-  const cleanRows = (rows, type) => (rows || []).map((row, index) => ({ ...row, label: typedLabel(row.label, type, index) }));
+  const cleanRows = cleanCachedRows;
   return { ...data,
     trend: (data.trend || []).map((row, index) => ({ ...row, label: iso(row.at) ? shanghaiDay(Date.parse(row.at)) : 'Day ' + (index + 1) })),
     models: cleanRows(data.models, 'model'), providers: cleanRows(data.providers, 'provider'),
@@ -484,7 +610,7 @@ export function sanitizeCachedLabels(data, key) {
 // no models, agents or computers.
 export function sanitizeCachedSummary(data) {
   if (!data || typeof data !== 'object') return data;
-  const cleanRows = (rows, type) => (rows || []).map((row, index) => ({ ...row, label: typedLabel(row.label, type, index) }));
+  const cleanRows = cleanCachedRows;
   return { ...data,
     trend: (data.trend || []).map((row, index) => ({ ...row, label: iso(row.at) ? shanghaiDay(Date.parse(row.at)) : 'Day ' + (index + 1) })),
     providers: cleanRows(data.providers, 'provider'),
@@ -495,7 +621,11 @@ export const shanghaiDay = value => new Date(value + 8 * 3600_000).toISOString()
 // Display choices live in the PC-side configuration; the phone and the dashboard
 // only render what the service projects.
 export const DEFAULT_DISPLAY = {
-  modelLimit: 8, agentLimit: 6, providerLimit: 20, computerLimit: 20, subscriptions: ['codex', 'minimax', 'glm'],
+  // Every subscription the gateway knows is shown. The list of vendors is not
+  // written down here, so a subscription that is added to Magpie shows up
+  // without being ticked, and one that is removed goes away by itself. The
+  // user may still pick a part of it in the console.
+  modelLimit: 8, agentLimit: 6, providerLimit: 20, computerLimit: 20, subscriptions: ['*'],
 };
 // A subscription is a vendor family (codex) or one of its accounts
 // (codex@alice). The family's case does not matter; the account's does.
@@ -509,7 +639,8 @@ const subscriptionId = id => {
   const { family, account } = splitSubscription(id);
   return family + (account ? '@' + account : '');
 };
-const SUBSCRIPTION_ID = /^[a-z][a-z0-9-]{0,19}$/;
+// The same shape as the id of a vendor: a subscription is named by it.
+const SUBSCRIPTION_ID = /^[a-z][a-z0-9._-]{0,19}$/;
 const SUBSCRIPTION_ACCOUNT = /^[A-Za-z0-9._-]{1,32}$/;
 export function displayOptions(value = {}) {
   const limit = (input, fallback) => {
@@ -621,8 +752,17 @@ export function usageForCard(card, { outdated = false, todayProviders = [], fami
     return card.accountUsage;
   }
   if ((card.accounts || familySizes.get(card.provider) || 0) > 1) return null;
-  const label = FAMILY_LABELS[card.provider];
-  const rows = label ? todayProviders.filter(row => String(row.label).trim().toLowerCase() === label.toLowerCase()) : [];
+  // The name of the vendor as the plugin knows it. A vendor that is not
+  // written down here is matched by the name Magpie gives it, so that the
+  // total of the day is found as well.
+  const label = providerLabel(card.provider) || card.vendor;
+  // The family of the vendor is the stable name of it, and it is the first
+  // thing that is matched: a vendor that is not written down yet has no name
+  // to be found by, but it has this one.
+  const rows = todayProviders.filter(row => {
+    if (row.family && row.family === card.provider) return true;
+    return Boolean(label) && String(row.label).trim().toLowerCase() === label.toLowerCase();
+  });
   if (!rows.length) return null;
   // A row of the usage of a vendor is only a number when it is a number: a
   // row that is missing one makes the whole total unknown, not smaller.
@@ -672,14 +812,20 @@ export function project(snapshot, now = Date.now(), display = {}, settings = {})
     })),
   }));
   const showAll = choices.subscriptions.includes('*');
-  // Without an explicit list the canonical family order is used; a provider that
-  // is not listed sorts last instead of first.
-  const order = showAll ? PROVIDER_ORDER : choices.subscriptions;
+  // The order of the cards. The list that was written down comes first, in the
+  // order it was written down in: it is the order the user has given, and it
+  // holds even when the whole list of Magpie is followed. What is not in it
+  // comes after, in the order of the families the widget knows by heart; a
+  // family that is not known sorts last instead of first.
+  const pinned = showAll ? choices.subscriptions.filter(entry => entry !== '*') : choices.subscriptions;
   // A card is ranked by the first entry that names it: its family, or the one
   // account of that family the list picked.
   const rank = card => {
-    const index = order.findIndex(entry => entry === card.provider || entry === card.id);
-    return index < 0 ? order.length : index;
+    const index = pinned.findIndex(entry => entry === card.provider || entry === card.id);
+    if (index >= 0) return index;
+    if (!showAll) return pinned.length;
+    const family = PROVIDER_ORDER.indexOf(card.provider);
+    return pinned.length + (family < 0 ? PROVIDER_ORDER.length : family);
   };
   const shown = subscriptions
     .filter(card => showAll || choices.subscriptions.includes(card.provider) || choices.subscriptions.includes(card.id))

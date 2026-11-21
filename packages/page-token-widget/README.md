@@ -1,6 +1,6 @@
 ## 中文说明
 
-在 Magpie 窗口里管理一个 **iPhone 桌面组件**：扫一次码，手机上就能看到 Codex、MiniMax、GLM 各家套餐的剩余额度和真实 Token 用量。
+在 Magpie 窗口里管理一个 **iPhone 桌面组件**：扫一次码，手机上就能看到 Magpie 里每一家订阅的剩余额度和真实 Token 用量。
 
 插件自己把服务跑起来，自己找到 Tailscale 尾网地址，手机扫一次码就配对好了。装它不需要运行安装脚本、装 Node.js、建计划任务或手工开端口转发。
 
@@ -20,7 +20,7 @@ magpie plugin add @magpie-community/page-token-widget
 
 A page in Magpie's window that puts a **quota widget on the home screen of your
 iPhone**: scan one code, and the phone shows the remaining quota and the real
-token usage of Codex, MiniMax and GLM.
+token usage of every subscription Magpie knows.
 
 The plugin runs the service itself, finds the tailnet address itself, and the
 phone pairs by scanning a code once. Installing it needs no install script, no
