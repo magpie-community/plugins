@@ -136,7 +136,12 @@ function createTimers() {
 // ---------------------------------------------------------------- 假子进程
 
 class FakeStream extends EventEmitter {
+  destroyed = false
   setEncoding() { return this }
+  destroy() {
+    this.destroyed = true
+    return this
+  }
 }
 
 class FakeChild extends EventEmitter {
@@ -561,10 +566,34 @@ export async function createBridgeKit(options = {}) {
       new FakeAgy(kit, child, opts)
       return child
     }
-    kit.otherSpawns.push({ file, args, opts })
     const child = new FakeChild(kit, file, args)
-    const code = options.onSpawn ? options.onSpawn(file, args, opts) : 0
-    child.finish(code ?? 0)
+    kit.otherSpawns.push({ file, args, opts, child })
+    const outcome = options.onSpawn ? options.onSpawn(file, args, opts) : 0
+    // A number is an exit code (the historical stub). An object can also hold
+    // stderr and refuse to emit "close", which is how a grandchild keeps the
+    // pipes open after bun build has already exited (#1428). `signal` is the
+    // exit signal (EDR/SIGKILL, code null). `stderrDelayMs` emits stderr that
+    // many milliseconds after "exit", so a drain timer can still collect it.
+    const coded = outcome && typeof outcome === "object" ? outcome : { code: outcome }
+    if (coded.hang) return child
+    const code = coded.code === undefined ? 0 : coded.code
+    const emitOutput = () => {
+      if (coded.stdout) child.stdout.emit("data", coded.stdout)
+      if (coded.stderr) child.stderr.emit("data", coded.stderr)
+    }
+    if (coded.exitWithoutClose) {
+      const signal = coded.signal ?? null
+      setImmediate(() => {
+        child.exitCode = code
+        child.signalCode = signal
+        if (coded.stderrDelayMs == null) emitOutput()
+        child.emit("exit", code, signal)
+        if (coded.stderrDelayMs != null) setTimeout(emitOutput, coded.stderrDelayMs)
+      })
+      return child
+    }
+    if (coded.stdout || coded.stderr) setImmediate(emitOutput)
+    child.finish(code)
     return child
   }
   const spawnSync = (file, args = [], opts = {}) => {
@@ -596,7 +625,10 @@ export async function createBridgeKit(options = {}) {
         return fakeServer
       },
     },
-    "node:os": { homedir: () => home, tmpdir: () => tmp },
+    // options.tmpdir is the module's os.tmpdir() (a non-ASCII Temp, an 8.3
+    // short Temp). The scratch dir `tmp` still holds HOME and is what dispose
+    // removes; the caller removes options.tmpdir.
+    "node:os": { homedir: () => home, tmpdir: () => options.tmpdir || tmp },
   }
   const runtime = new vm.SyntheticModule(RUNTIME_NAMES, function init() {
     this.setExport("Date", clock.Date)
