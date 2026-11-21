@@ -6,7 +6,7 @@
 
 模型实验室把鹈鹕 HTML 动画、模型指纹、糖果推理和定时自动测试放在同一个页面。可用于 AI 模型对比、推理能力观察及智商／智力趣味测试；趣味题结果不等同于正式智商评分。直接使用 Magpie 已配置的供应商和模型，可查看思考与输出用量、回放动画、追踪每日表现。
 
-**版本 1.0.3** · MIT · Magpie 0.1.2905+
+**版本 1.0.5** · MIT · Magpie 0.1.2905+
 
 Model Lab evaluates and compares AI models in Magpie through HTML animations, model fingerprints, candy reasoning and IQ-style fun tests, with per-model scheduled monitoring. It uses your existing providers and keeps results locally. Puzzle results are not formal IQ scores.
 
@@ -18,10 +18,13 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 | **模型指纹** | 每个模型进行 3 次数字采样，与参考库匹配；显示采样进度、候选模型和详细证据。 |
 | **糖果测试** | 使用固定推理题比较回答，答案为 **21** 显示绿色，其他明确数值显示红色；回答、思考和用量可展开查看。 |
 | **自动测试** | 每个供应商／模型分别设置糖果、动画计划；糖果用成功率与时间格展示，动画按模型排列为横向长廊。 |
-| **历史记录** | 手动结果按提交批次查看，自动结果按日期、类型和时刻分组；可筛选、导出与清理。 |
+| **历史记录** | 手动结果按提交批次查看，自动结果按日期、类型和时刻分组；动画长廊可直接跳到最新或最早，可筛选、导出与清理。 |
 
 - **先选供应商，再选模型**：默认显示全部供应商，支持搜索、多选、一键清空和跨供应商对比。
-- **参数自己控制**：可选择模型支持的思考档位、输出上限与并行数；插件不限制单批模型数量。
+- **参数自己控制**：可选择模型支持的思考档位、输出上限、生成超时与并行数；插件不限制单批模型数量。
+- **原条件复测**：入口与本批次、历史批次标题对齐；手动批次可多选，自动历史一次复测所选模型、所选时刻的一条记录；指纹保留原题和原库，创建新的手动批次并保留来源。
+- **失败原因与定向复测**：区分超时、限流、认证、响应中断、截断及答案不匹配等原因，保留原始错误；核对原条件后可按原因选择复测记录。
+- **同模型近期趋势**：详情中展开最近 20 条同模型、同完整条件的记录，查看对应测试的结果率、耗时与用量中位数，并可跳回原记录。
 - **用量统一展示**：三种测试均显示思考／输出 Token；接口尚未返回用量时显示流式字符数。
 - **每个模型独立定时**：指定时刻或固定间隔，支持工作日、周末、自选星期和时区，每种测试每天最多 24 次。
 - **修改计划保留结果**：同一模型、同一测试类型、同一原定执行分钟的已有结果可以复用，指定时刻与固定间隔互换也适用。
@@ -33,7 +36,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 
 ### 本地安装包
 
-将 `magpie-pelican-bench-1.0.3.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
+将 `magpie-pelican-bench-1.0.5.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
 
 也可以在解压目录运行：
 
@@ -51,9 +54,9 @@ Windows 可使用 `tools/install.ps1`；Magpie 不在 PATH 中时，传入 `-Mag
 magpie plugin add github:xiaopeng66/magpie-model-lab
 ```
 
-可在仓库地址后加 `#v1.0.3` 固定安装本版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
+可在仓库地址后加 `#v1.0.5` 固定安装本版本，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
 
-当前通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
+公开版通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
 
 技术包名和保存目录仍为 `magpie-pelican-bench`，升级沿用原有计划与历史。原地更新文件后，在 Magpie 插件页关闭再开启插件，重新打开页面即可加载新版本；页面刷新本身不能重载后台服务。
 
@@ -68,6 +71,7 @@ magpie plugin add github:xiaopeng66/magpie-model-lab
 | 默认设置 | 数值 |
 | --- | --- |
 | 最大输出 | **64000 Token**；设为 **0** 时省略插件提供的输出上限 |
+| 生成超时 | **600 秒**；Token 上限旁可调，**0** 表示不设插件侧超时 |
 | 手动批次并行数 | 动画 **2**，指纹／糖果 **3**；**0** 表示不设并行上限 |
 | 自动测试并行数 | **3**，在管理模型页直接调整；**0** 表示不设并行上限 |
 | 自动时刻数量 | 每模型、每测试类型、每计划日最多 **24 次** |
@@ -80,7 +84,7 @@ magpie plugin add github:xiaopeng66/magpie-model-lab
 - 自动计划需要 Magpie 插件服务持续运行；休眠或退出期间错过的时刻不补跑，新计划默认暂停。
 - 指纹提供参考库内的匹配证据，不能证明真实模型身份；糖果绿色表示最终数值匹配 21，不等同于完整推理验证或智商评分。
 - 动画预览限制网络访问；模型依赖外部脚本、图片或字体时可能显示不完整。重播读取已保存文件，不再请求模型。
-- JSON 导出用于留档和分析，当前没有导入恢复入口；分享前请检查提示词、回复、账号标识与本机路径。
+- JSON 导出用于留档和分析，单批采用 16 MiB 预算，超限时原始文件仍保留在保存位置；当前没有导入恢复入口。分享前请检查提示词、回复、账号标识与本机路径。
 
 详见 [使用说明](docs/usage.md)、[自动测试说明](docs/favorites-guide.md) 和 [更新记录](CHANGELOG.md)。
 

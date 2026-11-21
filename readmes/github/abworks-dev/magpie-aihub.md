@@ -2,9 +2,9 @@
 
 面向 **aihub.top 普通消费者** 的 Magpie Provider 插件。用自己的账户或分组 Key，在 Magpie 中提供一个 `aihub-auto` 上游入口，按倍率和延迟选组、保留会话线路、在首次响应前有限重试。
 
-**版本：v0.7.9（预发布）。** 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。v0.7.1 起用 Magpie 的 `auth.usage` 钩子在宿主「用量 → 概览」给出本账户的卡片：钱包余额，以及按平台配额汇总的今日/本周/本月预算使用。
+**版本：v0.8.0（预发布）。** v0.8.0 起，未显式配置上下文窗口时按平台与模型名取一组保守默认值（AIHub 的 `/v1/models` 与模型卡都不发布该字段），模型行尾可用 `|context|output` 覆盖。 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。v0.7.1 起用 Magpie 的 `auth.usage` 钩子在宿主「用量 → 概览」给出本账户的卡片：钱包余额，以及按平台配额汇总的今日/本周/本月预算使用。
 
-已通过 280 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
+已通过 285 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
 
 ## 安装
 
@@ -99,13 +99,13 @@ github:abworks-dev/magpie-aihub
 | `priceAlertRatio` | `0.2` | 分组真实价格相对上次观测变化超过该比例（0.2 = 20%）时在监控页提示；只提示，不参与路由 |
 | `breakerWindowMs` / `breakerMinSamples` / `breakerFailureRate` | `300000` / `5` / `0.5` | 滑动窗口熔断：窗口内失败数达到样本下限且失败率超阈值才冷却该分组，避免一次抖动把好分组踢掉 |
 | `defaultApi` | `responses` | 默认协议；可设 `chat`，Gemini 自动发现仍使用 Responses；原生 Gemini 须显式配置 |
-| `models` | `[]` | 字符串 ID 或 `{id, platform?, api?, context?, output?}`；空列表自动发现 |
+| `models` | `[]` | 字符串 ID 或 `{id, platform?, api?, context?, output?}`；空列表自动发现；不写 `context` / `output` 时按平台与模型名取保守默认值（Gemini 1M、GPT-5 400k、GLM-4.5+ 200k 等），显式值优先 |
 | `monitorPort` | `19871` | 页面服务与监控的回环端口；默认候选，**尚未在生产分配或确认可用** |
 | `firstByteTimeoutMs` / `totalTimeoutMs` | `30000` / `90000` | 单次首字节期限 / 路由与首字节总预算；输出后不截断长流 |
 | `refreshMs` / `maxStaleMs` | `60000` / `600000` | 按需目录刷新间隔 / 故障时旧目录可用上限 |
 | `sessionTtlMs` | `86400000` | 内存会话保留时间 |
 
-发现模型时上下文/输出默认 128000/16384，真实能力可能不同；可显式配置。模型成本字段的未知占位 0 不表示免费；实际计费以 AIHub 为准。监控缺失指标使用 `null`，不伪装为零。
+发现模型时上下文/输出按平台与模型名取保守默认值（家族未知时回落到 128000/16384），这些是显示用的占位猜测，不代表厂商规格；可在模型行尾用 `|context|output` 显式配置。模型成本字段的未知占位 0 不表示免费；实际计费以 AIHub 为准。监控缺失指标使用 `null`，不伪装为零。
 
 ## 页面、只读监控与密钥错误
 

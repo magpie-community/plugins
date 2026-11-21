@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **模型转发**：6 个模型（见下方模型目录），默认走 OpenAI Chat Completions 端点（支持思考档位），可在插件选项中切换为 Anthropic Messages 端点（从下一个请求起生效）。
+- **模型转发**：模型清单从上游 `/ai/portal/wenc/v1/platform/cp/models` 拉取（见下方模型目录），默认走 OpenAI Chat Completions 端点（支持思考档位），可在插件选项中切换为 Anthropic Messages 端点（从下一个请求起生效）。
 - **登录**：账号 + 密码（IAM → CAS → ticketAuthorize 链路），API Key 可选。
 - **自动续登**：JWT 到期前 6 小时自动重走登录链路；网页会话中途失效时自动重登并重试一次。
 - **每日签到**：通过 magpie 自带的签到调度（每个北京日一次），领取 `taskDefId=3001` 的「每日签到」Token 奖励。
@@ -27,20 +27,25 @@ magpie plugin login eaichat
 
 ## 模型目录
 
+模型清单以登录后的上游接口 `/ai/portal/wenc/v1/platform/cp/models` 为准：`model` 是请求用的上游模型 ID，`title` 是展示名，`api` 声明该模型可用的端点。插件不维护固定清单，上游新增或下线模型后，下一次刷新列表就会跟随。
+
+当前上游清单（2026-11-21）：
+
 | 上游模型 ID | 展示名称 | 上下文（tokens） | 最大输出 | 思考档位 | 输入 |
 | --- | --- | ---: | ---: | --- | --- |
-| `deepseek-v4.1-flash` | DeepSeek-V4.1-Flash | 1,048,576 | 384,000 | `none` `low` `high` `max` | text, image |
+| `deepseek-v4.1-flash` | DeepSeek-V4.1-Flash-1017 | 1,048,576 | 384,000 | `none` `low` `high` `max` | text, image |
 | `glm-5.3-flash` | GLM-5.3-Flash | 1,000,000 | 131,072 | `low` `high` `max` | text, image, video |
-| `deepseek-v4-flash-0731-oc` | DeepSeek-V4-Flash | 1,048,576 | 384,000 | `none` `low` `high` `max` | text |
-| `deepseek-v4-pro-0813-oc` | DeepSeek-V4-Pro | 1,000,000 | 384,000 | `none` `low` `high` `max` | text |
+| `deepseek-v4-pro-0813-oc` | DeepSeek-V4-Pro-0813 | 1,000,000 | 384,000 | `none` `low` `high` `max` | text |
 | `glm-5.3-oc` | GLM-5.3 | 1,000,000 | 131,072 | `low` `high` `max` | text |
-| `qwen-3.8-flash` | Qwen3.8-Flash | 1,000,000 | 131,072 | `none` `low` `medium` `xhigh` | text, image, video |
+| `qwen-3.8-flash` | Qwen-3.8-Flash | 1,000,000 | 131,072 | `none` `low` `medium` `xhigh` | text, image, video |
 
-展示名称由模型的 `name` 提供，请求使用对应的上游模型 ID。magpie 根据 `limit.context` 自动显示灰色 `1M` / `1.0M` 徽标，并把 `variants` 显示为思考档位；两种协议共用同一份模型元数据。更新插件后，在供应商页面点击「重新获取模型」刷新展示。
+请求使用 `model`，展示名使用 `title`。登录前（config 钩子还没有登录态）或上游清单拉取失败时，使用 `src/constants.ts` 的内置回退清单，内容与上表一致。上游 `api` 字段里的 `openai-completions` / `anthropic-messages` 决定模型出现在哪种协议下；字段缺失时视为两种都可用。
+
+magpie 根据 `limit.context` 自动显示灰色 `1M` / `1.0M` 徽标，并把 `variants` 显示为思考档位。更新插件或在供应商页面点击「重新获取模型」时，会重新请求上游清单。
 
 ### 元数据来源
 
-上下文、最大输出、多模态和思考档位都不在源码里手写。`src/constants.ts` 只维护「上游模型 ID → models.dev 规范模型 ID」的映射；`src/model-metadata.ts` 由脚本从 [models.dev](https://models.dev/api.json) 生成：
+上游清单不返回上下文、最大输出、多模态和思考档位，这部分仍来自 [models.dev](https://models.dev/api.json)。`src/constants.ts` 维护「已知上游模型 ID → models.dev 规范模型 ID」的映射，同时充当登录前的回退清单；`src/model-metadata.ts` 由脚本生成：
 
 ```sh
 npm run update:models
@@ -52,7 +57,7 @@ models.dev 没有 `eaichat` 供应商，所以脚本按每个条目的 `canonica
 - 输入模态：至少一半条目声明的类型；
 - 思考档位：出现次数最多的 `reasoning_options` 组合，`toggle` 记为 `none`。
 
-生成的元数据带 `sourceEntries` 字段，便于核对聚合了多少条 models.dev 条目。更换模型或上游规格变化时，改 `src/constants.ts` 的映射后重新运行脚本即可，不需要手工抄数字。
+生成的元数据带 `sourceEntries` 字段，便于核对聚合了多少条 models.dev 条目。上游新增、尚未写入映射的模型会先以保守默认值出现（128k 上下文、32k 输出、纯文本、无思考档位），补上映射后重新运行脚本即可获得准确元数据，不需要改模型清单本身。
 
 ### 思考档位
 
@@ -108,7 +113,7 @@ src/
   index.ts     插件入口（config/provider/auth 钩子）
   eaichat.ts   云智助手客户端（登录链路、签名、portal 接口）
   state.ts     账号会话管理（续登、Key 解析、并发合并）
-  models.ts    模型目录（6 个模型 × 两种协议）
+  models.ts    模型目录（上游清单 × 两种协议）
   model-metadata.ts  从 models.dev 生成的限额/模态/思考档位
   usage.ts     用量映射
   checkin.ts   签到映射
@@ -125,7 +130,7 @@ tests/         node --test 单元测试（含完整登录链路的假上游）
 
 ### 已知待校准项
 
-- 模型限额来自 models.dev 的聚合值，不是云智助手自己的 `/platform/cp/models`（该接口不返回限额）。若上游实际限额与聚合值不同，调整 `src/constants.ts` 的规范模型映射后重新运行 `npm run update:models`。
+- 模型限额来自 models.dev 的聚合值，不是云智助手自己的 `/platform/cp/models`（该接口只返回模型 id、展示名与可用端点，不返回限额）。若上游实际限额与聚合值不同，调整 `src/constants.ts` 的规范模型映射后重新运行 `npm run update:models`。
 - `addApiKey` 的创建路径未在真实账号实测（该账号已有同名 Key，走了复用路径）；响应字段名做了多候选兼容（`apiKey`/`key`/`keySecret` 等），列表回显字段已实测为 `apiKey`。
 
 ## License
