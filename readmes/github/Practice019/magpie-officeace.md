@@ -1,5 +1,7 @@
 # 华为云 HUAWEI for magpie
 
+> **改这个插件前先读 [AGENTS.md](./AGENTS.md)** —— 尤其是「不要重启 magpie」那一条。
+
 **一个包，两个华为云 provider：果办 `officeace` 和码道 `codearts`。**
 
 > 英文部分照抄华为云官方品牌字样：`码道 CodeArts`（[codearts.huaweicloud.com](https://codearts.huaweicloud.com/) 首屏）、`果办 OfficeAce`（[huaweicloud.com/product/officeace.html](https://www.huaweicloud.com/product/officeace.html) 产品名）、`华为云 HUAWEI`（官方英文品牌全大写）。

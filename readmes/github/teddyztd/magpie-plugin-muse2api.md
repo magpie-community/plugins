@@ -29,6 +29,14 @@
    没有 `if __name__ == "__main__"` 的 uvicorn 入口，直接跑会只打印两条 DeprecationWarning 然后退出，
    端口始终不监听——看起来像「启动了但连不上」。
 
+3. **视频取回依赖**：Magpie core 的 `@ai-sdk/openai-compatible` 视频适配器在生成完成后
+   按 OpenAI 视频协议直接拉 `GET <地址>/v1/videos/{task_id}/content` 下载成品（不读任务里的
+   `result.url`）。muse2api 需含该路由（[teddyztd/muse2api](https://github.com/teddyztd/muse2api)
+   commit `c7054b18` 起实现，`/v1/videos/generations/{task_id}/content` 同步支持）；
+   网关缺该路由时视频任务已完成，但取回报 `muse2api: {"detail":"Not Found"}`（FastAPI 未匹配路由的默认 404）。
+   用 [muse2api_generate_video](#配置图片--视频工具工具用) 等内置视频链路时必须满足；走插件自带
+   `video_status`（读 `result.url`）不受影响。
+
 ## 安装
 
 Magpie 桌面：**插件 → 发现 → 非官方插件 · GitHub**，搜 `magpie-plugin-muse2api`，点安装。
@@ -167,6 +175,8 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 | 网页登录成功但对话仍报没有账号 | 去 muse2api 管理页 `/admin` 看账号列表与 cookie 数量；核心 cookie 是 `hatch_sess` |
 | **管理页 `/admin` 账号池显示 0，但 `/admin/accounts` 明明有账号** | 页面顶部没填 API Key：页面只在填了 key 后才带 `Authorization` 调 `/admin/accounts`，否则一律 401、所有数字显示 0（不是后端问题）。点右上「保存」存 key 即可；也可以直接打开 `http://127.0.0.1:18610/?key=<m2a_…>` 免填 |
 | 图片 / 视频链接打不开 | muse2api 的 `PUBLIC_BASE` 不是外部可达地址；图片本身生成成功时任务里也有 `bytes` / `size` 可核对 |
+| 视频生成成功但报 `muse2api: {"detail":"Not Found"}` | 网关缺 OpenAI 视频下载端点 `GET /v1/videos/{task_id}/content`（Magpie core 不读 `result.url`，直接拉该路由）；换用含 commit `c7054b18` 的 muse2api。注意 `{"detail":"Not Found"}` 是 FastAPI 未匹配路由的默认体，业务 404 会带 `{"error":{"message":…}}` |
+| 对话里选 Muse Image 报 `413 preflight_compress_failed` | DSH 在 preflight 阶段把会话工具目录（`tools[]`）发给了 32k 窗口的图像模型：报错 meter 里 `tools[] ~70,903` > 窗口 `32,000`，请求根本没转发。图像模型不需要工具，给 `muse2api/muse-image` 关闭工具挂载（或只留 0-1 个最小工具）即可 |
 
 ## 更新
 

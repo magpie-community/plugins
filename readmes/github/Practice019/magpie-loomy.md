@@ -1,5 +1,7 @@
 # 讯飞 Loomy for magpie
 
+> **改这个插件前先读 [AGENTS.md](./AGENTS.md)** —— 尤其是「不要重启 magpie」那一条。
+
 把 [Loomy（讯飞 Loomy 桌面端）](https://loomy.xunfei.cn) 的模型接进 magpie：**三种登录**、
 实时模型目录、两个积分池，外加一个管理面板（新手任务 / 邀请码 / 批量导入）。
 
@@ -189,6 +191,16 @@ magpie plugin add owner/magpie-loomy
 | `停用 · 积分耗尽` | 余额为零，满额（路由跳过） | `used:100` |
 | `停用 · 限流冷却` | 429 后短暂避开，到期自动恢复 | `used:100` + `resetsAt` |
 | `说明 · 登录失效` | 真正的登录问题 —— 开关是顶层 `signIn:"expired"` | `aside:true` + `signIn:"expired"` |
+| `说明 · 额度读于 …` | 这份额度是多久前读的（恒在最后一条） | `aside:true` + `display` |
+| `说明 · 额度未读` | 还没有读数：点面板「刷新额度」 | `aside:true` + `display` |
+
+- **`auth.usage` 零上游**（T-54）。它只读 `<configDir>/loomy-usage-cache.json`。
+  额度要更新，只能点面板的「刷新额度」（`POST /api/usage/refresh`，可只刷勾选的号，
+  并发 / 间隔取设置）。**打开面板与 magpie 启动都不会自动查额度** —— 曾经这里每个账号
+  打一次 `/points/records`，301 个号全挤在启动瞬间，上游风控直接成批掉号。
+- **所有真实上游调用都过一个进程级令牌桶**（`src/rate-gate.mjs`）：容量**跟着设置走**
+  （默认 ≥20，用户把并发调高容量也跟着涨），它不是并发上限，只负责把意外爆发摊平。
+  `/api/hello` 的 `gate: { waiting, capacity }` 可观测。
 
 - **session 不会过期，也没有 refresh token** —— 所以本插件**不实现** `auth.refresh`。
   凭证失效时只能人工重登（会如实标 `X-Magpie-Sign-In: expired`）。
