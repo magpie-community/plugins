@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canBind, freePort, pidAlive, request, waitFor } from "./helpers-net.js";
 
+import { hasZombieFixture, zombieFixture } from "./zombie-fixture.js";
+
 const repo = resolve(__dirname, "..", "..");
 const entryUrl = pathToFileURL(join(repo, "index.mjs")).href;
 const hasDist = existsSync(join(repo, "daemon", "dist", "main.js"));
@@ -91,6 +93,25 @@ describe("plugin entry (index.mjs)", () => {
     expect(existsSync(sessionPath)).toBe(false);
     await host.stop();
     delete process.env.AGENT_CONSOLE_BIND_DELAY_MS;
+  });
+
+  it.skipIf(!hasZombieFixture)("a real Linux zombie cannot keep the old host session alive (#1164)", async () => {
+    const z = await zombieFixture();
+    try {
+      const dataDir = join(process.env.XDG_CONFIG_HOME!, "magpie", "agent-console");
+      mkdirSync(dataDir, { recursive: true });
+      const key = "ab".repeat(32);
+      writeFileSync(join(pageDir, "session.js"), `globalThis.AgentConsoleSession = {"key":"${key}"};\n`);
+      writeFileSync(join(dataDir, "session-owner.json"), JSON.stringify({ pid: z.pid, key: key.slice(0, 16) }));
+      expect(() => process.kill(z.pid, 0)).not.toThrow();
+      process.env.AGENT_CONSOLE_PORT = String(await freePort());
+      process.env.AGENT_CONSOLE_BIND_DELAY_MS = "60000";
+      vi.resetModules();
+      const mod = await import(/* @vite-ignore */ `${entryUrl}?zombie=${Date.now()}`);
+      const host = await mod.default.server({}, {});
+      stopHost = () => host.stop();
+      expect(existsSync(join(pageDir, "session.js"))).toBe(false);
+    } finally { await z.release(); }
   });
 
   it.skipIf(!hasDist)(
