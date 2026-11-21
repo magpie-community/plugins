@@ -9,15 +9,28 @@ const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim()
 // Failures that say something about the network at this moment rather than
 // about the account: they are remembered for a minute, not twenty.
 const NETWORK_FAILURE = /ERR_(?:TIMED_OUT|CONNECTION|NETWORK|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|PROXY|TUNNEL|SSL|EMPTY_RESPONSE)|net::ERR_|timed out after|TimeoutError|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i
+// Bumped when amount/currency parsing accepts inputs an older version rejected
+// (fractional JPY in #1423), so an old cached parse failure re-reads on upgrade
+// instead of waiting out failureTtl while valid balance caches stay intact.
+const PARSER_VERSION = 2
+const PARSER_FAILURE = /^Unsupported credit amount\/currency:/
 const column = (headers, name) => headers.findIndex((h) => normalize(h).toLowerCase() === name)
 // The currencies a credit can be read in. A billing account is read in USD
 // unless billingCurrencies names another one for it: the Console writes yen
 // and yuan with the same ¥, so a currency is never guessed from a symbol
 // (kidchen94, #667). Amounts are kept in the currency's minor unit and
-// nothing is ever converted.
+// nothing is ever converted. `digits` is how many places a whole amount is
+// shown with. `scale`, when set, is the exponent of the minor unit amounts
+// are parsed and added in: a JPY balance is a whole yen or exactly two
+// decimal places (¥10,000 and ¥46,776.12, #1423), so the unit is 100 while
+// a whole yen still shows with no fraction.
 export const CURRENCIES = {
   USD: { digits: 2, symbol: "$", marks: ["US$", "$"] },
-  JPY: { digits: 0, symbol: "¥", marks: ["JP¥", "¥", "￥"] },
+  JPY: { digits: 0, scale: 2, symbol: "¥", marks: ["JP¥", "¥", "￥"] },
+}
+const scaleOf = (currency) => {
+  const { digits, scale } = CURRENCIES[currency]
+  return scale ?? digits
 }
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 // What an amount looks like in a currency, for telling the person which one
@@ -30,16 +43,17 @@ const looksLike = (text) => {
 }
 const money = (value, currency = "USD", billingAccount) => {
   const text = normalize(value)
-  const { digits, marks } = CURRENCIES[currency]
+  const { marks } = CURRENCIES[currency]
+  const scale = scaleOf(currency)
   const mark = `(?:${marks.map(escape).join("|")}|${currency}\\s*)`
-  const number = `(\\d{1,3}(?:,\\d{3})+|\\d+)${digits ? `(?:\\.(\\d{${digits}}))?` : ""}`
+  const number = `(\\d{1,3}(?:,\\d{3})+|\\d+)${scale ? `(?:\\.(\\d{${scale}}))?` : ""}`
   const match = new RegExp(`^${mark}${number}(?:\\s*${currency})?$`).exec(text) ?? new RegExp(`^${number}\\s*${currency}$`).exec(text)
   if (!match) {
     const seen = looksLike(text)
     const which = billingAccount ? `billing account ${billingAccount}` : "this billing account"
     const set = (code) => `set billingCurrencies to { "${billingAccount ?? "<billing account>"}": "${code}" }`
-    // A ¥ under JPY is yen written wrongly (a fraction, a bad grouping), not
-    // another currency.
+    // A ¥ under JPY is yen written wrongly (not exactly two decimal places,
+    // or a bad grouping), not another currency.
     if (seen && seen !== currency && !(seen === "¥" && CURRENCIES[currency].marks.includes("¥"))) {
       throw new Error(seen === "¥"
         ? `Credits read for ${which} are in ¥ (yen or yuan), not ${currency}. If it bills in Japanese yen, ${set("JPY")} in the gcp-ai options; other currencies are not supported`
@@ -47,7 +61,29 @@ const money = (value, currency = "USD", billingAccount) => {
     }
     throw new Error(`Unsupported credit amount/currency: ${text} (${which} is read in ${currency}; supported: ${Object.keys(CURRENCIES).join(", ")})`)
   }
-  return Number(match[1].replaceAll(",", "")) * 10 ** digits + Number(match[2] ?? 0)
+  return BigInt(match[1].replaceAll(",", "")) * 10n ** BigInt(scale) + BigInt(match[2] ?? 0)
+}
+// Minor units stay exact BigInts through parsing and sums. Whole units match
+// safe-integer precision (preserving large whole JPY values), while fractional
+// amounts are accepted only if JS Number preserves all `scale` decimal places
+// in both fixed formatting and JSON serialization without drift.
+const toMajor = (minor, scale) => {
+  if (minor < 0n) throw new Error("Invalid Google Cloud credit amounts")
+  const unit = 10n ** BigInt(scale)
+  if (minor % unit === 0n) {
+    const whole = minor / unit
+    if (whole > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Invalid Google Cloud credit amounts")
+    return Number(whole)
+  }
+  const wholePart = minor / unit
+  const fracPart = String(minor % unit).padStart(scale, "0")
+  const fixed = `${wholePart}.${fracPart}`
+  const canonical = `${wholePart}.${fracPart.replace(/0+$/, "")}`
+  const value = Number(fixed)
+  if (!Number.isFinite(value) || value.toFixed(scale) !== fixed || String(value) !== canonical) {
+    throw new Error("Invalid Google Cloud credit amounts")
+  }
+  return value
 }
 const isoDate = (value) => {
   const text = normalize(value)
@@ -62,7 +98,7 @@ const isoDate = (value) => {
 // unrelated dollar amounts in overview widgets and expired-credit tooltips.
 export function parseCreditTables(tables, { now = Date.now(), currency = "USD", billingAccount } = {}) {
   if (!CURRENCIES[currency]) throw new Error(`Unsupported billing currency ${currency}; supported: ${Object.keys(CURRENCIES).join(", ")}`)
-  const unit = 10 ** CURRENCIES[currency].digits
+  const scale = scaleOf(currency)
   const credits = new Map()
   let recognized = false
   const unread = []
@@ -92,13 +128,19 @@ export function parseCreditTables(tables, { now = Date.now(), currency = "USD", 
       const id = cell("credit id")
       if (!id || credits.has(id)) continue
       const reported = money(cell("remaining value"), currency, billingAccount)
-      const original = money(cell("original value"), currency, billingAccount)
-      if (!Number.isSafeInteger(reported) || !Number.isSafeInteger(original) || reported < 0 || reported > original) throw new Error("Invalid Google Cloud credit amounts")
-      const remaining = spent.includes(status) ? 0 : reported
+      const originalMinor = money(cell("original value"), currency, billingAccount)
+      if (reported < 0n || reported > originalMinor) throw new Error("Invalid Google Cloud credit amounts")
+      const reportedMajor = toMajor(reported, scale)
+      const original = toMajor(originalMinor, scale)
+      const remainingMinor = spent.includes(status) ? 0n : reported
+      const remaining = spent.includes(status) ? 0 : reportedMajor
       const start = isoDate(cell("start date"))
       const end = isoDate(cell("end date"))
       const eligible = (usable.includes(status) || expiring) && !(start && Date.parse(start) > now) && !(end && Date.parse(end) <= now)
-      credits.set(id, { id, name: cell("credit name"), status: cell("status"), remaining: remaining / unit, original: original / unit, start, end, scope: cell("usage scope"), eligible })
+      credits.set(id, {
+        remainingMinor, originalMinor,
+        credit: { id, name: cell("credit name"), status: cell("status"), remaining, original, start, end, scope: cell("usage scope"), eligible },
+      })
     }
   }
   // A table with rows whose columns aren't the English ones is a page in
@@ -108,16 +150,21 @@ export function parseCreditTables(tables, { now = Date.now(), currency = "USD", 
     throw new Error(`The Cloud Console credits table's columns are not the English ones this plugin reads (it found: ${unread[0].slice(0, 6).join(", ")}); the page may have been translated or shown in another language. Turn off translation for console.cloud.google.com in the plugin's Chrome profile and retry`)
   }
   if (!recognized || !credits.size) throw new Error("Google Cloud Credits table was not found or is empty; the session may be expired, the page may still be loading, or its layout changed")
-  const active = [...credits.values()].filter((credit) => credit.eligible)
-  const remaining = active.reduce((sum, credit) => sum + Math.round(credit.remaining * unit), 0)
-  const original = active.reduce((sum, credit) => sum + Math.round(credit.original * unit), 0)
-  const ends = active.filter((credit) => credit.remaining > 0 && credit.end).map((credit) => credit.end).sort()
+  const active = [...credits.values()].filter((entry) => entry.credit.eligible)
+  const remainingMinor = active.reduce((sum, entry) => sum + entry.remainingMinor, 0n)
+  const originalMinor = active.reduce((sum, entry) => sum + entry.originalMinor, 0n)
+  const usedMinor = originalMinor - remainingMinor
+  const remaining = toMajor(remainingMinor, scale)
+  const original = toMajor(originalMinor, scale)
+  const used = toMajor(usedMinor, scale)
+  const ends = active.filter((entry) => entry.remainingMinor > 0n && entry.credit.end).map((entry) => entry.credit.end).sort()
   const soonest = ends[0]
+  const runsOutMinor = soonest ? active.filter((entry) => entry.credit.end === soonest).reduce((sum, entry) => sum + entry.remainingMinor, 0n) : undefined
   return {
-    currency, remaining: remaining / unit, original: original / unit, used: (original - remaining) / unit,
-    usedPercent: original > 0 ? ((original - remaining) * 100) / original : 100,
-    ...(soonest ? { runsOutAt: soonest, runsOut: active.filter((c) => c.end === soonest).reduce((s, c) => s + Math.round(c.remaining * unit), 0) / unit } : {}),
-    credits: [...credits.values()], fetchedAt: new Date(now).toISOString(), cached: false,
+    currency, remaining, original, used,
+    usedPercent: originalMinor === 0n || usedMinor === originalMinor ? 100 : Math.min(100, (Number(usedMinor) * 100) / Number(originalMinor)),
+    ...(soonest ? { runsOutAt: soonest, runsOut: toMajor(runsOutMinor, scale) } : {}),
+    credits: [...credits.values()].map((entry) => entry.credit), fetchedAt: new Date(now).toISOString(), cached: false,
   }
 }
 
@@ -361,7 +408,10 @@ export async function fetchCredits(options = {}) {
     }
     const age = Date.now() - Date.parse(data.failedAt ?? data.fetchedAt)
     if (settings.force || !(age >= 0)) return undefined
-    if (data.failedAt) return age < (transient(data) ? transientTtl : failureTtl) * 1000 ? { ...data, cached: false } : undefined
+    if (data.failedAt) {
+      if (!(data.parserVersion >= PARSER_VERSION) && PARSER_FAILURE.test(String(data.error ?? ""))) return undefined
+      return age < (transient(data) ? transientTtl : failureTtl) * 1000 ? { ...data, cached: false } : undefined
+    }
     const futureExpiry = !data.runsOutAt || Date.parse(data.runsOutAt) > Date.now()
     if (age < ttl * 1000 && futureExpiry && data.currency === currencyOf(currencies, data.billingAccount ?? settings.billingAccount) && Number.isFinite(data.remaining) && Number.isFinite(data.original) && Number.isFinite(data.usedPercent)) return { ...data, cached: true }
   }
@@ -405,7 +455,7 @@ export async function fetchCredits(options = {}) {
       try {
         result = await scrape(settings)
       } catch (error) {
-        await save({ error: error.message, failedAt: new Date().toISOString() })
+        await save({ error: error.message, failedAt: new Date().toISOString(), parserVersion: PARSER_VERSION })
         throw error
       }
       await save(result)
@@ -419,7 +469,14 @@ export async function fetchCredits(options = {}) {
 export function usageOf(credits) {
   const currency = CURRENCIES[credits.currency] ? credits.currency : "USD"
   const { digits, symbol } = CURRENCIES[currency]
-  const amount = (value) => `${symbol}${value.toFixed(digits)}`
+  const scale = scaleOf(currency)
+  // A whole yen stays ¥9500. A fractional one keeps the two places it was
+  // read in, including a trailing zero (¥8499.50).
+  const amount = (value) => {
+    const fixed = value.toFixed(scale)
+    const whole = scale > digits && fixed.endsWith("0".repeat(scale - digits))
+    return `${symbol}${whole ? value.toFixed(digits) : fixed}`
+  }
   return {
     plan: "Google Cloud promotional credits", balance: `${amount(credits.remaining)} ${currency}`, signIn: "kept",
     windows: [{
