@@ -15,6 +15,33 @@ OpenCode & Magpie provider plugin for **SenseTime Raccoon (商汤小浣熊, `xia
 - **SSE model rewrite**: transparently rewrites internal upstream model names back to requested downstream models for client compatibility.
 - **The card's name**: the account's own phone number (`138****8000`), read once per token from `/api/web/auth/v1/user_info` with the JWT the sign-in holds. `accountId` stays the account's identity (the JWT's `Raccoon-pu-<uuid>`, or the desktop app's name) — magpie keys the user's own name for the account, its proxy, model picks and a gateway key's list by it, so it never changes. The card shows usage's `user`, which is the phone once a sign-in or renewal has read it. A failed read changes nothing and never costs a sign-in.
 
+## Thinking levels
+
+The vendor does not read OpenAI's `reasoning_effort`. It reads a private field,
+`raccoon_thinking_level`, whose values are `level_1` … `level_5`, and **each model
+publishes only some of them** — `sn-qwen4-max` has `level_1/3/5`,
+`sn-sensenova-6-8-flash-lite` has `level_1/2/4/5`. The catalog says which
+(`params.raccoon_thinking`, with the vendor's own labels), and this plugin reads
+it from there rather than guessing.
+
+An effort name maps to the level of the same number; a level the model does not
+publish rounds **up** to the next one it does, and only at the top does it fall
+back to the highest available:
+
+| effort | level | 强度 |
+|---|---|---|
+| `minimal` | `level_1` | Minimal · 最低 |
+| `low` | `level_2` | Low · 低 |
+| `medium` | `level_3` | Medium · 中 |
+| `high` | `level_4` | High · 高 |
+| `max` | `level_5` | Max · 最高 |
+| `off` | — | off · 关闭（仅当模型 `can_disable`） |
+
+On a model that publishes `level_1/3/5` this becomes `minimal→1`, `low→3`,
+`medium→3`, `high→5`, `max→5`; on `level_1/2/4/5` it becomes `1, 2, 4, 4, 5`.
+The effort name itself is never forwarded — the vendor reads it as a different
+knob and thinks *less* when it sees one.
+
 ## 中文
 
 商汤小浣熊（SenseTime Raccoon / `xiaohuanxiong.com`）OpenCode & Magpie 提供商插件。
@@ -30,6 +57,23 @@ OpenCode & Magpie provider plugin for **SenseTime Raccoon (商汤小浣熊, `xia
 - **积分余额与套餐查询**：展示可用积分、未过期发放额度、每日积分过期时间与 Pro/Free 套餐状态。**每日池**（`Daily pool` 窗口，`daily_points`，每天 300 分、每份存 7 天，上限 2,100）与其余窗口同向显示「已用 / 上限」（`144 / 2100`）并附最近一次过期时间。它是唯一会作废的余额，所以由它承担路由权重；旁边的聚合 Credits 窗口标 `aside` 只显示不参与路由。积分余额接口 `/api/web/points/v1/balance` 拒绝时（403），改从 `/api/web/office/v3/setting_info` 读可用积分——这里读不到 `daily_points`，此时卡片只显示 Credits 且照常参与路由。套餐接口读不到时不显示套餐，而不是当作 Free。余额比账单里未过期的发放额度略多时（10% 以内），以这批发放下见过的最高余额作总额，之后用掉的积分记为已用；有新的发放或发放过期时重新计。
 - **每日签到与桌面端登录奖励**：支持 Magpie 每日自动签到（`+300` 积分/天）及首次桌面端 `+3000` 积分登录奖励领取。
 - **SSE 模型名重写**：将上游响应中的内部模型名重写为下游请求的 `model`，确保 Claude Code / Codex / OpenCode 等客户端兼容。
+
+### 思考强度
+
+商汤小浣熊不认 OpenAI 的 `reasoning_effort`，认的是私有字段 `raccoon_thinking_level`，取值为 `level_1` … `level_5`。**不同模型发布的档位并不相同**：`sn-qwen4-max` 只有 `level_1/3/5`，`sn-sensenova-6-8-flash-lite` 是 `level_1/2/4/5`。这些信息写在目录接口的 `params.raccoon_thinking` 里（带厂商自己的标签），插件直接读它，不再靠猜。
+
+档位按编号一一对应；模型没有该档时**向上取最近的一档**，只有在最高处才回落到它能给的最高档：
+
+| 强度 | 档位 | level |
+|---|---|---|
+| 最低 Minimal | `level_1` | `minimal` |
+| 低 Low | `level_2` | `low` |
+| 中 Medium | `level_3` | `medium` |
+| 高 High | `level_4` | `high` |
+| 最高 Max | `level_5` | `max` |
+| 关闭 off | — | `off`（仅当模型 `can_disable`） |
+
+在 `level_1/3/5` 的模型上实际发的是 `最低→1、低→3、中→3、高→5、最高→5`；在 `level_1/2/4/5` 上是 `1、2、4、4、5`。`reasoning_effort` 字段本身不会被转发——厂商把它当另一个开关，看到它反而会思考得更少。
 
 ### Browser callback lifecycle
 

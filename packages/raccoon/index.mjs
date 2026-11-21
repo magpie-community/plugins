@@ -395,6 +395,139 @@ function numOf(v) {
   return Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
+// ---- thinking levels --------------------------------------------------------
+//
+// The vendor does not take OpenAI's reasoning_effort: it takes a private field,
+// raccoon_thinking_level, whose values are level_1 … level_5 and whose valid set
+// differs per model (a model may publish level_1/level_3/level_5 or
+// level_1/level_2/level_4/level_5). The catalog publishes both in
+// params.raccoon_thinking, so the levels are read from it rather than guessed.
+
+// EFFORT_LEVEL is the level each effort name means, straight off the vendor's own
+// labels: level_1 Minimal, level_2 Low, level_3 Medium, level_4 High, level_5 Max.
+// A model that publishes all five gets a one-to-one mapping.
+const EFFORT_NAMES = ["minimal", "low", "medium", "high", "max"]
+const EFFORT_LEVEL = { minimal: 1, low: 2, medium: 3, high: 4, max: 5, xhigh: 5 }
+
+function normalizeRaccoonThinking(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const levels = (Array.isArray(raw.display_levels) ? raw.display_levels : [])
+    .map((l) => {
+      const value = String(l?.value ?? l?.level ?? "").trim()
+      const label = String(l?.label ?? "").trim()
+      return value ? { value, label } : null
+    })
+    .filter(Boolean)
+  const supported = raw.supported === true
+  const canDisable = raw.can_disable === true
+  const defaultLevel = String(raw.default_level ?? "").trim()
+  if (!supported && !levels.length) return null
+  return { supported, canDisable, defaultLevel, levels }
+}
+
+// levelNumber reads the N of level_N, so a model that skips a level still sorts.
+function levelNumber(value) {
+  const m = /^level[_-]?(\d+)$/i.exec(String(value ?? "").trim())
+  return m ? Number(m[1]) : NaN
+}
+
+function levelsOf(thinking) {
+  return [...(thinking?.levels ?? [])].sort(
+    (a, b) => (levelNumber(a.value) || 0) - (levelNumber(b.value) || 0),
+  )
+}
+
+// levelForEffort turns an effort name into one of the levels this model
+// publishes, or null when the model publishes none. A model missing the level an
+// effort names (qwen4 has level_1/3/5, not 2 or 4) takes the next level up; when
+// it publishes nothing above, the nearest below.
+function levelForEffort(effort, thinking) {
+  if (!thinking || !levelsOf(thinking).length) return null
+  const name = String(effort ?? "").trim().toLowerCase()
+  if (!name) return null
+  if (name === "off" || name === "none") return thinking.canDisable ? "off" : null
+  const ordered = levelsOf(thinking)
+  // the name itself may be a level ("level_3") or a label ("Medium")
+  const byName = ordered.find(
+    (l) =>
+      l.value.toLowerCase() === name ||
+      (l.label && l.label.toLowerCase() === name) ||
+      levelNumber(l.value) === Number(name),
+  )
+  if (byName) return byName.value
+  const target = EFFORT_LEVEL[name]
+  if (target === undefined) return null
+  const numbers = ordered.map((l) => levelNumber(l.value))
+  if (numbers.every((n) => Number.isFinite(n))) {
+    // the next level up, else the highest it does publish
+    const above = ordered.find((l) => levelNumber(l.value) >= target)
+    if (above) return above.value
+    return ordered[ordered.length - 1].value
+  }
+  // levels that are not level_N: fall back to their place in the sorted list
+  const index = Math.round(((ordered.length - 1) * (target - 1)) / 4)
+  return ordered[index]?.value ?? null
+}
+
+// applyThinkingLevel rewrites a request body for the vendor: the effort name is
+// dropped (sending it measurably lowers thinking there) and the level is set.
+// Returns null when there is nothing to change.
+function applyThinkingLevel(bodyText, thinking) {
+  if (typeof bodyText !== "string" || !bodyText.trim()) return null
+  let body
+  try {
+    body = JSON.parse(bodyText)
+  } catch {
+    return null
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null
+  const level = levelForEffort(body.reasoning_effort, thinking)
+  if (!level) return null
+  let changed = false
+  if (level === "off") {
+    if ("raccoon_thinking_level" in body) {
+      delete body.raccoon_thinking_level
+      changed = true
+    }
+  } else if (body.raccoon_thinking_level !== level) {
+    body.raccoon_thinking_level = level
+    changed = true
+  }
+  if ("reasoning_effort" in body) {
+    delete body.reasoning_effort
+    changed = true
+  }
+  return changed ? JSON.stringify(body) : null
+}
+
+// variantsFor is the level picker a client reads: an effort name, or off, mapped
+// to the field the vendor wants.
+function variantsFor(thinking) {
+  if (!thinking || !levelsOf(thinking).length) return {}
+  const out = {}
+  if (thinking.canDisable) out.off = {}
+  for (const name of EFFORT_NAMES) {
+    const level = levelForEffort(name, thinking)
+    if (level && level !== "off") out[name] = { raccoon_thinking_level: level }
+  }
+  return out
+}
+
+// thinkingOf finds a model's levels in the cached catalog. Three spellings of the
+// same model have to meet: the id the catalog carries, the id a client asks for
+// (which may be the bare one) and the id the gateway prefixes with its provider.
+// The catalog also suffixes some models with "-p", which a request may omit.
+function thinkingOf(modelId, models = catalogCache.models) {
+  const id = String(modelId ?? "").trim()
+  if (!id) return null
+  const bare = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id
+  const norm = (s) => String(s ?? "").trim().toLowerCase().replace(/-p$/, "")
+  const wanted = norm(bare)
+  if (!wanted) return null
+  const hit = (models ?? []).find((m) => norm(m.id) === wanted)
+  return hit?.thinking ?? null
+}
+
 function parseCatalog(payload) {
   const data = payload?.data && typeof payload.data === "object" ? payload.data : payload
   const categories = Array.isArray(data?.categories) ? data.categories : []
@@ -416,13 +549,21 @@ function parseCatalog(payload) {
       const rate = effRate ?? baseRate
       const free = rate === 0
       const rateWas = baseRate !== undefined && effRate !== undefined && effRate < baseRate ? baseRate : undefined
+      // The catalog already says whether a model thinks and at which levels;
+      // claiming thinking for every model is what #598 opened about. A catalog
+      // that names no raccoon_thinking at all keeps the old claim, so nothing
+      // regresses before the vendor serves the field.
+      const rawThinking = entry?.params?.raccoon_thinking
+      const thinking = normalizeRaccoonThinking(rawThinking)
+      const declaresThinking = !!rawThinking && typeof rawThinking === "object" && !Array.isArray(rawThinking)
       out.push({
         id,
         name: displayName,
         context,
         output,
         images,
-        reasoning: true,
+        reasoning: declaresThinking ? thinking?.supported === true : true,
+        ...(thinking ? { thinking } : {}),
         free,
         ...(rate !== undefined ? { rate } : {}),
         ...(rateWas !== undefined ? { rateWas } : {}),
@@ -502,7 +643,7 @@ function runtimeModel(provider, m) {
       interleaved: false,
     },
     release_date: "",
-    variants: {},
+    variants: variantsFor(m.thinking),
     free: !!m.free,
     ...(m.rate !== undefined ? { rate: m.rate } : {}),
     ...(m.rateWas !== undefined ? { rateWas: m.rateWas } : {}),
@@ -1291,6 +1432,19 @@ export const RaccoonAuthPlugin = async ({ client }) => {
                 },
               )
             }
+            // The levels a model takes come from the catalog. Warm it here so a
+            // request that arrives before any model listing still gets levelled.
+            if (!catalogCache.models) {
+              try {
+                await fetchLiveModels(a.access)
+              } catch {}
+            }
+            const thinking = thinkingOf(requestedModel)
+            if (thinking) {
+              const levelled = applyThinkingLevel(bodyText, thinking)
+              if (levelled) bodyText = levelled
+            }
+
             const sendOnce = (cred) => {
               const headers = new Headers(init?.headers ?? req?.headers)
               headers.delete("x-api-key")
@@ -1408,6 +1562,11 @@ export const _internal = {
   extractUserId,
   extractDisplayName,
   parseCatalog,
+  normalizeRaccoonThinking,
+  levelForEffort,
+  applyThinkingLevel,
+  variantsFor,
+  thinkingOf,
   parseCallbackInput,
   rewriteSseModel,
   beijingTodayKey,
