@@ -91,6 +91,19 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
       ? options.baseURL.trim().replace(/\/+$/, "")
       : ENDPOINTS.api;
   const browserPath = typeof options.browser === "string" && options.browser.trim() ? options.browser.trim() : undefined;
+  /** 用户通过 select prompt 选的浏览器优先；没选就用 options.browser / 机器默认。 */
+  const browserPathOf = (chosen) =>
+    typeof chosen === "string" && chosen.trim() ? chosen.trim() : browserPath;
+  /** 浏览器选择 prompt 的 options：本机真实存在的浏览器（Edge 优先）。 */
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserCandidates();
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }));
+    } catch {
+      /* no candidate list -> no options; the authorize() error is the real message */
+    }
+    return undefined;
+  })();
   const quotaTtlMs =
     Number.isFinite(Number(options.quotaTtlMs)) && Number(options.quotaTtlMs) > 0
       ? Number(options.quotaTtlMs)
@@ -389,7 +402,15 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
            * redirect before the console SPA consumes the code, and returns
            * opened:true with url:"" so magpie does not open a second page.
            */
-          async authorize() {
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
+          ],
+          async authorize(inputs) {
             if (!browserAvailable()) {
               throw new Error(
                 "No Chromium browser was found (or no display is available). Use the account password method or an API key instead.",
@@ -401,7 +422,7 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
               authorizeUrl,
               expectedState: pkce.state,
               timeoutMs: loginTimeoutMs,
-              browserPath,
+              browserPath: browserPathOf(inputs?.browser),
               log: (message) => log("info", `sensenova: ${message}`),
             });
             return {

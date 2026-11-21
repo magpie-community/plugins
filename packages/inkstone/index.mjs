@@ -31,6 +31,7 @@ import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
 import { precheckImages, rewriteBodyChanged, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
 import {
+  browserCandidates,
   readUaaToken,
   requireBrowser,
   renewSilently,
@@ -368,10 +369,26 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   }
 
   /**
+   * 浏览器选择 prompt 的 options：本机真实存在的浏览器（Edge 优先），
+   * 测试注入的 browserList 优先；一个都没有就退回机器默认查找。
+   */
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserList ? browserList() : browserCandidates()
+      if (Array.isArray(list) && list.length) {
+        return list.map((p) => ({ label: p, value: p }))
+      }
+    } catch {
+      /* fall through to machine default */
+    }
+    return undefined
+  })()
+
+  /**
    * 两个浏览器登录方式共用的 authorize：display 与候选浏览器的预检、
    * 开窗指令、回调里的建 Key。差别只在粘贴的 Key（零提示方式为空）。
    */
-  const browserAuthorize = (pasted) => {
+  const browserAuthorize = (pasted, chosenBrowser) => {
     if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
       return {
         type: "failed",
@@ -379,9 +396,11 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
       }
     }
+    // 用户通过 select prompt 选的浏览器优先；没选就用 options.browser / 机器默认。
+    const exe = typeof chosenBrowser === "string" && chosenBrowser.trim() ? chosenBrowser.trim() : browserPath
     try {
       // an empty list fails here, before the host is told a window opened
-      requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
+      requireBrowser(exe, browserList ? { candidates: browserList } : undefined)
     } catch (e) {
       return { type: "failed", error: cleanDetail(e?.message ?? e) }
     }
@@ -399,7 +418,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         let token = ""
         try {
           token = await signInWithBrowser({
-            browserPath,
+            browserPath: exe,
             keepSignIn: keepSignInOn(),
             timeoutMs: loginTimeoutMs,
             waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
@@ -552,11 +571,19 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           type: "oauth",
           label: "Browser sign-in (ink credits + creates an API key)",
           /**
-           * 零提示：点一下直接开窗，登录后自动建 ink-* Key。与 sensenova、
-           * cursor、cline 的浏览器登录同款——生态惯例是浏览器登录不问问题。
+           * 选一个本机浏览器来登录（Edge 优先）。不想被问就走下一个
+           * "粘贴已有 Key"的方式——但两个方式都需要选浏览器。
            */
-          authorize() {
-            return browserAuthorize("")
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
+          ],
+          authorize(inputs) {
+            return browserAuthorize("", inputs?.browser)
           },
         },
         {
@@ -567,6 +594,12 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
            * 一句再开窗的浏览器方式；不想被问就用上一个。
            */
           prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
             {
               type: "password",
               key: "apiKey",
@@ -580,7 +613,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             },
           ],
           authorize(inputs) {
-            return browserAuthorize(normalizeApiKey(inputs?.apiKey))
+            return browserAuthorize(normalizeApiKey(inputs?.apiKey), inputs?.browser)
           },
         },
         {

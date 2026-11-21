@@ -7,7 +7,7 @@
 // and given back as OpenAI tool_calls. See README.md.
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
-import { renew, profileRoot, signIn } from "./browser.mjs"
+import { browserCandidates, renew, profileRoot, signIn } from "./browser.mjs"
 import { GeminiError, MODELS, Session } from "./gemini.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
@@ -52,6 +52,17 @@ export function createPlugin({ client, fetchImpl = globalThis.fetch, newId, brow
   // and the account's model list are read once, not per request
   const sessions = new Map()
   const tables = new Map()
+
+  /** 浏览器选择 prompt 的 options：本机真实存在的浏览器（Chrome 优先）。 */
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserCandidates()
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+    } catch {
+      /* no candidate list -> no options; the sign-in error is the real message */
+    }
+    return undefined
+  })()
 
   const sessionFor = (auth) => {
     const key = auth?.accountId || (cookiesOf(auth) ? auth.refresh : ANONYMOUS) || ANONYMOUS
@@ -122,15 +133,23 @@ export function createPlugin({ client, fetchImpl = globalThis.fetch, newId, brow
         {
           type: "oauth",
           label: "在单独的浏览器窗口登录 Google 账号",
-          authorize: async () => ({
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "用哪个浏览器打开登录窗口？",
+              options: browserSelectOptions,
+            },
+          ],
+          authorize: async (inputs) => ({
             url: "",
             method: "auto",
-            instructions: "将打开一个单独的 Chrome 窗口（独立的配置，不影响你平时的浏览器）。请在其中登录 Google 账号，打开 Gemini 后窗口会自动关闭。",
+            instructions: "将打开一个单独的浏览器窗口（独立的配置，不影响你平时的浏览器）。请在其中登录 Google 账号，打开 Gemini 后窗口会自动关闭。",
             callback: async () => {
               const profile = join(browser.profileRoot(), randomBytes(6).toString("hex"))
               let cookies
               try {
-                cookies = await browser.signIn(profile)
+                cookies = await browser.signIn(profile, { browser: typeof inputs?.browser === "string" && inputs.browser.trim() ? inputs.browser.trim() : undefined })
               } catch (e) {
                 return { type: "failed", error: "打开浏览器失败：" + String(e?.message ?? e) }
               }
