@@ -1755,6 +1755,9 @@ class Turn {
       this.proc.inputTokenScale = Math.max(0.5, Math.min(1.5, total / estimate))
       this.proc.lastCacheRatio = Math.max(0, Math.min(1, usage.cache_read_input_tokens / total))
     }
+    if ((step.usageKind === "exact" || step.usageKind === "agy_model_call") && total > 0 && estimate > 0) {
+      this.proc.contextAnchor = { tokens: total, estimate }
+    }
   }
 
   attach() {
@@ -2131,6 +2134,12 @@ class Proc {
     // it, including a recorded 0. Distinct from a calibrated miss.
     this.lastCacheRatio = undefined
     this.omittedHistoryTokens = 0
+    // agy's window as a measured response last reported it, with that
+    // response's local estimate: { tokens, estimate }.
+    this.contextAnchor = null
+    // agy's window when a Claude Code compaction last kept this session.
+    this.keptCompactionContext = null
+    this.compactedContinuation = false
     this.stepUsageTrusted = true
     this.configOptions = []
     this.configMethodUnsupported = false
@@ -2593,6 +2602,17 @@ class Proc {
     // as everything after the client's summary is what the session has
     // (plugins#1401: each fold dropped the session and replayed ~10 KB).
     return compactedEarlierHistory(this.expectedMessages, messages)
+  }
+
+  // messages are where this session's history stood one or more turns back:
+  // a prefix of what it has, ending before a user message agy has answered.
+  continuesPast(messages) {
+    if (this.historyInvalid || this.turn || !Array.isArray(this.expectedMessages) || !Array.isArray(messages)) return false
+    const k = messages.length
+    if (!k || k >= this.expectedMessages.length || this.expectedMessages[k].role !== "user") return false
+    const expectedKey = historyKey(this.expectedMessages.slice(0, k))
+    const actualKey = historyKey(messages)
+    return expectedKey === actualKey || sameUpToMaskedValues(expectedKey, actualKey)
   }
 
   // Clients such as Claude Code normalize tool_use inputs when recording an
@@ -3669,7 +3689,8 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
       if (!forceNew && !pool.get(convKey)) {
-        const candidate = isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)
+        const candidate = (isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)) ||
+          findCompactedProc(convKey, opts)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
@@ -3728,6 +3749,17 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const candidate = findRemaskedProc(convKey, opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
+  // Claude Code compacted its copy of the conversation: the opening is now
+  // the summary, so its key changed, and the session that wrote the summary
+  // goes on with all of it.
+  let compacted = false
+  if (!existing && !forceNew) {
+    const candidate = findCompactedProc(convKey, opts)
+    if (candidate && lockedKeys.has(candidate.convKey)) {
+      existing = rekeyProc(candidate, convKey)
+      compacted = true
+    }
+  }
   let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
   let key = convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
@@ -3757,10 +3789,16 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     }
     const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
       isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
+    // Claude Code's compaction leaves the last exchange out of its history and
+    // appends the summary instructions to that exchange's user message. The
+    // live session has the whole conversation; a new one gets a replay cut to
+    // the prompt budget, and summarizes what is left of it.
+    const compactionFork = !forceNew && !!opts.compaction && !existing.dead && !existing.retiring &&
+      !existing.matchesHistory(matchedHistory) && existing.continuesPast(matchedHistory)
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
-      (existing.matchesHistory(matchedHistory) || continuedFresh)
-    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
+      (existing.matchesHistory(matchedHistory) || continuedFresh || compactionFork || compacted)
+    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh || compacted)) {
       if (continuedFresh) {
         const first = Array.isArray(opts.messages) ? opts.messages[0] : null
         // Snapshot the unsent tail before openingText advances to this turn.
@@ -3771,7 +3809,17 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       await existing.updateTools(opts.tools)
       // agy never listed the tools this request declares (an agy started
       // with none whose MCP server never connected): a new one may.
-      if (existing.toolsListed()) return { proc: existing, history: matchedHistory }
+      if (existing.toolsListed()) {
+        if (compactionFork) logBridgeEvent(existing, null, "kept", "compaction_fork", opts)
+        if (compacted) {
+          logBridgeEvent(existing, null, "kept", "compacted_opening", opts)
+          existing.keptCompactionContext = existing.contextAnchor?.tokens ?? 0
+          existing.compactedContinuation = true
+          // agy has none of the compacted conversation's messages yet: all go
+          return { proc: existing, history: [] }
+        }
+        return { proc: existing, history: matchedHistory }
+      }
       why = "tools_unlisted"
     } else {
       why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
@@ -4601,6 +4649,39 @@ function findLiveContinuedProc(opts) {
   return tied ? null : best
 }
 
+// The live session whose last turn wrote the summary a compacted conversation
+// opens with. Claude Code goes on with the summary alone; the session still
+// has the whole conversation, as agy cli itself would.
+function findCompactedProc(convKey, opts) {
+  const first = Array.isArray(opts?.messages) ? opts.messages[0] : null
+  if (first?.role !== "user") return null
+  const opening = contentText(first.content)
+  if (!opening.includes(CLAUDE_COMPACTED_OPENING)) return null
+  const flat = opening.replace(/\s+/g, " ")
+  let found = null
+  for (const proc of pool.values()) {
+    if (proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn || proc.historyInvalid) continue
+    if (proc.convKey === convKey) continue
+    if ((proc.userId || "") !== (opts.userId || "")) continue
+    if ((proc.sessionScope || "") !== (opts.sessionScope || "")) continue
+    if (proc.workDir !== opts.workDir || !sameInstructions(proc.instructions, opts.instructions)) continue
+    // Kept once already and agy has not compacted its window since: Claude
+    // Code would find it as full as before and compact again, turn after turn.
+    if (proc.keptCompactionContext != null &&
+      !(proc.contextAnchor && proc.contextAnchor.tokens < proc.keptCompactionContext * 0.8)) continue
+    const expected = proc.expectedMessages
+    if (!Array.isArray(expected) || expected.at(-1)?.role !== "assistant") continue
+    const asked = expected.slice(0, -1).findLast((message) => message?.role === "user")
+    if (!asked || !isCompactionTurn([asked])) continue
+    const probes = compactSummaryProbes(expected.at(-1).content)
+    if (!probes.length || !probes.some((probe) => flat.includes(probe))) continue
+    // two would be a guess
+    if (found) return null
+    found = proc
+  }
+  return found
+}
+
 function rekeyProc(proc, newKey) {
   if (!proc || proc.convKey === newKey) return proc
   const oldKey = proc.convKey
@@ -4755,6 +4836,30 @@ function renderPrefillCarrierParts(message) {
   const body = (assistantTextOf(message) || "").trim()
   if (!body) return []
   return [{ type: "text", text: `${prefillCarrierNote()}\n${body}` }]
+}
+
+// What Claude Code's /compact and auto-compact ask for. A partial compaction
+// ("the RECENT portion") is left out: it keeps the later messages as they are.
+const CLAUDE_COMPACT_PROMPT = "Your task is to create a detailed summary of the conversation so far"
+
+function isCompactionTurn(messages) {
+  return messages.some((message) => message?.role === "user" && contentText(message.content).includes(CLAUDE_COMPACT_PROMPT))
+}
+
+// How Claude Code opens the conversation it goes on with after a compaction:
+// this, then the summary the compaction turn wrote.
+const CLAUDE_COMPACTED_OPENING = "This session is being continued from a previous conversation that ran out of context."
+
+// Pieces of a compaction turn's reply as Claude Code quotes it in the
+// compacted opening: its <analysis> dropped, <summary> unwrapped, blank lines
+// squeezed, so compared with whitespace collapsed.
+function compactSummaryProbes(content) {
+  const text = contentText(content).replace(/<analysis>[\s\S]*?<\/analysis>/g, "")
+  const inner = /<summary>([\s\S]*?)<\/summary>/.exec(text)
+  const flat = (inner ? inner[1] : text).replace(/\s+/g, " ").trim()
+  if (flat.length < 64) return []
+  const size = Math.min(160, flat.length)
+  return [0, Math.floor((flat.length - size) / 2), flat.length - size].map((at) => flat.slice(at, at + size))
 }
 
 function trailingMessages(body) {
@@ -6435,6 +6540,17 @@ function responseOutputEstimate(content) {
   return { output: tokenCount(output), thinking: tokenCount(thinking) }
 }
 
+// agy's window as a measured response last reported it, plus what the client
+// added since, scaled. agy compacts its own context, so after that the
+// client's history no longer says how full the window is, and scaling all of
+// it (the scale stops at 0.5) still reported most of what agy had dropped.
+// Null without a measurement, or when the client's history shrank below it.
+function anchoredWindow(proc, estimate, scale) {
+  const anchor = proc.contextAnchor
+  if (!anchor || estimate < anchor.estimate) return null
+  return Math.max(1, tokenCount(anchor.tokens + (estimate - anchor.estimate) * scale))
+}
+
 // Usage for one HTTP response. ACP reports one accumulated total for a whole
 // session/prompt, which may span several HTTP responses (tool round-trips and
 // late tool results). Reporting that total on the last response makes clients
@@ -6456,7 +6572,8 @@ function responseUsage(proc, turn, step, content, result) {
   const estimate = turn.stepInputEstimates[step.estimateIndex] || step.inputEstimate
   const scale = Number.isFinite(proc.inputTokenScale) ? Math.max(0.5, Math.min(1.5, proc.inputTokenScale)) : 1
   let cacheRatio = Number.isFinite(proc.lastCacheRatio) ? Math.max(0, Math.min(1, proc.lastCacheRatio)) : 0
-  let input = Math.max(1, tokenCount(estimate * scale))
+  const anchored = anchoredWindow(proc, estimate, scale)
+  let input = anchored ?? Math.max(1, tokenCount(estimate * scale))
   let write = 0
   if (final) {
     const sum = turn.stepInputEstimates.reduce((total, value) => total + value, 0)
@@ -6472,7 +6589,7 @@ function responseUsage(proc, turn, step, content, result) {
     // The bound applies to the full window, including cache creation. Scale
     // both portions together before rounding, then split the exact integer.
     const combined = input + write
-    const bounded = Math.min(tokenCount(estimate * 1.5), combined)
+    const bounded = Math.min(tokenCount((anchored ?? estimate) * 1.5), combined)
     write = combined > 0 ? Math.min(bounded, tokenCount(bounded * (write / combined))) : 0
     input = bounded - write
   } else if (!Number.isFinite(proc.lastCacheRatio)) {
@@ -7067,6 +7184,16 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     }
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
   }
+  if (proc.compactedContinuation) {
+    proc.compactedContinuation = false
+    // The client's history is now the compacted one: nothing of it was left
+    // out, and agy's window holds all of the conversation before it, so what
+    // this request's messages add is counted on top of that window.
+    proc.omittedHistoryTokens = 0
+    if (proc.contextAnchor) {
+      proc.contextAnchor = { tokens: proc.contextAnchor.tokens, estimate: proc.estimatePromptTokens({ ...body, messages: [] }) }
+    }
+  }
   if (isFirstTurn) {
     const rawEstimate = estimateInputTokens(body)
     const sessionOverhead = (proc.instructionsInSession && body.system
@@ -7363,7 +7490,8 @@ export const AntigravityBridgePlugin = async () => {
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
+                hasToolResults: resultBlocks.length > 0, compaction: isCompactionTurn(trailing.messages),
+                userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
               let keptSession = false
