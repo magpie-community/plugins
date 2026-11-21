@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { test } from "node:test"
 import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
 
@@ -139,4 +142,26 @@ test("storedEmail is the Google account agy's keyring is signed in to, on macOS 
   assert.equal(await storedEmail({ platform: "darwin", exec: async () => { throw new Error("no security") }, env: {} }), "")
   assert.equal(await storedEmail({ platform: "win32", exec: mac(0, "OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), "someone@example.com")
   assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value)), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), "")
+})
+
+test("readStoredSignIn on darwin falls back to default token file when Keychain returns 44", async () => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agy-signin-test-"))
+  try {
+    const mac44 = async () => ({ code: 44, stdout: "" })
+    const missing = await readStoredSignIn({ platform: "darwin", exec: mac44, now: NOW, env: { HOME: tmpHome } })
+    assert.equal(missing.state, "missing")
+
+    const tokenPath = path.join(tmpHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(tokenPath), { recursive: true })
+    const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-14T00:00:00Z" })
+    fs.writeFileSync(tokenPath, value, "utf8")
+
+    const recovered = await readStoredSignIn({ platform: "darwin", exec: mac44, now: NOW, env: { HOME: tmpHome } })
+    assert.equal(recovered.state, "present")
+    assert.equal(recovered.canRenew, true)
+    assert.equal(recovered.expired, false)
+    assert.equal(await storedEmail({ platform: "darwin", exec: mac44, env: { HOME: tmpHome } }), "someone@example.com")
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  }
 })
