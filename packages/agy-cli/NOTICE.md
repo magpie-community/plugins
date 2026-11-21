@@ -52,7 +52,7 @@ A1–A16、U1–U6 逐项并入。两边都有、且 `acb8d84` 写法更新的�
 | A13 | `addUsage` 通过 `tokenCount` 把累加结果限制为非负整数 |
 | A14 | `reclaimStaleTurn` 同时清除该会话的无进展重复计数 |
 | A15 | 防止 503 进程池饿死：并发上限默认值由 8 改为 16（`AGY_BRIDGE_MAX_PROCS`，`magpie.maxConcurrency` 同为 16）。`evictLRU` 分两级淘汰，第二级淘汰客户端已断开超过 30 秒（`AGY_BRIDGE_DETACHED_EVICT_MS`）的挂起工具回合，之后补交的合法 `tool_result` 会在新进程上重放。`acquireProcLocked` 遇到同会话旧回合时先判断过期并回收。历史压缩后变短的新请求判为 fork，回收旧回合 |
-| A16 | 长历史重放预算：`renderInitialPromptParts` 默认限制在 112 KiB（`AGY_BRIDGE_MAX_PROMPT_BYTES`）内。先为必保段预留预算（system 说明、`</conversation_history>` 闭合标签及禁止输出工具调用声明的文字、完整的 `<current_turn>`），历史按头尾保留，超长的 `[tool result]` 保留首尾、省略中间，保证不被 agy 的 128 KiB 尾部截断切掉 |
+| A16 | 长历史重放预算：`renderInitialPromptParts` 默认限制在 112 KiB（agy 1.5.10 起 184,000 字节，`AGY_BRIDGE_MAX_PROMPT_BYTES`）内。先为必保段预留预算（system 说明、`</conversation_history>` 闭合标签及禁止输出工具调用声明的文字、完整的 `<current_turn>`），历史按头尾保留，超长的 `[tool result]` 保留首尾、省略中间，保证不被 agy 的尾部截断（早期 128 KiB，1.5.10 实测 192,000 字节）切掉；裁剪后的完整历史由桥接自己应答的 `read_conversation_history` 工具按行回读 |
 
 ## 4. `usage.mjs` 并入的修复（U1–U6）
 
