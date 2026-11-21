@@ -635,17 +635,31 @@ export const MclawAuthPlugin = async (_input, options) => {
   activeBase = base
   // 测试缝：fake browser 从 options.browserModule 进（宿主不会传）。
   const browser = options?.browserModule ?? browserDefault
+  // 浏览器选择 prompt 的 options：本机真实存在的、pipe 可用的浏览器
+  // （Chrome/Chromium/Brave，不含 Edge——实测 Edge 不支持 --remote-debugging-pipe，
+  // 见 browser.mjs 的 browserCandidates 注释）。模块级算一次即可。
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserDefault.browserCandidates?.({ transport: 'pipe' })
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+    } catch {
+      /* no candidate list -> no options; the prerequisites error is the real message */
+    }
+    return undefined
+  })()
   // 登录前的浏览器/图形界面预检（宿主不会传，测试可注入）。失败要发生在
   // authorize 里、返回 opened:true 之前——不能先宣称窗口已弹出再在 callback 里
   // 报错。fake browser 不带预检时整个跳过，不碰本机真实环境。
   // signinEnv / signinPlatform 是测试缝：让「找不到浏览器」与「无 DISPLAY」两条
   // 预检各自可确定性触发，不受测试机（如无头 Linux CI）环境影响。
+  // `explicit`（用户在 select prompt 里选的浏览器路径）透传给预检与 harvest。
   const signinPrerequisites = options?.signinPrerequisites
     ?? (options?.browserCandidates !== undefined || options?.signinEnv !== undefined || options?.signinPlatform !== undefined
-      ? () => browserDefault.assertBrowserSigninPrerequisites({
+      ? (explicit) => browserDefault.assertBrowserSigninPrerequisites({
         ...(options?.signinPlatform !== undefined ? { platform: options.signinPlatform } : {}),
         ...(options?.signinEnv !== undefined ? { env: options.signinEnv } : {}),
         ...(options?.browserCandidates !== undefined ? { candidates: options.browserCandidates } : {}),
+        ...(typeof explicit === 'string' && explicit.trim() ? { explicit: explicit.trim() } : {}),
       })
       : undefined)
     ?? (options?.browserModule ? undefined : (pre) => browserDefault.assertBrowserSigninPrerequisites(pre))
@@ -674,9 +688,13 @@ export const MclawAuthPlugin = async (_input, options) => {
         {
           type: 'oauth',
           label: '浏览器登录（登录一次，凭证全自动）',
-          // 没有 prompts：登录全程只有「在弹出的 Chrome 里登录」一个动作。
+          // 登录全程只有「在弹出的 Chrome 里登录」一个动作，外加一个浏览器
+          // 选择：本机装了多个 Chromium 内核浏览器时，让用户挑一个来开窗口。
           // llm key 由 apikey/get v1 自动取；vip 会话由 SSO 换票链自动维持
           // （0.5.0 前老账号手动粘过的 metadata.vipCookie 仍优先、失效自动换新）。
+          prompts: [{
+            type: 'select', key: 'browser', message: '用哪个浏览器打开登录窗口？', options: browserSelectOptions,
+          }],
 
           // 流程：宿主契约要求 authorize 立即返回 { url, opened, instructions,
           // method, callback }（参照 sensenova/joycode），Chrome 由 authorize 弹出、
@@ -689,19 +707,23 @@ export const MclawAuthPlugin = async (_input, options) => {
           // metadata }，到期前宿主调 refresh 钩子 headless 续期（复开该账号
           // 自己的 profile）。
           async authorize(inputs = {}, { signal } = {}) {
+            // 用户在 select prompt 里选的浏览器（完整路径，可为空→自动探测）。
+            const chosenBrowser = typeof inputs?.browser === 'string' && inputs.browser.trim() ? inputs.browser.trim() : undefined
             // 预检先于任何副作用：没有图形界面（Linux 无 DISPLAY/WAYLAND）或找不到
             // Chromium 内核浏览器时，直接在这里失败。参照 inkstone 0.1.1 的
             // 修法——「窗口已弹出」这类话绝不能先说出去再在 callback 里报错
-            // （magpie-community/plugins#825）。
+            // （magpie-community/plugins#825）。预检返回的路径不单独用——它和
+            // chosenBrowser 同源（显式选择优先），harvest 直接拿 chosenBrowser，
+            // 免得两处各找一遍出现分歧。
             try {
-              if (typeof signinPrerequisites === 'function') await signinPrerequisites()
+              if (typeof signinPrerequisites === 'function') await signinPrerequisites(chosenBrowser)
             } catch (error) {
               return { type: 'failed', error: error?.message ?? String(error) }
             }
             // 不 await：Chrome 立即弹出；若宿主取消（callback 没被调），定时器
             // 到点 abort——关浏览器、放 profile 锁；挂个空 catch 免得 abort 后
             // 的拒绝刷 unhandled rejection。
-            const harvesting = browser.startBrowserHarvest()
+            const harvesting = browser.startBrowserHarvest({ browser: chosenBrowser })
             harvesting.promise.catch(() => {})
             const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, signinAbortMs)
             // magpie 式取消：宿主在 authorize 之后立刻调 callback(undefined, { signal })，

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import { defaultProfile, validateProject } from "./lib/browser.mjs"
+import { browserCandidates, defaultProfile, validateProject } from "./lib/browser.mjs"
 import { resolveIdentity, startLogin, tokenProvider, identityOf } from "./lib/credentials.mjs"
 import { consoleAccountFor, fetchCredits, usageOf } from "./lib/credits.mjs"
 import { hardenRequest } from "./lib/history.mjs"
@@ -135,6 +135,17 @@ function endorse(identity, location, owner) {
 export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => {
   const client = input.client
   let configured = {}
+  // 浏览器选择 prompt 的 options：本机真实存在的、pipe 可用的浏览器
+  // （Chrome/Chromium/Brave，不含 Edge——实测 Edge 不支持 --remote-debugging-pipe）。
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserCandidates({ transport: "pipe" })
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+    } catch {
+      /* no candidate list -> no options; the sign-in error is the real message */
+    }
+    return undefined
+  })()
   return {
     // The row's name, protocol and the list it starts with. Magpie lists a
     // plugin provider from what this hook gives it, so a row configured with no
@@ -178,14 +189,21 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
       ...(icon ? { icon } : {}),
       methods: [{
         type: "oauth", label: "Google Cloud ADC / gcloud account (Chrome for credits)",
+        // 浏览器选择 prompt：本机真实存在的、pipe 可用的浏览器（Chrome/Chromium/
+        // Brave，不含 Edge——实测 Edge 不支持 --remote-debugging-pipe，而本插件
+        // 读 credits 走 pipe；见 lib/browser.mjs 的 browserCandidates 注释）。
+        prompts: [{
+          type: "select", key: "browser", message: "Which browser should open for the sign-in?", options: browserSelectOptions,
+        }],
         // The first account on a machine opens gcloud's consent page directly;
         // a later one opens Google's add-account page first so the account can
         // be picked. Both continue in the same window, and gcloud's exit tells
         // the plugin when to close it; the person never closes it themselves.
-        async authorize() {
+        async authorize(inputs = {}) {
+          const chosenBrowser = typeof inputs?.browser === "string" && inputs.browser.trim() ? inputs.browser.trim() : undefined
           const options = settings(configured)
           options.profileDirectory ??= pluginOptions.profileDirectory
-          const login = await startLogin(options)
+          const login = await startLogin(options, undefined, chosenBrowser)
           return {
             url: "", method: "auto",
             instructions: `A Chrome window opens on Google's consent page and you approve it there; when the plugin already has an account, it opens Google's add-account page first so you can pick which account this is. The plugin closes the window itself when gcloud finishes, so leave it open. Google must confirm the new ADC's email and stable subject (sub). A subject already present in a managed ADC is the same Google account even after an email change, so the new credentials are removed and the original ones are kept; if an existing ADC's subject cannot be confirmed, nothing is added. The project is the first of the account's projects that already has the Vertex AI API enabled, chosen automatically; with no such project the sign-in fails instead, so create one and enable the API before trying again. The sign-in expires after ten minutes.`,

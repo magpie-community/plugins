@@ -60,22 +60,47 @@ export async function safeGoto(page, url, options = { waitUntil: "domcontentload
 
 // Where Chrome keeps its binary on each platform. The macOS entry is a path
 // inside the app bundle, which is where Chrome installs itself for everyone.
-export async function chromeExecutable() {
+// `explicit` is the user's own choice from the sign-in select prompt (a path):
+// it wins over VERTEX_CHROME_PATH and the candidate list, so a wrong path gets
+// its own message instead of silently falling back to another browser.
+// The automatic search drops Edge (`transport: "pipe"`): the credit reads and
+// the sign-in window both run the same browser here, and Edge is measured not
+// to support the pipe transport those reads drive.
+export async function chromeExecutable(explicit) {
+  if (typeof explicit === "string" && explicit.trim()) {
+    const path = expandPath(explicit.trim())
+    try { await access(path); return path } catch {}
+    throw new Error(`The browser you chose does not exist: ${path}. Pick another, or set VERTEX_CHROME_PATH to a Chrome / Chromium / Brave executable.`)
+  }
   if (process.env.VERTEX_CHROME_PATH) return expandPath(process.env.VERTEX_CHROME_PATH)
-  const candidates = process.platform === "win32"
-    ? [
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
-    ].filter(Boolean)
-    : process.platform === "darwin"
-      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", join(home(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome")]
-      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"]
+  const candidates = browserCandidates({ transport: "pipe" })
   for (const path of candidates) {
     try { await access(path); return path } catch {}
   }
   throw new Error("Chrome not found; set VERTEX_CHROME_PATH to its executable")
+}
+
+// Every Chromium-family browser this plugin could drive, in priority order, on
+// each platform. platform/env injectable so a test does not depend on what the
+// machine has installed. The Windows list adds Edge beside Chrome and
+// Chromium; `transport: "pipe"` then drops Edge, because Edge is measured not
+// to support --remote-debugging-pipe (Edge 158.0.4370.33 exits on that flag,
+// 2026-11-21) while Chrome/Chromium/Brave drive over it.
+export function browserCandidates({ platform = process.platform, env = process.env, transport } = {}) {
+  const candidates = platform === "win32"
+    ? [
+      env.PROGRAMFILES && join(env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+      env["PROGRAMFILES(X86)"] && join(env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
+      env.PROGRAMFILES && join(env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
+      env["PROGRAMFILES(X86)"] && join(env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Microsoft", "Edge", "Application", "msedge.exe"),
+    ].filter(Boolean)
+    : platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", join(home(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"), "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "/Applications/Chromium.app/Contents/MacOS/Chromium", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"]
+      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium", "/usr/bin/microsoft-edge"]
+  return transport === "pipe" ? candidates.filter((p) => !/edge/i.test(p)) : candidates
 }
 
 // One browser at a time per profile, across processes: magpie asks each
@@ -281,7 +306,7 @@ export async function withPage({ profile = defaultProfile(), profileDirectory, h
   })
 }
 
-export async function openBrowser({ profile = defaultProfile(), profileDirectory, headless = true, javaScriptEnabled = true, launchArgs = [] } = {}) {
+export async function openBrowser({ profile = defaultProfile(), profileDirectory, headless = true, javaScriptEnabled = true, launchArgs = [], chosenBrowser } = {}) {
   const profilePath = expandPath(profile)
   // The lock stays the user-data directory's: Chrome runs one process per
   // user-data directory, whichever of its profiles a window shows.
@@ -322,7 +347,7 @@ export async function openBrowser({ profile = defaultProfile(), profileDirectory
       ...launchArgs,
       "about:blank",
     ]
-    const started = await launch(await chromeExecutable(), args)
+    const started = await launch(await chromeExecutable(chosenBrowser), args)
     browser = started.browser
     const page = started.page
     // A Chrome that ends on its own (a crash, or a window the user closed)
@@ -363,7 +388,7 @@ export async function openBrowser({ profile = defaultProfile(), profileDirectory
 // openTab hook also hands URLs to this window without attaching a client, for
 // a caller that has a page to put in front of the person in the window they
 // already have open.
-export async function openSignInWindow({ profile = defaultProfile(), profileDirectory, url, headless = false } = {}) {
+export async function openSignInWindow({ profile = defaultProfile(), profileDirectory, url, headless = false, chosenBrowser } = {}) {
   const profilePath = expandPath(profile)
   const pinned = profileDirectoryArgs(profileDirectory)
   await mkdir(profilePath, { recursive: true, mode: 0o700 })
@@ -390,7 +415,7 @@ export async function openSignInWindow({ profile = defaultProfile(), profileDire
     ]
     // No pipes on 3 and 4: those are what --remote-debugging-pipe would use, and
     // the point of this window is that no such client exists.
-    const child = spawn(await chromeExecutable(), args, { stdio: "ignore", detached: false })
+    const child = spawn(await chromeExecutable(chosenBrowser), args, { stdio: "ignore", detached: false })
     let ended = false
     const exited = new Promise((resolve) => {
       const finish = (error) => {
@@ -422,7 +447,7 @@ export async function openSignInWindow({ profile = defaultProfile(), profileDire
       openTab: async (tabUrl) => {
         if (child.exitCode !== null || child.signalCode !== null) return false
         if (typeof tabUrl !== "string" || !/^(https?|file):\/\//i.test(tabUrl)) return false
-        const helper = spawn(await chromeExecutable(), [
+        const helper = spawn(await chromeExecutable(chosenBrowser), [
           `--user-data-dir=${profilePath}`, ...pinned,
           "--no-first-run", "--no-default-browser-check",
           ...(process.platform === "darwin" ? ["--use-mock-keychain"] : process.platform === "linux" ? ["--password-store=basic"] : []),

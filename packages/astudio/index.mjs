@@ -441,6 +441,18 @@ function reasonOf(error) {
 
 function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir = osHomedir(), registryQuery, readFileImpl, sleepImpl, nowMsImpl = () => Date.now(), browserModule = browserDefault } = {}) {
   const sleep = sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  // 浏览器选择 prompt 的 options：本机真实存在的、pipe 可用的浏览器
+  // （Chrome/Chromium/Brave，不含 Edge——实测 Edge 不支持 --remote-debugging-pipe，
+  // 见 browser.mjs 的 browserCandidates 注释）。
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserModule.browserCandidates?.({ transport: "pipe" })
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+    } catch {
+      /* no candidate list -> no options; the sign-in error is the real message */
+    }
+    return undefined
+  })()
 
   async function readBalance(session) {
     return await studioJson("points/balance", { session, fetchImpl, operation: "积分余额" })
@@ -574,10 +586,16 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           // 同一账号用桌面端登录时也是 uid，宿主因此把两路登录归到同一格。
           type: "oauth",
           label: "浏览器登录（推荐，可多账号）",
-          async authorize(_inputs, { signal } = {}) {
+          prompts: [{
+            type: "select", key: "browser", message: "用哪个浏览器打开登录窗口？", options: browserSelectOptions,
+          }],
+          async authorize(inputs = {}, { signal } = {}) {
+            // 用户在 select prompt 里选的浏览器（完整路径，可为空→自动探测）。
+            const chosenBrowser = typeof inputs?.browser === "string" && inputs.browser.trim() ? inputs.browser.trim() : undefined
             // 先确认本机有 Chrome/Edge：没有就当场报错，别先说「已弹出」再失败。
-            await browserModule.browserExecutable?.()
-            const harvesting = browserModule.startBrowserHarvest({ deadlineMs: WEB_SIGNIN_WAIT_MS, startUrl: STUDIO_WEB_URL })
+            // 传 chosenBrowser，让预检用用户选的那一个（写错路径给专属报错）。
+            await browserModule.browserExecutable?.(chosenBrowser)
+            const harvesting = browserModule.startBrowserHarvest({ deadlineMs: WEB_SIGNIN_WAIT_MS, startUrl: STUDIO_WEB_URL, browser: chosenBrowser })
             harvesting.promise.catch(() => {})
             const cleanup = setTimeout(() => { harvesting.abort().catch(() => {}) }, WEB_SIGNIN_WAIT_MS)
             // 别让这个兜底定时器拖住宿主的事件循环（测试里变成 5 分钟不退出）。
