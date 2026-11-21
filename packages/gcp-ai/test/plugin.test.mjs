@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events"
 import { promisify } from "node:util"
 import { accountOf, adcDirectoryFor, adcDirectoryOwnedBy, adcDirectoryToCreate, adcFile, adcSlug, beginAdcLogin, command, effectiveAuthMode, gcloudProgram, hasAdc, resolveAccount, resolveIdentity, resolveProject, runGcloud, startLogin, tokenProvider, windowsCommand } from "../lib/credentials.mjs"
 import { fakeGcloud } from "./gcloud.mjs"
-import { billingCurrenciesOf, consoleAccountFor, parseCreditTables, usageOf } from "../lib/credits.mjs"
+import { billingCurrenciesOf, consoleAccountFor, fetchCredits, parseCreditTables, usageOf } from "../lib/credits.mjs"
 import { availableModels, toProviderModels } from "../lib/models.mjs"
 import { assertConsoleSession } from "../lib/browser.mjs"
 import { main } from "../lib/fetch_credits.mjs"
@@ -87,9 +87,10 @@ test("credits fail closed on missing layout, unknown statuses, unsupported curre
   assert.equal(parseCreditTables([{ headers, rows: [row("a", "$10.00", "$10.00", "Expired")] }], { now }).remaining, 0)
 })
 
-// kidchen94's JPY billing account (#667): yen amounts have no minor unit, and
-// a bare ¥ is never taken for yen unless the billing account is said to bill
-// in JPY, since the Console writes yuan with the same sign.
+// kidchen94's JPY billing account (#667): a bare ¥ is never taken for yen
+// unless the billing account is said to bill in JPY, since the Console
+// writes yuan with the same sign. Whole yen are read here; two decimal
+// places are #1423, below.
 test("a billing account named as JPY reads yen, and a ¥ is never guessed", () => {
   const yen = (id, remaining, original = "¥10,000", status = "Available") => row(id, remaining, original, status)
   const result = parseCreditTables([{ headers, rows: [yen("a", "¥8,500"), yen("b", "￥1,000"), yen("c", "JP¥0", "¥5,000", "Exhausted")] }], { now, currency: "JPY", billingAccount: "AAAAAA-BBBBBB-CCCCCC" })
@@ -105,12 +106,157 @@ test("a billing account named as JPY reads yen, and a ¥ is never guessed", () =
     /in ¥ \(yen or yuan\), not USD\. If it bills in Japanese yen, set billingCurrencies to \{ "AAAAAA-BBBBBB-CCCCCC": "JPY" \}/)
   // A USD page read as JPY is not taken as yen either.
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$10.00")] }], { now, currency: "JPY", billingAccount: "AAAAAA-BBBBBB-CCCCCC" }), /are in USD, not JPY/)
-  // Yen has no fraction, and a misplaced group separator is not a number.
-  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥8,500.50")] }], { now, currency: "JPY" }), /Unsupported credit amount/)
+  // A misplaced group separator is not a number.
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$1,00.00")] }], { now }), /Unsupported credit amount/)
   assert.throws(() => parseCreditTables([{ headers, rows: [row("a", "$1.00")] }], { now, currency: "CNY" }), /Unsupported billing currency CNY/)
   // USD reads as it did.
   assert.equal(parseCreditTables([{ headers, rows: [row("a", "$1,234.56", "$2,000.00"), row("b", "USD 1.00"), row("c", "2.00 USD")] }], { now }).remaining, 1237.56)
+})
+
+// Cloud Console writes a JPY promotional balance as a whole yen or exactly
+// two decimal places (#1423). Sums stay in minor units, so 10000 - 8499.53
+// is 1500.47 rather than the drifted result of subtracting the two floats.
+test("fractional JPY credits parse to the yen and add without drift", () => {
+  const yen = (id, remaining, original = "¥10,000", status = "Available", end = "July 1, 2027") => row(id, remaining, original, status, "July 15, 2026", end)
+  const one = parseCreditTables([{ headers, rows: [yen("a", "￥8,499.53", "JP¥10,000.00")] }], { now, currency: "JPY", billingAccount: "AAAAAA-BBBBBB-CCCCCC" })
+  assert.equal(one.remaining, 8499.53)
+  assert.equal(one.original, 10000)
+  assert.equal(one.used, 1500.47)
+  assert.equal(one.usedPercent, 15.0047)
+  assert.equal(one.runsOut, 8499.53)
+  const half = usageOf(parseCreditTables([{ headers, rows: [yen("a", "¥8,499.50")] }], { now, currency: "JPY" }))
+  assert.equal(half.balance, "¥8499.50 JPY")
+  assert.equal(half.windows[0].display, "¥8499.50 remaining / ¥10000 JPY")
+  assert.equal(half.windows[0].amount, 1500.5)
+  const shown = usageOf(parseCreditTables([{ headers, rows: [yen("a", "¥46,776.12", "¥50,000")] }], { now, currency: "JPY" }))
+  assert.equal(shown.balance, "¥46776.12 JPY")
+  assert.equal(shown.windows[0].display, "¥46776.12 remaining / ¥50000 JPY")
+  const mixed = parseCreditTables([{ headers, rows: [
+    yen("frac", "¥46,776.12", "¥50,000.00", "Available", "November 1, 2026"),
+    yen("part", "¥8,499.53", "¥10,000"),
+    yen("whole", "¥10,000", "¥15,821"),
+    yen("even", "¥8,500.00", "¥8,500.50"),
+  ] }], { now, currency: "JPY" })
+  assert.equal(mixed.remaining, 73775.65)
+  assert.equal(mixed.original, 84321.5)
+  assert.equal(mixed.used, 10545.85)
+  assert.equal(mixed.runsOut, 46776.12)
+  assert.equal(mixed.runsOutAt, "2026-11-01T00:00:00.000Z")
+  assert.equal(mixed.credits.find((credit) => credit.id === "even").remaining, 8500)
+  assert.equal(mixed.credits.find((credit) => credit.id === "even").original, 8500.5)
+  const usage = usageOf(mixed)
+  assert.equal(usage.balance, "¥73775.65 JPY")
+  assert.equal(usage.windows[0].display, "¥73775.65 remaining / ¥84321.50 JPY")
+  assert.equal(usage.windows[0].amount, 10545.85)
+  // One decimal place, three decimal places, and a bad grouping are still refused.
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥8,500.5")] }], { now, currency: "JPY" }), /Unsupported credit amount/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥8,500.123")] }], { now, currency: "JPY" }), /Unsupported credit amount/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("a", "¥1,00.00")] }], { now, currency: "JPY" }), /Unsupported credit amount/)
+  // Minor units stay exact integers through sums so large safe amounts never lose a cent,
+  // large whole yen keep working up to MAX_SAFE_INTEGER, and fractional rows or sums that
+  // cannot preserve 2-decimal precision across fixed formatting and JSON fail closed.
+  const hugeWhole = parseCreditTables([{ headers, rows: [yen("whole-big", "¥100,000,000,000,000", "¥100,000,000,000,000")] }], { now, currency: "JPY" })
+  assert.equal(hugeWhole.remaining, 100000000000000)
+  assert.equal(hugeWhole.original, 100000000000000)
+  assert.equal(hugeWhole.used, 0)
+  assert.equal(usageOf(hugeWhole).balance, "¥100000000000000 JPY")
+  const exactHalf = parseCreditTables([{ headers, rows: [
+    row("usd-a", "$50,000,000,000,000.25", "$50,000,000,000,000.25"),
+    row("usd-b", "$50,000,000,000,000.25", "$50,000,000,000,000.25"),
+  ] }], { now })
+  assert.equal(exactHalf.remaining, 100000000000000.5)
+  assert.equal(usageOf(exactHalf).balance, "$100000000000000.50 USD")
+  const exactHalfYen = parseCreditTables([{ headers, rows: [yen("yen-half", "¥100,000,000,000,000.50", "¥100,000,000,000,000.50")] }], { now, currency: "JPY" })
+  assert.equal(exactHalfYen.remaining, 100000000000000.5)
+  assert.equal(usageOf(exactHalfYen).balance, "¥100000000000000.50 JPY")
+  const hugeUsed = parseCreditTables([{ headers, rows: [yen("yen-used", "¥0", "¥300,000,000,000,001", "Used")] }], { now, currency: "JPY" })
+  assert.equal(hugeUsed.usedPercent, 100)
+  assert.equal(usageOf(hugeUsed).windows[0].used, 100)
+  const large = parseCreditTables([{ headers, rows: [yen("big", "¥45,035,996,273,704.02", "¥45,035,996,273,704.03")] }], { now, currency: "JPY" })
+  assert.equal(large.remaining, 45035996273704.02)
+  assert.equal(large.original, 45035996273704.03)
+  assert.equal(large.used, 0.01)
+  assert.equal(large.runsOut, 45035996273704.02)
+  assert.equal(usageOf(large).balance, "¥45035996273704.02 JPY")
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("inexact-fixed", "¥70,368,744,177,664.01", "¥70,368,744,177,664.01")] }], { now, currency: "JPY" }), /Invalid Google Cloud credit amounts/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [yen("inexact-json", "¥70,368,744,177,664.13", "¥70,368,744,177,664.13")] }], { now, currency: "JPY" }), /Invalid Google Cloud credit amounts/)
+  assert.throws(() => parseCreditTables([{ headers, rows: [
+    yen("sum-a", "¥50,000,000,000,000", "¥50,000,000,000,000"),
+    yen("sum-b", "¥50,000,000,000,000", "¥50,000,000,000,000.01"),
+  ] }], { now, currency: "JPY" }), /Invalid Google Cloud credit amounts/)
+})
+
+test("upgrading past a parser change re-reads cached amount parse failures while keeping valid balance caches", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vertex-parser-cache-"))
+  const previousCache = process.env.XDG_CACHE_HOME
+  process.env.XDG_CACHE_HOME = directory
+  const profile = join(directory, "profile")
+  const project = "cache-upgrade-project"
+  const baseOptions = { profile, project, account: "", cloudsdkConfig: "", profileDirectory: "", ttl: 300, failureTtl: 1200, transientTtl: 60 }
+  const cacheFileFor = (billingAccount, billingCurrencies) => {
+    const parts = [profile, project, billingAccount, "", ""]
+    if (billingCurrencies) parts.push({ currencies: Object.entries(billingCurrencies).sort(([a], [b]) => a.localeCompare(b)) })
+    const digest = createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 24)
+    return join(directory, "magpie", "gcp-ai", `credits-${digest}.json`)
+  }
+  const fakeBrowser = (tables) => {
+    let reads = 0
+    return {
+      get reads() { return reads },
+      page: {
+        isClosed: () => false,
+        goto: async () => {},
+        waitForFunction: async () => ({ jsonValue: async () => ({ text: "Google Cloud Console" }), dispose: async () => {} }),
+        evaluate: async (fn) => {
+          const src = String(fn)
+          if (src.includes("translated-")) return false
+          if (src.includes("Next page")) return false
+          reads++
+          return tables
+        },
+      },
+    }
+  }
+  try {
+    const currencies = { "AAAAAA-BBBBBB-CCCCCC": "JPY" }
+    const staleFile = cacheFileFor("AAAAAA-BBBBBB-CCCCCC", currencies)
+    await mkdir(dirname(staleFile), { recursive: true })
+    // 0.2.3 remembered a parse failure on fractional JPY (no parserVersion).
+    await writeFile(staleFile, JSON.stringify({
+      error: "Unsupported credit amount/currency: ¥46,776.12 (billing account AAAAAA-BBBBBB-CCCCCC is read in JPY; supported: USD, JPY)",
+      failedAt: new Date().toISOString(),
+    }))
+    const browserA = fakeBrowser([{ headers, rows: [row("a", "¥46,776.12", "¥50,000")] }])
+    const reread = await fetchCredits({ ...baseOptions, browser: browserA, billingAccount: "AAAAAA-BBBBBB-CCCCCC", billingCurrencies: currencies })
+    assert.equal(browserA.reads, 1)
+    assert.equal(reread.cached, false)
+    assert.equal(reread.currency, "JPY")
+    assert.equal(reread.remaining, 46776.12)
+
+    // A valid balance cached by 0.2.3 (no parserVersion) is still reused.
+    const keepCurrencies = { "111111-222222-333333": "JPY" }
+    const validFile = cacheFileFor("111111-222222-333333", keepCurrencies)
+    await writeFile(validFile, JSON.stringify({
+      currency: "JPY", remaining: 8500, original: 10000, used: 1500, usedPercent: 15, fetchedAt: new Date().toISOString(),
+    }))
+    const browserB = fakeBrowser([{ headers, rows: [row("b", "¥1", "¥10")] }])
+    const kept = await fetchCredits({ ...baseOptions, browser: browserB, billingAccount: "111111-222222-333333", billingCurrencies: keepCurrencies })
+    assert.equal(browserB.reads, 0)
+    assert.equal(kept.cached, true)
+    assert.equal(kept.remaining, 8500)
+
+    // A parse failure produced by the current parser is still remembered across polls.
+    const badCurrencies = { "444444-555555-666666": "JPY" }
+    const browserC = fakeBrowser([{ headers, rows: [row("c", "¥8,500.5", "¥10,000")] }])
+    await assert.rejects(fetchCredits({ ...baseOptions, browser: browserC, billingAccount: "444444-555555-666666", billingCurrencies: badCurrencies }), /Unsupported credit amount/)
+    assert.equal(browserC.reads, 1)
+    await assert.rejects(fetchCredits({ ...baseOptions, browser: browserC, billingAccount: "444444-555555-666666", billingCurrencies: badCurrencies }), (error) => error.remembered === true && /Unsupported credit amount/.test(error.message))
+    assert.equal(browserC.reads, 1)
+  } finally {
+    if (previousCache === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = previousCache
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test("billingCurrencies names a supported currency for a valid billing account", () => {
