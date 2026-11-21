@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.17 · 2026-11-21
+
+The rules that decide whether a release may go out are stronger now: the guard
+asks the tag which commit it means, and the code of a release never runs in
+the job that holds the publishing token. Nothing in this package changed.
+
+> 发版的规则变严了：守卫自己去问标签是哪个提交，而不是问「这次运行的提交」——npm 认的是工作流的
+> 名字和仓库，不认分支；发版代码也不再跑在握着发布令牌的那个活里，只有打过包、查过的那一个包会
+> 发出去。这个包里的东西一个都没变。
+
+### Changed
+
+- **The guard asks the tag, not the run.** npm trusts a workflow by its name
+  and its repository, not by the branch it runs from, so the rules now read
+  `refs/tags/<tag>` and ask which commit that tag means, whether that commit
+  is on `main`, and whether the version in `package.json` of that commit is
+  the version of the tag.
+- **The code of a release never touches the publishing token.** The workflow
+  has two jobs: the first one reads the code, asks the questions, runs the
+  tests and packs the package; the second one takes the packed package and
+  publishes it, and runs no code of the repository at all.
+- **A pre-release is not published.** The release event of GitHub fires for a
+  pre-release as well, and npm makes the version that goes out the version
+  everybody gets: a release candidate would become the latest one right
+  away. The job that publishes skips a pre-release, and the guard refuses a
+  tag that carries a suffix such as `-rc.1`.
+- **Nothing in the package changed.** The code here is the code of the
+  standalone plugin, and that code did not move in 0.4.17. There is nothing to
+  update on the computer and nothing to run again on the phone.
+
 ## 0.4.16 · 2026-11-21
 
 The standalone plugin is sent to npm by GitHub Actions itself now, so no token
@@ -21,6 +51,7 @@ standalone plugin.
 - **Nothing in the package changed.** The code here is the code of the
   standalone plugin, and that code did not move in 0.4.16. There is nothing to
   update on the computer and nothing to run again on the phone.
+
 ## 0.4.15 · 2026-11-21
 
 The widget settings of the plugin page are two blocks of their own now, and
