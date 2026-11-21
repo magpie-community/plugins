@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.16 · 2026-11-21
+
+The standalone plugin is sent to npm by GitHub Actions itself now, so no token
+is used any more. Nothing in this package changed; the number follows the
+standalone plugin.
+
+> 独立插件发到 npm 的方式换了：现在由 GitHub Actions 自己的工作流发布（npm 叫它 trusted
+> publisher），不用令牌了。这个包里的东西一个都没变；版本号跟着独立插件走。
+
+### Changed
+
+- **The way it is published changed, not the package.** The standalone plugin
+  (0.4.16) is published by a workflow of GitHub Actions that holds an OIDC
+  token, and npm trusts that workflow as a trusted publisher, so no access
+  token is kept anywhere any more. The workflow asks two questions before it
+  sends anything: whether the release is on `main`, and whether the tag and the
+  version in `package.json` are the same. If one of them does not hold,
+  nothing is published.
+- **Nothing in the package changed.** The code here is the code of the
+  standalone plugin, and that code did not move in 0.4.16. There is nothing to
+  update on the computer and nothing to run again on the phone.
 ## 0.4.15 · 2026-11-21
 
 The widget settings of the plugin page are two blocks of their own now, and
