@@ -156,6 +156,13 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     not as a 0% miss (0.2.26). So does one that counts 0 read and 0
     written: Trae answers that while it bills the turn at its cache price
     (0.2.31).
+  - After the answer the plugin reads Trae's commercial session usage
+    (`/api/v1/commercial/get_session_usage`) for that turn. Its settled
+    `credits_float` goes on the response as `usage.credits`, and its
+    `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
+    named no cache read (0.2.47). A cache count the stream did name wins;
+    a failed lookup leaves the answer unchanged. The host is
+    `TRAE_USAGE_API_HOST` when set, else the realm's own.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,
