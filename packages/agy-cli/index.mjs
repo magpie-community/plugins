@@ -7519,12 +7519,14 @@ export const AntigravityBridgePlugin = async () => {
     },
     // The provider's name, which magpie shows on its Providers row and
     // OpenCode in its model picker: with none, both fell back to the id
-    // (agy-cli). The same name as the plugin's row in registry.json. A
-    // name the user gave the provider in their own config is kept.
+    // (agy-cli). The same name as the plugin's row in registry.json, and
+    // the package its models are spoken to with, as provider.npm says. A
+    // name or package the user gave the provider in their own config is
+    // kept. The models come from provider.models.
     config: async (cfg) => {
       cfg.provider ??= {}
       const was = cfg.provider[PROVIDER_ID] ?? {}
-      cfg.provider[PROVIDER_ID] = { ...was, name: was.name || PROVIDER_NAME }
+      cfg.provider[PROVIDER_ID] = { npm: NPM_ANTHROPIC, ...was, name: was.name || PROVIDER_NAME }
     },
     provider: {
       id: PROVIDER_ID,
