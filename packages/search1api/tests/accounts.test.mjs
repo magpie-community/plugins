@@ -262,6 +262,41 @@ test("Magpie's auth.refresh writes back the slot whose session it was given", as
   assert.equal(all["search1api#b"].access, "refreshed-1");
 });
 
+test("a stale auth passed to auth.refresh returns the session already renewed", async (t) => {
+  const f = await stub(t, () => ok());
+  const stale = oauth("stale-access", "stale-refresh", Date.now() - 1);
+  await f.saveAll({ search1api: stale });
+  const plugin = await Search1APIPlugin(f.input, { baseUrl });
+  await plugin.tool.search.execute({ query: "q" }, context());
+  assert.equal(f.refreshes.length, 1);
+  assert.deepEqual(f.writes, ["search1api"]);
+  const next = await plugin.auth.refresh(stale);
+  assert.equal(next.access, "refreshed-1");
+  assert.equal(next.refresh, "rotated-1");
+  assert.equal(f.refreshes.length, 1, "no second refresh request");
+  assert.deepEqual(f.writes, ["search1api"]);
+});
+
+test("a stale auth that fits two saved OAuth accounts asks for a new sign-in", async (t) => {
+  const f = await stub(t, () => ok());
+  await f.saveAll({
+    search1api: oauth("first-access", "first-refresh", Date.now() + 3600_000),
+    "search1api#b": oauth("second-access", "second-refresh", Date.now() + 3600_000),
+  });
+  const plugin = await Search1APIPlugin(f.input, { baseUrl });
+  await assert.rejects(
+    plugin.auth.refresh(oauth("stale-access", "stale-refresh", Date.now() - 1)),
+    (error) => {
+      assert.match(error.message, /Sign in with/);
+      assert.doesNotMatch(error.message, /stale-access|first-access|second-access/);
+      return true;
+    },
+  );
+  assert.equal(f.refreshes.length, 0, "no refresh request is sent");
+  assert.deepEqual(f.writes, []);
+  assert.deepEqual(f.calls, []);
+});
+
 test("a revoked refresh rests that account and the next one serves the call", async (t) => {
   const f = await stub(t, (call) =>
     call.token === "primary-key" ? refused(401) : ok());

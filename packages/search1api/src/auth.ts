@@ -203,10 +203,19 @@ export class Credentials {
   }
 
   private async slot(was: StoredOAuth): Promise<string | undefined> {
-    return (await this.accounts()).find(
+    const oauth = (await this.accounts()).filter(
+      (account): account is SavedCredential & { auth: StoredOAuth } =>
+        account.auth.type === "oauth",
+    );
+    const exact = oauth.find((account) => SAME_SESSION(account.auth, was));
+    if (exact) return exact.accountKey;
+    const same = oauth.filter(
       (account) =>
-        account.auth.type === "oauth" && SAME_SESSION(account.auth, was),
-    )?.accountKey;
+        account.auth.issuer === was.issuer &&
+        account.auth.tokenEndpoint === was.tokenEndpoint &&
+        account.auth.clientId === was.clientId,
+    );
+    return same.length === 1 ? same[0].accountKey : undefined;
   }
 
   async renew(
