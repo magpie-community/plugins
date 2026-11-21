@@ -8,6 +8,7 @@
   "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
   "keywords": ["magpie", "opencode", "opencode-plugin", "astergate"],
   "license": "MIT",
+  "magpie": { "icon": "https://beta.astergate.cc/favicon.svg" },
   "repository": {
     "type": "git",
     "url": "https://github.com/magpie-community/plugins.git",

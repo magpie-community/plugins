@@ -1,7 +1,7 @@
 {
   "version": 1,
   "plugins": [
-    { "package": "@magpie-community/opencode-astergate-auth", "name": "Astra Magpie", "providers": ["astergate"], "community": true,
+    { "package": "@magpie-community/opencode-astergate-auth", "name": "Astra Magpie", "icon": "https://beta.astergate.cc/favicon.svg", "providers": ["astergate"], "community": true,
       "summary": { "en": "Unofficial AsterGate provider with API key sign-in, live Claude models, Anthropic Messages streaming, and 5-hour and weekly quota windows.", "zh": "非官方 AsterGate Provider，使用 API Key 登录，动态发现 Claude 模型，支持 Anthropic Messages 流式响应，显示 5 小时和每周额度及重置时间。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
