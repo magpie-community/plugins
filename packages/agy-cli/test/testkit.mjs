@@ -294,13 +294,31 @@ class FakeAgy {
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
+      const opened = { sessionId: this.sessionId, models }
+      // undefined omits configOptions (a legacy agy). null, [], or a list is
+      // what this session actually returned, including a degraded one.
+      if (this.kit.sessionConfig !== undefined) opened.configOptions = structuredClone(this.sessionConfigOptions())
       // A real signed-in agy takes ~3s to open a session (#1064).
-      if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
-      else this.respond(id, { sessionId: this.sessionId, models })
+      if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, opened), this.kit.sessionNewDelayMs)
+      else this.respond(id, opened)
+    } else if (method === "session/set_config_option") {
+      this.kit.setConfigs.push({ configId: params.configId, value: params.value, spawn: this.spawnIndex })
+      if (this.kit.setConfigError) {
+        this.send({ id, error: this.kit.setConfigError })
+        return
+      }
+      const current = this.sessionConfigOptions()
+      if (!Array.isArray(current)) {
+        this.send({ id, error: { code: -32601, message: "Method not found" } })
+        return
+      }
+      this.configSnapshot = current.map(option => option.id === params.configId ? { ...option, currentValue: params.value } : { ...option })
+      this.respond(id, { configOptions: this.configSnapshot })
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
       // agy whose account Google turned away offers no model: every one is unknown
-      if (this.kit.setModelError) this.send({ id, error: this.kit.setModelError })
+      const failure = typeof this.kit.setModelError === "function" ? this.kit.setModelError(params) : this.kit.setModelError
+      if (failure) this.send({ id, error: failure })
       else this.respond(id, {})
     } else if (method === "session/prompt") {
       this.runPrompt(id, params)
@@ -364,6 +382,14 @@ class FakeAgy {
     this.kit.controlHandler(socket)
     socket.emit("data", JSON.stringify({ token: this.token, ...message }) + "\n")
     return socket.reply
+  }
+
+  // The options this session is advertising. A later set_config_option
+  // answers with the updated copy; the kit's own value stays put.
+  sessionConfigOptions() {
+    if (this.configSnapshot) return this.configSnapshot
+    const raw = this.kit.sessionConfig
+    return typeof raw === "function" ? raw(this) : raw
   }
 
   agentApi(params, index) {
@@ -486,6 +512,10 @@ export async function createBridgeKit(options = {}) {
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
     setModelError: options.setModelError ?? null,
+    setConfigError: options.setConfigError ?? null,
+    // undefined: session/new omits configOptions. Any other value, including
+    // null and [], is returned as configOptions.
+    sessionConfig: options.sessionConfig,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
@@ -496,6 +526,7 @@ export async function createBridgeKit(options = {}) {
     listings: [],
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
+    setConfigs: [],
     acpLog: [],
     controlHandler: null,
     turns: [],
