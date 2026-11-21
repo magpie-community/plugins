@@ -198,6 +198,13 @@ function opencodeTmp() {
 // and a model typed in by hand doesn't ask the list on every request.
 const RELIST_AFTER = 60_000;
 
+// Magpie asks a provider for its models on every refresh, and the Zen
+// catalog behind them is 2.6 MB. Keep the parsed catalog for an hour so
+// repeated asks do not download it again; the small model list is still
+// read on every call, so newly free models appear at once.
+const CATALOG_EVERY = 60 * 60 * 1000;
+const CATALOG_CACHE = Symbol.for("magpie.opencode-zen-free.catalog");
+
 function httpURL(value) {
   const url = new URL(value);
   if (
@@ -642,6 +649,7 @@ async function server(_input, options = {}) {
   const baseURL = httpURL(options.baseURL ?? DEFAULT_BASE);
   const catalogURL = httpURL(options.catalogURL ?? CATALOG);
   const docsURL = httpURL(options.docsURL ?? DOCS);
+  const catalogTTL = options.catalogTTL ?? CATALOG_EVERY;
   let known = buildModels(
     Object.keys(bootstrapProvider.models),
     bootstrapProvider,
@@ -670,6 +678,16 @@ async function server(_input, options = {}) {
     return versionAsk;
   }
 
+  async function readCatalog(signal) {
+    if (catalogTTL <= 0) return readRemote(catalogURL, true, undefined, signal);
+    const cache = (globalThis[CATALOG_CACHE] ??= new Map());
+    const hit = cache.get(catalogURL);
+    if (hit && Date.now() - hit.at < catalogTTL) return hit.value;
+    const value = await readRemote(catalogURL, true, undefined, signal);
+    cache.set(catalogURL, { at: Date.now(), value });
+    return value;
+  }
+
   async function discover(signal) {
     const headers = {
       authorization: "Bearer public",
@@ -678,7 +696,7 @@ async function server(_input, options = {}) {
     };
     const [listing, catalog, docs] = await Promise.allSettled([
       readRemote(`${baseURL}/models`, true, headers, signal),
-      readRemote(catalogURL, true, undefined, signal),
+      readCatalog(signal),
       readRemote(docsURL, false, undefined, signal),
     ]);
     signal?.throwIfAborted();

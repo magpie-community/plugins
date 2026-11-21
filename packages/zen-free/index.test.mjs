@@ -13,7 +13,7 @@ const subject = import("./index.mjs").then((module) => ({
   default: { server: module.ZenFreePlugin },
 }));
 
-async function fixture(t, input = {}) {
+async function fixture(t, input = {}, options = {}) {
   const state = { calls: [], status: 200, modelsStatus: 200, docsStatus: 200, catalogStatus: 200 };
   const server = createServer(async (req, res) => {
     let text = "";
@@ -90,6 +90,7 @@ async function fixture(t, input = {}) {
     baseURL: `${origin}/v1`,
     catalogURL: `${origin}/catalog`,
     docsURL: `${origin}/docs`,
+    ...options,
   });
   return { plugin, state, origin };
 }
@@ -1395,3 +1396,25 @@ for (const { protocol, path, model } of protocols) {
     });
   }
 }
+
+test("repeated model discovery downloads the catalog once and still re-reads the list", async (t) => {
+  const { state, origin } = await fixture(t, {}, { catalogTTL: 60_000 });
+  const module = await subject;
+  const auth = await publicAuth();
+  const open = () =>
+    module.default.server(
+      {},
+      {
+        baseURL: `${origin}/v1`,
+        catalogURL: `${origin}/catalog`,
+        docsURL: `${origin}/docs`,
+        catalogTTL: 60_000,
+      },
+    );
+  const first = await open();
+  const second = await open();
+  await first.provider.models({ models: {} }, { auth });
+  await second.provider.models({ models: {} }, { auth });
+  assert.equal(state.calls.filter((call) => call.url === "/catalog").length, 1);
+  assert.equal(state.calls.filter((call) => call.url === "/v1/models").length, 2);
+});
