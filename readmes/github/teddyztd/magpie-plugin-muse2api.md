@@ -159,13 +159,37 @@ expected string, received undefined`，这时代码根本没执行到插件里�
    先拿 `task_id`，再调 `muse2api_video_status`；它只查一次并立即返回状态，没完成就隔一会儿用同一个
    `task_id` 再查，直到 `completed` 并拿到 `.mp4` 链接。
 
+## 网关自动拉起与保活（v0.2.0 起）
+
+插件加载时（Magpie 启动 / 插件启用）会在后台自动把本机 muse2api 网关拉起来，
+之后每 30 秒探一次端口，连续 2 次失败就自动重启（指数退避，上限 5 分钟）。
+登录校验、模型列表刷新、网页登录前也会先确保网关在跑。
+
+- **只管本机实例**（`127.0.0.1` / `localhost` / `::1`）；`baseUrl` 指向远端时不会动远端进程。
+- 拉起命令等价于 `python -m uvicorn app:app --host 127.0.0.1 --port 18610`（在网关目录下执行），
+  日志写到 `<网关目录>/data/logs/gateway-keepalive.log`。
+- Python 自动探测顺序：显式配置 → 环境变量 `MUSE2API_PYTHON` → 网关目录里的 `.venv` / `venv` → PATH 上的 `python` / `py`。
+- 只杀自己拉起的进程；手动起的 uvicorn 不会被误杀。
+- 拉起失败（目录不对 / 没装 uvicorn / 端口被别的程序占用）时，登录报错会附带网关日志末尾，方便定位。
+
+在 **插件 → 已安装 → muse2api → 选项** 里可以覆盖（都是可选）：
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `gatewayEnabled` | `true` | 关掉则完全不自动拉起 |
+| `gatewayKeepAlive` | `true` | 关掉则只拉起一次，不做崩溃重启 |
+| `gatewayDir` | `E:\github\muse2api` | 网关仓库目录（含 `app.py`） |
+| `gatewayPython` | 自动探测 | Python 解释器路径 |
+
+环境变量兜底：`MUSE2API_GATEWAY_AUTOLAUNCH=0`、`MUSE2API_GATEWAY_KEEPALIVE=0`、`MUSE2API_GATEWAY_DIR`、`MUSE2API_PYTHON`。
+
 ## 故障排查
 
 | 现象 | 处理 |
 | --- | --- |
 | 登录报「API key 无效（401）」 | 核对 `MUSE2API_KEY` 是否与 muse2api 实例一致（注意 muse2api 的 `MUSE2API_KEY` 为空时是不校验的，这时填任何 key 都能过） |
-| 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍。注意 muse2api 进程退出后端口就不监听了（`Get-NetTCPConnection -LocalPort 18610` 为空），要用 `python -m uvicorn app:app --host 127.0.0.1 --port 18610` 重新拉起，而不是 `python app.py` |
-| 重启机器后 Magpie 报连不上 | muse2api 不会自启；用上面的 uvicorn 命令常驻（可用计划任务 / `nssm` / 前台终端），或改用远端实例 |
+| 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍。v0.2.0 起插件会自动拉起本机实例（见上节），拉起失败时错误里会带网关日志末尾 |
+| 重启机器后 Magpie 报连不上 | v0.2.0 起插件加载即自动拉起 + 保活；若仍失败，检查 `gatewayDir` 是否指向真实网关目录、`.venv` 里有没有 uvicorn，或看 `data/logs/gateway-keepalive.log` |
 | 对话 404 或 400 | `baseURL` 拼错了；本插件固定用 `<地址>/v1`，登录时地址**不要带** `/v1`（带了会被 validate 拦下） |
 | 工具说「没有配置 muse2api 连接信息」 | 去 **插件 → 已安装 → muse2api → 选项** 填 `baseUrl` / `apiKey`，或设环境变量后重启 Magpie |
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |

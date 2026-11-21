@@ -35,11 +35,11 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
   `POST /api/public/v1/credits/runs` 领 run → `POST /api/public/v1/agent-runtime/chat/completions` 对话。
   原生 `messages` / `tools` 进，原生 `tool_calls` / `reasoning_content` / `usage` 出；同时转换 Codex Responses 的 `input`、函数工具和调用结果。
 - 🔁 **权限拒绝回退**
-  只有上游明确返回 HTTP 403 `PermissionDenied` 才尝试 `cowork_web`。该通路只接受纯文本；请求含工具或多模态内容时保留 403，不把不完整回答伪装成成功。
+  只有上游明确返回 HTTP 403 `PermissionDenied` 才尝试 `cowork_web`。默认只回退纯文本；工具请求保留 403。可通过 `MAGPIE_LINGXI_EXPERIMENTAL_TOOL_CALLS=1` 显式启用文本提示协议实验，但它不是 WPS 原生工具调用，尚未完成真实上游闭环验证。
 - 🧵 **会话隔离**
   有稳定会话 ID 时按账号、模型、客户端、模式和会话分别缓存 run。请求未带会话 ID 时每次新建 run，避免不同对话共用上下文；如果客户端每轮不提供稳定 ID，可能增加 run 用量。
 - 🧹 **不走旧 AIGC 对话接口**
-  `/api/aigc/v3/assistant/...`、`question` 压平和正文工具桥已删除。`cowork_web` 仅用于一次性任务及明确权限拒绝后的纯文本回退。
+  `/api/aigc/v3/assistant/...`、`question` 压平和旧正文工具桥已删除。`cowork_web` 用于一次性任务及明确权限拒绝后的纯文本回退；工具文本协议仅在显式实验开关下启用。
 - 🎁 **每日签到 + 一次性任务 (`auth.checkin`)**  
   读客户端任务中心 `GET /api/public/v1/tasks`，领取 `daily_check_in`；
   已领过返回 `done`，领到返回 `claimed` 并用领前/领后余额差作为奖励。
@@ -73,7 +73,8 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 
 - 计费按 run：一个 run 内多次调用只扣一次智点。有 `client_metadata.thread_id`（或等效会话 ID）时，session/run 按「账号 × 模型 × 客户端 × 模式 × 会话」缓存 1 小时；
   没有稳定会话 ID 时不缓存，每次创建独立 run。上游报 `SQLNoRows` / 会话不存在时自动重建一次。
-- 若上游明确返回 403 `PermissionDenied`，纯文本请求会改用 `cowork_web` WebSocket；工具调用、工具历史和图片内容不降级，仍返回 403。
+- 若上游明确返回 403 `PermissionDenied`，纯文本请求会改用 `cowork_web` WebSocket；默认情况下工具调用、工具历史和图片内容不降级，仍返回 403。
+- `MAGPIE_LINGXI_EXPERIMENTAL_TOOL_CALLS=1` 可选择启用 cowork_web 文本工具协议。该协议只把提示词标记转换成 OpenAI `tool_calls`，未证明 WPS 上游会稳定生成这些标记；生产使用前请自行验证工具往返。
 - 响应帧：`data:{"code":"Success","usage":{…},"choices":[{"text","reasoning_content","tool_calls","finish_reason"}]}`，
   没有 `[DONE]`，靠 `finish_reason` 收尾；`code != Success` 直接作为上游错误返回。
 - 请求头（与客户端一致）：`X-Client-Type: lingxi_claw`、`X-Client-Lang: zh-CN`、
@@ -90,14 +91,14 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 | 请求头 | ✅ | `X-Client-Type`、`X-Client-Lang`、`X-Cc-Agent-Type`、`X-Cc-Session-ID`、`X-Cc-Run-ID`、`X-Request-Id`；有 `copilot_server_branch` 时带 `X-Cc-Region` |
 | 模型目录 | ✅ | 登录后只取 `sessions/plans` 的 `data.models`；未登录用真实模型快照 |
 | 思考档位 | ✅ | 每个模型按目录里的 `reasoning_efforts` 生成 `variants`（对象），宿主选档后原样作为 `reasoning_effort` 发上游 |
-| 工具调用 | ✅ | 原生 `tools` / `tool_calls`，不再从正文反解 |
+| 工具调用 | ✅ | agent-runtime 使用原生 `tools` / `tool_calls`；cowork_web 文本工具协议为显式 opt-in 实验功能 |
 | 流式帧 | ✅ | `choices[].text` / `reasoning_content` / `tool_calls` / `finish_reason`，`code != Success` 即报错 |
 | 用量 | ✅ | `usage` 原样带回；`cached_tokens` / `reasoning_tokens` 归一成 OpenAI 形状 |
 | 会话缓存 | ✅ | 按对话 ID 隔离并缓存 1 小时；缺少 ID 时每次新建 run；过期会话重建一次 |
 | 额度 | ✅ | `credits/balance`：`total_balance` + `bonus_summary` 算已用；钱包型也给有限 `used` |
 | 签到 | ✅ | `tasks` + `tasks/{key}/claim`；已领返回 `done` |
 | 多账号 | ✅ | 按 `uid` 区分（无 uid 用 sid 尾部），不互相覆盖 |
-| 错误语义 | ✅ | `InvalidArgument` / 审核拦截 → 400；`PermissionDenied` → 403，纯文本尝试回退 |
+| 错误语义 | ✅ | `InvalidArgument` / 审核拦截 → 400；`PermissionDenied` → 403，纯文本默认尝试回退，工具请求默认保留 403 |
 | 一次性任务·群聊 | ✅ | 网页端同款流程：`cowork_web` 会话 + WS `user.input` → 建群 → 解散（issue #5 的 400 根因已修：空会话缺真实使用信号） |
 | 一次性任务·专家/客户端 | ✅ 已验证 | v0.3.15 的 `execution_status` 生命周期（running → 对话 → completed，真实内核抓包复刻）是真根因修复；未领账号实测两任务同时翻转并自动领取（issue #5） |
 | 脚手架 | ✅ | `check.mjs` 30 通过 / 0 警告 / 0 失败；`score.mjs` 身份门通过、自动分 65/65 |
@@ -134,7 +135,8 @@ node tests/test_tasks.mjs --sid "你的 wps_sid"
 ```bash
 MAGPIE_LINGXI_MAX_PROMPT_KB=320     # 总预算，默认 320KB（约 80K token，留一半余量）
 MAGPIE_LINGXI_MAX_MESSAGE_KB=48     # 单条上限，默认 48KB
-MAGPIE_LINGXI_PLANE=cowork_web     # 可选：强制纯文本 cowork_web 通路；工具/图片请求会被拒绝
+MAGPIE_LINGXI_PLANE=cowork_web     # 可选：强制 cowork_web；图片请求会被拒绝，工具需显式启用实验开关
+MAGPIE_LINGXI_EXPERIMENTAL_TOOL_CALLS=1 # 可选：启用未验证的 cowork_web 文本工具协议实验
 ```
 
 > 为什么需要：网页端时代（0.2.2）靠的是同一个预算才把一个 961KB、已经彻底打不开的会话救回来。
