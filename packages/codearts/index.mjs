@@ -152,6 +152,13 @@ const OPS_CREDIT_OVERVIEW_URL = `${SNAP_HOST}/v1/ops/credit/overview`
 const OPS_CREDIT_CAMPAIGN_URL = (id) => `${SNAP_HOST}/v1/ops/credit/campaign/${encodeURIComponent(id)}?pageNum=1&pageSize=100`
 // The batches change slowly; read them again this often (and after a check-in).
 const CREDIT_BATCHES_TTL_MS = 10 * 60 * 1000
+// The Beijing hour from which a `CONFIRMED` the ledger has no claim of today
+// for is believed as today's. Before it the vendor's own day may not have
+// turned for every campaign: magpie's check-in runs seconds after midnight
+// (measured 00:00:13), and its own check-ins hold a done answer provisional
+// until noon for this reason (magpie #3326 names CodeArts among the vendors
+// that answered 「already in」 for credits still to claim).
+const CHECKIN_SURE_HOUR = 12
 // Daily check-in (「限时福利 → 每日领取」), as the IDE's ActivityWelfarePane calls it.
 const OPS_DELIVERY_URL = `${SNAP_HOST}/v1/ops/delivery?channel=IDE`
 const OPS_CLAIM_URL = `${SNAP_HOST}/v1/ops/claim`
@@ -2314,9 +2321,11 @@ function grantExpiry(benefit, at) {
  * one such item: the ordinary daily check-in, and the campaigns a contest adds
  * beside it. Answers magpie's check-in outcome; never throws. `unconfirmed` is
  * today's list of claims this plugin left unconfirmed (the ledger's); an
- * answer's own `unconfirmed` is one to keep there.
+ * answer's own `unconfirmed` is one to keep there. `recorded` is that ledger's
+ * grants: they date the account's own last claim, which is what tells
+ * yesterday's `CONFIRMED` from today's just after the day turns.
  */
-async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
+async function dailyCheckin(cred, fetcher, { unconfirmed, recorded, now = Date.now() } = {}) {
   const listed = await dailyCampaigns(cred, fetcher)
   if (listed.error) return { outcome: "failed", message: listed.error }
   const items = listed.items
@@ -2326,6 +2335,31 @@ async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
   const results = []
   const grants = []
   const kept = []
+
+  // The list can still answer yesterday's CONFIRMED just after the day turns:
+  // measured 2026-11-18 (Beijing), the 00:00:13 check-in read campaign 40
+  // (Skill创新赛每日签到礼, 1000) as not claimable and settled 「今天已领取」
+  // while 34 claimed — one claimed campaign makes the answer `claimed`, which
+  // magpie counts as today's and never asks again, so the 1000 was lost with no
+  // failure to retry. The ledger dates this account's own last claim of each
+  // campaign: an older day's claim there, and none today, marks the CONFIRMED as
+  // yesterday's while it is still morning. No claim of that campaign ever is
+  // someone else's (the IDE's, the web's) and is believed; so is one past
+  // CHECKIN_SURE_HOUR, where the vendor's day has certainly turned.
+  const today = beijingDay(now)
+  const beforeSureHour = new Date(now + BEIJING_MS).getUTCHours() < CHECKIN_SURE_HOUR
+  const lastClaimDay = new Map()
+  for (const grant of Array.isArray(recorded) ? recorded : []) {
+    const id = String(grant?.campaignId ?? "")
+    const at = vendorDate(grant?.at)
+    if (id === "" || at === undefined) continue
+    const day = beijingDay(at)
+    if (!lastClaimDay.has(id) || lastClaimDay.get(id) < day) lastClaimDay.set(id, day)
+  }
+  const yesterdaysAnswer = (item) => {
+    const id = String(item?.campaignId ?? "")
+    return beforeSureHour && isClaimedToday(item) && lastClaimDay.has(id) && lastClaimDay.get(id) !== today
+  }
 
   for (const item of items) {
     const credit = num(item.benefitAmount)
@@ -2355,6 +2389,13 @@ async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
       continue
     }
     if (isClaimedToday(item)) {
+      // Not settled when only yesterday's claim explains it: magpie asks a
+      // failed again later the same day, and that retry is what still claims a
+      // campaign whose day turned after this check-in ran.
+      if (yesterdaysAnswer(item)) {
+        results.push({ outcome: "failed", message: "领取状态未刷新，稍后重试" })
+        continue
+      }
       results.push({ outcome: "done", message: "今天已领取" })
       continue
     }
@@ -2372,7 +2413,7 @@ async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
       // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
       const again = await dailyCampaigns(cred, fetcher)
       const seen = again.items?.find((it) => sameCampaign(it, item))
-      if (isClaimedToday(seen)) {
+      if (isClaimedToday(seen) && !yesterdaysAnswer(seen)) {
         results.push({ outcome: "done", message: "今天已领取" })
         continue
       }
@@ -3586,13 +3627,17 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         if (stationOf(cred) !== STATIONS.mainland) return { outcome: "inactive", message: "no daily check-in on this station" }
         const key = await ledgerKey(cred)
         const state = await stateOf(cred)
-        const today = beijingDay()
+        const today = beijingDay(now())
         // The account's own memory first: the ledger is written best effort,
         // and a write that failed mustn't lose the claim; the ledger carries it
         // to another process, or past a restart.
         const held = state.unconfirmed?.day === today ? state.unconfirmed.claims : undefined
         const left = held ?? readUnconfirmed(ledgerPath, key)
-        const { grant, grants, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        const { grant, grants, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, {
+          unconfirmed: left,
+          recorded: readGrants(ledgerPath, key),
+          now: now(),
+        })
         // A claim whose confirm failed is kept for the next check-in; one
         // confirmed now, or found done, is dropped.
         const kept = Array.isArray(unconfirmed) ? unconfirmed : unconfirmed ? [unconfirmed] : []

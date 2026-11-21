@@ -2603,6 +2603,51 @@ test("a contest check-in refused for not having signed up is ineligible, not a f
   assert.deepEqual(claims, [40, 34])
 })
 
+test("a daily campaign the list still calls CONFIRMED just after midnight is retried, not settled", async () => {
+  const cred = await makeCred()
+  // 2026-11-18 00:00:13 Beijing, when magpie asked and the list still carried
+  // 2026-11-17's answer for the contest's 1000 (campaign 40) while the ordinary
+  // 100 (34) claimed — the reported day the 1000 was lost.
+  const midnight = Date.parse("2026-11-18T00:00:13+08:00")
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: false, status: "CONFIRMED", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  // 2026-11-17 10:00 Beijing: the 1000 that campaign 40 read as CONFIRMED for.
+  const recorded = [{ campaignId: 40, at: "2026-11-17T10:00:00+08:00", credit: 1000, expiresAt: "2026-12-26T00:00:00+08:00" }]
+
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher, { recorded, now: midnight })
+  assert.deepEqual(r, { outcome: "failed", message: "领取状态未刷新，稍后重试" }, "not a claimed day that hides the 1000")
+  assert.deepEqual(claims, [34], "the ordinary one is still claimed")
+  assert.deepEqual([grant.campaignId, grant.credit], [34, 100])
+
+  // Past noon the same Beijing day the vendor's day has certainly turned: a
+  // CONFIRMED the ledger never claimed is someone else's (the IDE, the web).
+  const later = Date.parse("2026-11-18T13:00:00+08:00")
+  assert.equal((await x.dailyCheckin(cred, fetcher, { recorded, now: later })).outcome, "done")
+  // As it is with no claim of that campaign in the ledger at all.
+  assert.equal((await x.dailyCheckin(cred, fetcher, { recorded: [], now: midnight })).outcome, "done")
+})
+
 test("a claimed check-in is kept, and the usage card says when those credits run out", async () => {
   const cred = await makeCred()
   const ledgerPath = path.join(ledgerDir, "integrated.json")

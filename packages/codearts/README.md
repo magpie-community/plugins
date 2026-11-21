@@ -180,7 +180,10 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
   check-in beside it (such as the 小红书 Skill 创新赛 daily 1000, 2026-11-11–12-05) are separate campaigns in that
   same list; a contest's one-time sign-up gift is left to the user. A contest check-in the
   account has not signed up for is not claimable, so it is skipped and the ordinary one is still
-  claimed. The dates are the vendor list's own (`extra.endTime`), not hardcoded here, so the
+  claimed. A daily campaign the list still reports as `CONFIRMED` when the ledger has no claim of
+  it that Beijing day is answered `failed`, not `done`: the list can still carry yesterday's answer
+  just after midnight, and magpie then asks again later the same day instead of losing it. The
+  dates are the vendor list's own (`extra.endTime`), not hardcoded here, so the
   campaign stops being claimed when it ends. Turn on
   *Auto check-in* for CodeArts under **Settings → Usage → Plugins**.
 
