@@ -29,6 +29,7 @@ const ZH = {
 
   reloginRequired: "AtomCode 登录已失效，请重新登录",
   refreshFailed: "AtomCode 令牌续期失败：{detail}",
+  refreshCooling: "AtomCode 令牌续期暂缓，将自动重试",
   authFileReadFailed: "读取 AtomCode CLI 登录失败：{detail}",
   authFileWriteFailed: "回写 AtomCode CLI 登录失败：{detail}",
   authPersistFailed: "magpie 保存续期后的登录失败：{detail}",
@@ -87,6 +88,7 @@ const EN = {
 
   reloginRequired: "The AtomCode sign-in has expired; please sign in again",
   refreshFailed: "Renewing the AtomCode token failed: {detail}",
+  refreshCooling: "AtomCode token renewal is waiting and will retry on its own",
   authFileReadFailed: "Reading the AtomCode CLI sign-in failed: {detail}",
   authFileWriteFailed: "Writing the renewed AtomCode CLI sign-in failed: {detail}",
   authPersistFailed: "magpie failed to save the renewed sign-in: {detail}",
