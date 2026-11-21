@@ -392,12 +392,31 @@ export async function geminiDirArgs(agyPath, env = process.env) {
   return { args: ["--gemini-dir", dir], dir }
 }
 
+// After "exit", libuv still has to deliver stderr that was already written
+// (InvalidPEFile). "close" does that immediately when the pipes end. When a
+// grandchild holds the pipes, give those Poll turns a moment, then drop the
+// handles so they cannot keep the process alive (#1428).
+const EXEC_EXIT_DRAIN_MS = 50
+
 function execOnce(file, args, opts = {}) {
   return new Promise((resolve) => {
     let child
+    let settled = false
+    let timer
+    let exitTimer
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(exitTimer)
+      // A grandchild can keep the pipes open and ref'd after the child is gone.
+      try { child?.stdout?.destroy?.() } catch {}
+      try { child?.stderr?.destroy?.() } catch {}
+      resolve(result)
+    }
     try {
       const launch = file === "taskkill" ? spawn : spawnAgy
-      const { unrefTimer: _unrefTimer, ...spawnOpts } = opts
+      const { unrefTimer: _unrefTimer, exitEnds: _exitEnds, ...spawnOpts } = opts
       child = launch(file, args, {
         stdio: ["ignore", "pipe", "pipe"],
         ...spawnOpts,
@@ -410,30 +429,45 @@ function execOnce(file, args, opts = {}) {
     let stdout = ""
     let stderr = ""
     let timedOut = false
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true
       try { child.kill("SIGKILL") } catch {}
       // A grandchild can hold the pipes open after the kill; never wait for close.
-      resolve({ err: null, stdout, stderr, code: null, timedOut })
+      finish({ err: null, stdout, stderr, code: null, timedOut })
     }, opts.timeoutMs ?? 30_000)
     // Background work (the model catalog refresh) must never hold Node's exit.
     // A caller that awaits the result keeps the deadline referenced.
     if (opts.unrefTimer) timer.unref?.()
     try {
-      child.stdout.on("data", (data) => { stdout += data })
-      child.stderr.on("data", (data) => { stderr += data })
+      child.stdout.on("data", (data) => { if (!settled) stdout += data })
+      child.stderr.on("data", (data) => { if (!settled) stderr += data })
       child.on("error", (err) => {
-        clearTimeout(timer)
-        resolve({ err, stdout, stderr, code: null, timedOut })
+        finish({ err, stdout, stderr, code: null, timedOut })
       })
-      child.on("close", (code) => {
-        clearTimeout(timer)
-        resolve({ err: null, stdout, stderr, code, timedOut })
+      // bun build exits in about a second when Temp rejects the PE write, and
+      // a grandchild can keep the pipes open so "close" never arrives (#1428).
+      // A signal kill (code null, EDR) is the same: do not wait out the timeout.
+      // "close" still settles a normal exit at once; this timer is only the
+      // held-pipe path, long enough for stderr already buffered to arrive.
+      if (opts.exitEnds) {
+        child.on("exit", (code, signal) => {
+          if (settled || timedOut) return
+          exitTimer = setTimeout(() => {
+            const result = { err: null, stdout, stderr, code, timedOut: false }
+            if (signal) result.signal = signal
+            finish(result)
+          }, EXEC_EXIT_DRAIN_MS)
+          if (opts.unrefTimer) exitTimer.unref?.()
+        })
+      }
+      child.on("close", (code, signal) => {
+        const result = { err: null, stdout, stderr, code, timedOut }
+        if (signal) result.signal = signal
+        finish(result)
       })
     } catch (err) {
-      clearTimeout(timer)
       try { child.kill("SIGKILL") } catch {}
-      resolve({ err, stdout, stderr, code: null, timedOut })
+      finish({ err, stdout, stderr, code: null, timedOut })
     }
   })
 }
@@ -1360,6 +1394,100 @@ function asciiPath(value) {
   return /^[\x20-\x7e]*$/.test(String(value || ""))
 }
 
+// Windows env names are case-insensitive (platform.mjs childEnv). A host can
+// see `tmp` or `LocalAppData` where another saw `TMP` and `LOCALAPPDATA`.
+function windowsEnv(name) {
+  const env = process.env
+  if (process.platform !== "win32") return env[name]
+  const want = name.toUpperCase()
+  let found
+  for (const [key, value] of Object.entries(env)) {
+    if (value && key.toUpperCase() === want) found = value
+  }
+  return found
+}
+
+// Compare with the Windows rules when the host is Windows, including under a
+// test that only pretends to be. Drive-letter case and slash direction are
+// the same path; POSIX path.resolve is not.
+function pathApi() {
+  return process.platform === "win32" ? path.win32 : path
+}
+
+function pathKey(value) {
+  const resolved = pathApi().resolve(String(value))
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
+function samePath(left, right) {
+  if (!left || !right) return false
+  return pathKey(left) === pathKey(right)
+}
+
+function pathInside(parent, child) {
+  if (!parent || !child) return false
+  const paths = pathApi()
+  const rel = paths.relative(pathKey(parent), pathKey(child))
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${paths.sep}`) && !paths.isAbsolute(rel))
+}
+
+// os.tmpdir() is not the only Temp. TEMP, TMP, and %LOCALAPPDATA%\Temp can
+// name the same folder (an 8.3 short path) or another one AppLocker blocks.
+function tempRoots(tmp) {
+  const local = windowsEnv("LOCALAPPDATA")
+  return [tmp, windowsEnv("TEMP"), windowsEnv("TMP"), local && pathApi().join(local, "Temp")].filter(Boolean)
+}
+
+function insideTemp(dir, roots) {
+  return roots.some((root) => pathInside(root, dir))
+}
+
+// os.tmpdir() first when it is ASCII, so a Temp directory that accepts the
+// write still builds there in one shot. A non-ASCII tmp (os.tmpdir() under a
+// Chinese user name) is not a build cwd: Bun mis-reads that path (#1097).
+// The shared nc.exe cache still lives under tmp. What follows is an ASCII
+// directory outside every Temp root: Bun's compile writes a ~115MB copy of
+// itself in the cwd and re-reads it as a PE, and Temp can reject that write
+// (#1428). A non-ASCII LOCALAPPDATA stays out; that path cannot hold the
+// Bun copy either (#1097).
+function windowsNcBuildBases(tmp) {
+  const roots = tempRoots(tmp)
+  const bases = []
+  if (asciiPath(tmp)) bases.push(tmp)
+  for (const dir of [windowsEnv("LOCALAPPDATA"), windowsEnv("PUBLIC"), windowsEnv("ProgramData")]) {
+    if (!dir || !asciiPath(dir) || insideTemp(dir, roots)) continue
+    if (bases.some((have) => samePath(have, dir))) continue
+    bases.push(dir)
+  }
+  return bases
+}
+
+// Copying the runtime into Temp is what AppLocker blocks, including when
+// Temp's path is an ASCII 8.3 short name. Outside Temp first; Temp last.
+function runtimeCopyBases(bases, tmp) {
+  const roots = tempRoots(tmp)
+  const outside = []
+  const inside = []
+  for (const base of bases) {
+    if (!asciiPath(base)) continue
+    if (insideTemp(base, roots)) inside.push(base)
+    else outside.push(base)
+  }
+  return outside.concat(inside)
+}
+
+function ncBuildFailureOf(outcome, cwd, timeoutMs) {
+  const said = String(outcome.stderr || outcome.stdout || outcome.err?.message || "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ")
+  const how = outcome.timedOut
+    ? `timed out after ${timeoutMs / 1000}s`
+    : outcome.signal
+      ? `exited with signal ${outcome.signal}`
+      : !outcome.err && outcome.code === 0
+        ? "wrote no nc.exe"
+        : `exited with ${outcome.code ?? "an error"}`
+  return `bun build ${how}${said ? `: ${said.slice(0, 300)}` : ""} (cwd ${cwd})`
+}
+
 async function isFileWithBytes(file) {
   try {
     const stat = await fs.promises.stat(file)
@@ -1387,48 +1515,121 @@ async function windowsNcDir() {
     await fs.promises.utimes(exe, now, now).catch(() => {})
     return dir
   }
-  const build = await fs.promises.mkdtemp(path.join(tmp, WINDOWS_NC_BUILD_PREFIX))
-  let copy = null
-  let copyBase = null
+  const roots = tempRoots(tmp)
+  const bases = windowsNcBuildBases(tmp)
+  const temps = []
+  const used = new Set([tmp])
+  let built = false
   try {
     let runtime = process.execPath
+    const copyFailed = new Map()
     if (!asciiPath(runtime)) {
       // Bun's compile reads its own path one byte to one UTF-16 unit, so a
       // runtime under a non-ASCII folder (a Chinese user name) fails with
       // "failed to copy bun executable into temporary file: ENOENT" (#1097).
-      // A copy of it in an ASCII-only folder builds the same nc.exe.
-      const base = [tmp, process.env.PUBLIC, process.env.ProgramData]
-        .find(dir => dir && asciiPath(dir))
-      if (!base) {
+      // A copy of it in an ASCII-only folder builds the same nc.exe. The copy
+      // has its own directory, so a failed Temp build can be removed without
+      // taking the runtime with it. Prefer a folder outside Temp: an 8.3
+      // short Temp is ASCII but AppLocker still blocks the 115MB copy there,
+      // and a read-only PUBLIC has to fall through to the next candidate.
+      const copies = runtimeCopyBases(bases, tmp)
+      if (!copies.length) {
         ncBuildFailure = "Bun is under a non-ASCII folder and there is no ASCII-only folder to copy it to"
         return null
       }
-      copyBase = base
-      copy = base === tmp ? build : await fs.promises.mkdtemp(path.join(base, WINDOWS_NC_BUILD_PREFIX))
-      runtime = path.join(copy, path.win32.basename(process.execPath))
-      await fs.promises.copyFile(process.execPath, runtime)
+      let copyError
+      for (const ascii of copies) {
+        try {
+          const copy = await fs.promises.mkdtemp(path.join(ascii, WINDOWS_NC_BUILD_PREFIX))
+          temps.push(copy)
+          const next = path.join(copy, path.win32.basename(process.execPath))
+          await fs.promises.copyFile(process.execPath, next)
+          runtime = next
+          used.add(ascii)
+          copyError = null
+          break
+        } catch (error) {
+          copyFailed.set(ascii, error)
+          copyError = error
+        }
+      }
+      if (copyError) {
+        ncBuildFailure = `could not copy Bun out of its non-ASCII folder: ${copyError?.message || copyError}`
+        return null
+      }
     }
-    const spec = windowsNcBuild(runtime, MCP_SERVER_PATH, path.join(build, "nc.exe"))
-    const { err, code, timedOut, stdout, stderr } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
-    if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) {
-      const said = String(stderr || stdout || err?.message || "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ")
-      ncBuildFailure = `bun build ${timedOut ? `timed out after ${WINDOWS_NC_BUILD_TIMEOUT_MS / 1000}s` : !err && code === 0 ? "wrote no nc.exe" : `exited with ${code ?? "an error"}`}${said ? `: ${said.slice(0, 300)}` : ""}`
+    if (!bases.length) {
+      ncBuildFailure = "no ASCII-only folder available to build nc.exe"
       return null
     }
-    await fs.promises.mkdir(dir, { recursive: true })
-    await fs.promises.writeFile(path.join(dir, WINDOWS_NC_RUNTIME_FILE), runtimeKey).catch(() => {})
-    try {
-      await fs.promises.rename(path.join(build, "nc.exe"), exe)
-    } catch (error) {
-      // Another host built it at the same time; theirs is as good.
-      if (!await isFileWithBytes(exe)) throw error
+    const timeoutMs = configuredTimeout("AGY_BRIDGE_NC_BUILD_TIMEOUT_MS", WINDOWS_NC_BUILD_TIMEOUT_MS)
+    const failures = []
+    for (const base of bases) {
+      if (copyFailed.has(base)) {
+        const error = copyFailed.get(base)
+        failures.push(`could not use build dir in ${base}: ${error?.message || error}`)
+        continue
+      }
+      used.add(base)
+      let build
+      try {
+        build = await fs.promises.mkdtemp(path.join(base, WINDOWS_NC_BUILD_PREFIX))
+      } catch (error) {
+        // This directory cannot hold a build. That is not a compile, so the
+        // next ASCII candidate is still worth a try.
+        failures.push(`could not create build dir in ${base}: ${error?.message || error}`)
+        continue
+      }
+      temps.push(build)
+      const spec = windowsNcBuild(runtime, MCP_SERVER_PATH, path.join(build, "nc.exe"))
+      // exitEnds: a non-zero exit is the Temp policy failing in about a
+      // second. Waiting out "close" spends the whole timeout (#1428).
+      const outcome = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs, exitEnds: true })
+      const produced = !outcome.err && !outcome.timedOut && outcome.code === 0 && await isFileWithBytes(path.join(build, "nc.exe"))
+      if (!produced) {
+        failures.push(ncBuildFailureOf(outcome, build, timeoutMs))
+        // A hang, a spawn error, or a failure whose cwd is already outside
+        // every Temp root will not be fixed by another directory.
+        if (outcome.timedOut || outcome.err || !insideTemp(base, roots)) break
+        continue
+      }
+      await fs.promises.mkdir(dir, { recursive: true })
+      await fs.promises.writeFile(path.join(dir, WINDOWS_NC_RUNTIME_FILE), runtimeKey).catch(() => {})
+      const producedExe = path.join(build, "nc.exe")
+      try {
+        await fs.promises.rename(producedExe, exe)
+      } catch {
+        // Another host built it at the same time; theirs is as good.
+        // rename across volumes (EXDEV) still keeps the exe this build wrote,
+        // but the publish has to be atomic on the cache's own volume.
+        if (!await isFileWithBytes(exe)) {
+          const staged = path.join(dir, `.nc-${process.pid}-${randomBytes(4).toString("hex")}.tmp`)
+          try {
+            await fs.promises.copyFile(producedExe, staged)
+            try {
+              await fs.promises.rename(staged, exe)
+            } catch (renameError) {
+              if (!await isFileWithBytes(exe)) throw renameError
+            }
+          } finally {
+            await fs.promises.unlink(staged).catch(() => {})
+          }
+        }
+      }
+      built = true
+      break
+    }
+    if (!built) {
+      ncBuildFailure = failures.join("; ") || "bun build wrote no nc.exe"
+      return null
     }
   } finally {
-    fs.promises.rm(build, { recursive: true, force: true }).catch(() => {})
-    if (copy && copy !== build) fs.promises.rm(copy, { recursive: true, force: true }).catch(() => {})
+    // A scanner can still hold the 115MB tree for a moment (EBUSY/EPERM).
+    for (const file of temps) {
+      fs.promises.rm(file, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {})
+    }
   }
-  sweepWindowsNcDirs(tmp, path.basename(dir), runtimeKey).catch(() => {})
-  if (copyBase && copyBase !== tmp) sweepWindowsNcDirs(copyBase, path.basename(dir), runtimeKey).catch(() => {})
+  for (const base of used) sweepWindowsNcDirs(base, path.basename(dir), runtimeKey).catch(() => {})
   return dir
 }
 
