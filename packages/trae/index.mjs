@@ -416,14 +416,42 @@ const REREAD_MS = 5 * 60 * 1000
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
 // smaller one than DeepSeek V4.1 Flash's (ARNO on magpie's Discord)
-// cost names the model's price so magpie can write a cost_usd beside the
-// credits a turn spent. Trae bills in credits (the `rate` from
-// traeRateOf), not per-token dollars, but a model with cost: null is left
-// unpriced by magpie: its usage has an empty cost and no currency, while
-// workbuddy's models carry a cost object and get a cost_usd column. Give
-// every Trae model the same shape; magpie prices the turn from the credits
-// reported as usage.credit. The zeros say no per-token USD price is known.
-const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] }, cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } }
+// PRICES are the models.dev per-million-token prices in USD, under the bare
+// model name (the -max variants are these same models at a longer output
+// limit). magpie writes a request's cost_usd by matching the model it served
+// to models.dev; a Trae name like `deepseek-v4.1-flash-max` isn't a
+// models.dev id, so without a price on the model the cost is left blank (as
+// it was for every Trae row). Put the price of the matching models.dev model
+// on each Trae model's cost, in magpie's {input, output, cache} shape, so a
+// turn gets a dollar cost beside the credits Trae reports. A name with no
+// models.dev entry keeps zero: no price is invented.
+const PRICES = {
+  "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cache_read: 0.003 },
+  "deepseek-v4-flash": { input: 0.3, output: 1.2, cache_read: 0.006, cache_write: 0.1125 },
+  "deepseek-v4-pro": { input: 1.32, output: 3.96, cache_read: 0.044 },
+  "glm-5.3-flash": { input: 0.15, output: 0.5, cache_read: 0.03 },
+  "glm-5.3-flashx": { input: 0.37, output: 1.25, cache_read: 0.075 },
+  "glm-5.3": { input: 0.7, output: 2.2, cache_read: 0.13 },
+  "glm-5.2": { input: 1.05, output: 3.3, cache_read: 0.195 },
+  "glm-5.1": { input: 1.4, output: 4.4, cache_read: 0.26 },
+  "glm-5": { input: 1, output: 3.2, cache_read: 0.2 },
+  "glm-4.7": { input: 0.6, output: 2.2, cache_read: 0.11 },
+  "glm-4.6": { input: 0.6, output: 2.2, cache_read: 0.11 },
+  "kimi-k2.7-code": { input: 0.95, output: 4, cache_read: 0.19 },
+  "kimi-k3.1-pro": { input: 2, output: 10, cache_read: 0.2 },
+  "kimi-k2.6": { input: 0.95, output: 4, cache_read: 0.16 },
+}
+// priceOf finds a models.dev price for a Trae model name: the name itself,
+// its -max twin, or a DeepSeek-V4-Pro-Official style alias. It returns the
+// magpie cost shape, or the zero shape when the name has no listed price.
+function priceOf(id) {
+  const key = String(id ?? "").toLowerCase().replace(/-max$/, "")
+  const alias = key.startsWith("deepseek-v4-pro-official") ? "deepseek-v4-pro" : key.startsWith("deepseek-v4-flash-official") ? "deepseek-v4-flash" : key
+  const p = PRICES[key] ?? PRICES[alias]
+  return { input: p?.input ?? 0, output: p?.output ?? 0, cache: { read: p?.cache_read ?? 0, write: p?.cache_write ?? 0 } }
+}
+const ZERO_COST = { input: 0, output: 0, cache: { read: 0, write: 0 } }
+const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] }, cost: ZERO_COST }
 // a site's fallback list names only what differs from MODEL: the defaults go
 // in here, where MODEL is defined (a site table above can't spread it)
 for (const site of Object.values(SITES)) {
@@ -4271,6 +4299,9 @@ const makePlugin = (site) => async ({ client }) => {
       // model in the fallback table would lose the levels its entry names.
       variants: Object.keys(was.variants ?? {}).length ? was.variants : variantsOf(levelsOf(m)),
       ...traeRateOf(m),
+      // models.dev price, so magpie can write a cost_usd for this model's
+      // turns (the -max name alone has no entry in models.dev)
+      cost: priceOf(id),
     }
   }
 

@@ -160,6 +160,14 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     named no cache read (0.2.47). A cache count the stream did name wins;
     a failed lookup leaves the answer unchanged. The host is
     `TRAE_USAGE_API_HOST` when set, else the realm's own.
+    Each model also carries the matching models.dev price as `cost`
+    (`{input, output, cache}` in USD per million tokens, 0.2.51). magpie
+    writes a request's `cost_usd` from that price and the tokens served:
+    a Trae name like `deepseek-v4.1-flash-max` has no models.dev entry of
+    its own, so without it the cost column was blank. The `-max` twin uses
+    its base model's price; a name with no models.dev price stays at zero.
+    Trae still bills in credits (`rate`), which the `credit` reading above
+    reports; the dollar cost is the catalog price, not a conversion of it.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,
