@@ -1,0 +1,29 @@
+{
+  "name": "@magpie-community/opencode-wps-comate-auth",
+  "version": "0.1.3",
+  "description": "接入本机已登录的 WPS Comate（金山办公）桌面端，把它的模型作为 OpenAI 兼容 provider 提供，并在额度卡上显示今日、本对话与总计智点消耗。 / WPS Comate (Kingsoft Office) desktop app on this machine: serves its models as an OpenAI-compatible provider, with today / this conversation / all-time credits on the usage card.",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "wps",
+    "comate",
+    "kingsoft"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/wps-comate"
+  }
+}
