@@ -416,7 +416,14 @@ const REREAD_MS = 5 * 60 * 1000
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
 // smaller one than DeepSeek V4.1 Flash's (ARNO on magpie's Discord)
-const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] } }
+// cost names the model's price so magpie can write a cost_usd beside the
+// credits a turn spent. Trae bills in credits (the `rate` from
+// traeRateOf), not per-token dollars, but a model with cost: null is left
+// unpriced by magpie: its usage has an empty cost and no currency, while
+// workbuddy's models carry a cost object and get a cost_usd column. Give
+// every Trae model the same shape; magpie prices the turn from the credits
+// reported as usage.credit. The zeros say no per-token USD price is known.
+const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] }, cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } }
 // a site's fallback list names only what differs from MODEL: the defaults go
 // in here, where MODEL is defined (a site table above can't spread it)
 for (const site of Object.values(SITES)) {

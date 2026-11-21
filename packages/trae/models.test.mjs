@@ -47,6 +47,20 @@ test("a model the fallback table doesn't have is served with capabilities", asyn
   expect(m.variants).toEqual({})
 })
 
+test("every model carries a cost shape so magpie writes a cost beside its credits", async () => {
+  const ms = await live([
+    offTable,
+    { config_name: "glm-5", usage: "chat_completion", display_config: { display_name: "GLM-5" } },
+  ])
+  for (const m of Object.values(ms)) {
+    // a model with cost: null is left unpriced by magpie: its usage carries
+    // credits but an empty cost_usd. Workbuddy's models carry this shape and
+    // get a cost_usd column; Trae's must too (its per-turn charge is the
+    // credits reported as usage.credit).
+    expect(m.cost).toEqual({ input: 0, output: 0, cache: { read: 0, write: 0 } })
+  }
+})
+
 test("the fallback table stays the authority where it has an entry", async () => {
   // what magpie's host hands the hook for a model of the config: the
   // fallback table's flat fields already spread into capabilities
