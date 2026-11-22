@@ -262,7 +262,8 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
   "There was a network issue connecting to the server" 和 "Your AI credits balance is
   too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
-  重试中的提示行会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
+  重试中的提示行、上游流断开后重试前写的 "⚠ The stream was interrupted. Please continue the
+  task you were working on." 都会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
   （"Your previous response was cut off because it exceeded the output token limit"、
   它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
   输出。agy 1.5.12 遇到格式错误的函数调用时重试的三行提示（"Your previous response

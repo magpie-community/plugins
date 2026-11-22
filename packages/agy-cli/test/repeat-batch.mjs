@@ -2469,3 +2469,33 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+// agy writes this line into the reply when its upstream stream broke, then
+// asks the model again in the same turn. Codex stored it as the assistant's
+// own message, byte for byte as below, and the next request ended with it
+// (plugins#1052, #1319).
+const STREAM_BANNER = "\n⚠ The stream was interrupted. Please continue the task you were working on.\n"
+
+test("plugins#1052: agy's stream-interrupted banner never reaches the client; the retry's reply does", async () => {
+  const answer = "the retry's answer"
+  for (const [chunks, want] of [
+    [["Let me look." + STREAM_BANNER + answer], "Let me look." + answer],
+    [[STREAM_BANNER, answer], answer],
+    [["Let me look.\n⚠ The stream was ", "interrupted. Please continue the task", " you were working on.\n", answer], "Let me look." + answer],
+    [["⚠ The stream", " was interrupted. Please continue the task you were working on.\n" + answer], answer],
+    [["Let me look." + STREAM_BANNER + EOF_ATTEMPT(1).slice(1) + "\n" + answer], "Let me look." + answer],
+  ]) {
+    const parsed = await replyOf(chunks, "stream-banner")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), `no banner reaches the client: ${JSON.stringify(chunks)}`)
+  }
+})
+
+test("plugins#1052: the model quoting the stream-interrupted banner mid-line keeps it", async () => {
+  const chunks = ["agy printed `⚠ The stream was interrupted. Please continue the task you were working on.`", " and retried."]
+  const parsed = await replyOf(chunks, "stream-banner-quoted")
+  assert.equal(parsed.error, null)
+  assert.equal(replyText(parsed), chunks.join(""))
+})

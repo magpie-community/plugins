@@ -372,7 +372,8 @@ off unless you turn it on.
   1.5.8's "There was a network issue connecting to the server" and "Your AI
   credits balance is too low to continue." end the turn the same way (the
   latter as a rate limit), and its `⚠ API error (attempt N)` retry lines are
-  dropped. So are the three lines agy writes into the reply when its own output
+  dropped, as is "⚠ The stream was interrupted. Please continue the task you
+  were working on.", which agy writes before it retries a broken stream. So are the three lines agy writes into the reply when its own output
   cap triggers a retry ("Your previous response was cut off because it exceeded
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.

@@ -178,6 +178,11 @@ const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been 
 // It is agy's, not the model's, and the turn goes on (#1124).
 const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
 const RETRY_CORE = RETRY_MARKER.trim()
+// agy writes this line into the reply when its upstream stream broke, then
+// asks the model again in the same turn. Codex stored it as the assistant's
+// own message and a retry ended with it (plugins#1052, #1319). It is agy's.
+const STREAM_MARKER = "\n⚠ The stream was interrupted. Please continue the task you were working on.\n"
+const STREAM_CORE = STREAM_MARKER.trim()
 // When agy's retry comes back empty too, agy ends the turn on end_turn with
 // nothing but thinking, and a client takes that as a finished reply that
 // said nothing: billion-context's "the turn degenerated again after the
@@ -209,9 +214,9 @@ const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 // agy's lines as they start a reply or a line, with no newline before them:
 // a chunk that ends on the start of one is held (plugins#1454).
-const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
+const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, STREAM_CORE, NOTICE_CORE]
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, ...QUOTA_MARKERS.map((marker) => marker.length), BUSY_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, ...QUOTA_MARKERS.map((marker) => marker.length), BUSY_MARKER.length, STREAM_MARKER.length,
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1861,7 +1866,7 @@ class Turn {
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
       if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKERS.some((marker) => marker.startsWith(tail)) ||
-        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
+        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || STREAM_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           NOTICE_MARKER.startsWith(tail) || CAP_MARKER.startsWith(tail))) ||
         (this.startsLine(text, text.length - keep) && LINE_CORES.some((core) => core.startsWith(tail)))) {
         return text.length - keep
@@ -1959,8 +1964,9 @@ class Turn {
         cut(start, cap.end)
         continue
       }
-      const attempt = !text.startsWith(RETRY_CORE, at)
-      let end = attempt ? text.indexOf("\n", at) : at + RETRY_CORE.length
+      const fixed = [RETRY_CORE, STREAM_CORE].find((core) => text.startsWith(core, at))
+      const attempt = !fixed
+      let end = attempt ? text.indexOf("\n", at) : at + fixed.length
       if (end < 0) end = text.length
       if (end === text.length && !final) {
         // agy waits before its next try with the line still open
@@ -1969,7 +1975,7 @@ class Turn {
         this.openBanner = start
         return text
       }
-      if (!attempt) this.invalidOutput = this.invalidOutputSeen = true
+      if (fixed === RETRY_CORE) this.invalidOutput = this.invalidOutputSeen = true
       if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
       if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
@@ -3437,7 +3443,7 @@ function capNoticeEnd(text, at, final) {
 
 // Where the next retry banner of either kind starts, from `from` on.
 function nextBanner(text, from) {
-  const found = [RETRY_CORE, ATTEMPT_CORE, NOTICE_CORE]
+  const found = [RETRY_CORE, STREAM_CORE, ATTEMPT_CORE, NOTICE_CORE]
     .map((core) => text.indexOf(core, from))
     .filter((at) => at >= 0)
   return found.length ? Math.min(...found) : -1
