@@ -2193,6 +2193,10 @@ class Proc {
     this.listWaiters = []
     this.watchers = new Set()
     this.deniedPermissions = 0
+    // How long each step of starting agy took, in ms, for the session row
+    // of the bridge's events (initialize, session/new, the model's options)
+    this.phases = {}
+    this.sessionPrompts = 0
     allProcs.add(this)
   }
 
@@ -2209,9 +2213,11 @@ class Proc {
     this.openingText = openingTextOf(opts.messages?.[0])
     this.openingImages = openingImagesOf(opts.messages?.[0])
     this.resumeFrom = opts.resume || null
+    this.stateless = statelessRequest(opts)
   }
 
   async start() {
+    this.phases = {}
     await this.#spawn()
     await this.#withStartTimeout(async () => {
       await this.#initialize()
@@ -2232,10 +2238,47 @@ class Proc {
     this.#assign(convKey, opts)
     this.spareKey = null
     this.lastUsed = Date.now()
+    this.phases = {}
+    await this.#withStartTimeout(() => this.#openSession())
+  }
+
+  // A stateless request (statelessRequest) takes an idle agy that served
+  // one before and opens its own session there. agy boots its backend on a
+  // process's first session/new (it signs in and asks Google for the
+  // account, models and settings: ~3s here, far longer over a slow
+  // proxy); a later session/new in the same process takes milliseconds.
+  // The session the agy had is closed: its request was answered, and a
+  // follow-up to it replays its history in a session of its own, as after
+  // any lost session.
+  async reuse(convKey, opts) {
+    const previous = this.sessionId
+    this.#assign(convKey, opts)
+    this.sessionId = null
+    this.currentModel = null
+    this.configOptions = []
+    this.currentSelectionKey = null
+    this.instructionsInSession = false
+    this.resumed = false
+    this.hasSentFirstTurn = false
+    this.historyInvalid = false
+    this.unsentPrompt = null
+    this.expectedMessages = null
+    this.omittedHistoryTokens = 0
+    this.lastCacheRatio = undefined
+    this.pendingFlattenedTurn = undefined
+    this.deniedPermissions = 0
+    this.inputTokenScale = 1
+    this.lastUsed = Date.now()
+    this.phases = {}
+    if (previous && this.closable) {
+      // agy holds a closed session no longer; one it can't close stays
+      this.conn.request("session/close", { sessionId: previous }, 10_000).catch(() => {})
+    }
     await this.#withStartTimeout(() => this.#openSession())
   }
 
   async #spawn() {
+    this.launchKey = await launchKey(this.agyPath, this.workDir)
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
@@ -2333,6 +2376,7 @@ class Proc {
   }
 
   async #initialize() {
+    const started = Date.now()
     const init = await this.conn.request("initialize", {
       protocolVersion: 1,
       // The plugin's own name. agy decides which models it offers this client,
@@ -2348,6 +2392,8 @@ class Proc {
       capabilities.prompt_capabilities?.image === true
     this.appendable = capabilities._meta?.antigravity?.systemPrompt?.append === true
     this.resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
+    this.closable = !!(capabilities.sessionCapabilities?.close ?? capabilities.session_capabilities?.close)
+    this.phases.initialize_ms = Date.now() - started
   }
 
   async #openSession() {
@@ -2358,6 +2404,8 @@ class Proc {
       : {}
 
     let session = null
+    this.sessionPrompts = 0
+    const opened = Date.now()
     if (this.resumeFrom && resumable) {
       try {
         session = await this.conn.request("session/resume", {
@@ -2380,11 +2428,14 @@ class Proc {
       if (!session?.sessionId) throw new Error("agy session/new returned no sessionId")
       this.sessionId = session.sessionId
     }
+    this.phases.session_ms = Date.now() - opened
     // A resumed session reports the account default; always apply the selection.
     this.currentModel = session?.models?.currentModelId ?? null
     this.configOptions = Array.isArray(session?.configOptions) ? session.configOptions : []
     inAccount(this.home, () => noteOfferedModels(this.configOptions, session?.models))
+    const configured = Date.now()
     if (this.model) await this.#setModel(this.model, this.selection, this.resumed)
+    this.phases.set_model_ms = Date.now() - configured
     if (this.tools.length) await this.#waitForToolList(this.toolsVersion)
     if (!this.toolsListed()) throw toolsUnlistedError(this.tools.length)
   }
@@ -2552,6 +2603,10 @@ class Proc {
     const turn = this.turn
     if (!turn || turn.done || turn.finalized) return
     const update = params.update ?? {}
+    if (turn.firstOutputAt == null && turn.promptSentAt != null &&
+      (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk")) {
+      turn.firstOutputAt = Date.now()
+    }
     turn.arm()
     turn.noteAcpToolUpdate(update)
     if (turn.cancelRequested) return
@@ -2741,6 +2796,8 @@ class Proc {
         promptParts = userTurnParts(promptParts)
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         turn.promptInFlight = true
+        this.sessionPrompts++
+        if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
         try {
           result = await this.conn.request("session/prompt", {
@@ -2749,6 +2806,14 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
+        }
+        if (promptNumber === 1) {
+          // how long agy took to answer, beside the session row's start-up steps
+          const now = Date.now()
+          logSessionEvent(this, this.sessionReason ?? null, {
+            ttft_ms: turn.firstOutputAt != null ? turn.firstOutputAt - turn.promptSentAt : null,
+            prompt_ms: now - turn.promptSentAt,
+          }, "prompt")
         }
         usage = turn.recordPromptUsage(promptNumber, result?.usage)
         if (turn.cancelRequested) {
@@ -3708,16 +3773,19 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // the new key (sorted, to avoid deadlock), then pick again inside those
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
+  const launch = !forceNew && isFreshConversation && statelessRequest(opts)
+    ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
       if (!forceNew && !pool.get(convKey)) {
-        const candidate = isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)
+        const candidate = (isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)) ??
+          findStatelessDonor(opts, launch)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
-      const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked)
+      const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked, launch)
       return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
     })
     if (outcome.retry) {
@@ -3729,7 +3797,7 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
 }
 
 // Caller holds the conversation lock; recovery must not acquire it recursively.
-async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey])) {
+async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey]), launch = null) {
   await evictIdle()
   let existing = pool.get(convKey)
   if (existing?.turn?.cancelRequested) {
@@ -3827,9 +3895,18 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       // as drop_live logs it (yetone/magpie#7223)
       if (why === "history") historyDiff = firstHistoryDiff(existing.expectedMessages, matchedHistory)
     }
+    if (!forceNew && launch && statelessRequest(opts) &&
+      statelessDonor(existing, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)) {
+      // the same stateless request again: its agy answers it in a new session
+      return await reuseStateless(existing, key, opts, why)
+    }
     existing.retiring = true
     dropFromPool(existing)
     await existing.stop().catch(() => {})
+  }
+  if (!forceNew && isFreshConversation && launch) {
+    const donor = findStatelessDonor(opts, launch)
+    if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
   const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
@@ -3862,8 +3939,36 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
     ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
+    ...proc.phases,
   })
   return { proc, history: opts.history }
+}
+
+// Open a stateless request's session in an idle agy that answered one
+// (findStatelessDonor), instead of starting another: agy's first session/new
+// boots its backend and takes seconds, a later one milliseconds. The
+// donor's conversation keeps no live session: a follow-up to it replays its
+// history, as after any lost session.
+async function reuseStateless(donor, key, opts, why) {
+  const previousKey = donor.convKey
+  dropFromPool(donor)
+  // its session is closed, and resuming it elsewhere would share this agy's folder
+  unpark(previousKey)
+  try {
+    await donor.reuse(key, opts)
+  } catch (error) {
+    donor.retiring = true
+    await donor.stop().catch(() => {})
+    throw error
+  }
+  pool.set(key, donor)
+  donor.sessionReason = why
+  logSessionEvent(donor, why, {
+    fresh: true, resumed: false, spare: false, parked: false, reused: true,
+    history: Array.isArray(opts.history) ? opts.history.length : null,
+    ...donor.phases,
+  })
+  return { proc: donor, history: opts.history }
 }
 
 // Bounded, content-free events: never log prompts, arguments, results or tool IDs.
@@ -4650,6 +4755,37 @@ function findRemaskedProc(convKey, opts) {
     found = proc
   }
   return found
+}
+
+// A request that needs nothing of agy's but one answer: no stream to hold,
+// no tools, no tool results and no earlier turns (an image described, a
+// title written). Any agy of the same launch can open a session for it.
+function statelessRequest(opts) {
+  return !!opts && opts.nonstream === true && !opts.tools?.length && !opts.hasToolResults &&
+    Array.isArray(opts.history) && !opts.history.length
+}
+
+// An idle agy whose only turn answered a stateless request, for another
+// stateless request to open its session in (Proc.reuse); the longest idle
+// first. Only one whose session holds that single turn: an agy a
+// conversation went on in is never taken.
+function findStatelessDonor(opts, launch) {
+  if (!statelessRequest(opts) || !launch || process.env.AGY_BRIDGE_STATELESS_REUSE === "0") return null
+  const userId = opts.userId || ""
+  const sessionScope = opts.sessionScope || ""
+  let best = null
+  for (const proc of pool.values()) {
+    if (!statelessDonor(proc, launch, userId, sessionScope, opts.workDir)) continue
+    if (!best || proc.lastUsed < best.lastUsed) best = proc
+  }
+  return best
+}
+
+function statelessDonor(proc, launch, userId, sessionScope, workDir) {
+  return !!proc && proc.stateless && !proc.dead && !proc.stopping && !proc.retiring && !proc.turn &&
+    !proc.resumed && proc.hasSentFirstTurn && proc.sessionPrompts === 1 && !!proc.sessionId &&
+    proc.launchKey === launch && (proc.userId || "") === userId &&
+    (proc.sessionScope || "") === sessionScope && proc.workDir === workDir
 }
 
 function findLiveContinuedProc(opts) {
