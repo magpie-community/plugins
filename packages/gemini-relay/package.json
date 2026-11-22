@@ -1,5 +1,5 @@
 {
-  "name": "@nonamelane/magpie-gemini-web-relay",
+  "name": "@nonamelane/magpie-gemini-relay",
   "version": "0.1.0",
   "type": "module",
   "main": "./opencode.mjs",

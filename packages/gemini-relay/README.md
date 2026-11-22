@@ -1,4 +1,4 @@
-# Gemini 网页版中继（gemini-web-relay）
+# Gemini 网页版中继（gemini-relay）
 
 把 Gemini 网页版（gemini.google.com）接进 OpenCode 和
 [magpie](https://usemagpie.ai)：请求由一个**常驻的真实浏览器中继**代发——
@@ -44,7 +44,7 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 
 ## 登录方式
 
-本插件**独立登录**：有自己的浏览器配置根目录（`gemini-web-relay-browser`），
+本插件**独立登录**：有自己的浏览器配置根目录（`gemini-relay-browser`），
 不依附、不复用任何其他插件的登录状态。
 
 | 方式 | 做什么 | 给什么 |
@@ -54,12 +54,12 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 | **不登录使用（访客）** | 用无登录的独立浏览器；网页版也回答访客 | 仅 `gemini-auto`（经由 Auto，多半是较轻的模型） |
 
 **Profile 边界**：与 moss/quick 插件同规则——只用插件自己的专用 profile
-（`%LOCALAPPDATA%/magpie/gemini-web-relay-browser`），绝不碰日常浏览器，
+（`%LOCALAPPDATA%/magpie/gemini-relay-browser`），绝不碰日常浏览器，
 也不读写其他插件的目录。
 
 ## OpenAI 兼容接口
 
-- `model`：上表之一（可带 `gemini-web-relay/` 前缀）
+- `model`：上表之一（可带 `gemini-relay/` 前缀）
 - `stream: true` → SSE：`reasoning_content` 先行、正文随后、`[DONE]` 结束；
   最后一个 finish 块带 usage（token 数按字符数 ÷3 估算，网页端不回报计数）
 - `stream: false` → 聚合 JSON：正文在 `choices[0].message.content`，思考在
@@ -73,11 +73,11 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 ## 自检
 
 ```bash
-bun test packages/gemini-web-relay   # 离线测试（假 ask，不碰网络）
-bun scripts/check.mjs gemini-web-relay
-node packages/gemini-web-relay/selftest.mjs   # 端到端，需要真实登录态
+bun test packages/gemini-relay   # 离线测试（假 ask，不碰网络）
+bun scripts/check.mjs gemini-relay
+node packages/gemini-relay/selftest.mjs   # 端到端，需要真实登录态
 ```
 
 ## 包名
 
-`@nonamelane/magpie-gemini-web-relay`（自用，未注册进 magpie 市场）。
+`@nonamelane/magpie-gemini-relay`（自用，未注册进 magpie 市场）。

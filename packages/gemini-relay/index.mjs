@@ -10,8 +10,8 @@ import { GeminiError, MODELS, RelaySession, thinkingByte } from "./relay.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
 
-const ID = "gemini-web-relay"
-const BASE = "https://gemini-web-relay.invalid/v1"
+const ID = "gemini-relay"
+const BASE = "https://gemini-relay.invalid/v1"
 // the anonymous account: no cookies, the app serves what it serves visitors
 const ANONYMOUS = "anonymous"
 // visitors get the app's Auto only (the old gemini-web plugin's way)
@@ -193,13 +193,13 @@ export function createPlugin({ profileDir, headless = true } = {}) {
         const session = sessionFor(auth)
         return {
         baseURL: BASE,
-        apiKey: "gemini-web-relay",
+        apiKey: "gemini-relay",
         async fetch(input, init = {}) {
           const request = input instanceof Request ? new Request(input, init) : null
           const url = new URL(request ? request.url : String(input))
           const method = request ? request.method : init.method ?? "GET"
           if (url.origin !== new URL(BASE).origin || !url.pathname.endsWith("/chat/completions") || method !== "POST")
-            return json(404, "gemini-web-relay 只提供 chat/completions。", "not_found")
+            return json(404, "gemini-relay 只提供 chat/completions。", "not_found")
           let body
           try {
             body = JSON.parse(request ? await request.text() : String(init.body ?? "{}"))
@@ -207,7 +207,7 @@ export function createPlugin({ profileDir, headless = true } = {}) {
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
           const table = accountKey(auth) === ANONYMOUS ? VISITOR : MODELS
-          const model = String(body.model ?? "gemini-auto").replace(/^gemini-web-relay\//, "")
+          const model = String(body.model ?? "gemini-auto").replace(/^gemini-relay\//, "")
           let m = table[model] ?? (accountKey(auth) === ANONYMOUS ? undefined : MODELS[model])
           if (!m) return json(404, `没有模型 ${model}。可用：${Object.keys(table).join("、")}。`, "model_not_found")
           // 4 Neon carries its thinking depth as the request's reasoning
@@ -255,7 +255,7 @@ function wrapAsk(session, prompt, model, onUpdate, signal, strictModel = false) 
 }
 
 export default async function GeminiWebRelay({ client, options } = {}) {
-  const dir = options?.profileDir || process.env.GEMINI_WEB_RELAY_PROFILE || latestProfile()
+  const dir = options?.profileDir || process.env.GEMINI_RELAY_PROFILE || latestProfile()
   return createPlugin({ profileDir: dir, headless: options?.headless ?? true })
 }
 

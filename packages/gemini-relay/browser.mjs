@@ -25,9 +25,9 @@ const NEED = ["__Secure-1PSID", "__Secure-1PSIDTS"]
 // through this plugin's window lives here, and nothing outside it is read
 // or written.
 export function profileRoot(env = process.env, platform = process.platform) {
-  if (env.GEMINI_WEB_RELAY_PROFILE_ROOT) return env.GEMINI_WEB_RELAY_PROFILE_ROOT
-  if (platform === "win32") return join(env.LOCALAPPDATA || env.APPDATA || tmpdir(), "magpie", "gemini-web-relay-browser")
-  return join(env.XDG_CONFIG_HOME || join(env.HOME || tmpdir(), ".config"), "magpie", "gemini-web-relay-browser")
+  if (env.GEMINI_RELAY_PROFILE_ROOT) return env.GEMINI_RELAY_PROFILE_ROOT
+  if (platform === "win32") return join(env.LOCALAPPDATA || env.APPDATA || tmpdir(), "magpie", "gemini-relay-browser")
+  return join(env.XDG_CONFIG_HOME || join(env.HOME || tmpdir(), ".config"), "magpie", "gemini-relay-browser")
 }
 
 // googleCookies keeps the cookies a request to gemini.google.com carries.
@@ -104,7 +104,7 @@ async function cdpOnce(port, method, params = {}, timeout = 5000) {
 // reads its cookies and closes it.
 export async function openWindow(profile, url, { headless = false, browser = findChrome() } = {}) {
   if (!browser) {
-    throw Object.assign(new Error("没有找到 Chrome、Edge 或 Chromium。请先安装 Chrome，或用 GEMINI_WEB_RELAY_BROWSER 指定浏览器。"), { code: "browser_missing" })
+    throw Object.assign(new Error("没有找到 Chrome、Edge 或 Chromium。请先安装 Chrome，或用 GEMINI_RELAY_BROWSER 指定浏览器。"), { code: "browser_missing" })
   }
   mkdirSync(profile, { recursive: true, mode: 0o700 })
   const port = await freePort()
@@ -183,7 +183,7 @@ export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settl
 }
 
 export function findChrome(env = process.env) {
-  if (env.GEMINI_WEB_RELAY_BROWSER && existsSync(env.GEMINI_WEB_RELAY_BROWSER)) return env.GEMINI_WEB_RELAY_BROWSER
+  if (env.GEMINI_RELAY_BROWSER && existsSync(env.GEMINI_RELAY_BROWSER)) return env.GEMINI_RELAY_BROWSER
   const candidates = [
     join(env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
     join(env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),

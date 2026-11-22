@@ -154,9 +154,9 @@ test("the plugin's shape serves config, models and a loader fetch", async () => 
   const plugin = createPlugin()
   const cfg = { provider: {} }
   await plugin.config(cfg)
-  expect(cfg.provider["gemini-web-relay"]).toBeTruthy()
-  expect(plugin.auth.provider).toBe("gemini-web-relay")
-  expect(plugin.provider.id).toBe("gemini-web-relay")
+  expect(cfg.provider["gemini-relay"]).toBeTruthy()
+  expect(plugin.auth.provider).toBe("gemini-relay")
+  expect(plugin.provider.id).toBe("gemini-relay")
   // a visitor's catalog is the anonymous Auto only; a signed-in profile's
   // catalog is the full table
   const ms = await plugin.provider.models({}, { auth: { access: "anonymous" } })
@@ -166,15 +166,15 @@ test("the plugin's shape serves config, models and a loader fetch", async () => 
   // the loader answers with a fetch for the chat/completions route
   const opts = await plugin.auth.loader(async () => ({ type: "oauth", access: "anonymous" }))
   expect(typeof opts.fetch).toBe("function")
-  const miss = await opts.fetch("https://gemini-web-relay.invalid/v1/other", { method: "POST" })
+  const miss = await opts.fetch("https://gemini-relay.invalid/v1/other", { method: "POST" })
   expect(miss.status).toBe(404)
-  const bad = await opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+  const bad = await opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "not json",
   })
   expect(bad.status).toBe(400)
-  const unknown = await opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+  const unknown = await opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "nope", messages: [{ role: "user", content: "hi" }] }),
@@ -211,7 +211,7 @@ test("the loader's fetch answers a chat request through a stubbed ask", async ()
         { role: "user", content: "What is 17*23?" },
       ],
     }
-    const whole = await opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+    const whole = await opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...body, stream: false }),
@@ -226,7 +226,7 @@ test("the loader's fetch answers a chat request through a stubbed ask", async ()
     expect(calls[0].prompt).toContain("[System]")
 
     calls.length = 0
-    const streamed = await opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+    const streamed = await opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...body, stream: true }),
@@ -259,7 +259,7 @@ test("reasoning_effort maps to 4 Neon's thinking byte and is rejected for unknow
   }
   try {
     const ask = (extra) =>
-      opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+      opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "gemini-3.1-pro", messages: [{ role: "user", content: "hi" }], ...extra }),
