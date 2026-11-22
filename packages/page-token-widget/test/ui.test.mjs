@@ -151,13 +151,12 @@ test('the refresh button asks the service for the list of the subscriptions', as
     return { ok: true, subscriptions: [], shown: [], added: [], removed: [], hidden: [], observedAt: null };
   };
   const refresh = new Function(
-    'element', 'saveState', 'saveQueue', 'nameQueue', 'api', 'current',
+    'element', 'saveState', 'saveQueue', 'api', 'current',
     'renderSubscriptions', 'renderWidgetCard', 'hidden', 'syncHidden', 'safeError',
     `${source[0]}\nreturn refreshSubscriptions;`,
   )(
     () => null,
     () => {},
-    Promise.resolve(),
     Promise.resolve(),
     api,
     { display: {}, subscriptions: [] },
@@ -169,6 +168,28 @@ test('the refresh button asks the service for the list of the subscriptions', as
   );
   await refresh();
   assert.deepEqual(calls, ['api/v1/console/subscriptions/refresh']);
+});
+
+test('turning one account of a vendor on leaves the other accounts off', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/  const turnOn = [\s\S]*?\n  \};/);
+  assert.ok(source, 'the page has no way of turning a subscription on again');
+  const hidden = new Set(['codex', 'codex@beta', 'minimax']);
+  const turnOn = new Function('hidden', `${source[0]}\nreturn turnOn;`)(hidden);
+  const subscriptions = [
+    { id: 'codex@alpha', provider: 'codex' },
+    { id: 'codex@beta', provider: 'codex' },
+    { id: 'minimax', provider: 'minimax' },
+  ];
+  turnOn('codex@alpha', 'codex', subscriptions);
+  // The account the user turned on is not off any more, and the vendor as a
+  // whole is not off any more either. The other account of that vendor stays
+  // off: the user turned this one on, not the whole vendor.
+  assert.equal(hidden.has('codex@alpha'), false);
+  assert.equal(hidden.has('codex'), false);
+  assert.equal(hidden.has('codex@beta'), true);
+  // The other vendor is not touched.
+  assert.equal(hidden.has('minimax'), true);
 });
 
 test('a subscription that is turned off is not offered by the small widget', async () => {
@@ -349,8 +370,9 @@ test('the name of a subscription is saved while it is written', async () => {
   assert.match(script, /rename\.addEventListener\('change'/);
   // Two names that travel at the same time would each carry a map of its own,
   // and the second one would take the name of the first one with it: the
-  // service keeps the map it is given. One name waits for the one before it.
-  assert.match(script, /nameQueue = nameQueue\.then\(send, send\)/);
+  // service keeps the map it is given. A name waits in the same line as the
+  // other changes, so a save that overlaps it cannot carry a list of its own.
+  assert.match(script, /saveQueue = saveQueue\.then\(send, send\)/);
   // The rows are not drawn again when a change is saved: the order on the
   // page is the order that was sent, and drawing them again would take the
   // name that is being written out of its field.

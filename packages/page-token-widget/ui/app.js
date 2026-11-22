@@ -7,8 +7,6 @@ import { pairingLeft, remainingText } from './timing.mjs';
   // each carry a list of its own, and the one that is answered last would be
   // the one that is kept: a tick that was undone would come back.
   let saveQueue = Promise.resolve();
-  // The names are saved one after another as well, for the same reason.
-  let nameQueue = Promise.resolve();
   // The subscriptions the user has turned off. They are written down in the
 // state file, so one that is hidden does not come back by itself, not even
 // when the whole list of Magpie is followed. The list is one for the whole
@@ -56,6 +54,28 @@ import { pairingLeft, remainingText } from './timing.mjs';
       out.push(entry);
     }
     return out;
+  };
+  // Whether the list of the subscriptions is not a new one: the gateway did
+  // not name a subscription, or it named something that could not be read
+  // into a list. The numbers of the cards may be old even when the list is a
+  // new one: the gateway named the subscriptions again, and that is what was
+  // asked for.
+  const listIsOld = (reading = {}) => {
+    if (reading.answered === undefined) return Boolean(reading.stale);
+    if (reading.named === undefined) return Boolean(reading.stale);
+    return !((reading.named && reading.read) || (reading.empty && !reading.count));
+  };
+  // A subscription that is turned on again leaves the list of the turned off
+  // ones. A vendor that was turned off as a whole leaves it as well, and the
+  // other accounts of that vendor stay off: the user turned this one on, not
+  // the whole vendor.
+  const turnOn = (id, family, subscriptions) => {
+    hidden.delete(id);
+    if (!family || !hidden.has(family)) return;
+    hidden.delete(family);
+    for (const other of subscriptions || []) {
+      if ((other.provider || other.id) === family && other.id !== id) hidden.add(other.id);
+    }
   };
   // The cards the phone is shown, as the page understands them. The service
   // says it after a reading; after a change it is worked out here, so that
@@ -682,8 +702,11 @@ import { pairingLeft, remainingText } from './timing.mjs';
         });
         state.display = result.display;
       };
-      nameQueue = nameQueue.then(send, send);
-      return nameQueue;
+      // The names go in the same line as the other changes, for the same
+      // reason: the service reads its file and writes it back, and two
+      // requests that overlap would each carry a list of their own.
+      saveQueue = saveQueue.then(send, send).catch(() => {});
+      return saveQueue;
     };
     const save = async (input) => {
       const run = async () => {
@@ -757,8 +780,11 @@ import { pairingLeft, remainingText } from './timing.mjs';
             if (follow) follow.checked = (state.display?.subscriptions || []).includes('*');
             // The cards the phone is shown are worked out again: the picker
             // of the small widget offers only the cards that are really
-            // there.
-            refreshShown(state);
+            // there. The service says which ones those are: it has the floor
+            // under an empty choice, and the phone shows what the service
+            // shows.
+            if (Array.isArray(result.shown)) state.shown = result.shown;
+            else refreshShown(state);
             renderWidgetCard(state);
             // The note says which of the two ways is in use. It is written
             // again here: the rows are not drawn again, so it would still
@@ -968,16 +994,19 @@ import { pairingLeft, remainingText } from './timing.mjs';
         // all is not a gateway that failed: the list is empty, and it is
         // said to be empty.
         const nothing = reading.answered && reading.empty && !reading.count;
+        // A list that is not a new one is said to be an old one: an old list
+        // is never passed for a new one.
+        const old = listIsOld(reading);
       // A list that could not be read is an old one, and it is said so: an
       // old list is never passed for a new one. A list that was never read is
       // not an old one either: it is an unknown one.
-      note.textContent = !reading.observedAt
-        ? '还没有读过网关的订阅名单，点上面的按钮读一次。'
-          : nothing
-            ? `网关的订阅名单读于 ${when}，网关现在没有可读订阅。`
-        : reading.stale
-          ? `这是上一次读到的订阅名单（${when || '时间不详'}），网关这次没有给出新的。点上面的按钮重读一次。`
-          : `网关的订阅名单读于 ${when}，点上面的按钮重读一次。`;
+        note.textContent = nothing
+          ? `网关的订阅名单读于 ${when || '刚才'}，网关现在没有可读订阅。`
+          : !reading.observedAt
+            ? '还没有读过网关的订阅名单，点上面的按钮读一次。'
+            : old
+              ? `这是上一次读到的订阅名单（${when || '时间不详'}），网关这次没有给出新的。点上面的按钮重读一次。`
+              : `网关的订阅名单读于 ${when}，点上面的按钮重读一次。`;
     }
     list.onchange = (event) => {
       // The name of a subscription is saved by its own field.
@@ -994,14 +1023,7 @@ import { pairingLeft, remainingText } from './timing.mjs';
           // A vendor that was turned off as a whole leaves it as well, and
           // the other accounts of that vendor stay off: the user turned this
           // one on, not the whole vendor.
-          hidden.delete(input.value);
-          const family = subscription?.provider || subscription?.id;
-          if (family && hidden.has(family)) {
-            hidden.delete(family);
-            for (const other of state.subscriptions || []) {
-              if ((other.provider || other.id) === family && other.id !== input.value) hidden.add(other.id);
-            }
-          }
+          turnOn(input.value, subscription?.provider || subscription?.id, state.subscriptions);
         } else {
           hidden.add(input.value);
         }
@@ -1083,9 +1105,10 @@ import { pairingLeft, remainingText } from './timing.mjs';
       // after the reading, and a tick that was not stored yet would be taken
       // back by the drawing.
       await saveQueue;
-      // A name that is being written is waited for as well: the drawing
-      // that follows would take it out of its field.
-      await nameQueue;
+      // A name that is being written is waited for as well: it goes in the
+      // same line as the other changes, and the drawing that follows would
+      // take it out of its field.
+      await saveQueue;
       const result = await api('api/v1/console/subscriptions/refresh', { method: 'POST', body: '{}' });
       if (current) {
         if (!result.ok) {
@@ -1105,6 +1128,8 @@ import { pairingLeft, remainingText } from './timing.mjs';
             // The service says whether the gateway answered, and whether it
             // said that it holds nothing at all.
             answered: result.answered !== false,
+            named: result.named === true,
+            read: result.read !== false,
             empty: result.empty === true,
           };
           // The service keeps the list of the turned off ones: a

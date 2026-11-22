@@ -878,6 +878,11 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
         collector.setStrategy(state.settings.refreshStrategy);
         return json(response, 200, {
           display: collector.display,
+          // The cards the phone is shown, as the service projects them. The
+          // page works them out by itself too, but the service has the floor
+          // under an empty choice, and the phone shows what the service
+          // shows.
+          shown: collector.shownSubscriptions().map(card => card.id),
           refresh: consoleState().refresh,
           external: consoleState().external,
         }, allowOrigin);
@@ -905,12 +910,15 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
         const reading = collector.readingInfo();
         // A reading that failed keeps the old list in place. It is told as a
         // failure, so that an old list is never passed for a new one.
-        // A gateway that answered and said that it has no subscription at
-        // all is not a failure: it answered, and there was nothing there to
-        // read. An old list that is kept over it is still told as an old
-        // one, because that is what it is.
+        // The list is a new one when the gateway named the subscriptions
+        // itself: the numbers of the cards may be old even so, and the
+        // button was asked for the list, not for the numbers. A gateway that
+        // answered and said that it has no subscription at all is not a
+        // failure either: it answered, and there was nothing there to read.
+        // A list that the gateway did not name is the one that was stored,
+        // and it is told as an old one.
         const failed = Boolean(trouble) ||
-          (reading.stale && !(reading.answered && reading.empty && reading.count === 0));
+          !((reading.named && reading.read) || (reading.empty && reading.read));
         // What is gone is taken off the list of the turned off ones: a
         // subscription that was taken away in Magpie is not turned off any
         // more, and it does not take the place of a name that is still there.
@@ -935,7 +943,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
           // The words of the gateway are not handed to the page: they may
           // carry the name of a machine of the network. The page is told
           // what happened, and that the list below is the old one.
-          error: failed ? '网关没有给出新的订阅列表，下面还是上一次读到的。' : '',
+          error: failed ? '网关没有给出新的订阅列表。' : '',
           subscriptions: after,
           shown: collector.shownSubscriptions().map(card => card.id),
           // The list of the turned off ones as the service keeps it now.
@@ -947,6 +955,8 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
           // Whether the gateway answered, and whether it said that it holds
           // no subscription at all. The page tells the two apart.
           answered: reading.answered,
+          named: reading.named,
+          read: reading.read,
           empty: reading.empty,
         }, allowOrigin);
       }

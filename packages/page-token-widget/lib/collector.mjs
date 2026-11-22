@@ -121,11 +121,15 @@ export class Collector {
     // Magpie is not looked for again and again.
     this.todayMode = 'unknown';
     this.todayModeAt = 0;
-    // Whether the gateway answered the question of the subscriptions the
-    // last time it was asked, and whether its answer held nothing at all.
-    // A gateway that says "I have no subscriptions" is answering, and that
-    // is not a failure of the reading.
+    // The answers of the gateway about the subscriptions, kept apart: whether
+    // it answered at all, whether it named a subscription, whether its answer
+    // could be read into a list, and whether that list held nothing at all. A
+    // gateway that says "I have no subscriptions" is answering, and that is
+    // not a failure of the reading. A list that the gateway did not name is
+    // the one that was stored, and it is not a new one.
     this.quotaAnswered = false;
+    this.quotaNamed = false;
+    this.quotaRead = false;
     this.quotaEmpty = false;
   }
 
@@ -200,11 +204,17 @@ export class Collector {
     // that is busy is told apart from a gateway that says that it has
     // nothing at all.
     this.quotaAnswered = false;
+    this.quotaNamed = false;
+    this.quotaRead = false;
     this.quotaEmpty = false;
-    const cache = await this.quotaCache();
     const previous = this.snapshot.parts.quotas?.data || [];
+    const cache = await this.quotaCache();
     const resolve = answer => {
       const cachedIdentities = [];
+      // The gateway says that it has no subscription at all: an empty answer
+      // is a list of its own, and the readings that were stored are not
+      // brought back over it, because that would make an old list stand for a
+      // new one.
       const cards = resolveQuotas(answer, cache, previous, cachedIdentities);
       return { cards, rows: { data: [...(Array.isArray(answer?.data) ? answer.data : []), ...cachedIdentities] } };
     };
@@ -218,9 +228,14 @@ export class Collector {
     // The gateway answered when it did not throw. An answer that holds no
     // subscription at all is an answer as well, and not a broken reading.
     this.quotaAnswered = !failure;
+    this.quotaNamed = this.quotaAnswered && Array.isArray(rows?.data) && rows.data.length > 0;
     this.quotaEmpty = this.quotaAnswered && Array.isArray(rows?.data) && rows.data.length === 0;
     try {
-      return resolve(rows);
+      const result = resolve(rows);
+      // The answer could be read into a list. The numbers of the cards may
+      // be old, but the list of the subscriptions is the one of the gateway.
+      this.quotaRead = true;
+      return result;
     } catch (error) {
       const empty = !failure && Array.isArray(rows?.data) && rows.data.length === 0;
       if (empty && this.plainQuotaAllowed()) {
@@ -229,12 +244,19 @@ export class Collector {
           // The plain answer is the one that is used from now on, so it is
           // the one that says whether the gateway holds anything at all.
           this.quotaAnswered = true;
+          this.quotaNamed = Array.isArray(plain?.data) && plain.data.length > 0;
           this.quotaEmpty = Array.isArray(plain?.data) && plain.data.length === 0;
+          // The plain answer was asked for at a cold start, and it is the one
+          // that says what the gateway holds now.
+          if (this.quotaEmpty) this.quotaRead = true;
           try {
-            return resolve(plain);
+            const result = resolve(plain);
+            this.quotaRead = true;
+            return result;
           } catch { /* The plain answer holds nothing usable either. */ }
         }
       }
+      if (empty) this.quotaRead = true;
       // The old snapshot stays as it is: the reader keeps the last numbers it
       // saw, marked as old.
       throw failure || error;
@@ -424,14 +446,30 @@ export class Collector {
         card.accountUsage = this.usage.get(card.id) || null;
         if (card.accountUsage) card.accountUsageDay = periodDay;
       }
-      this.snapshot.parts.quotas = { observedAt, periodDay, data: fresh };
       // A gateway that answered and said that it holds no subscription at
       // all is not a gateway that failed: the list is empty because there is
       // nothing in it. An answer that holds rows and none of them can be
       // read is a failure, and the list that was there stays.
       this.snapshot.failures.quotas = !this.quotaEmpty && !fresh.some(card => !card.stale);
+      // The list is what the gateway named. A reading that fell back to the
+      // cards that were stored carries the numbers of those cards, but it is
+      // not the list of this moment: the empty answer is.
+      this.snapshot.parts.quotas = {
+        observedAt,
+        periodDay,
+        data: this.quotaEmpty ? [] : fresh,
+      };
     } else {
-      this.snapshot.failures.quotas = true;
+      // The gateway answered and said that it has no subscription at all: the
+      // list is empty, and that is what it holds now. It is written down
+      // with the time it was read, so that the page can say that it knows
+      // that there is nothing, instead of saying that it does not know.
+      if (this.quotaEmpty) {
+        this.snapshot.parts.quotas = { observedAt, periodDay, data: [] };
+        this.snapshot.failures.quotas = false;
+      } else {
+        this.snapshot.failures.quotas = true;
+      }
     }
     if (today.status === 'fulfilled') {
       this.snapshot.parts.today = { observedAt, periodDay, data: today.value };
@@ -584,6 +622,13 @@ export class Collector {
       // subscriptions. A gateway that answered and said that it has none
       // is not a gateway that failed.
       answered: this.quotaAnswered,
+      // Whether the gateway named a subscription. A list that the gateway did
+      // not name is the one that was stored, and it is not a new one.
+      named: this.quotaNamed,
+      // Whether the answer of the gateway could be read into a list. The
+      // numbers of the cards may be old even so: the list of the
+      // subscriptions is a new one all the same.
+      read: this.quotaRead,
       // Whether the answer of the gateway held no subscription at all.
       empty: this.quotaEmpty,
     };

@@ -99,10 +99,7 @@ for (const source of ['disk', 'history', 'restart']) {
       await collector.load();
     }
     if (source === 'disk') collector.quotaCache = async () => rows.map(quota => ({ quota }));
-    collector.request = async endpoint => {
-      if (endpoint.includes('quotas') && source !== 'disk') return quotaAnswer([]);
-      throw new Error('unavailable');
-    };
+    collector.request = async () => { throw new Error('unavailable'); };
     await collector.collect();
     const alpha = () => collector.overview().subscriptions.find(card => card.id === 'codex@alpha');
     assert.equal(alpha().usage?.today.requests, 40);

@@ -418,6 +418,9 @@ export function resolveQuotas(raw, cache = {}, previous = [], cachedIdentities =
   // show, so it does not count: when the gateway says nothing that can be
   // read, the reading that was stored is shown instead of nothing.
   const answered = api.size > 0;
+  // An answer without a list is not an answer about which subscriptions there
+  // are: the reading that was stored is shown instead of nothing at all. An
+  // empty array is an answer in itself — the caller carries that meaning.
   // The vendors that are looked at: the ones the widget knows by heart first,
   // in the order they have, and then the ones that are not written down here,
   // in the order of their own id. A vendor that Magpie adds later is a vendor
@@ -643,8 +646,8 @@ const subscriptionId = id => {
 const SUBSCRIPTION_ID = /^[a-z][a-z0-9._-]{0,19}$/;
 const SUBSCRIPTION_ACCOUNT = /^[A-Za-z0-9._-]{1,32}$/;
 // How many subscriptions the service lets a user turn off at the same time.
-// A longer list is refused, so that nothing is ever dropped without the user
-// being told.
+// A longer list is refused when it is written, so that nothing is ever
+// dropped without the user being told.
 export const MAX_HIDDEN_SUBSCRIPTIONS = 256;
 // How many entries are read at all. This one is not a rule of the product but
 // a guard against a state file that was written by hand and holds a name a

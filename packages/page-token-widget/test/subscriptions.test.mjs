@@ -305,6 +305,7 @@ test('a refresh the gateway does not answer is told as a failure', async () => {
 test('a gateway that answers with no subscription at all is not a failure', async () => {
   await withService({
     '/v1/magpie/quotas?kept=1': { data: [] },
+    '/v1/magpie/quotas': { httpStatus: 500, body: { error: 'not now' } },
     '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
     '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
   }, async ({ base, token }) => {
@@ -367,6 +368,82 @@ test('the refresh asks the gateway again, even when a reading is on its way', as
     assert.equal(body.subscriptions.some(entry => entry.id === 'qoder-cn'), true);
     // The gateway was asked again, and not only once.
     assert.ok(quotaCalls >= 2);
+  });
+});
+
+test('a list that is new but whose numbers are old is not a failure', async () => {
+  let withoutNumbers = false;
+  await withService({
+    // The row carries no window: the number of the account falls back to the
+    // one that was stored, and the card is marked as old. The list of the
+    // subscriptions is a new one all the same.
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: withoutNumbers
+        ? [
+          { provider: 'codex', user: 'alpha@example.com', readAt: '2026-11-22T12:00:00.000Z' },
+          { provider: 'codex', user: 'beta@example.com', readAt: '2026-11-22T12:00:00.000Z' },
+        ]
+        : [quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')],
+    }),
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    assert.equal((await first.json()).ok, true);
+    withoutNumbers = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await second.json();
+    // The gateway named the subscription again: the list is a new one, and
+    // the button was asked for the list, not for the numbers.
+    assert.equal(body.ok, true);
+    assert.equal(body.error, '');
+    assert.equal(body.subscriptions.length, 2);
+  });
+});
+
+test('an empty answer after a good reading does not bring the old list back', async () => {
+  let empty = false;
+  await withService({
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: empty ? [] : [quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')],
+    }),
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token, cards }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const firstBody = await first.json();
+    assert.equal(firstBody.ok, true);
+    assert.equal(firstBody.subscriptions.length, 2);
+    empty = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const secondBody = await second.json();
+    // The gateway says that it has nothing: the old cards are not brought
+    // back as though the gateway had named them.
+    assert.equal(secondBody.ok, true);
+    assert.equal(secondBody.error, '');
+    assert.deepEqual(secondBody.subscriptions, []);
+    assert.deepEqual(secondBody.shown, []);
+    const onThePhone = await cards();
+    assert.deepEqual(onThePhone, []);
+  });
+});
+
+test('an answer that holds no list is an old list', async () => {
+  await withService({
+    '/v1/magpie/quotas?kept=1': { note: 'nothing here' },
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token }) => {
+    const answer = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await answer.json();
+    // The gateway answered, but it did not say which subscriptions there are.
+    // Nothing is passed for a new list.
+    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.answered, true);
+    assert.equal(body.named, false);
+    assert.deepEqual(body.added, []);
+    assert.deepEqual(body.removed, []);
   });
 });
 
