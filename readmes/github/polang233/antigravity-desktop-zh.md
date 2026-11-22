@@ -2,7 +2,7 @@
 
 在喜鹊（Magpie）侧栏检查 Antigravity 的社区汉化更新、应用汉化包或还原原版。译文和汉化包由 [Antigravity 中文本地化社区](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization) 维护。本插件独立发布，直接从该项目的 GitHub Releases 下载并校验 SHA-256。
 
-![喜鹊侧栏中的 Antigravity 汉化管理页](docs/magpie-workbench.png)
+![Antigravity 汉化插件的设置页：客户端版本匹配时可下载社区汉化包](docs/magpie-workbench.png)
 
 ## 安装与使用
 
@@ -16,4 +16,6 @@ Windows 已验证。自定义安装位置可在插件选项中设置 `appDir`。
 
 ## 来源与许可
 
-下载、校验、安装和还原模块改编自社区汉化项目，遵循 [MIT 许可证](LICENSE)，保留原作者和社区的版权声明。汉化包按需从[社区发布页](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization/releases)获取。插件图标以 Antigravity 客户端图标为基础添加了汉化角标。
+插件代码采用 [MIT 许可证](LICENSE)。下载、校验、安装和还原模块改编自社区汉化项目，保留原作者和社区的版权声明。汉化包按需从[社区发布页](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization/releases)获取。
+
+图标是 Gemini 娘手持「文 / A」双语对话牌的 Q 版重绘，角色设计来自 ZipZipPipe。图标及截图中的角色形象按署名、非商业用途使用。[原作立绘](https://www.bilibili.com/opus/1233069202138464289)

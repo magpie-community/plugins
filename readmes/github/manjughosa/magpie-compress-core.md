@@ -41,7 +41,7 @@ magpie plugin add github:magpie-community/plugins             # 从仓库装（p
 
 不可用的 LLMLingua-2 / OmniGlyph 在面板上照常显示并写明缺什么。LLM Compressor 是可选后端：未配置模型时不工作，不会偷偷发请求。
 
-安装默认开启 `ccr`、`lite`、`headroom`、`rtk`、`codex-responses`、`read-lifecycle`，其余关闭（包括 `session-dedup`）。Read Lifecycle 只折叠被同路径后续 Read 或 Write 明确取代的旧结果，保留一行说明；它会改变历史前缀，介意缓存时单独关闭。RTK 不要与 Magpie 官方 RTK 同时开启。Relevance、Caveman、Aggressive、Ultra、Ionizer 这些散文剪枝策略仍可单独开启，不做全局默认叠加。
+安装默认就是下文的稳妥档：开启 `session-dedup`、`ccr`、`lite`、`headroom`，其余关闭。需要 RTK、Codex Tool Output、Read Lifecycle 或散文剪枝策略时单独开启。Read Lifecycle 只折叠被同路径后续 Read 或 Write 明确取代的旧结果，保留一行说明；它会改变历史前缀。RTK 不要与 Magpie 官方 RTK 同时开启。
 
 LLM 后端在 options 里配置，例如 `"llm": {"enabled": true, "model": "group/deepseek-v4.1-flash", "timeoutMs": 12000}`。仅可信 Bun 宿主发请求，默认使用本机 `http://127.0.0.1:3425/v1`；同步 moejs fallback 不会等待异步后端。
 

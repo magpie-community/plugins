@@ -7,7 +7,7 @@
 - **模型转发**：模型清单从上游 `/ai/portal/wenc/v1/platform/cp/models` 拉取（见下方模型目录），默认走 OpenAI Chat Completions 端点（支持思考档位），可在插件选项中切换为 Anthropic Messages 端点（从下一个请求起生效）。
 - **登录**：账号 + 密码（IAM → CAS → ticketAuthorize 链路），API Key 可选。
 - **自动续登**：JWT 到期前 6 小时自动重走登录链路；网页会话中途失效时自动重登并重试一次。
-- **每日签到**：通过 magpie 自带的签到调度（每个北京日一次），领取 `taskDefId=3001` 的「每日签到」Token 奖励。
+- **每日签到**：通过 magpie 自带的签到调度（每个北京日一次），领取 `taskDefId=3001` 的「每日签到」Token 奖励；若「连续7天签到」任务（`taskDefId=3002`）已满足条件且尚未领取，会在同一次签到中自动领取。
 - **用量显示**：读取 Token 中心的 `platform/cp/usage/summry`，在账号额度卡片 / `magpie quota` / `GET /v1/magpie/quotas` 中显示已用、剩余、已过期额度。
 
 ## 登录交互
@@ -39,13 +39,13 @@ magpie plugin login eaichat
 | `glm-5.3-oc` | GLM-5.3 | 1,000,000 | 131,072 | `low` `high` `max` | text |
 | `qwen-3.8-flash` | Qwen-3.8-Flash | 1,000,000 | 131,072 | `none` `low` `medium` `xhigh` | text, image, video |
 
-请求使用 `model`，展示名使用 `title`。登录前（config 钩子还没有登录态）或上游清单拉取失败时，使用 `src/constants.ts` 的内置回退清单，内容与上表一致。上游 `api` 字段里的 `openai-completions` / `anthropic-messages` 决定模型出现在哪种协议下；字段缺失时视为两种都可用。
+请求使用 `model`，展示名使用 `title`。模型列表只包含上游声明过的模型：`config` 钩子不声明模型，`provider.models` 在登录后按上游清单生成，未登录或拉取失败时返回空表。上游 `api` 字段里的 `openai-completions` / `anthropic-messages` 决定模型出现在哪种协议下；字段缺失时视为两种都可用。
 
 magpie 根据 `limit.context` 自动显示灰色 `1M` / `1.0M` 徽标，并把 `variants` 显示为思考档位。更新插件或在供应商页面点击「重新获取模型」时，会重新请求上游清单。
 
 ### 元数据来源
 
-上游清单不返回上下文、最大输出、多模态和思考档位，这部分仍来自 [models.dev](https://models.dev/api.json)。`src/constants.ts` 维护「已知上游模型 ID → models.dev 规范模型 ID」的映射，同时充当登录前的回退清单；`src/model-metadata.ts` 由脚本生成：
+上游清单不返回上下文、最大输出、多模态和思考档位，这部分仍来自 [models.dev](https://models.dev/api.json)。`src/constants.ts` 维护「已知上游模型 ID → models.dev 规范模型 ID」的映射，只用于补充元数据；`src/model-metadata.ts` 由脚本生成：
 
 ```sh
 npm run update:models
@@ -74,7 +74,14 @@ models.dev 没有 `eaichat` 供应商，所以脚本按每个条目的 `canonica
 
 ## 每日签到
 
-插件实现了 magpie 的 `auth.checkin`。要每个北京日自动签到，需在 magpie 的 **设置 → 签到** 里为本供应商开启每日签到（默认关闭）；`magpie accounts checkin` 可随时手动触发一次。签到结果（获得多少 Token、连续天数）显示在账号的用量卡片上。
+插件实现了 magpie 的 `auth.checkin`。要每个北京日自动签到，需在 magpie 的 **设置 → 签到** 里为本供应商开启每日签到（默认关闭）；`magpie accounts checkin` 可随时手动触发一次。
+
+一次签到会依次处理两个任务：
+
+1. 领取 `taskDefId=3001` 的「每日签到」奖励；
+2. 检查 `taskDefId=3002` 的「连续7天签到」奖励。若本次领取了每日签到，会重新读取任务列表，确认 7 天奖励是否刚解锁；满足条件且尚未领取时自动领取。
+
+签到结果（获得多少 Token、连续天数）显示在账号的用量卡片上。连续 7 天奖励领取后，上游仍可能返回 `canReceive: true`，插件以 `status=2` 判断已领取，不会重复领取。
 
 ## 用量口径
 
@@ -116,7 +123,7 @@ src/
   models.ts    模型目录（上游清单 × 两种协议）
   model-metadata.ts  从 models.dev 生成的限额/模态/思考档位
   usage.ts     用量映射
-  checkin.ts   签到映射
+  checkin.ts   签到流程与结果映射（每日签到 + 连续7天奖励）
   relay.ts     模型请求转发（URL 归一 + 认证头 + 思考档位）
   quota.ts     额度耗尽识别（把上游 200 充值文案转成 402）
   crypto.ts    加密/签名原语
