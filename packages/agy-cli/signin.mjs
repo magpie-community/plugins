@@ -94,7 +94,9 @@ function decodeStored(raw) {
 
 // parseStored is what a stored value says, "unknown" when it isn't the
 // shape agy writes. It says nothing of who: the account's email isn't kept
-// with the cached read (storedEmail reads it when a sign-in names it).
+// with the cached read (storedEmail reads it when a sign-in names it). who
+// is a hash of it, "" when it names none: heldByAnother tells an account of
+// agy's own from the one agy holds now by it.
 export function parseStored(raw, now = Date.now()) {
   const fp = createHash("sha256").update(String(raw ?? "").trim()).digest("hex").slice(0, 32)
   const stored = decodeStored(raw)
@@ -109,7 +111,34 @@ export function parseStored(raw, now = Date.now()) {
   const at = Date.parse(token.expiry ?? "")
   // Go's zero time (0001-01-01) is "doesn't end"
   const expiresAt = Number.isFinite(at) && at > 0 ? at : 0
-  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt }
+  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt, who: whoOf(emailOf(raw)) }
+}
+
+// whoOf is an email's hash: what a cached read keeps of who it is for.
+export function whoOf(email) {
+  const e = typeof email === "string" ? email.trim().toLowerCase() : ""
+  return e ? createHash("sha256").update(e).digest("hex").slice(0, 32) : ""
+}
+
+// heldByAnother says agy's own sign-in (stored, a storedSignIn read) is
+// for another Google account than saved, the email an account of agy's own
+// was saved as; false when it is the same, or when either can't be told.
+// agy holds one Google account in its keyring: an account saved as agy's
+// own before agy was signed in to another (Switch to another Google account
+// before 0.1.67, a sign-in in a terminal) is no longer there, and its usage
+// and requests would be the other one's (ownsh1p on X: two accounts, both
+// showing the first one's balance).
+export function heldByAnother(stored, saved) {
+  const now = stored?.state === "present" && typeof stored.who === "string" ? stored.who : ""
+  const was = whoOf(saved)
+  return Boolean(now && was && now !== was)
+}
+
+// notHeldError is what an account heldByAnother is told.
+export function notHeldError(saved) {
+  return `agy is signed in to another Google account now, not to ${saved}: agy holds one Google account, so ` +
+    `${saved}'s usage and requests would be the other account's. Sign ${saved} in again with "Add another Google ` +
+    `account" to use both.`
 }
 
 // emailOf is the Google account a stored value is signed in to, "" when
@@ -186,6 +215,29 @@ export async function storedEmail(opts) {
     return ""
   }
 }
+
+// signedInEmail is storedEmail, else, for a sign-in that doesn't name its
+// account (id_token_email), who Google says its access token is for: the
+// userinfo agy itself asks at sign-in, with the token agy stored. "" when
+// neither tells; a token that has ended is not renewed for it. An account
+// saved without its email is listed as "API key" (tmr11235 on X), which
+// it isn't.
+export async function signedInEmail(opts = {}, { fetch: fetchFn = globalThis.fetch, timeoutMs = 5_000 } = {}) {
+  const email = await storedEmail(opts)
+  if (email) return email
+  const access = (await storedToken(opts))?.token?.access_token
+  if (typeof access !== "string" || !access) return ""
+  try {
+    const res = await fetchFn(USERINFO_URL, { headers: { Authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) return ""
+    const who = await res.json()
+    return typeof who?.email === "string" && who.email.includes("@") ? who.email.trim().slice(0, 200) : ""
+  } catch {
+    return ""
+  }
+}
+
+const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 // cannotSignIn is why a stored sign-in can't serve agy without a new
 // Google sign-in, or "" when it may.

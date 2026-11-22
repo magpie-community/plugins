@@ -66,7 +66,7 @@ test("Claude Code's request made chat completions goes without the phrases Facto
   // user turn by the translation: reworded, its facts kept
   expect(m[2].content.startsWith("# Runtime context\nThe session environment is: \n - Primary working directory: /Users/me/proj\n")).toBe(true)
   expect(m[2].content).toContain("\n\nCurrent model: glm-5.3-flash.\n\n")
-  expect(m[2].content).toContain("the harness executes these, not the assistant, so memory")
+  expect(m[2].content).toContain("the runtime executes these, not the assistant, so memory")
   expect(m.length).toBe(JSON.parse(CHAT).messages.length)
   expect(b.model).toBe("glm-5.3-flash")
 })

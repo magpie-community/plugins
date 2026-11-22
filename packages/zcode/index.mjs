@@ -980,24 +980,48 @@ async function toClaim(s) {
   return { plans, unread, rate: null }
 }
 
-// RECHECK is how long an "nothing to claim" stands before magpie's loop
-// asks again: ZCode drops gift plans into the feed during the day (a
-// weekend banner, say) on its own schedule, and the day's ask
-// may have run hours before, so an inactive settled for the day lets a
-// plan sit unclaimed past its short life (the weekend plan of
-// testdata/touch-1030-wk.json starts 19:00 Beijing). `until` wakes the
-// loop again in half an hour, and it asks again all day while neither
-// list names a plan — two GETs and no claim posted. The other settled
-// answers stand for the day: a claimed plan leaves the feed, so asking
-// a claimed account again half an hour later finds nothing and flips
-// its card from "Checked in today" to "No check-in event now"; a
-// captcha plan re-asked makes ZCode demand its captcha again each time,
-// and a done plan re-asked posts a claim it already answered 1003. The
-// same shape as Qoder's campaign that opens mid-day, asked again on
-// magpie's side there (yetone/magpie#2696). A failed needs no until:
-// magpie asks a failed again after 30 minutes of its own.
+// RECHECK is how long an answer that leaves the day open stands before
+// magpie's loop asks again: ZCode drops gift plans into the feed during
+// the day on its own schedule (the weekend plan of
+// testdata/touch-1030-wk.json starts 19:00 Beijing; @aaron0x10 on X,
+// 11-22: a second one follows at 19:30), and the day's ask may have run
+// hours before, so an answer settled for the day lets a plan sit
+// unclaimed past its short life. `until` wakes the loop again in half an
+// hour, and it asks again all day — one GET each time. That holds after a
+// claim too (claimed, done): the recheck posts only plans this account
+// has no answer for today (dayAnswers), so a plan claimed, answered 1003
+// or held for the captcha is never posted again, and one that has left
+// the feed is still the day's claim — answered done, so the card keeps
+// "Checked in today" instead of flipping to "No check-in event now". A
+// captcha needs no until: magpie leaves it for the day, as it waits on
+// the user. A failed needs none either: magpie asks a failed again after
+// 30 minutes of its own. The same shape as Qoder's campaign that opens
+// mid-day, asked again on magpie's side there (yetone/magpie#2696).
 const RECHECK_MS = 30 * 60_000
 const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
+
+// dayAnswers is what each account's plans answered today (Beijing):
+// holdKey -> { day, plans: Map(plan_id -> { name, outcome }) }, for the
+// answers that settle a plan for the day — claimed, done (1003) and
+// captcha (3007). A recheck posts only plans not in it, so none of those
+// is asked again; an ineligible or failed one is not kept, and is asked
+// again. It lives in this process's memory: a magpie restart forgets it,
+// and the next check-in posts a plan still in the feed once more (1003,
+// done, as before).
+const dayAnswers = new Map()
+const SETTLES = new Set(["claimed", "done", "captcha"])
+const uniq = (xs) => [...new Set(xs)]
+const beijingDay = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+function answersToday(s) {
+  const k = holdKey(s), day = beijingDay()
+  let a = dayAnswers.get(k)
+  if (!a || a.day !== day) dayAnswers.set(k, (a = { day, plans: new Map() }))
+  return a.plans
+}
+// resetDayAnswers is for tests: it forgets every account's answers today.
+export function resetDayAnswers() {
+  dayAnswers.clear()
+}
 
 // claimDaily claims every gift plan ZCode offers the account (#503:
 // toClaim, the app's banners and its preview), as auth.checkin's answer:
@@ -1016,9 +1040,10 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // v0.1.3165 honors a failed's `until` itself; older versions wait for
 // this hold, which is why it stays.
 // A failed one is asked again later in the
-// day, when a plan claimed now answers 1003. An inactive stands only
-// until RECHECK_MS from now, so a plan dropped into the feed later in
-// the day is still claimed; the other settled answers stand for the day
+// day. An inactive, ineligible, claimed or done stands only until
+// RECHECK_MS from now, so a plan dropped into the feed later in the day
+// is still claimed; a plan answered today (dayAnswers) is not posted
+// again, and after the day's claim an ask that finds nothing new is done
 // (see RECHECK).
 // Nothing here marks the account: a failed claim keeps its sign-in.
 async function claimDaily(s) {
@@ -1035,14 +1060,23 @@ async function claimDaily(s) {
     const message = unread.join("; ") || "ZCode rate limited this account"
     return { outcome: "failed", message, until: noteRateLimit(holdKey(s), rate, message) }
   }
+  // the plans this account answered for already today: never posted again
+  const today = answersToday(s)
+  const checkedToday = () => [...today.values()].filter((a) => a.outcome === "claimed" || a.outcome === "done").map((a) => a.name)
+  const fresh = plans.filter((p) => !today.has(p.plan_id))
   // the feed answered and no claim is read: the wait is over. It is not
   // forgotten before the claims below, so a claim ZCode keeps limiting
   // waits longer each time (see noteRateLimit)
-  if (!plans.length) {
+  if (!fresh.length) {
     rateWait.delete(holdKey(s))
-    return unread.length
-      ? { outcome: "failed", message: unread.join("; ") }
-      : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+    if (unread.length) return { outcome: "failed", message: unread.join("; ") }
+    // nothing new since the day's claim: still checked in today, and
+    // looked at again half an hour out (see RECHECK)
+    const had = checkedToday()
+    if (had.length) return { outcome: "done", message: `already claimed: ${uniq(had).join(", ")}`, until: recheck() }
+    // only plans held for the captcha, still listed: named again, not posted
+    if (plans.length) return { outcome: "captcha", message: plans.map((p) => `${p.name}: claim it in the ZCode app (${today.get(p.plan_id).why})`).join("; ") }
+    return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   }
   // a claim ZCode guards with its security check is not posted: the app
   // passes it before each claim and sends the proof in a header, which
@@ -1059,11 +1093,15 @@ async function claimDaily(s) {
   }
   if (guarded !== false) {
     rateWait.delete(holdKey(s))
-    if (guarded === null) return { outcome: "failed", message: [...plans.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
-    return { outcome: "captcha", message: plans.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
+    if (guarded === null) return { outcome: "failed", message: [...fresh.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
+    return { outcome: "captcha", message: fresh.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
   }
   const got = []
-  for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
+  for (const p of fresh) {
+    const g = { name: p.name, ...(await claimOne(s, p.plan_id)) }
+    if (SETTLES.has(g.outcome)) today.set(p.plan_id, { name: p.name, outcome: g.outcome, why: g.why })
+    got.push(g)
+  }
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
   const claimed = named("claimed")
   const said = [
@@ -1082,12 +1120,16 @@ async function claimDaily(s) {
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
-  if (claimed.length) return { outcome: "claimed", message: said }
+  // claimed and done keep looking for the day's later plans (see RECHECK)
+  if (claimed.length) return { outcome: "claimed", message: said, until: recheck() }
+  const had = checkedToday()
+  const notOffered = got.filter((g) => g.outcome === "ineligible").map((g) => `${g.name}: ${g.why}`)
   // a plan not offered now can be offered later in the day (11-04: an
   // account's GLOBAL BUILD banner showed 28 minutes after it signed in),
-  // so an ineligible is read again half an hour out, as an inactive is
-  if (got.some((g) => g.outcome === "ineligible")) return { outcome: "ineligible", message: said, until: recheck() }
-  return { outcome: "done", message: `already claimed: ${named("done").join(", ")}` }
+  // so an ineligible is read again half an hour out, as an inactive is;
+  // after the day's claim the card stays checked in
+  if (!had.length) return { outcome: "ineligible", message: said, until: recheck() }
+  return { outcome: "done", message: [`already claimed: ${uniq(had).join(", ")}`, ...notOffered].join("; "), until: recheck() }
 }
 
 // GIFT_SIGN_IN is the card's line for an account whose gift plans can't

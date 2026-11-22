@@ -31,6 +31,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [inkstone](packages/inkstone) | (Unofficial) 书生·端砚 Token Plan: browser sign-in gives the ink-credit balance, the 5-hour and 7-day windows and the credit packs, and creates an `ink-*` API key to serve the plan's models for chat | `intern-inkstone` |
 | [joycode](packages/joycode) | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial) | `joycode` |
 | [doubao-work](packages/doubao-work) | Doubao Work (豆包工作), whose agent runs in the cloud with no API, through the Doubao desktop app driven the way a person uses it (macOS, Windows) | `doubao-work` |
+| [gemini-web](packages/gemini-web) | The Gemini web app (gemini.google.com), not Google's API: your Google account signed in through a browser window of its own, or as a visitor; one streamed call to the app's own endpoint per request | `gemini-web` |
 | [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
@@ -281,6 +282,7 @@ it off puts the config back.
 
 | Package | Agent |
 |---|---|
+| [chatcut](packages/chatcut) | [ChatCut](https://chatcut.io): a separate Magpie connection in `~/.config/chatcut/magpie.json`, using ChatCut's isolated Codex harness; requires the companion Desktop release |
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
@@ -297,6 +299,7 @@ it off puts the config back.
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
 | [rhino9-ai](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
+| [pine](packages/pine) | [Pine](https://github.com/pmndre/pine): magpie's endpoint and model catalog in `~/.pine/models.json`, and the model Pine starts on (`defaults.model` in `pine.json`) picked on the Agents page; restart Pine after a change |
 | [zycode](packages/zycode) | [zycode](https://github.com/zy1233/pi-python) (`zypi`, the VS Code extension, the ACP agent): Magpie's model in the `[model]` table of `~/.pi-python/agent.toml`, set by a host part that follows `local.env` and puts the file back byte for byte; restart zycode after choosing a model |
 | [meowcode](packages/meowcode) | [MeowCode](https://github.com/MuLiuSaMa/MeowCode): magpie's models in MeowCode's own model list, written to an overlay file beside its settings that MeowCode reads at start-up; restart MeowCode after choosing a model |
 | [lorca](packages/lorca) | [Lorca](https://lorca.app): `~/.lorca/credentials.json` as a custom provider, mirroring Magpie's models with thinking levels and MCP support via `~/.lorca/mcp.json` |

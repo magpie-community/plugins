@@ -30,8 +30,9 @@ A fix to that machinery reaches both.
 
 ## Sign-in
 
-One way per provider, **Trae CN account (browser)** or **Trae Global account
-(browser)**. The plugin opens that realm's authorization page
+A personal account signs in with **Trae CN account (browser)** or **Trae
+Global account (browser)**; an enterprise seat has its own way (see
+Enterprise below). The plugin opens that realm's authorization page
 (`www.trae.cn/authorization` or `www.trae.ai/authorization`, the IDE's client
 `ono9krqynydwx5`). Sign in there and allow the sign-in; the page then sends the
 browser back to a callback on `http://127.0.0.1:<port>/authorize` — it accepts
@@ -50,6 +51,21 @@ Trae Global's stays 19. The daily check-in goes on a 15-digit id made from it
 (see Daily check-in).
 
 ### Enterprise (SaaS) accounts
+
+Each provider has a second way, **Trae CN enterprise account (browser)** or
+**Trae Global enterprise account (browser)**, since 0.2.46. It opens the
+realm's enterprise console's own authorization page
+(`console.enterprise.trae.cn/authorization` or
+`console.enterprise.trae.ai/authorization`) with the same parameters and
+callback. There the seat signs in with its TRAE enterprise email and
+password, the Doubao/Feishu tab, or the company's SSO. Since November 2026
+trae.cn's own page sends a signed-out browser to a Doubao/Feishu account
+sign-in (accounts.doubao.com) that has no way to an enterprise seat, so an
+enterprise account signing in again there was not recognised (@yalifesign
+on X). The console's page calls back with `userJwt`, `userInfo`,
+`refreshToken` and `host` (its Api host), read as below; a callback naming
+no host is taken as the console's seat. Read from the consoles' page code;
+**not tried with a real enterprise seat**.
 
 Since 0.2.10 the authorization page also offers Trae's enterprise (SaaS / SSO)
 sign-in; before, the plugin asked the page to hide it (`hide_saas_login`), so
@@ -246,14 +262,28 @@ custom-model slots. An enterprise's own built-in models
 since 0.2.41 (#1258), unless the admin switched one off (`status` false); a
 personal custom model (`config_source` 3) is not, its key being in the
 user's IDE only. A chat with an enterprise model carries `config_source`
-2, `is_custom_model` true and the entry's `provider` at the top of the
-body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.42; 0.2.41
+2, `is_custom_model` true, and the `model_name` and `provider` of its
+`model_detail_list` entry (its `__dev` one, else the first) at the top of the
+body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
 put them under `user_message_context.model_info`, and an enterprise seat got
-4001 "the param is invalid" on every function) — **not verified with a real
-enterprise seat**. A refused chat's error names
+4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
+config, where Trae's list doesn't carry it, sent no `model_name`, and got
+4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
 the model, the functions tried and the host, and says when the account's
 list doesn't have the model. Context is the list's `context_window_tokens.dev`,
-output the `__dev` model's `max_tokens`. A model with a `__max` model and
+output the `__dev` model's `max_tokens` (an enterprise model's own detail's,
+since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
+held to it and it sent when the agent names none, as Trae's own client
+sends the model's `max_tokens` with each model: asked with none, an
+enterprise seat's replies stopped at exactly 2000 output tokens (0.2.43).
+They still did on 0.2.44 with `max_tokens` 4096 asked, so since 0.2.45 an
+enterprise model's limit also goes in `enterprise_custom_hyper_params`
+(`max_tokens`, the detail's `prompt_max_tokens`, `multimodal`), where Trae
+CN 3.4.22's own agent task puts it — read from the binary, **not verified
+with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
+after using every token it was let have — the `max_tokens` sent, or 2000
+for an enterprise model — ends with `finish_reason: "length"`, so an agent
+knows it was cut. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3

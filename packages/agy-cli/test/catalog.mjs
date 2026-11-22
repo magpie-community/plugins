@@ -11,7 +11,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
-  BASE_MODEL_ROWS, CATALOG_TTL_MS, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
+  BASE_MODEL_ROWS, CATALOG_TTL_MS, MESSAGES_URL, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 const FAST_BUDGET_MS = 750 // 计划给的调度容差；补丁内部等待预算是 500ms，远低于 Magpie 的 2s。
@@ -92,6 +92,78 @@ test("agy 没存登录时不在后台跑 agy models、不起探测会话，请�
     await settle(kit)
     assert.ok(kit.modelsSpawns.length >= 1, "有登录却没跑 agy models")
   })
+})
+
+// ownsh1p on X: two accounts in the local agy CLI, and the usage overview
+// showed the first one's balance on both cards. Both were saved as agy's
+// own (no home of their own: Switch to another Google account before
+// 0.1.67, or a sign-in in a terminal), and agy's keyring holds one of
+// them, so each read, and each request, was that one's.
+test("an account of agy's own that agy no longer holds shows no other account's usage, nor sends as it", async () => {
+  const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29." + email, refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: email,
+  })).toString("base64") + "\n"
+  const options = {
+    platform: "darwin", storedSignIn: keyring("b@example.com"), modelsBehavior: DYNAMIC_OK,
+    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
+  }
+  // the quota read agy makes (usage.mjs readQuotaDirect), answered here
+  const asked = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    asked.push(init.headers.Authorization)
+    const left = init.headers.Authorization === "Bearer ya29.a@example.com" ? 0.9 : 0.25
+    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
+      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: left }],
+    }] }
+    return new Response(JSON.stringify(reply), { status: 200 })
+  }
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "B@example.com" } }
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(ua.windows, [], JSON.stringify(ua))
+      assert.equal(ua.signIn, "expired")
+      assert.match(ua.error, /signed in to another Google account now, not to a@example\.com/)
+      assert.match(ua.error, /Add another Google account/)
+      assert.deepEqual(asked, [], "a's card was read with b's sign-in")
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.error, undefined, JSON.stringify(ub))
+      assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"))
+
+      // a's requests would go out as b
+      const la = await kit.plugin.auth.loader(async () => a)
+      const refused = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.equal(refused.status, 401)
+      assert.equal(refused.headers.get("X-Magpie-Sign-In"), "expired")
+      assert.match(await refused.text(), /not to a@example\.com/)
+      assert.equal(kit.acpSpawns.length, 0, "a's request ran agy")
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const served = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401)
+      await served.text()
+
+      // agy holds a again (signed in to it in a terminal): a's card reads
+      // a's quota, and says its sign-in works again
+      options.storedSignIn = keyring("a@example.com")
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const again = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(again.error, undefined, JSON.stringify(again))
+      assert.equal(again.signIn, "renewed")
+      assert.equal(again.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"))
+      const bNow = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(bNow.signIn, "expired")
+      await settle(kit)
+    })
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () => {
@@ -821,5 +893,100 @@ test("shenggxhz 运行中换了账号：agy models 列表变了就重新探测�
     await kit.models()
     await warmed(kit)
     assert.equal(kit.acpSpawns.length, 2, "列表没变不该再起探测会话")
+  })
+})
+
+// canlee886 on X: magpie wired Antigravity's app to itself
+// (~/.gemini/config/config.json's gateway), and agy reads that file too: an
+// agy on ~/.gemini lists and offers magpie's own models, and a turn on one
+// would go back into magpie. The provider lists the Google account's.
+const APP_GATEWAY_ACP_HELP = "Usage of acp:\n  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n"
+const MAGPIE_ROWS = [["rg/gpt-6-astra", "GPT-6 Astra · routing group"], ["rg/gpt-6-astra:low", "GPT-6 Astra · routing group (Low)"], ["gemini-4-argon-high", "Gemini 4 Argon (High)"]]
+const ACCOUNT_OFFERED = [
+  ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+]
+function appGatewayKit(extra = {}) {
+  const onOwnFolder = (args) => args.includes("--gemini-dir")
+  return {
+    acpHelp: APP_GATEWAY_ACP_HELP,
+    topHelp: AGY_159_TOP_HELP,
+    // `agy models` has no --gemini-dir: it always reads the app's gateway
+    modelsBehavior: { stdout: modelsOutput(MAGPIE_ROWS) },
+    offeredModels: (_home, args) => onOwnFolder(args) ? ACCOUNT_OFFERED : MAGPIE_ROWS,
+    ...extra,
+  }
+}
+function wireAppGateway(home, body = { gateway: { enabled: true, url: "http://127.0.0.1:3425", apiKey: "mk", wireProtocol: "openai" } }) {
+  fs.mkdirSync(path.join(home, ".gemini", "config"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".gemini", "config", "config.json"), typeof body === "string" ? body : JSON.stringify(body))
+}
+function assertAccountListed(listed) {
+  const all = ids(listed)
+  assert.ok(!all.some(id => id.startsWith("rg/")), `magpie's own models were listed: ${all.join(", ")}`)
+  assert.ok(listed["gemini-3.8-flash"], `the account's models should be listed, got ${all.join(", ")}`)
+  assert.deepEqual(Object.keys(listed["gemini-3.8-flash"].variants ?? {}).sort(), ["high", "low"])
+  assert.ok(listed["claude-opus-4-6-thinking"], `got ${all.join(", ")}`)
+}
+
+test("canlee886 Antigravity 的 app 接到 magpie 时，目录列 Google 账号的型号，不列 magpie 自己的", async () => {
+  await withKit(appGatewayKit(), async (kit) => {
+    wireAppGateway(kit.home)
+    await kit.models()
+    await warmed(kit)
+    assertAccountListed(await kit.models())
+    assert.ok(kit.acpSpawns.length >= 1)
+    for (const spawn of kit.acpSpawns) assert.ok(spawn.args.includes("--gemini-dir"), `agy acp ran on ~/.gemini: ${spawn.args.join(" ")}`)
+  })
+})
+
+test("canlee886 app 接到 magpie 时，登录检查和它读到的目录都来自账号的会话", async () => {
+  await withKit(appGatewayKit(), async (kit) => {
+    wireAppGateway(kit.home)
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.equal((await started.callback()).type, "success")
+    assertAccountListed(await kit.models())
+    assert.equal(kit.modelsSpawns.length, 0, "agy models lists the app's gateway, not the account")
+  })
+})
+
+test("canlee886 app 接到 magpie、agy 没登录 Google 时，登录检查不因 gateway 的列表说已登录", async () => {
+  await withKit(appGatewayKit({ sessionNewError: { code: -32000, message: "Authentication required" } }), async (kit) => {
+    wireAppGateway(kit.home)
+    const started = await kit.plugin.auth.methods[0].authorize()
+    // signed in, authorize ends at once ("auto"); here it starts Google's sign-in
+    assert.notEqual(started.method, "auto", "the gateway's listing was taken for a Google sign-in")
+  })
+})
+
+test("canlee886 app 的 gateway 关着、读不成 JSON 时各按关、开处理", async () => {
+  await withKit(appGatewayKit({ offeredModels: ACCOUNT_OFFERED, modelsBehavior: { stdout: modelsOutput(ACCOUNT_OFFERED.slice(1)) } }), async (kit) => {
+    wireAppGateway(kit.home, { gateway: { enabled: false, url: "http://127.0.0.1:3425" } })
+    assert.equal(kit.module.appGatewayOn(kit.home), false)
+    await kit.models()
+    await warmed(kit)
+    assert.ok(kit.modelsSpawns.length >= 1, "a gateway turned off leaves agy models as it was")
+    wireAppGateway(kit.home, "{not json")
+    assert.equal(kit.module.appGatewayOn(kit.home), true)
+    fs.rmSync(path.join(kit.home, ".gemini", "config", "config.json"))
+    assert.equal(kit.module.appGatewayOn(kit.home), false)
+  })
+})
+
+// The provider is named as the plugin's row is, not by its id (agy-cli), on
+// magpie's Providers row; a name the user gave it stays.
+test("config names the provider, keeping the user's own name", async () => {
+  await withKit({ agyPath: null }, async (kit) => {
+    const cfg = {}
+    await kit.plugin.config(cfg)
+    assert.equal(cfg.provider["agy-cli"].name, "Antigravity (local agy CLI)")
+    const registry = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../../../registry.json"), "utf8"))
+    const row = registry.plugins.find((p) => p.providers?.includes("agy-cli"))
+    assert.equal(cfg.provider["agy-cli"].name, row.name)
+    assert.equal(cfg.provider["agy-cli"].npm, kit.plugin.provider.npm)
+    const own = { provider: { "agy-cli": { name: "My agy", npm: "x", options: { x: 1 } } } }
+    await kit.plugin.config(own)
+    assert.deepEqual(own.provider["agy-cli"], { name: "My agy", npm: "x", options: { x: 1 } })
   })
 })
