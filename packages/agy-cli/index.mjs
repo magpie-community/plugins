@@ -31,19 +31,32 @@ const PROVIDER_NAME = "Antigravity (local agy CLI)"
 // 1.5.0. An older agy is refused with a clear message; a version agy doesn't
 // report is not known to be older, so the session goes ahead.
 export const MIN_AGY_VERSION = "1.4.12"
-export function agyTooOld(version) {
-  const parse = value => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
-    return match ? match.slice(1).map(Number) : null
-  }
-  const have = parse(version)
-  if (!have) return null
-  const need = parse(MIN_AGY_VERSION)
+// agy 1.5.12 selects a model through configOptions. session/set_model of an
+// effort-suffixed id (gemini-4-neon-medium, gemini-4-hydrogen-xhigh) is
+// "Unknown model ID" there. Older builds still take that id, and the tests
+// for them omit configOptions on purpose.
+const CONFIG_SELECT_AGY = "1.5.12"
+function versionParts(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim())
+  return match ? match.slice(1).map(Number) : null
+}
+function versionAtLeast(version, minimum) {
+  const have = versionParts(version)
+  const need = versionParts(minimum)
+  if (!have || !need) return false
   for (let i = 0; i < 3; i++) {
-    if (have[i] > need[i]) return null
-    if (have[i] < need[i]) return `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+    if (have[i] !== need[i]) return have[i] > need[i]
   }
-  return null
+  return true
+}
+export function agyTooOld(version) {
+  const have = versionParts(version)
+  if (!have) return null
+  if (versionAtLeast(version, MIN_AGY_VERSION)) return null
+  return `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+}
+function agySelectsByConfig(version) {
+  return versionAtLeast(version, CONFIG_SELECT_AGY)
 }
 // agy is told who is connecting: this plugin, by its own package name.
 const CLIENT_INFO = (() => {
@@ -1210,6 +1223,22 @@ function configModelSelection(options, model, selection) {
   }
 }
 
+// No model select, or one with nothing to choose. A present catalog that
+// simply does not list the requested model is not missing.
+function modelCatalogMissing(options) {
+  const config = configSelect(Array.isArray(options) ? options : [], "model")
+  return !config || selectValues(config.options).length === 0
+}
+
+// The session came back without the catalog agy 1.5.12 selects from. The
+// caller closes the process; 502 is retryable, where 400 is not (plugins#1360).
+function degradedSessionError(model) {
+  const error = new Error(`agy bridge: agy opened this session without a model catalog, so ${model} was not selected; the session was closed, send the request again`)
+  error.statusCode = 502
+  error.code = "degraded_session"
+  return error
+}
+
 class BusyError extends Error {
   constructor(message) {
     super(message)
@@ -2364,12 +2393,21 @@ class Proc {
     if (updated?.currentValue !== value) throw new Error(`agy did not apply session option ${config.id}`)
   }
 
+  // agy 1.5.12 with no model catalog. A legacy build, or one that already
+  // answered set_config_option with "method not found", still uses set_model.
+  #catalogDegraded() {
+    return !this.configMethodUnsupported && agySelectsByConfig(this.agentVersion) && modelCatalogMissing(this.configOptions)
+  }
+
   async #setModel(model, selection, force = false) {
     const selectionKey = stableJSON({ model, selection })
     if (!force && this.currentSelectionKey === selectionKey) return
     try {
       let configured = false
       const target = this.configMethodUnsupported ? null : configModelSelection(this.configOptions, model, selection)
+      // Don't hand an effort-suffixed id to session/set_model. That agy
+      // rejects it, and the miss is the session's, not the account's.
+      if (!target && this.#catalogDegraded()) throw degradedSessionError(model)
       if (target) {
         try {
           if (force || target.config.currentValue !== target.value) await this.#setConfig(target.config, target.value)
@@ -2398,6 +2436,11 @@ class Proc {
       // model at all, so every model is "unknown". That is the account.
       const refused = await refusalNow(this.agyPath).catch(() => "")
       if (refused) throw refusedError(refused)
+      // A missing catalog on a configOptions agy is a bad session. Say so
+      // even when session/set_model was what failed, and never as a 400.
+      if (error.code === "degraded_session" || this.#catalogDegraded()) {
+        throw error.code === "degraded_session" ? error : degradedSessionError(model)
+      }
       const wrapped = new Error(`agy bridge: model ${model} is unavailable to this agy account: ${error.message}`)
       wrapped.statusCode = 400
       throw wrapped
