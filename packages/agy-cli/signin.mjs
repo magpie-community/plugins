@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
 import { currentHome, tokenFile } from "./account.mjs"
 
 // What agy's own sign-in looks like on this computer, read without running
@@ -166,8 +167,19 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
   if (ENV_SIGN_INS.some((name) => env[name])) return { state: "unknown" }
   if (platform === "darwin") {
     const r = await exec("/usr/bin/security", ["find-generic-password", "-s", SERVICE, "-a", USER, "-w"])
-    // 44: errSecItemNotFound
-    if (r.code === 44) return { state: "missing" }
+    // 44: errSecItemNotFound — agy 1.5.14+ may store the OAuth token in
+    // ~/.gemini/antigravity-cli/antigravity-oauth-token instead of Keychain
+    if (r.code === 44) {
+      const fallbackHome = env.HOME || (env === process.env ? os.homedir() : "")
+      if (fallbackHome) {
+        try {
+          return { raw: await fs.promises.readFile(tokenFile(fallbackHome), "utf8") }
+        } catch (error) {
+          if (error?.code !== "ENOENT") return { state: "unknown" }
+        }
+      }
+      return { state: "missing" }
+    }
     if (r.code !== 0) return { state: "unknown" }
     return { raw: r.stdout }
   }
