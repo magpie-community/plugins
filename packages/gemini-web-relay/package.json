@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "main": "./opencode.mjs",
-  "files": ["index.mjs", "relay.mjs", "browser.mjs", "openai.mjs", "prompt.mjs", "opencode.mjs", "README.md", "LICENSE"],
+  "files": ["index.mjs", "relay.mjs", "browser.mjs", "openai.mjs", "prompt.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
   "description": "Gemini web app via a long-lived real browser relay: each request is one in-page fetch to StreamGenerate through Chrome's own TLS, with model tiers routed by the app's mode byte",
   "magpie": {
     "icon": "gemini-color",
@@ -12,6 +12,6 @@
   "keywords": ["magpie", "magpie-plugin", "gemini", "gemini-web", "relay"],
   "license": "MIT",
   "exports": {
-    ".": "./opencode.mjs"
+    ".": "./opencode2.mjs"
   }
 }
