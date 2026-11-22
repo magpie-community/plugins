@@ -43,8 +43,9 @@ async function run(a, reply) {
 
 test("a Teams plan: its end, its day and week, the extra usage balance", async () => {
   const { u, seen } = await run(auth, () => Response.json(status()))
-  // no plan: the row keeps the sign-in's, as `devin auth status` names it
+  // the plan as `devin auth status` names it, from teamsTier
   expect(u).toEqual({
+    plan: "Devin Teams",
     until: "2026-10-26T21:45:55Z",
     balance: "$46.81",
     windows: [
@@ -79,6 +80,7 @@ test("a hidden quota isn't shown, nor one with no reset; ACUs with a limit are",
   s.userStatus.planStatus.planInfo.hideWeeklyQuota = true
   const { u } = await run({ ...auth, metadata: { ...auth.metadata, server: "https://eu.example" } }, () => Response.json(s))
   expect(u).toEqual({
+    plan: "Devin Teams",
     until: "2026-10-26T21:45:55Z",
     windows: [{ name: "ACUs", used: 25, display: "12.5 / 50 ACUs", resetsAt: "2026-10-26T21:45:55Z", aside: true }],
     signIn: "renewed",
@@ -88,12 +90,20 @@ test("a hidden quota isn't shown, nor one with no reset; ACUs with a limit are",
 test("a plan billed otherwise, with resets and no share given, has no quota windows", async () => {
   const s = status({ dailyQuotaRemainingPercent: undefined, weeklyQuotaRemainingPercent: undefined, overageBalanceMicros: undefined })
   s.userStatus.planStatus.planInfo.billingStrategy = "BILLING_STRATEGY_CREDITS"
-  expect((await run(auth, () => Response.json(s))).u).toEqual({ until: "2026-10-26T21:45:55Z", windows: [], signIn: "renewed" })
+  expect((await run(auth, () => Response.json(s))).u).toEqual({ plan: "Devin Teams", until: "2026-10-26T21:45:55Z", windows: [], signIn: "renewed" })
 })
 
 test("a plan without quotas has no windows, and leaves the row's plan be", async () => {
   const s = { userStatus: { planStatus: { planInfo: { planName: "Free" } } } }
   expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "renewed" })
+})
+
+test("a sign-in saved as Devin Free reads as Devin Max once the account is on Max", async () => {
+  const a = { ...auth, metadata: { email: "d@x.dev", plan: "Devin Free" } }
+  const s = status()
+  s.userStatus.teamsTier = "TEAMS_TIER_DEVIN_MAX"
+  s.userStatus.planStatus.planInfo = { ...s.userStatus.planStatus.planInfo, planName: "Max", teamsTier: "TEAMS_TIER_DEVIN_MAX" }
+  expect((await run(a, () => Response.json(s))).u.plan).toBe("Devin Max")
 })
 
 test("usage enriches an older sign-in with its organization and keeps each org's quota pool separate", async () => {
