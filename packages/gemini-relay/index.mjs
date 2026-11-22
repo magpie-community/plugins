@@ -25,6 +25,29 @@ const ICON =
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
 
+// accountName reads the account's Google email from its signed-in profile.
+// A page of the app itself names it; when Google's risk control answers a
+// /sorry instead (a per-IP, per-moment state), there is nothing to read and
+// the caller falls back to a neutral label — the name is cosmetic, the
+// cookies decide what is served.
+async function accountName(profileDir, { headless = false } = {}) {
+  try {
+    const check = new RelayBrowser({ profileDir, headless })
+    try {
+      const page = await check.ensure()
+      const t = await page.eval(`(() => {
+        const html = document.documentElement.innerHTML
+        return { email: (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || "" }
+      })()`)
+      return t?.email || ""
+    } finally {
+      await check.stop()
+    }
+  } catch {
+    return ""
+  }
+}
+
 function models(table) {
   const out = {}
   for (const [id, m] of Object.entries(table))
@@ -75,6 +98,21 @@ export function createPlugin({ profileDir, headless = true } = {}) {
       async models(given, { auth } = {}) {
         return models(accountKey(auth) === ANONYMOUS ? VISITOR : MODELS)
       },
+      // the account's own info, read again on every magpie account-page
+      // visit: a name left as a fallback by a /sorry moment becomes the
+      // account's email as soon as the app serves the page again — no
+      // re-sign-in needed
+      async accountInfo(_given, { auth } = {}) {
+        const key = accountKey(auth)
+        if (key === ANONYMOUS) return { name: "访客（未登录）" }
+        try {
+          const { profileDir } = JSON.parse(auth.access)
+          const email = await accountName(profileDir)
+          return email ? { name: email } : {}
+        } catch {
+          return {}
+        }
+      },
     },
     auth: {
       provider: ID,
@@ -103,26 +141,11 @@ export function createPlugin({ profileDir, headless = true } = {}) {
                 return { type: "failed", error: "打开浏览器失败：" + String(e?.message ?? e) }
               }
               if (!cookies) return { type: "failed", error: "五分钟内没有在窗口里登录 Google 账号，请再试一次。" }
-              // name the account by its Google email. The page's HTML
-              // carries it, and the check browser keeps the page's own
-              // session (not headless), so the app serves the page instead
-              // of a sorry. The sign-in window itself is a fallback: it is
-              // just on Gemini, and the app names accounts there too.
-              let who = ""
-              try {
-                const check = new RelayBrowser({ profileDir: profile, headless: false })
-                try {
-                  const page = await check.ensure()
-                  const t = await page.eval(`(() => {
-                    const html = document.documentElement.innerHTML
-                    return { at: (html.match(/"SNlM0e":"([^"]+)"/) || [])[1] || "", email: (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || "" }
-                  })()`)
-                  if (t?.email) who = t.email
-                } finally {
-                  await check.stop()
-                }
-              } catch {}
-              if (!who) who = "Google 账号"
+              // name the account by its Google email, from the app's own
+              // page. If Google's risk control is /sorry-ing this network
+              // right now the name falls back — the next sign-in or a later
+              // request's account refresh picks the email up.
+              const who = (await accountName(profile)) || "Google 账号"
               return { type: "success", access: JSON.stringify({ profileDir: profile }), refresh: profile, expires: 0, accountId: who, name: who }
             },
           }),
