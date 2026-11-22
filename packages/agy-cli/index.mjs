@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, signedInEmail, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -7469,18 +7469,43 @@ async function importSignIns(texts) {
 // homeOfAuth is the home of the account a saved sign-in is, null for
 // agy's own.
 async function homeOfAuth(getAuth) {
+  return (await accountOfAuth(getAuth)).home
+}
+
+// accountOfAuth is homeOfAuth, with the email an account of agy's own was
+// saved as ("" for one with a home: its home is its own).
+async function accountOfAuth(getAuth) {
   let auth
   try { auth = typeof getAuth === "function" ? await getAuth() : getAuth } catch {}
-  return homeOf(homeIdOfAuth(auth))
+  const home = homeOf(homeIdOfAuth(auth))
+  const email = !home && typeof auth?.metadata?.email === "string" ? auth.metadata.email.trim() : ""
+  return { home, email }
 }
 
 // One usage reader per account: each holds its own last report.
 const usageReaders = new Map()
-function readUsageOf(home) {
+// The accounts of agy's own told agy holds another (by email, lower case):
+// a read once agy holds them again says the sign-in works.
+const toldNotHeld = new Set()
+function readUsageOf(home, email = "") {
   const key = home ?? ""
   let read = usageReaders.get(key)
   if (!read) usageReaders.set(key, (read = createUsageReader(findAgy)))
-  return inAccount(home, () => read())
+  return inAccount(home, async () => {
+    if (email) {
+      let stored = null
+      try { stored = await storedSignIn() } catch {}
+      if (heldByAnother(stored, email)) {
+        toldNotHeld.add(email.toLowerCase())
+        return { windows: [], error: notHeldError(email), signIn: "expired" }
+      }
+    }
+    const result = await read()
+    if (email && !result.error && toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept") {
+      return { ...result, signIn: "renewed" }
+    }
+    return result
+  })
 }
 
 export const AntigravityBridgePlugin = async () => {
@@ -7502,7 +7527,10 @@ export const AntigravityBridgePlugin = async () => {
         },
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
-      usage: async (getAuth) => readUsageOf(await homeOfAuth(getAuth)),
+      usage: async (getAuth) => {
+        const { home, email } = await accountOfAuth(getAuth)
+        return readUsageOf(home, email)
+      },
       // magpie's "Import accounts from a file…" (OpenCode ignores it): the
       // retired Antigravity plugin's sign-ins, which magpie's Move hands over
       importFrom: IMPORT_FROM.en,
@@ -7552,7 +7580,7 @@ export const AntigravityBridgePlugin = async () => {
       loader: async (getAuth) => {
         // the account's own home, null for agy's own sign-in: every agy
         // its requests run is started there
-        const home = await homeOfAuth(getAuth)
+        const { home, email } = await accountOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
@@ -7585,10 +7613,16 @@ export const AntigravityBridgePlugin = async () => {
             // nothing stored to sign agy in with: agy would only start its
             // own Google sign-in, so the account is told to sign in again
             // (from the last read; a request doesn't wait for a new one)
-            const notSignedIn = cannotSignIn(storedSignInNow())
+            const stored = storedSignInNow()
+            const notSignedIn = cannotSignIn(stored)
             if (notSignedIn) {
               return jsonError(401, `${notSignedIn}: sign in again in magpie, or run \`agy\` in a terminal`, undefined,
                 { headers: { "X-Magpie-Sign-In": "expired" } })
+            }
+            // an account of agy's own that agy no longer holds: its request
+            // would go out as the account agy holds now
+            if (heldByAnother(stored, email)) {
+              return jsonError(401, notHeldError(email), undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
             }
             let body
             try {
