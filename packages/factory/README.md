@@ -112,7 +112,10 @@ droid's own dates for it hold. A promotion that has ended is no discount at
 all.
 
 Gemini's requests go to Factory's generate route with the model in the
-body, droid's line opening the system instruction. Gemini 4 Argon is behind
+body, droid's line opening the system instruction. The client's prompt,
+user turns and tool descriptions are adapted there as on Factory's other
+routes, so Codex or pi on a Gemini model reads to Factory as it does on
+GPT or Claude. Gemini 4 Argon is behind
 a Factory feature flag in droid 0.241.1, so an account it isn't on for may
 be refused it.
 
@@ -193,6 +196,18 @@ goes once more with every tool renamed the same way (droid's own names and
 `mcp__` tools kept). If that is taken, the same tool set goes renamed in full
 for the rest of the process; if it is refused again, the refusal is about
 what the request says, and that is the answer.
+
+## DeepSeek Harness (dsh)
+
+Factory refuses some of dsh's fixed lines. The plugin sends its identity
+line as "You are an AI agent.", its model line as "Current model: X.",
+"harness" in the prompt, tool descriptions and skill catalog as "runtime",
+and its Web GUI's "The browser provides no implicit DOM, route, or
+screenshot context." with "gives". The rest of dsh's prompt and the user's
+own words go as written. A refusal that comes back on a new session's first
+turn is in what the agent sends every turn (its prompt, instruction files,
+skills or tools); turn skills, MCP servers and plugins off, then on again a
+few at a time, to find which.
 
 ## Claude Code through magpie
 

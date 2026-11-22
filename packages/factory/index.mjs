@@ -485,7 +485,7 @@ function contentRefused(status, text, headers) {
 // the request carries what droid sends.
 function explain(status, text, headers) {
   if (status !== 403) return ""
-  if (contentRefused(status, text, headers)) return "Factory's usage policy check reads the whole conversation, so this session's requests are refused again until the text that tripped it is gone: start a new session, or remove or reword what the conversation quotes (another agent's system prompt or instructions pasted in a message or a tool's output are the usual cause)"
+  if (contentRefused(status, text, headers)) return "Factory's usage policy check reads the whole conversation, so this session's requests are refused again until the text that tripped it is gone: start a new session, or remove or reword what the conversation quotes (another agent's system prompt or instructions pasted in a message or a tool's output are the usual cause). When a new session's first turn is refused too, it is in what the agent sends every turn: its system prompt, instruction files, skill list or tools' descriptions; turn skills, MCP servers and plugins off for this chat, then on again a few at a time, to find which"
   if (orgRefused(status, text)) return "the Factory account's organization changed; remove the account in magpie and sign in to it again"
   return "Factory refused the request. magpie adapts fixed client metadata on both OpenAI and Anthropic routes. Factory may still refuse unsupported fields or wrappers; check the upstream error, the organization's model policy, plan and regional provider availability, and compare the same model in Droid"
 }
@@ -537,8 +537,38 @@ const DROID_LINE = "You are Droid, an AI software engineering agent built by Fac
 // developer prompt, changes; the rest of pi's prompt goes on as it is.
 const PI_OPENING = /(^|\n)You are an expert coding assistant operating inside pi, a coding agent harness\./
 const PI_COMPAT = "You are an expert coding assistant."
+// dsh (@deepseek-ai/dsh, DeepSeek Harness) opens its system prompt with its
+// own identity line, "You are an AI agent powered by DeepSeek Harness."
+// (dsh-system-prompt's harness:identity section), then its preset's "You are
+// a coding agent powered by the <model> model." On Factory's Opus 5.5 every
+// first turn of a fresh dsh session was content_policy_rejected, tools
+// renamed in full or not (@a1pha1nthefog on X, 11-20, factory 0.1.52): an
+// identity sentence naming another agent's harness, the class of pi's and
+// omp's openings. The identity line goes as "You are an AI agent." and the
+// model line as the plain "Current model: <model>." droid's adapters use for
+// Claude Code's; both only at the start of a line of a system or developer
+// prompt, the rest of dsh's prompt as dsh wrote it.
+const DSH_OPENING = /(^|\n)You are an AI agent powered by DeepSeek (?:Harness|Runtime)\./
+const DSH_COMPAT = "You are an AI agent."
+const DSH_MODEL_LINE = /(^|\n)You are a coding agent powered by the ([^\n]+?) model\.(?=\n|$)/
+// dsh's Web GUI puts a paragraph in its system prompt
+// (@deepseek-ai/dsh-harness-dev-context, "You are interacting with the user
+// through the DeepSeek Harness Web GUI ..."), and one sentence of it is a
+// fixed line a vendor's client check reads as dsh: Google's Antigravity
+// turned it away from 11-17, and let it through with "gives" for "provides"
+// (agy-cli 0.1.88, packages/agy-cli/cloak.mjs, 3 of 3 on a real account).
+// @a1pha1nthefog's dsh on Factory (11-20, 0.1.53) was still refused with
+// the identity and model lines plain and the Web GUI notes in its prompt;
+// the sentence goes the same way here, in the prompt, wherever it sits in
+// its paragraph.
+const DSH_BROWSER = "The browser provides no implicit DOM, route, or screenshot context."
+const DSH_BROWSER_COMPAT = "The browser gives no implicit DOM, route, or screenshot context."
 function clientOpening(text) {
-  return typeof text === "string" ? text.replace(PI_OPENING, (_, at) => at + PI_COMPAT) : text
+  if (typeof text !== "string") return text
+  return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT)
+    .replace(DSH_OPENING, (_, at) => at + DSH_COMPAT)
+    .replace(DSH_MODEL_LINE, (_, at, model) => at + "Current model: " + model + ".")
+    .replaceAll(DSH_BROWSER, DSH_BROWSER_COMPAT)
 }
 
 // pi turns a compaction, and a branch it came back from, into a user
@@ -755,8 +785,12 @@ function geminiBody(model, body) {
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
   delete si.role
+  // the client's prompt, its user turns and its tools' descriptions are
+  // adapted as on Factory's other routes (droidBody, anthropicBody):
+  // magpie hands a Responses, chat or Messages request for a Gemini model
+  // here, and Factory's policy check reads it the same on this route
   const parts = Array.isArray(si.parts) ? si.parts.map((part) =>
-    part && typeof part.text === "string" ? { ...part, text: zcodeRuntimeContext(part.text) } : part) : []
+    part && typeof part.text === "string" ? { ...part, text: promptText(part.text) } : part) : []
   si.parts = parts
   if (!(typeof parts[0]?.text === "string" && parts[0].text.startsWith(DROID_LINE))) {
     const texts = []
@@ -769,6 +803,8 @@ function geminiBody(model, body) {
     si.parts = [{ text: joined.trim() === "" ? DROID_LINE : DROID_LINE + "\n" + joined }, ...rest]
   }
   m.systemInstruction = si
+  geminiTurns(m.contents)
+  if (Array.isArray(m.tools)) for (const t of m.tools) if (t && typeof t === "object") toolDescriptions(t.functionDeclarations)
   // Gemini's route has no tool-output adaptation: escape every refused
   // phrase in its parts (functionResponse, systemInstruction) here.
   escapeDeep(m, REFUSED_PHRASES)
@@ -776,6 +812,22 @@ function geminiBody(model, body) {
   for (const k of GEMINI_ORDER) if (m[k] !== undefined) ordered[k] = m[k]
   for (const [k, v] of Object.entries(m)) if (!(k in ordered)) ordered[k] = v
   return JSON.stringify(ordered)
+}
+
+// geminiTurns adapts the text parts of contents' user turns as
+// promptOpenings adapts a Responses or chat user message's: pi's summary,
+// Claude Code's reminders, Codex's AGENTS.md and environment blocks. The
+// model's turns, function calls and responses stay as they are (a
+// functionResponse is escaped with the rest of the body).
+function geminiTurns(contents) {
+  if (!Array.isArray(contents)) return
+  for (const c of contents) {
+    if (!c || typeof c !== "object" || c.role !== "user" || !Array.isArray(c.parts)) continue
+    for (const p of c.parts) {
+      if (!p || typeof p !== "object" || typeof p.text !== "string" || p.thought) continue
+      p.text = userText(piSummary(p.text))
+    }
+  }
 }
 
 // ---- request size -------------------------------------------------------------
@@ -1185,7 +1237,8 @@ function harnessText(text) {
 
 // toolDescriptions puts each tool's description, and its schema's
 // descriptions, through harnessText: Anthropic's tools[].description and
-// input_schema, chat's tools[].function, Responses' tools[]. False when
+// input_schema, chat's tools[].function, Responses' tools[], Gemini's
+// functionDeclarations (parameters or parametersJsonSchema). False when
 // nothing changed.
 function schemaDescriptions(schema, depth = 0) {
   if (!schema || typeof schema !== "object" || depth > 32) return false
@@ -1210,7 +1263,7 @@ function toolDescriptions(tools) {
       const adapted = harnessText(fn.description)
       if (adapted !== fn.description) (fn.description = adapted), (changed = true)
     }
-    for (const key of ["input_schema", "parameters"]) if (schemaDescriptions(fn[key])) changed = true
+    for (const key of ["input_schema", "parameters", "parametersJsonSchema"]) if (schemaDescriptions(fn[key])) changed = true
   }
   return changed
 }
@@ -1721,8 +1774,18 @@ function userBlockText(text) {
       .replace("Assistant knowledge cutoff is", "Model knowledge cutoff:")
   }
   if (SKILL_REMINDER.test(text)) return configSkillText(text)
+  if (DSH_SKILL_CATALOG.test(text)) return harnessText(text)
   return text
 }
+
+// dsh (@deepseek-ai/dsh-tool-skill) announces its skills in a user turn, a
+// <system-reminder> of its own wording around <available_skills>: the first
+// catalog, a changed one, or an incomplete one. Like a tool's description,
+// a skill's is the client's metadata, not the user's words, and
+// @a1pha1nthefog's 174-skill catalog names "DeepSeek Harness" in it; the
+// word goes as harnessText says, as it does in the system prompt and the
+// tools' descriptions. Only a whole generated block matches.
+const DSH_SKILL_CATALOG = /^<system-reminder>\n(?:A skill is a reusable set of task-specific instructions\. The following skills are available in this session:|The available skill catalog changed\. This complete catalog replaces every earlier available-skills list in this session:|Skill discovery is incomplete\. This catalog of currently available skills replaces every earlier available-skills list in this session:)\n\n<available_skills>\n(?:(?!<\/?system-reminder>)[\s\S])*\n<\/system-reminder>$/
 
 // A chat completions user message is one string: magpie joins a Messages
 // turn's text blocks with nothing between them, so a reminder block and the
@@ -1730,9 +1793,48 @@ function userBlockText(text) {
 // reminder in it as the block it was; the rest stays as it is.
 const REMINDER_BLOCK = /<system-reminder>\n[\s\S]*?\n<\/system-reminder>/g
 function userText(text) {
+  const blocks = joinedBlocks(text)
+  if (blocks.length > 1) return blocks.map(oneUserText).join("")
+  return oneUserText(text)
+}
+
+function oneUserText(text) {
   const adapted = userBlockText(text)
   if (adapted !== text || !text.includes("<system-reminder>\n")) return adapted
   return text.replace(REMINDER_BLOCK, (block) => userBlockText(block))
+}
+
+// joinedBlocks splits a chat user message back into the blocks magpie
+// joined with nothing between them. Claude Code's turn after /compact is
+// one such turn: the summary, which ends with no newline, then each
+// restored file and the rest of its context as a reminder of its own. As
+// one text it opened with the compaction header and was adapted as one
+// summary, and the reminders glued to it went to Factory as they were
+// (@dannykkg on X, 2026-11-20). Only a place nothing but joining makes is
+// a boundary: a reminder opening right after a character that is not a
+// newline, or the compaction header right after a reminder's close, and
+// either only where every reminder opened before it is closed, so a file a
+// read result quotes stays inside its block. A text with no such place is
+// one block, as before.
+const REMINDER_OPEN = "<system-reminder>\n", REMINDER_CLOSE = "\n</system-reminder>"
+function joinedBlocks(text) {
+  if (!text.includes(REMINDER_OPEN)) return [text]
+  const blocks = []
+  let start = 0, open = 0
+  const marks = /<system-reminder>\n|\n<\/system-reminder>/g
+  for (let m; (m = marks.exec(text)) !== null;) {
+    const i = m.index
+    if (m[0] === REMINDER_OPEN) {
+      if (i > start && open === 0 && text[i - 1] !== "\n") { blocks.push(text.slice(start, i)); start = i }
+      open++
+    } else if (open > 0 && --open === 0) {
+      const next = i + REMINDER_CLOSE.length
+      const prefix = COMPACT_ARTIFACT.exec(text.slice(next, next + 400))?.[0] ?? ""
+      if (text.startsWith(COMPACT_HEADER, next + prefix.length)) { blocks.push(text.slice(start, next)); start = next }
+    }
+  }
+  blocks.push(text.slice(start))
+  return blocks
 }
 
 // Claude Code's tool search (ENABLE_TOOL_SEARCH, on behind a gateway since
