@@ -16,7 +16,7 @@
 //     only, masked in logs).
 
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ORIGIN } from "./session.mjs"
@@ -30,6 +30,84 @@ const LOGIN_URL = `${ORIGIN}/`
 // token the signed-in page's config carries. All of these cookies are
 // httpOnly, so CDP's Network.getAllCookies is the only way to read them
 // (document.cookie cannot see them).
+
+// the cookie-jar domains the sign-in completes on: quick.aws.com itself and
+// the auth hosts the console redirects through (us-east-1.signin.aws). A
+// fresh row on any of these that this launch did not already have means the
+// sign-in landed — this is the profile-side completion signal (the window
+// title on quick.aws.com settles immediately even signed out, so it cannot
+// be the signal; see waitForConsoleWindow).
+const SESSION_COOKIE_DOMAINS = ["quick.aws.com", "signin.aws"]
+const cookieDomainMatches = (hostKey) => {
+  const h = String(hostKey ?? "").replace(/^\./, "").toLowerCase()
+  return SESSION_COOKIE_DOMAINS.some((d) => h === d || h.endsWith(`.${d}`))
+}
+
+// Chromium stores cookies in the profile's Default directory (current
+// layouts: Default/Network/Cookies, older Default/Cookies); only the value
+// column is encrypted, so "a session row exists" reads without decrypting.
+// While the browser runs it holds the library lock, so every poll COPIES the
+// database first (into the profile's own directory, not the system temp: the
+// copy holds plaintext cookie rows). A locked database reads as "not yet".
+const COOKIES_DB_PATHS = (profile) => [join(profile, "Default", "Network", "Cookies"), join(profile, "Default", "Cookies")]
+
+// Chromium time is microseconds since 1601-01-01.
+const CHROMIUM_EPOCH_OFFSET_MS = 11644473600000
+const unixMsOf = (chromiumUs) => Number(chromiumUs) / 1000 - CHROMIUM_EPOCH_OFFSET_MS
+
+function defaultSqliteOpen(dbPath) {
+  const { Database } = require("bun:sqlite")
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    return db.query("SELECT host_key, name, creation_utc, last_update_utc, expires_utc FROM cookies").all()
+  } finally {
+    db.close()
+  }
+}
+
+// every row of the profile's Cookies database, read from a copy; a missing
+// database, a lock, or no sqlite runtime yields [] — "not yet"
+export function cookieRows(profile, { sqliteOpen } = {}) {
+  const db = COOKIES_DB_PATHS(profile).find(existsSync)
+  if (!db) return []
+  const open = sqliteOpen ?? defaultSqliteOpen
+  let tmp = ""
+  try {
+    tmp = join(profile, `.quick-cookie-probe-${process.pid}-${Math.random().toString(36).slice(2, 8)}`)
+    copyFileSync(db, tmp)
+    return open(tmp)
+  } catch {
+    return []
+  } finally {
+    if (tmp) {
+      try {
+        rmSync(tmp, { force: true })
+      } catch {}
+    }
+  }
+}
+
+// Chrome keeps creation_utc on overwrite and moves last_update_utc, so a
+// row's identity is all three columns
+const rowKey = (r) => `${r.host_key}\u0000${r.name}\u0000${r.creation_utc}\u0000${r.last_update_utc}`
+
+// the profile's session-cookie rows before this launch; keep_sign_in keeps
+// the previous sign-in's rows, so "a row exists" is not "this sign-in landed"
+export function cookieBaseline(profile, opts = {}) {
+  return cookieRows(profile, opts).filter((r) => r?.name && cookieDomainMatches(r.host_key)).map(rowKey)
+}
+
+// is the sign-in finished? a quick.aws.com / signin.aws session-cookie row
+// that was not in the baseline and is unexpired (0 = session cookie, counts)
+export function profileHasNewCookie(profile, baseline = [], { sqliteOpen, nowMs = Date.now() } = {}) {
+  const seen = new Set(baseline)
+  return cookieRows(profile, { sqliteOpen }).some((r) => {
+    if (!r?.name || !cookieDomainMatches(r.host_key)) return false
+    if (seen.has(rowKey(r))) return false
+    const expires = Number(r.expires_utc ?? 0)
+    return !expires || unixMsOf(expires) > nowMs
+  })
+}
 
 // the same exclusive lock the moss module keeps: the login window, the
 // headless read and a silent renewal all use this profile, and two browser
@@ -259,41 +337,68 @@ function killTree(child) {
 }
 
 // the sign-in window carries NO debug port: it should look and behave like
-// a normal browser. Completion is the window settling on a page that is not
-// the sign-in page — Quick's start/chat is the signed-in surface, its title
-// stabilises there. The window is closed by the plugin, not the user.
+// a normal browser. Completion is NOT the window title — the landing page's
+// title ("AWS Quick - …") is indistinguishable from the signed-in console's
+// without the very pages that distinguish them. The signal is the profile's
+// Cookies database: a quick.aws.com / signin.aws session row newer than this
+// launch. On a locked database (the running browser's exclusive handle) the
+// probe reads "not yet" and the poll retries — Chrome flushes cookies to
+// disk on its own ~30s timer. The title remains as a cross-check only where
+// it can genuinely confirm a login page (SSO/账号页), never as completion.
+// The window is closed by the plugin, not the user.
 export async function waitForConsoleWindow(
   child,
-  { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform, titleOf = windowTitleOf, settleMs = 5000 } = {},
+  {
+    timeoutMs = 8 * 60_000,
+    pollMs = 1000,
+    signal,
+    log = () => {},
+    platform = process.platform,
+    titleOf = windowTitleOf,
+    settleMs = 5000,
+    profile = "",
+    cookieProbe = null,
+  } = {},
 ) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
   const canReadTitle = platform === "win32"
+  const canProbeCookies = Boolean(profile) && typeof cookieProbe === "function"
+  if (canProbeCookies) {
+    log("watching the profile's cookie store for the Quick session")
+  }
   const SIGNIN_PAGE = /sign.?in|login|auth|sso|register|captcha|验证|登录|登入/i
   let lastTitle = ""
   let hits = 0
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) return "closed"
     if (signal?.aborted) return "aborted"
-    if (!canReadTitle) {
-      await sleep(pollMs)
-      continue
+    // the profile's cookie store is the completion signal (a row newer than
+    // this launch); a locked db reads as false and the poll retries
+    if (canProbeCookies && cookieProbe(profile)) {
+      log("the Quick session is in the profile; closing the window")
+      return "console"
     }
-    const title = Date.now() - started >= settleMs ? titleOf(child.pid) : ""
-    if (title && !SIGNIN_PAGE.test(title)) {
-      if (title === lastTitle) {
-        hits += 1
-        if (hits >= 1) {
-          log(`login window settled on "${title.slice(0, 60)}"; closing the window`)
-          return "console"
+    // the title is only consulted to keep waiting honestly on a visible
+    // sign-in page; it can never complete the wait (the landing page's
+    // title matches a signed-out window)
+    if (canReadTitle && !canProbeCookies) {
+      const title = Date.now() - started >= settleMs ? titleOf(child.pid) : ""
+      if (title && !SIGNIN_PAGE.test(title)) {
+        if (title === lastTitle) {
+          hits += 1
+          if (hits >= 1) {
+            log(`login window settled on "${title.slice(0, 60)}"; closing the window`)
+            return "console"
+          }
+        } else {
+          hits = 0
         }
+        lastTitle = title
       } else {
         hits = 0
+        if (title) lastTitle = ""
       }
-      lastTitle = title
-    } else {
-      hits = 0
-      if (title) lastTitle = ""
     }
     await sleep(pollMs)
   }
@@ -532,10 +637,22 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
     log("opening the sign-in window")
     killProfileProcesses(dir, log)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // keep_sign_in keeps the previous sign-in's session rows, so "a row
+    // exists" is not "this sign-in finished" — remember the rows there now,
+    // and accept only one newer than this launch (or an overwritten one,
+    // whose last_update_utc moved).
+    const baseline = cookieBaseline(dir)
+    log(`profile baseline: ${baseline.length} existing session row(s)`)
     try {
       const child = spawn(exe, browserArgs(dir, 0, LOGIN_URL, { cdp: false }), { stdio: "ignore", env: browserEnv() })
       try {
-        const how = await waitForConsoleWindow(child, { timeoutMs, signal, log })
+        const how = await waitForConsoleWindow(child, {
+          timeoutMs,
+          signal,
+          log,
+          profile: dir,
+          cookieProbe: (probeProfile) => profileHasNewCookie(probeProfile, baseline),
+        })
         log(`login window finished (${how})`)
         if (how === "aborted") throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
         // the sign-in landed (or the window was closed): let the page
