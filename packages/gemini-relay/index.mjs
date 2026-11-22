@@ -103,11 +103,14 @@ export function createPlugin({ profileDir, headless = true } = {}) {
                 return { type: "failed", error: "打开浏览器失败：" + String(e?.message ?? e) }
               }
               if (!cookies) return { type: "failed", error: "五分钟内没有在窗口里登录 Google 账号，请再试一次。" }
-              // check the sign-in really opens Gemini: the page must carry
-              // its tokens, and its email names the account
-              let who = "Google 账号"
+              // name the account by its Google email. The page's HTML
+              // carries it, and the check browser keeps the page's own
+              // session (not headless), so the app serves the page instead
+              // of a sorry. The sign-in window itself is a fallback: it is
+              // just on Gemini, and the app names accounts there too.
+              let who = ""
               try {
-                const check = new RelayBrowser({ profileDir: profile, headless: true })
+                const check = new RelayBrowser({ profileDir: profile, headless: false })
                 try {
                   const page = await check.ensure()
                   const t = await page.eval(`(() => {
@@ -119,6 +122,7 @@ export function createPlugin({ profileDir, headless = true } = {}) {
                   await check.stop()
                 }
               } catch {}
+              if (!who) who = "Google 账号"
               return { type: "success", access: JSON.stringify({ profileDir: profile }), refresh: profile, expires: 0, accountId: who, name: who }
             },
           }),
