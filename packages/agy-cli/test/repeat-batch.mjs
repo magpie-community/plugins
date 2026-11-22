@@ -2469,3 +2469,59 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+// A Codex turn (2026-11-22): the model called agy's own read_file twice and
+// the client's exec_command once. The bridge turned agy's tool away (it runs
+// only the client's tools), agy cancelled the batch and ended the turn with
+// no text and no tool call, and Codex took that as a finished reply that
+// said nothing: the conversation stopped with no error.
+const READ_FILE = { toolCallId: "agy-read-1", title: "Read file README.md", kind: "read", rawInput: { path: "README.md" } }
+
+function deniedAgent(kit, { thinks = false, emptyAgain = null } = {}) {
+  const outcomes = []
+  kit.defaultPrompt = async (agent) => {
+    if (promptText({ prompt: agent.prompt }).includes("Your last reply was empty")) {
+      if (emptyAgain === "denied") outcomes.push(await agent.requestPermission(READ_FILE))
+      if (emptyAgain) return { stopReason: "end_turn" }
+      await agent.tool("Read", { path: "README.md" })
+      return { stopReason: "end_turn" }
+    }
+    if (thinks) await agent.thought("read the plugin's README first")
+    outcomes.push(await agent.requestPermission(READ_FILE))
+    return { stopReason: "end_turn" }
+  }
+  return outcomes
+}
+
+test("a turn that ends empty after agy's own tool was turned away is asked again, naming the tools to use", async () => {
+  for (const thinks of [false, true]) {
+    await withKit({}, async (kit) => {
+      const outcomes = deniedAgent(kit, { thinks })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `denied-${thinks}` },
+        messages: [{ role: "user", content: "read the plugin's README" }] })))
+      assert.equal(outcomes[0]?.outcome?.optionId, "deny", "agy's own tool is still turned away")
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "tool_use", `thinks=${thinks}: the client gets the tool call, not an empty reply`)
+      assert.deepEqual(parsed.content.filter((block) => block.type === "tool_use").map((block) => block.name), ["Read"])
+      const sent = prompts(kit)
+      assert.equal(sent.length, 2, "asked once more")
+      assert.ok(sent[1].includes("mcp_ide-tools_"), sent[1])
+      assert.ok(!/magpie|agy|antigravity|gemini/i.test(sent[1]), "the words sent upstream name nobody")
+      assert.equal(sessionsOpened(kit), 1, "in the same session, not a replay")
+    })
+  }
+})
+
+test("a turn still empty after that is an error that says a tool was turned away, never a silent stop", async () => {
+  for (const emptyAgain of ["bare", "denied"]) {
+    await withKit({}, async (kit) => {
+      deniedAgent(kit, { emptyAgain })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `denied-twice-${emptyAgain}` },
+        messages: [{ role: "user", content: "read the plugin's README" }] })))
+      assert.ok(parsed.error, `${emptyAgain}: an error, not a finished reply that said nothing`)
+      assert.match(parsed.error.message, /no text and no tool call/)
+      assert.match(parsed.error.message, /turned away/)
+      assert.equal(prompts(kit).length, 2, "asked once more, not again and again")
+    })
+  }
+})

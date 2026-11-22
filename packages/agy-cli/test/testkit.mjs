@@ -223,6 +223,9 @@ class FakeAgy {
     this.buffer = ""
     this.cancelWaiters = []
     this.cancelPending = false
+    // the bridge's answers to agy's own requests (session/request_permission)
+    this.replies = new Map()
+    this.requestSerial = 0
     child.onStdin = (chunk) => this.onStdin(chunk)
     // offeredModels may be a function of the agy's HOME: accounts on
     // different plans are offered different models (#1229).
@@ -249,6 +252,7 @@ class FakeAgy {
       if (!line.trim()) continue
       const message = JSON.parse(line)
       if (typeof message.method === "string") this.onMessage(message)
+      else this.replies.get(message.id)?.(message)
     }
   }
 
@@ -399,6 +403,20 @@ class FakeAgy {
         return Promise.all(replies)
       },
       async tool(name, args) { return (await this.tools([[name, args]]))[0] },
+      // agy asks before running a tool of its own; resolves the bridge's outcome
+      requestPermission(toolCall, options = [
+        { optionId: "allow", name: "Allow once", kind: "allow_once" },
+        { optionId: "deny", name: "Deny", kind: "reject_once" },
+      ]) {
+        const id = `agy-req-${++self.requestSerial}`
+        return new Promise((resolve) => {
+          self.replies.set(id, (message) => {
+            self.replies.delete(id)
+            resolve(message.result ?? { error: message.error })
+          })
+          self.send({ id, method: "session/request_permission", params: { sessionId: self.sessionId, toolCall, options } })
+        })
+      },
       listTools() { return self.control({ kind: "list" }) },
       waitCancel() {
         if (self.cancelPending) return Promise.resolve()

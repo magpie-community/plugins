@@ -409,7 +409,14 @@ off unless you turn it on.
   once more in the same session, where the model still has the whole context.
   Still empty, the turn ends with an error, so magpie asks the next account,
   and the client sending the request again continues in that session. An
-  empty ending with no thinking either is returned as it is.
+  empty ending with no thinking either is returned as it is, except as the
+  answer to the plugin's own ask, where it is still an error.
+- **The conversation stops with no reply and no error**: the model called a
+  tool of agy's own (file reads, shell), the plugin turned it away since it
+  runs only the client's tools, and agy ended the turn saying nothing. Such
+  an ending is now asked once more in the same session, telling the model to
+  use the tools whose names start with `mcp_ide-tools_`; still empty, the
+  turn ends with an error that says why instead of stopping silently.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
