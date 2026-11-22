@@ -162,6 +162,12 @@ const DISABLED_CORE = AGENT_ERROR_CORES[6]
 // the account is not rested as a 429 would rest it.
 const BUSY_CORE = "⚠ Our servers are experiencing high traffic right now"
 const BUSY_MARKER = "\n" + BUSY_CORE
+// agy's ending when its agent executor failed: "⚠ agent executor error:
+// request failed: Bad Gateway", then end_turn. Answered as text, it was a
+// normal stop (plugins#1326). Its detail varies, so it is matched by its
+// start, as the quota ending is, and fails the turn with that detail.
+const EXECUTOR_CORE = "⚠ agent executor error: "
+const EXECUTOR_MARKER = "\n" + EXECUTOR_CORE
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
 const ATTEMPT_CORE = "⚠ API error (attempt "
@@ -209,7 +215,7 @@ const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 // agy's lines as they start a reply or a line, with no newline before them:
 // a chunk that ends on the start of one is held (plugins#1454).
-const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
+const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, EXECUTOR_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
 const HOLD_MAX = Math.max(
   ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, ...QUOTA_MARKERS.map((marker) => marker.length), BUSY_MARKER.length,
 ) - 1
@@ -1856,12 +1862,13 @@ class Turn {
       const marker = text.lastIndexOf(core)
       if (marker >= 0 && !text.slice(marker + core.length).trim()) return this.lineFrom(text, marker)
     }
-    const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE))
+    const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE), this.quotaEnding(text, EXECUTOR_CORE))
     if (quota >= 0) return quota
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
       if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKERS.some((marker) => marker.startsWith(tail)) ||
-        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
+        BUSY_MARKER.startsWith(tail) || EXECUTOR_MARKER.startsWith(tail) ||
+        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           NOTICE_MARKER.startsWith(tail) || CAP_MARKER.startsWith(tail))) ||
         (this.startsLine(text, text.length - keep) && LINE_CORES.some((core) => core.startsWith(tail)))) {
         return text.length - keep
@@ -1999,6 +2006,11 @@ class Turn {
     } else if (this.quotaEnding(this.heldText, BUSY_CORE) >= 0) {
       this.agentError = true
       this.agentErrorCore = BUSY_CORE
+      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
+      this.heldText = ""
+    } else if (this.quotaEnding(this.heldText, EXECUTOR_CORE) >= 0) {
+      this.agentError = true
+      this.agentErrorCore = EXECUTOR_CORE
       this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
     }
@@ -2896,6 +2908,7 @@ class Proc {
     if (core === BUSY_CORE) {
       return new AgentTurnError(`agy bridge: Antigravity has no capacity for this model now: ${turn.quotaNotice}`, "overloaded_error")
     }
+    if (core === EXECUTOR_CORE) return this.#formatAgentError(turn.quotaNotice)
     // agy 1.5.10 leaves out the status agyRefusal reads the ban by
     if (core === DISABLED_CORE) return refusedError(ACCOUNT_DISABLED_REFUSED)
     if (core === VERIFY_CORE) {

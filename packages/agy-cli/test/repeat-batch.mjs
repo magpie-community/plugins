@@ -2469,3 +2469,33 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+// agy ends a turn whose executor failed with one line of its own and
+// end_turn; Pi got it as the reply, a normal stop (plugins#1326). Its detail
+// varies, so it is matched by its start, as the quota ending is.
+const EXECUTOR_LINE = "⚠ agent executor error: request failed: Bad Gateway"
+
+test("plugins#1326: agy's agent executor error ending fails the turn, never a 200 reply", async () => {
+  for (const [chunks, want] of [
+    [["Working on it.\n" + EXECUTOR_LINE + "\n"], "Working on it."],
+    [["Working on it.", "\n⚠ agent executor", " error: request failed: Bad Gateway"], "Working on it."],
+    [[EXECUTOR_LINE + "\n"], ""],
+    [["Let me look.\n⚠ Model produced invalid output.\n" + EXECUTOR_LINE], "Let me look."],
+  ]) {
+    const parsed = await replyOf(chunks, "executor-error")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), `no notice reaches the client as text: ${JSON.stringify(chunks)}`)
+    assert.match(sseError(parsed.raw).message, /agy stopped the turn because of an error: agent executor error: request failed: Bad Gateway/)
+  }
+})
+
+test("plugins#1326: the model quoting agy's executor error keeps it", async () => {
+  for (const chunks of [
+    ["agy logged `" + EXECUTOR_LINE + "`", " so the turn stopped."],
+    [EXECUTOR_LINE + "\n", "That line is from agy's log."],
+  ]) {
+    const parsed = await replyOf(chunks, "executor-quoted")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(replyText(parsed), chunks.join(""))
+  }
+})
