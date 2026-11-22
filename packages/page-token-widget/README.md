@@ -14,6 +14,8 @@ magpie plugin add @magpie-community/page-token-widget
 
 **控制台永远留在本机**：它只听 `127.0.0.1`，尾网里的设备够不到它，伪造 `Host` 头也没有用（见下面的「安全边界」）。
 
+**订阅可以挑，名单可以随时重读**：插件页「显示哪些订阅」的第一行是「全部订阅（跟着 Magpie 走）」，跟着走的时候下面每一行照样能勾、照样能拖——五家订阅只想在手机上留四家（不显示 minimax），勾掉 minimax 就行，这个「关掉」是记住了的：只要它还在 Magpie 里，它就不会自己回来。同一块上面有一个「刷新订阅」按钮，点了立刻重新读一次网关，把「现在有哪些订阅」摆出来，新出现的标一个「新」，不用等定时刷新；网关没答上来时明说「没有读到网关」，并保留上一次读到的名单——不拿旧的冒充新的。
+
 # @magpie-community/page-token-widget
 
 ## English
@@ -40,7 +42,13 @@ magpie plugin add @magpie-community/page-token-widget
   last seven days and the ranking per provider.
 - The plugin page chooses which subscriptions the medium and the large widget
   show, and it can drag them into the order you want. The phone and the widgets
-  follow that order. Every row has a field of its own under it: a name of your
+  follow that order. While the whole list of Magpie is followed you can still untick
+  a subscription: it is hidden, and the hiding is remembered, so (as long as it is still
+  in Magpie) five subscriptions
+  and four of them on the phone (no minimax) is a matter of unticking minimax. A
+  "refresh subscriptions" button reads the gateway again at once and shows which
+  subscriptions there are now, so one that was added in Magpie does not have to
+  wait for the next reading. Every row has a field of its own under it: a name of your
   own for that subscription, used by the page on the phone and by the widgets.
   Leave it empty and the name Magpie gives the vendor is used — "Zhipu GLM" and
   "MiniMax (China)", the names the software shows as well.

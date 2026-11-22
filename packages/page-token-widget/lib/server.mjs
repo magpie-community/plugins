@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { Collector, REFRESH_STRATEGIES, refreshStrategy } from './collector.mjs';
-import { displayOptions } from './normalize.mjs';
+import { displayOptions, MAX_HIDDEN_SUBSCRIPTIONS } from './normalize.mjs';
 import { sweepTemporaries } from './atomic.mjs';
 import {
   ensureState, notePairing, rotatePairing, writeState, pairingUsable,
@@ -416,6 +416,13 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       options: Object.values(REFRESH_STRATEGIES).map(entry => ({ id: entry.id, label: entry.label })),
     },
     subscriptions: collector.allSubscriptions(),
+    // The subscriptions the phone is shown, in the order the phone shows
+    // them. The console offers the card of the small widget from here, so
+    // that it only offers the cards that are really there.
+    shown: collector.shownSubscriptions().map(card => card.id),
+    // What the last reading of the gateway was: when it was taken, and
+    // whether it is a reading of this moment.
+    reading: collector.readingInfo(),
   });
 
   // The forwarding of the published port has to point at the phone side. A
@@ -809,7 +816,34 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
           }
         }
         const next = displayOptions({ ...state.settings, ...body });
+        // The list of the turned off ones is written down in the state file.
+        // A list that is longer than that is refused, so that a name is
+        // never dropped without the person at the keyboard being told. The
+        // count is the one of the names that are really there: the same name
+        // twice is one name, and a name that is not a name is none.
+        const given = displayOptions({ subscriptions: ['*'], subscriptionHidden: body.subscriptionHidden });
+        if (Array.isArray(body.subscriptionHidden) && given.subscriptionHidden.length > MAX_HIDDEN_SUBSCRIPTIONS) {
+          return json(response, 400, { error: `一次最多关掉 ${MAX_HIDDEN_SUBSCRIPTIONS} 家订阅。` }, allowOrigin);
+        }
+        // The widgets need something to show. A choice that turns off every
+        // subscription the gateway knows is refused here as well as on the
+        // page, so that a state file written by hand cannot leave the phone
+        // empty. A choice that simply does not match the gateway (a vendor
+        // that has been renamed) is not refused: it is the choice of the
+        // user, and it has always been kept.
+        const withoutHidden = collector.selectedWith({ ...next, subscriptionHidden: [] });
+        const withHidden = collector.selectedWith(next);
+        if (next.subscriptionHidden.length && collector.knownCount() > 0
+          && withoutHidden.length && !withHidden.length) {
+          return json(response, 400, { error: '至少要留一家订阅，中号和大号组件才有内容。' }, allowOrigin);
+        }
         state.settings = { ...state.settings, ...next };
+        // A state file of an older version does not grow a key for nothing:
+        // the list of the turned off ones is only written down when there is
+        // one.
+        if (!next.subscriptionHidden.length) delete state.settings.subscriptionHidden;
+        // The order of the rows is only written down when there is one.
+        if (!next.subscriptionOrder.length) delete state.settings.subscriptionOrder;
         if (body.refreshStrategy !== undefined) {
           state.settings.refreshStrategy = refreshStrategy(body.refreshStrategy);
         }
@@ -846,6 +880,74 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
           display: collector.display,
           refresh: consoleState().refresh,
           external: consoleState().external,
+        }, allowOrigin);
+      }
+      if (pathname === '/api/v1/console/subscriptions/refresh' && method === 'POST') {
+        // Somebody is at the keyboard: the gateway is asked now, and not once
+        // a minute for nothing. A reading that is already running is joined
+        // instead of a second one.
+        collector.noteActivity();
+        const before = collector.allSubscriptions().map(entry => ({ id: entry.id, provider: entry.provider }));
+        // A reading that throws is a reading that failed: the old list stays
+        // in place and the failure is told, so that an old list is never
+        // passed for a new one.
+        let trouble = '';
+        try {
+          // A new reading, not the one that happens to be on its way: the
+          // person at the keyboard wants the list of the subscriptions as
+          // they are now, not the one that was read before the click.
+          await collector.refreshNow();
+        } catch (error) {
+          trouble = error?.message ? String(error.message) : '网关没有给出新的订阅列表。';
+        }
+        const after = collector.allSubscriptions();
+        const ids = after.map(entry => entry.id);
+        const reading = collector.readingInfo();
+        // A reading that failed keeps the old list in place. It is told as a
+        // failure, so that an old list is never passed for a new one.
+        // A gateway that answered and said that it has no subscription at
+        // all is not a failure: it answered, and there was nothing there to
+        // read. An old list that is kept over it is still told as an old
+        // one, because that is what it is.
+        const failed = Boolean(trouble) ||
+          (reading.stale && !(reading.answered && reading.empty && reading.count === 0));
+        // What is gone is taken off the list of the turned off ones: a
+        // subscription that was taken away in Magpie is not turned off any
+        // more, and it does not take the place of a name that is still there.
+        // A name is only gone when no card carries it any more: the card of
+        // a vendor with one account is called after the vendor, and with two
+        // accounts it is called after the account. The choice of the user is
+        // about the vendor, so it has to hold when its cards change names.
+        const removed = before.filter(entry => !ids.includes(entry.id));
+        let hidden = Array.isArray(state.settings.subscriptionHidden) ? state.settings.subscriptionHidden : [];
+        if (!failed && removed.length && hidden.length) {
+          const kept = hidden.filter(id => after.some(entry => entry.id === id || entry.provider === id));
+          if (kept.length !== hidden.length) {
+            hidden = kept;
+            state.settings.subscriptionHidden = hidden;
+            if (!hidden.length) delete state.settings.subscriptionHidden;
+            await writeState(stateFile, state);
+            collector.setDisplay(displayOptions({ ...state.settings, ...pluginSettings }));
+          }
+        }
+        return json(response, 200, {
+          ok: !failed,
+          // The words of the gateway are not handed to the page: they may
+          // carry the name of a machine of the network. The page is told
+          // what happened, and that the list below is the old one.
+          error: failed ? '网关没有给出新的订阅列表，下面还是上一次读到的。' : '',
+          subscriptions: after,
+          shown: collector.shownSubscriptions().map(card => card.id),
+          // The list of the turned off ones as the service keeps it now.
+          hidden,
+          // What came and what went since the list the console knew.
+          added: ids.filter(id => !before.some(entry => entry.id === id)),
+          removed: removed.map(entry => entry.id),
+          observedAt: reading.observedAt,
+          // Whether the gateway answered, and whether it said that it holds
+          // no subscription at all. The page tells the two apart.
+          answered: reading.answered,
+          empty: reading.empty,
         }, allowOrigin);
       }
       if (pathname === '/api/v1/console/network/reset' && method === 'POST') {

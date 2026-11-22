@@ -79,7 +79,7 @@ test('the small widget picker offers the accounts covered by the display selecti
   const renderer = script.match(/  const renderWidgetCard = [\s\S]*?\n  \};/)[0];
   const list = { children: [], replaceChildren() { this.children = []; }, append(row) { this.children.push(row); } };
   const document = { createElement: () => ({ children: [], append(...children) { this.children.push(...children); } }) };
-  const render = new Function('document', 'element', 'node', 'saveState', `${renderer}\nreturn renderWidgetCard;`)(document, () => list, document.createElement, () => {});
+  const render = new Function('document', 'element', 'node', 'saveState', 'text', 'hidden', `${renderer}\nreturn renderWidgetCard;`)(document, () => list, document.createElement, () => {}, () => {}, new Set());
   const subscriptions = ['codex@alpha', 'codex@beta', 'glm'].map(id => ({ id, provider: id.split('@')[0] }));
   const offered = selected => {
     render({ subscriptions, display: { subscriptions: selected } });
@@ -101,6 +101,92 @@ test('the parameter of the subscription sits on the right', async () => {
   assert.match(css, /\.checks \.param \{[^}]*text-overflow: ellipsis;/);
   assert.match(css, /\.checks label \.name \{[^}]*min-width: 0/);
   assert.match(script, /hint\.className = 'tag param'/);
+});
+
+test('the rows that are not ticked keep their place in the order', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/    const rows = \(\) => \{[\s\S]*?\n    \};/);
+  assert.ok(source, 'the page has no list of the rows any more');
+  // The list of the rows is every row of the page, the ones that are not
+  // ticked among them: a row that is turned off has to be written down as
+  // well, or it loses its place.
+  const rows = new Function('list', `${source[0]}\nreturn rows;`)({
+    querySelectorAll: () => ['codex', 'minimax', 'qoder-cn', '*'].map(value => ({
+      querySelector: () => ({ value, classList: { contains: name => name === 'follow' && value === '*' } }),
+    })),
+  });
+  assert.deepEqual(rows(), ['codex', 'minimax', 'qoder-cn']);
+});
+
+test('the order of the rows is kept when the way of choosing changes', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/  const rowOrder = [\s\S]*?\n  \};/);
+  assert.ok(source, 'the page has no order of the rows any more');
+  const rowOrder = new Function(`${source[0]}\nreturn rowOrder;`)();
+  // The order the user gave is the whole order: a row that is turned off
+  // keeps its place, also when only the ticked ones are shown.
+  assert.deepEqual(
+    rowOrder({
+      subscriptionOrder: ['codex', 'minimax', 'qoder-cn'],
+      subscriptions: ['codex', 'qoder-cn'],
+      subscriptionHidden: ['minimax'],
+    }),
+    ['codex', 'minimax', 'qoder-cn'],
+  );
+  // A state of an older version has no order of its own: the list of the
+  // shown ones comes first, and the ones that are turned off after them.
+  assert.deepEqual(
+    rowOrder({ subscriptions: ['*', 'codex', 'qoder-cn'], subscriptionHidden: ['minimax'] }),
+    ['codex', 'qoder-cn', 'minimax'],
+  );
+});
+
+test('the refresh button asks the service for the list of the subscriptions', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/  const refreshSubscriptions = async \(\) => \{[\s\S]*?\n  \};/);
+  assert.ok(source, 'the page has no refresh of the subscriptions any more');
+  const calls = [];
+  const api = async (route) => {
+    calls.push(route);
+    return { ok: true, subscriptions: [], shown: [], added: [], removed: [], hidden: [], observedAt: null };
+  };
+  const refresh = new Function(
+    'element', 'saveState', 'saveQueue', 'nameQueue', 'api', 'current',
+    'renderSubscriptions', 'renderWidgetCard', 'hidden', 'syncHidden', 'safeError',
+    `${source[0]}\nreturn refreshSubscriptions;`,
+  )(
+    () => null,
+    () => {},
+    Promise.resolve(),
+    Promise.resolve(),
+    api,
+    { display: {}, subscriptions: [] },
+    () => {},
+    () => {},
+    new Set(),
+    () => {},
+    (message, fallback) => message || fallback,
+  );
+  await refresh();
+  assert.deepEqual(calls, ['api/v1/console/subscriptions/refresh']);
+});
+
+test('a subscription that is turned off is not offered by the small widget', async () => {
+  const script = await read('ui/app.js');
+  const renderer = script.match(/  const renderWidgetCard = [\s\S]*?\n  \};/)[0];
+  const list = { children: [], replaceChildren() { this.children = []; }, append(row) { this.children.push(row); } };
+  const document = { createElement: () => ({ children: [], append(...children) { this.children.push(...children); } }) };
+  // The minimax subscription is turned off: it is not offered, or the small
+  // widget would say "not found" for it.
+  const render = new Function('document', 'element', 'node', 'saveState', 'text', 'hidden', `${renderer}\nreturn renderWidgetCard;`)(
+    document, () => list, document.createElement, () => {}, () => {}, new Set(['minimax']),
+  );
+  render({
+    subscriptions: [{ id: 'codex@example.com', provider: 'codex' }, { id: 'minimax', provider: 'minimax' }],
+    display: { subscriptions: ['*'] },
+  });
+  const offered = list.children.map(row => row.children[0]).filter(input => input.name === 'widget-card' && input.value).map(input => input.value);
+  assert.deepEqual(offered, ['codex@example.com']);
 });
 
 test('a device can be taken off the list', async () => {
@@ -409,8 +495,13 @@ test('the subscription rows can be dragged into another order', async () => {
   assert.match(page, /rows\[to\]\.after\(dragging\)|rows\[to\]\.before\(dragging\)/);
   assert.match(page, /api\/v1\/console\/options/);
   // The rows are drawn in the order the user has given, not in the order the
-  // gateway happens to list them.
-  assert.match(page, /for \(const entry of state\.display\?\.subscriptions \|\| \[\]\)/);
+  // gateway happens to list them. The rows that are turned off keep their
+  // place as well: the whole order is written down apart from the list of
+  // the shown ones.
+  assert.match(page, /for \(const entry of order\)/);
+  assert.match(page, /const order = rowOrder\(state\.display \|\| \{\}\)/);
+  assert.match(page, /display\.subscriptionOrder/);
+  assert.match(page, /display\.subscriptionHidden/);
   assert.match(styles, /\.grip/);
 });
 
@@ -447,7 +538,11 @@ test('the console offers to follow the subscriptions of Magpie', async () => {
   // The list that is sent is the whole one when that row is ticked, and the
   // rows below it only decide when it is not. The subscriptions that are
   // written down after the star keep the order the user has given them.
-  assert.match(script, /follow && follow\.checked \? \['\*', \.\.\.collect\(\)\] : collect\(\)/);
+  // When the whole list is followed, every row is written down, the ones
+  // that are turned off among them: a row that is turned off keeps its
+  // place instead of falling to the end of the list.
+  assert.match(script, /follow && follow\.checked \? \['\*', \.\.\.rows\(\)\] : collect\(\)/);
+  assert.match(script, /const rows = \(\) => \{/);
   // The first row is not a subscription of its own: it is not written down
   // with the others.
   assert.match(script, /!input\.classList\.contains\('follow'\)/);
@@ -455,6 +550,79 @@ test('the console offers to follow the subscriptions of Magpie', async () => {
   // that does not show up is not a mystery.
   assert.match(page, /id="subMode"/);
   assert.match(script, /element\('subMode'\)/);
+});
+
+test('the subscriptions can be read again from the gateway', async () => {
+  const page = await read('ui/index.html');
+  const script = await read('ui/app.js');
+  // The button and the line that says what the reading was.
+  assert.match(page, /id="refreshSubs"/);
+  assert.match(page, /id="subsRefreshNote"/);
+  assert.match(page, /刷新订阅/);
+  // The button asks the service to read the gateway again, and the answer
+  // says what is new.
+  assert.match(script, /api\/v1\/console\/subscriptions\/refresh/);
+  assert.match(script, /result\.added/);
+  // A reading that failed is told as a failure.
+  assert.match(script, /!result\.ok/);
+});
+
+test('a subscription can be turned off in both ways of choosing', async () => {
+  const script = await read('ui/app.js');
+  // The rows below the star are not disabled any more: following Magpie does
+  // not take away the choice of the number and the order of the cards.
+  assert.doesNotMatch(script, /input\.disabled = all/);
+  assert.doesNotMatch(script, /box\.disabled = following/);
+  assert.match(script, /grip\.draggable = true/);
+  // What the user turns off is written down with the choice, so that it does
+  // not come back by itself.
+  assert.match(script, /hidden\.add\(input\.value\)/);
+  assert.match(script, /hidden\.delete\(input\.value\)/);
+  assert.match(script, /subscriptionHidden: \[\.\.\.hidden\]/);
+});
+
+test('the warning about the small widget is written where the list of the shown cards is', async () => {
+  const script = await read('ui/app.js');
+  // The warning needs the list of the cards that are really shown. That list
+  // only exists in the function that draws the card of the small widget: a
+  // function that used it without having it would stop the page altogether.
+  const start = script.indexOf('const renderWidgetMode = (state) =>');
+  const end = script.indexOf('const refreshSubscriptions = async () =>');
+  assert.ok(start > 0 && end > start, 'the page has both functions');
+  const mode = script.slice(start, end);
+  assert.doesNotMatch(mode, /\bshown\b/, 'the mode of the widget does not use the shown list');
+  const cardStart = script.indexOf('const renderWidgetCard = (state) =>');
+  const card = script.slice(cardStart, script.indexOf('const renderPairing = (state) =>'));
+  assert.match(card, /widgetCardWarn/);
+  // The warning is cleared as well when there is nothing to say, so that an
+  // old warning does not stay on the page.
+  assert.match(card, /text\('widgetCardWarn', ''\)/);
+});
+
+test('the saves of the page go one after another', async () => {
+  const script = await read('ui/app.js');
+  // Two saves that travel at the same time would each carry a list of their
+  // own, and the one that is answered last would be the one that is kept.
+  assert.match(script, /saveQueue = saveQueue\.then\(run, run\)/);
+  // A reading of the gateway waits for the save that is on its way, so that
+  // the rows are not drawn over a tick that was not stored yet.
+  assert.match(script, /await saveQueue;/);
+});
+
+test('a late answer does not overwrite a newer change', async () => {
+  const script = await read('ui/app.js');
+  // Every change of the user has a number. A response that comes back after
+  // a newer change is about an older state, and it does not overwrite it:
+  // the request that is queued behind it carries the newer change.
+  assert.match(script, /hiddenRevision \+= 1;/);
+  assert.match(script, /if \(hiddenRevision === revision\)/);
+  // The ticks that are put back after a change go by the same rule the rows
+  // are drawn by, so that the page cannot show something the service does
+  // not keep.
+  assert.match(script, /box\.checked = shownOf\(subscription, state\.display\)/);
+  // The rows cannot be dragged while the gateway is read: an order that is
+  // given in between would be taken back by the drawing that follows.
+  assert.match(script, /grip\.draggable = false/);
 });
 
 test('the phone says goodbye to its row on the list', async () => {

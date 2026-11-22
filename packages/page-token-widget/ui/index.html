@@ -53,12 +53,17 @@
 
             <section>
               <h2>显示哪些订阅</h2>
+              <div class="actions left">
+                <button type="button" id="refreshSubs" class="quiet">刷新订阅</button>
+              </div>
+              <p class="note" id="subsRefreshNote"></p>
               <div id="subscriptions" class="checks"></div>
               <p class="note">
-                这里改的是中号和大号组件里的内容。第一行的「全部订阅」是跟着 Magpie 走：在 Magpie 里新增的订阅自动出现，删掉的自动消失。下面勾上的账号会显示；拖动左边的把手可以换顺序，手机和组件都按这个顺序排。改完是直接记下的，不用再点哪里。
+                这里改的是中号和大号组件里的内容。先点「刷新订阅」，网关现在有哪些订阅就摆出来：勾上的那几家才在手机上显示额度，拖动左边的把手可以换顺序，手机和组件都按这个顺序排。第一行的「全部订阅」是跟着 Magpie 走：在 Magpie 里新增的订阅自动出现，删掉的自动消失；被你取消勾选的那几家会被记住，不会自己回来。改完是直接记下的，不用再点哪里。
               </p>
               <p class="note" id="subMode"></p>
               <p class="note" id="subNote"></p>
+              <p class="note" id="subWarn"></p>
             </section>
 
             <section>
@@ -72,6 +77,7 @@
                 <h3>小号组件显示哪一张</h3>
                 <div id="widgetCard" class="checks"></div>
                 <p class="note state" id="widgetCardNote"></p>
+                <p class="note" id="widgetCardWarn"></p>
               </div>
               <p class="note">
                 第一块是数字的方向，三种尺寸的组件都跟着它走；第二块只管小号组件，中号和大号组件显示的是上面「显示哪些订阅」里勾出来的那些卡片。不用再去 Scriptable 里敲参数了。手机上那个参数还能临时改一次，改完只影响那一个组件。「跟着第一个有数的」= 今天网关报过数的那一张；网关今天没报这个账号，组件上就只有一个破折号。

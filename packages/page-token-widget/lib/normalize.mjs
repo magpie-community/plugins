@@ -642,6 +642,15 @@ const subscriptionId = id => {
 // The same shape as the id of a vendor: a subscription is named by it.
 const SUBSCRIPTION_ID = /^[a-z][a-z0-9._-]{0,19}$/;
 const SUBSCRIPTION_ACCOUNT = /^[A-Za-z0-9._-]{1,32}$/;
+// How many subscriptions the service lets a user turn off at the same time.
+// A longer list is refused, so that nothing is ever dropped without the user
+// being told.
+export const MAX_HIDDEN_SUBSCRIPTIONS = 256;
+// How many entries are read at all. This one is not a rule of the product but
+// a guard against a state file that was written by hand and holds a name a
+// thousand times over: it is far above the rule above, so it never cuts a
+// list that the user could have made.
+const HARD_HIDDEN_LIMIT = 1024;
 export function displayOptions(value = {}) {
   const limit = (input, fallback) => {
     if (input === null || input === undefined || input === '') return fallback;
@@ -656,6 +665,33 @@ export function displayOptions(value = {}) {
     const { family, account } = splitSubscription(id);
     return SUBSCRIPTION_ID.test(family) && (!account || SUBSCRIPTION_ACCOUNT.test(account));
   }).map(subscriptionId);
+  // The subscriptions the user has turned off. They are written down, so one
+  // that is hidden does not come back by itself, not even when the whole list
+  // of Magpie is followed. The name of a vendor turns off every account of
+  // it; the name of an account turns off that one only.
+  const subscriptionHidden = (Array.isArray(value.subscriptionHidden) ? value.subscriptionHidden : [])
+    .filter(id => {
+      if (typeof id !== 'string' || id === '*') return false;
+      const { family, account } = splitSubscription(id);
+      return SUBSCRIPTION_ID.test(family) && (!account || SUBSCRIPTION_ACCOUNT.test(account));
+    })
+    .map(subscriptionId)
+    .filter((id, index, list) => list.indexOf(id) === index)
+    .slice(0, HARD_HIDDEN_LIMIT);
+  // The order of the rows of the page, the ones that are shown and the ones
+  // that are turned off among them. It is kept apart from the list of the
+  // shown ones, because that list only holds the ones that are shown when
+  // the whole list of Magpie is not followed: a row that is turned off would
+  // lose its place every time the page is drawn again.
+  const subscriptionOrder = (Array.isArray(value.subscriptionOrder) ? value.subscriptionOrder : [])
+    .filter(id => {
+      if (typeof id !== 'string') return false;
+      const { family, account } = splitSubscription(id);
+      return SUBSCRIPTION_ID.test(family) && (!account || SUBSCRIPTION_ACCOUNT.test(account));
+    })
+    .map(subscriptionId)
+    .filter((id, index, list) => list.indexOf(id) === index)
+    .slice(0, HARD_HIDDEN_LIMIT);
   // The direction of the widget and the card it shows are chosen on the
   // plugin side. The Scriptable parameter may still override them.
   const widgetMode = value.widgetMode === 'used' ? 'used' : 'remaining';
@@ -690,6 +726,8 @@ export function displayOptions(value = {}) {
     providerLimit: limit(value.providerLimit, DEFAULT_DISPLAY.providerLimit),
     computerLimit: limit(value.computerLimit, DEFAULT_DISPLAY.computerLimit),
     subscriptions: subscriptions.length ? subscriptions : [...DEFAULT_DISPLAY.subscriptions],
+    subscriptionHidden,
+    subscriptionOrder,
     widgetMode,
     widgetCard,
     names,
@@ -775,6 +813,68 @@ export function usageForCard(card, { outdated = false, todayProviders = [], fami
   } };
 }
 
+// A subscription the user has turned off stays off: it does not come back by
+// itself, not even when the whole list of Magpie is followed. The name of a
+// vendor turns off every account of it; the name of an account turns off
+// that one only.
+export const isTurnedOff = (card, hidden = []) =>
+  hidden.some(entry => entry === card?.id || entry === card?.provider);
+// A card is ranked by the first entry that names it: its family, or the one
+// account of that family the list picked. What is not in the list comes
+// after it, in the order of the families the widget knows by heart; a
+// family that is not known sorts last instead of first.
+const rankOf = (card, pinned, showAll) => {
+  const index = pinned.findIndex(entry => entry === card.provider || entry === card.id);
+  if (index >= 0) return index;
+  if (!showAll) return pinned.length;
+  const family = PROVIDER_ORDER.indexOf(card.provider);
+  return pinned.length + (family < 0 ? PROVIDER_ORDER.length : family);
+};
+
+// The cards the display choices keep, in the order the phone shows them. The
+// choices are already read here, so that the caller does not have to read
+// them twice. The list can be empty: a choice of the user that matches
+// nothing is a choice of the user, and the service keeps it.
+export function selectedWith(cards = [], choices = {}) {
+  const list = Array.isArray(choices?.subscriptions) ? choices.subscriptions : [];
+  const hidden = Array.isArray(choices?.subscriptionHidden) ? choices.subscriptionHidden : [];
+  const showAll = list.includes('*');
+  const pinned = showAll ? list.filter(entry => entry !== '*') : list;
+  // The cards the choice of the user keeps, before the ones that were turned
+  // off are taken out of it.
+  const wanted = cards
+    .filter(card => showAll || list.includes(card.provider) || list.includes(card.id));
+  return wanted
+    .filter(card => !isTurnedOff(card, hidden))
+    .sort((a, b) => rankOf(a, pinned, showAll) - rankOf(b, pinned, showAll));
+}
+// The cards the display choices keep, in the order the phone shows them. The
+// widgets need something to show: a choice that turns off every card does
+// not leave the phone empty, the choice itself is left out and the cards are
+// shown as they were before it. The service refuses such a choice when it is
+// written, so this is the floor under a state file that was written by hand
+// or a subscription that was taken away in Magpie.
+export function orderedWith(cards = [], choices = {}) {
+  const kept = selectedWith(cards, choices);
+  if (kept.length) return kept;
+  const list = Array.isArray(choices?.subscriptions) ? choices.subscriptions : [];
+  const showAll = list.includes('*');
+  const pinned = showAll ? list.filter(entry => entry !== '*') : list;
+  const wanted = cards
+    .filter(card => showAll || list.includes(card.provider) || list.includes(card.id));
+  if (!wanted.length) return kept;
+  return wanted.sort((a, b) => rankOf(a, pinned, showAll) - rankOf(b, pinned, showAll));
+}
+// The cards the display choices keep, in the order the phone shows them.
+// The list that was written down comes first, in the order it was written
+// down in: it is the order the user has given, and it holds even when the
+// whole list of Magpie is followed. What is not in it comes after, in the
+// order of the families the widget knows by heart; a family that is not
+// known sorts last instead of first.
+export function orderedSubscriptions(cards = [], display = {}) {
+  return orderedWith(cards, displayOptions(display));
+}
+
 export function project(snapshot, now = Date.now(), display = {}, settings = {}) {
   const choices = displayOptions(display);
   const sources = {};
@@ -797,7 +897,8 @@ export function project(snapshot, now = Date.now(), display = {}, settings = {})
   const cards = snapshot.parts.quotas?.data || [];
   const { familySizes, todayProviders, day } = todayContext(snapshot, now);
   const usageOf = card => usageForCard(card, { outdated, todayProviders, familySizes, day });
-  const subscriptions = cards.map(card => ({
+  // The cards the display choices keep, in the order the phone shows them.
+  const shown = orderedWith(cards, choices).map(card => ({
     ...card,
     // The name the user gave the card is the name it carries on the phone and
     // on the widget.
@@ -811,25 +912,6 @@ export function project(snapshot, now = Date.now(), display = {}, settings = {})
       expired: !!window.resetsAt && Date.parse(window.resetsAt) <= now,
     })),
   }));
-  const showAll = choices.subscriptions.includes('*');
-  // The order of the cards. The list that was written down comes first, in the
-  // order it was written down in: it is the order the user has given, and it
-  // holds even when the whole list of Magpie is followed. What is not in it
-  // comes after, in the order of the families the widget knows by heart; a
-  // family that is not known sorts last instead of first.
-  const pinned = showAll ? choices.subscriptions.filter(entry => entry !== '*') : choices.subscriptions;
-  // A card is ranked by the first entry that names it: its family, or the one
-  // account of that family the list picked.
-  const rank = card => {
-    const index = pinned.findIndex(entry => entry === card.provider || entry === card.id);
-    if (index >= 0) return index;
-    if (!showAll) return pinned.length;
-    const family = PROVIDER_ORDER.indexOf(card.provider);
-    return pinned.length + (family < 0 ? PROVIDER_ORDER.length : family);
-  };
-  const shown = subscriptions
-    .filter(card => showAll || choices.subscriptions.includes(card.provider) || choices.subscriptions.includes(card.id))
-    .sort((a, b) => rank(a) - rank(b));
   const week = snapshot.parts.week?.data;
   return {
     schemaVersion: 1, generatedAt: new Date(now).toISOString(), timezone: 'Asia/Shanghai', sources,

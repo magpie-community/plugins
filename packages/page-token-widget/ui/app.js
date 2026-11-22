@@ -3,6 +3,77 @@ import { pairingLeft, remainingText } from './timing.mjs';
 (() => {
   const token = document.querySelector('meta[name="service-token"]')?.content || '';
   let current = null;
+  // The saves go one after another. Two that travel at the same time would
+  // each carry a list of its own, and the one that is answered last would be
+  // the one that is kept: a tick that was undone would come back.
+  let saveQueue = Promise.resolve();
+  // The names are saved one after another as well, for the same reason.
+  let nameQueue = Promise.resolve();
+  // The subscriptions the user has turned off. They are written down in the
+// state file, so one that is hidden does not come back by itself, not even
+// when the whole list of Magpie is followed. The list is one for the whole
+// page: the rows are drawn again and again, and a second copy of it would
+// be a second truth that the rows and the saves do not agree on.
+  const hidden = new Set();
+  // How many changes the user has made to that list. A response that comes
+  // back after a newer change does not overwrite that newer change: the
+  // next request in the queue carries it.
+  let hiddenRevision = 0;
+  // The list is taken from the service, which is the one that keeps it.
+  const syncHidden = (list) => {
+    hidden.clear();
+    for (const id of list || []) hidden.add(id);
+  };
+  // Whether a subscription is shown on the phone, as the page understands
+  // it: the choice of the user in the list, and the ones that were turned
+  // off. The rows and the putting back of a refused tick both use this, so
+  // that the page cannot show something the service does not keep.
+  const shownOf = (subscription, display = {}) => {
+    const id = subscription?.id;
+    if (!id) return false;
+    const family = subscription.provider || id;
+    if (hidden.has(id) || hidden.has(family)) return false;
+    const chosen = Array.isArray(display.subscriptions) ? display.subscriptions : [];
+    if (chosen.includes('*')) return true;
+    return chosen.includes(id) || chosen.includes(family);
+  };
+  // The order the rows are drawn in: the order the user gave, then the ones
+  // that are shown, then the ones that are turned off. The order the user
+  // gave is the whole order, and it is written down apart from the list of
+  // the shown ones: a row that is turned off keeps its place even when the
+  // list of the shown ones holds only the ones that are shown.
+  const rowOrder = (display = {}) => {
+    const seen = new Set();
+    const out = [];
+    const entries = [
+      ...(Array.isArray(display.subscriptionOrder) ? display.subscriptionOrder : []),
+      ...(Array.isArray(display.subscriptions) ? display.subscriptions : []).filter(entry => entry !== '*'),
+      ...(Array.isArray(display.subscriptionHidden) ? display.subscriptionHidden : []),
+    ];
+    for (const entry of entries) {
+      if (typeof entry !== 'string' || !entry || seen.has(entry)) continue;
+      seen.add(entry);
+      out.push(entry);
+    }
+    return out;
+  };
+  // The cards the phone is shown, as the page understands them. The service
+  // says it after a reading; after a change it is worked out here, so that
+  // the picker of the small widget does not offer a card that is not there.
+  const refreshShown = (state) => {
+    state.shown = (state.subscriptions || [])
+      .filter(subscription => shownOf(subscription, state.display))
+      .map(subscription => subscription.id);
+  };
+  // The words of an error are shown to the person at the keyboard. The ones
+  // that carry an address or the name of a machine are not shown: they are
+  // said in a way that says nothing.
+  const safeError = (message, fallback) => {
+    const text = String(message || '').trim();
+    if (!text || text.length > 200) return fallback;
+    if (/https?:\/\//i.test(text) || /@/.test(text) || /[\\/]/.test(text)) return fallback;
+    return text;
+  };
   const element = (id) => document.getElementById(id);
   const text = (id, value) => {
     const node = element(id);
@@ -524,8 +595,8 @@ import { pairingLeft, remainingText } from './timing.mjs';
       const mode = element('subMode');
       if (!mode) return;
       mode.textContent = following
-        ? '现在跟着 Magpie 的订阅列表走：在 Magpie 里新增的订阅，下一次刷新就出现；删掉的也自己消失。'
-        : '现在只显示勾上的这几家：在 Magpie 里新增的订阅不会自己出现，要在这里勾上才显示；勾上第一行的「全部订阅」就能让它跟着 Magpie 走。';
+        ? '现在跟着 Magpie 的订阅列表走：在 Magpie 里新增的订阅，下一次刷新就出现；删掉的也自己消失。你手动取消勾选的那几家会被记住，不会自己回来。'
+        : '现在只显示勾上的这几家：在 Magpie 里新增的订阅不会自己出现，要在这里勾上才显示；你手动取消勾选的那几家会被记住，换回「全部订阅」时也不会自己回来。';
     };
     // Every account knows the vendor it belongs to. A vendor that is chosen
     // as a whole stands at the place of its first account.
@@ -535,7 +606,13 @@ import { pairingLeft, remainingText } from './timing.mjs';
     // the gateway happens to list them.
     const ordered = [];
     const seen = new Set();
-    for (const entry of state.display?.subscriptions || []) {
+    // The order of the rows is the order the phone follows. The whole order
+    // is kept as it is: the rows that are turned off are written down after
+    // the ones that are shown, but the order the user gave is the one that
+    // is remembered, so a row that is turned off keeps its place even when
+    // the list of the shown ones is written down again.
+    const order = rowOrder(state.display || {});
+    for (const entry of order) {
       for (const subscription of items) {
         const id = subscription.id;
         if (seen.has(id)) continue;
@@ -546,6 +623,11 @@ import { pairingLeft, remainingText } from './timing.mjs';
       }
     }
     for (const subscription of items) if (!seen.has(subscription.id)) ordered.push(subscription);
+    // A row is ticked when its subscription is shown on the phone. When the
+    // whole list of Magpie is followed, everything is shown but the
+    // subscriptions the user has turned off; in the other way, only the
+    // ticked ones are shown.
+    const isShown = subscription => shownOf(subscription, state.display);
     // The rows can be dragged into another order. The order is what the phone
     // and the widget follow, so it is written back with the selection.
     let dragging = null;
@@ -570,12 +652,25 @@ import { pairingLeft, remainingText } from './timing.mjs';
       }
       return next;
     };
+    // Every row of the list, in the order the page shows them, the ones
+    // that are turned off among them. When the whole list of Magpie is
+    // followed, this is the order that is written down: a row that is turned
+    // off and then turned on again stands where the user put it, not at the
+    // end of the list.
+    const rows = () => {
+      const next = [];
+      for (const row of list.querySelectorAll('label')) {
+        const input = row.querySelector('input');
+        if (!input || input.classList.contains('follow')) continue;
+        next.push(input.value);
+      }
+      return next;
+    };
     // The names are sent one after another. Two names that travel at the
     // same time would each carry a map of its own, and the second one would
     // take the name of the first one with it: the service keeps the map it
     // is given, so a name that is not in it is gone. One name waits for the
     // one before it, and each one starts from what the last one was given.
-    let nameQueue = Promise.resolve();
     const sendName = (id, value) => {
       const send = async () => {
         const names = { ...(state.display?.names || {}) };
@@ -591,51 +686,120 @@ import { pairingLeft, remainingText } from './timing.mjs';
       return nameQueue;
     };
     const save = async (input) => {
-      // The first row is the whole list: the subscriptions of Magpie are
-      // followed, so one that is added shows up and one that is removed goes
-      // away by itself. The rows below it are the ones that are picked.
-      const follow = list.querySelector('input.follow');
-      // The star says "and everything else", and the subscriptions that are
-      // written down after it keep the order the user has given them.
-      const next = follow && follow.checked ? ['*', ...collect()] : collect();
-      if (!next.length) {
-        // Nothing would be left on the widget, so the last one is put back.
-        if (input) input.checked = true;
-        saveState('subNote', 'bad', '至少要留一家订阅，中号和大号组件才有内容。');
-        return;
-      }
-      saveState('subNote', 'busy', '保存中…');
-      try {
-        const result = await api('api/v1/console/options', {
-          method: 'POST',
-          body: JSON.stringify({ subscriptions: next }),
-        });
-        state.display = result.display;
-        // The rows are not drawn again: the order on the page is the order
-        // that was sent, and drawing them again would take the name that is
-        // being written out of its field. Only the rows that changed their
-        // meaning are touched: the whole list is followed, or it is not.
-        if (input && input.classList.contains('follow')) {
-          const following = Boolean(follow && follow.checked);
-          for (const row of list.querySelectorAll('label.sub')) {
-            const box = row.querySelector('input');
-            if (!box || box.classList.contains('follow')) continue;
-            box.disabled = following;
-            if (following) box.checked = true;
-            const grip = row.querySelector('.grip');
-            if (!grip) continue;
-            grip.draggable = !following;
-            grip.title = following ? '全部订阅时，顺序跟着写下来的那几行走' : '拖着换顺序';
+      const run = async () => {
+        // The first row is the whole list: the subscriptions of Magpie are
+        // followed, so one that is added shows up and one that is removed
+        // goes away by itself. The rows below it are the ones that are picked.
+        const follow = list.querySelector('input.follow');
+        // The star says "and everything else", and the subscriptions that are
+        // written down after it keep the order the user has given them. When
+        // the whole list is followed, every row is written down, the ones
+        // that are turned off among them: the order of the page is the order
+        // that is kept, and a row that is turned off keeps its place.
+        const next = follow && follow.checked ? ['*', ...rows()] : collect();
+        // At least one subscription has to be left: the widgets would have
+        // nothing to show. The row that was put back is not remembered as one
+        // that was turned off. When there is no row at all — the list of the
+        // gateway is not known yet — there is nothing to keep, and the choice
+        // itself is written down.
+        const boxes = [...list.querySelectorAll('input')]
+          .filter(box => !box.classList.contains('follow'));
+        const shown = boxes.filter(box => box.checked).length;
+        if (boxes.length && !shown) {
+          // Nothing would be left on the widget, so the last one is put back.
+          if (input) input.checked = true;
+          // A row that was put back is not remembered as one that was turned
+          // off.
+          if (input && !input.classList.contains('follow')) hidden.delete(input.value);
+          saveState('subNote', 'bad', '至少要留一家订阅，中号和大号组件才有内容。');
+          return;
+        }
+        saveState('subNote', 'busy', '保存中…');
+        // The number of the change this request carries. A response that
+        // comes back after a newer change was made does not overwrite that
+        // newer change: the next request in the queue carries it.
+        const revision = hiddenRevision;
+        try {
+          const result = await api('api/v1/console/options', {
+            method: 'POST',
+            // The subscriptions that were turned off go with it: they are
+            // written down, so they do not come back by themselves.
+            // The whole order of the rows goes with it as well: the list of
+            // the shown ones only holds the ones that are shown, and a row
+            // that is turned off would lose its place without it.
+            body: JSON.stringify({
+              subscriptions: next,
+              subscriptionHidden: [...hidden],
+              subscriptionOrder: rows(),
+            }),
+          });
+          // A response that comes back after a newer change was made is
+          // about an older state: it does not overwrite the newer change,
+          // which is not yet written down and must not be lost. The next
+          // request in the queue carries it.
+          if (hiddenRevision === revision) {
+            state.display = result.display;
+            // The service may have refused a name it does not accept. What
+            // it really keeps is what the page goes by from now on.
+            syncHidden(result.display?.subscriptionHidden || []);
+            // The rows are not drawn again: the order on the page is the
+            // order that was sent, and drawing them again would take the
+            // name that is being written out of its field. The ticks are
+            // brought in line with what the service really keeps, by the
+            // rule the rows are drawn by.
+            for (const row of list.querySelectorAll('label.sub')) {
+              const box = row.querySelector('input');
+              if (!box || box.classList.contains('follow')) continue;
+              const subscription = (state.subscriptions || [])
+                .find(entry => entry.id === box.value);
+              if (subscription) box.checked = shownOf(subscription, state.display);
+            }
+            if (follow) follow.checked = (state.display?.subscriptions || []).includes('*');
+            // The cards the phone is shown are worked out again: the picker
+            // of the small widget offers only the cards that are really
+            // there.
+            refreshShown(state);
+            renderWidgetCard(state);
+            // The note says which of the two ways is in use. It is written
+            // again here: the rows are not drawn again, so it would still
+            // speak of the way that was left behind.
+            modeNote(Boolean(follow && follow.checked));
+          }
+          saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
+        } catch (error) {
+          // Nothing was written. The rows are not drawn again: the tick that
+          // was refused is put back the way the service really keeps it, and
+          // the name that is being written stays in its field. A change that
+          // was made after this request went out is not put back: it is not
+          // this request that was refused, and it is still on its way.
+          if (hiddenRevision === revision) {
+            syncHidden(state.display?.subscriptionHidden || []);
+            if (input && input.type === 'checkbox') {
+              if (input.classList.contains('follow')) {
+                input.checked = (state.display?.subscriptions || []).includes('*');
+              } else {
+                // The tick is put back the way the service really keeps it:
+                // the rows and this put back go by one rule only.
+                const subscription = (state.subscriptions || [])
+                  .find(entry => entry.id === input.value);
+                input.checked = subscription
+                  ? shownOf(subscription, state.display)
+                  : !hidden.has(input.value);
+              }
+            }
           }
           // The note says which of the two ways is in use. It is written
-          // again here: the rows are not drawn again, so it would still
-          // speak of the way that was left behind.
-          modeNote(following);
+          // again here: the way that was refused is not the way that is in
+          // use any more.
+          const follow = list.querySelector('input.follow');
+          modeNote(Boolean(follow && follow.checked));
+          saveState('subNote', 'bad', safeError(error?.message, '没有存上，请再试一次。'), () => { void save(input); });
         }
-        saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
-      } catch {
-        saveState('subNote', 'bad', '没有存上，请再试一次。', () => { void save(input); });
-      }
+      };
+      // The saves wait for one another, so that the one that is answered
+      // last is the one that is kept.
+      saveQueue = saveQueue.then(run, run).catch(() => {});
+      return saveQueue;
     };
     // The first row: the whole list of Magpie, followed. It is the way the
     // plugin is meant to be used, so it is the first thing the user sees.
@@ -649,7 +813,6 @@ import { pairingLeft, remainingText } from './timing.mjs';
     followRow.append(followInput, node('span', 'name', '全部订阅（跟着 Magpie 走）'));
     list.append(followRow);
     for (const subscription of ordered) {
-      const family = subscription.provider || subscription.id;
       // The name the user gives the subscription is his own: it is what the
       // widget and the phone show for it. It stands under the row, so that
       // the row itself keeps the order it is dragged into.
@@ -660,19 +823,23 @@ import { pairingLeft, remainingText } from './timing.mjs';
       const grip = document.createElement('span');
       grip.className = 'grip';
       grip.textContent = '⠿';
-      grip.title = all ? '全部订阅时，顺序跟着写下来的那几行走' : '拖着换顺序';
-      grip.draggable = !all;
+      // The order of the cards is the order the user has given, in both ways
+      // of choosing. The handle is therefore always there.
+      grip.title = '拖着换顺序';
+      grip.draggable = true;
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.value = subscription.id;
-      input.checked = all || chosen.has(family) || chosen.has(subscription.id);
-      // While the whole list is followed, the rows below it do not decide
-      // anything: they only show what is there.
-      input.disabled = all;
+      input.checked = isShown(subscription);
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = subscription.label || subscription.id;
       label.append(grip, input, name);
+      // A subscription that the gateway only just told about is marked, so
+      // that the person at the keyboard sees that something is new.
+      if (state.newSubscriptions?.has(subscription.id)) {
+        label.append(node('span', 'tag', '新'));
+      }
       // The small widget is told which card to show with a parameter. The
       // names it understands are written here, so an old one (an account that
       // was renamed) can be seen and replaced.
@@ -772,10 +939,77 @@ import { pairingLeft, remainingText } from './timing.mjs';
       list.append(row);
     }
     modeNote(all);
+    // A subscription that the user turned off can be shown on the phone all
+    // the same: the widgets need something to show, and that floor is under
+    // the choice of the user. When it happens, the page says so: a card
+    // that comes back without being asked for is not a mystery.
+    const warning = element('subWarn');
+    if (warning) {
+      const onThePhone = new Set(Array.isArray(state.shown) ? state.shown : []);
+      const back = (state.subscriptions || []).filter((subscription) => {
+        const id = subscription?.id;
+        if (!id || !onThePhone.has(id)) return false;
+        return hidden.has(id) || hidden.has(subscription.provider || id);
+      });
+      warning.textContent = back.length
+        ? `你关掉的「${back.map(subscription => subscription.label || subscription.id).join('、')}」又在手机上出现了：手机上永远至少要留一家可看，勾上别的家以后它就会回去。`
+        : '';
+    }
+    // The list of the subscriptions is read at a certain time. The page says
+    // when, so that an old list is not passed for a new one.
+    const reading = state.reading || {};
+    const note = element('subsRefreshNote');
+    if (note) {
+      const stamp = reading.observedAt ? new Date(reading.observedAt) : null;
+      const when = stamp && !Number.isNaN(stamp.getTime())
+        ? stamp.toLocaleTimeString('zh-CN', { hour12: false })
+        : '';
+        // A gateway that answered and said that it has no subscription at
+        // all is not a gateway that failed: the list is empty, and it is
+        // said to be empty.
+        const nothing = reading.answered && reading.empty && !reading.count;
+      // A list that could not be read is an old one, and it is said so: an
+      // old list is never passed for a new one. A list that was never read is
+      // not an old one either: it is an unknown one.
+      note.textContent = !reading.observedAt
+        ? '还没有读过网关的订阅名单，点上面的按钮读一次。'
+          : nothing
+            ? `网关的订阅名单读于 ${when}，网关现在没有可读订阅。`
+        : reading.stale
+          ? `这是上一次读到的订阅名单（${when || '时间不详'}），网关这次没有给出新的。点上面的按钮重读一次。`
+          : `网关的订阅名单读于 ${when}，点上面的按钮重读一次。`;
+    }
     list.onchange = (event) => {
       // The name of a subscription is saved by its own field.
       if (event.target && event.target.type === 'text') return;
-      void save(event.target);
+      const input = event.target;
+      // A subscription that is not ticked is one the user has turned off. It
+      // is written down, so it does not come back by itself, not even when
+      // the whole list of Magpie is followed.
+      if (input && input.type === 'checkbox' && !input.classList.contains('follow')) {
+        const subscription = (state.subscriptions || [])
+          .find(entry => entry.id === input.value);
+        if (input.checked) {
+          // It is turned on again: it leaves the list of the turned off ones.
+          // A vendor that was turned off as a whole leaves it as well, and
+          // the other accounts of that vendor stay off: the user turned this
+          // one on, not the whole vendor.
+          hidden.delete(input.value);
+          const family = subscription?.provider || subscription?.id;
+          if (family && hidden.has(family)) {
+            hidden.delete(family);
+            for (const other of state.subscriptions || []) {
+              if ((other.provider || other.id) === family && other.id !== input.value) hidden.add(other.id);
+            }
+          }
+        } else {
+          hidden.add(input.value);
+        }
+        // The user has changed something: the answer of a request that is
+        // on its way does not overwrite it.
+        hiddenRevision += 1;
+      }
+      void save(input);
     };
   };
 
@@ -829,6 +1063,85 @@ import { pairingLeft, remainingText } from './timing.mjs';
     };
   };
 
+  // The list of the subscriptions is read again from the gateway, so that a
+  // subscription that was added to Magpie shows up at once, and not with the
+  // next reading of the numbers.
+  const refreshSubscriptions = async () => {
+    const button = element('refreshSubs');
+    // The rows are held still while the gateway is read: a tick that is
+    // made in between would be taken back by the drawing that follows.
+    const boxes = [...(element('subscriptions')?.querySelectorAll('input') || [])];
+    for (const box of boxes) box.disabled = true;
+    // The rows cannot be dragged either: an order that is given in between
+    // would be taken back by the drawing that follows.
+    const grips = [...(element('subscriptions')?.querySelectorAll('.grip') || [])];
+    for (const grip of grips) grip.draggable = false;
+    if (button) button.disabled = true;
+    saveState('subsRefreshNote', 'busy', '正在读网关…');
+    try {
+      // A save that is on its way is waited for: the rows are drawn again
+      // after the reading, and a tick that was not stored yet would be taken
+      // back by the drawing.
+      await saveQueue;
+      // A name that is being written is waited for as well: the drawing
+      // that follows would take it out of its field.
+      await nameQueue;
+      const result = await api('api/v1/console/subscriptions/refresh', { method: 'POST', body: '{}' });
+      if (current) {
+        if (!result.ok) {
+          // The reading failed: the list below is the one that was there.
+          // It is not replaced by an empty one, and it is not passed for a
+          // new one either.
+          current.reading = { ...(current.reading || {}), stale: true };
+        } else {
+          current.subscriptions = result.subscriptions || [];
+          // The service says which cards the phone is shown. When it does
+          // not say, the old way of finding them is kept.
+          if (Array.isArray(result.shown)) current.shown = result.shown;
+          current.reading = {
+            observedAt: result.observedAt || null,
+            stale: false,
+            count: (result.subscriptions || []).length,
+            // The service says whether the gateway answered, and whether it
+            // said that it holds nothing at all.
+            answered: result.answered !== false,
+            empty: result.empty === true,
+          };
+          // The service keeps the list of the turned off ones: a
+          // subscription that was taken away in Magpie is taken off that
+          // list as well.
+          if (Array.isArray(result.hidden)) {
+            syncHidden(result.hidden);
+            current.display = { ...(current.display || {}), subscriptionHidden: result.hidden };
+          }
+          // What the gateway only just told about is marked in the list.
+          current.newSubscriptions = new Set(result.added || []);
+          // The rows are drawn again: a subscription that is new has to be
+          // seen, and the order that was given is kept.
+          renderSubscriptions(current);
+          renderWidgetCard(current);
+        }
+      }
+      const count = (result.subscriptions || []).length;
+      const added = result.added || [];
+      if (!result.ok) {
+        saveState('subsRefreshNote', 'bad', `${safeError(result.error, '网关没有给出新的订阅列表。')}下面还是上一次读到的。`, () => { void refreshSubscriptions(); });
+        return;
+      }
+      saveState('subsRefreshNote', 'ok', added.length
+        ? `读到了 ${count} 家订阅，新出现了 ${added.length} 家：${added.join('、')}。`
+        : count
+          ? `读到了 ${count} 家订阅，还是这些。`
+          : '网关现在没有可读订阅。');
+    } catch {
+      saveState('subsRefreshNote', 'bad', '没有读到网关，请再试一次。', () => { void refreshSubscriptions(); });
+    } finally {
+      for (const box of boxes) box.disabled = false;
+      for (const grip of grips) grip.draggable = true;
+      if (button) button.disabled = false;
+    }
+  };
+
   const renderWidgetCard = (state) => {
     const list = element('widgetCard');
     if (!list) return;
@@ -836,12 +1149,39 @@ import { pairingLeft, remainingText } from './timing.mjs';
     const display = state.display || {};
     const current = display.widgetCard || '';
     // Only the cards that are really shown are offered: a card that is not
-    // projected would leave the small widget saying "not found".
-    const wanted = new Set(display.subscriptions || []);
+    // projected would leave the small widget saying "not found". The service
+    // says which cards those are; when it does not, the list of the display
+    // choices is used, the way it was before.
+    const shown = Array.isArray(state.shown) ? state.shown : null;
+    const wanted = new Set(shown || display.subscriptions || []);
     const items = (state.subscriptions || []).filter(subscription => {
       const id = subscription.id || subscription.provider;
-      return Boolean(id) && (!wanted.size || wanted.has('*') || wanted.has(id) || wanted.has(subscription.provider));
+      if (!id) return false;
+      // A card that was turned off is not offered: it would leave the small
+      // widget saying "not found".
+      if (hidden.has(id) || hidden.has(subscription.provider || id)) return false;
+      if (shown) return wanted.has(id);
+      return !wanted.size || wanted.has('*') || wanted.has(id) || wanted.has(subscription.provider);
     });
+    // The card the small widget shows has to be one of the cards that are
+    // shown. When it is not, the phone falls back to the first card with a
+    // number, and the person at the keyboard is told about it. The note is
+    // cleared as well when there is nothing to say, so that an old warning
+    // does not stay on the page.
+    const picked = display.widgetCard || '';
+    const stillThere = (state.subscriptions || []).some(entry => {
+      const id = entry.id || entry.provider;
+      if (!id) return false;
+      if (shown && !shown.includes(id)) return false;
+      return entry.id === picked
+        || entry.provider === picked
+        || String(entry.account || '').toLowerCase() === String(picked).toLowerCase();
+    });
+    if (picked && !stillThere) {
+      text('widgetCardWarn', `小号组件选的那张（${picked}）已经不显示了，手机上会退到第一张有数的卡片。要它回来，就把它勾上。`);
+    } else {
+      text('widgetCardWarn', '');
+    }
     const choice = (field, value, label, hint) => {
       const wrapper = document.createElement('label');
       const input = document.createElement('input');
@@ -922,6 +1262,12 @@ import { pairingLeft, remainingText } from './timing.mjs';
 
   const render = (state) => {
     current = state;
+    // The service keeps the list of the turned off ones, and it is the one
+    // that is written down: the page goes by it from now on.
+    syncHidden(state.display?.subscriptionHidden || []);
+    // The mark "new" is for one reading: the page is opened again, and the
+    // subscriptions that were new are not new any more.
+    state.newSubscriptions = new Set();
     renderPairing(state);
     text(
       'lifetime',
@@ -1078,6 +1424,7 @@ import { pairingLeft, remainingText } from './timing.mjs';
       text('diagnoseNote', '诊断没有跑起来，请再试一次。');
     }
   });
+  element('refreshSubs')?.addEventListener('click', () => { void refreshSubscriptions(); });
 
   load();
 })();

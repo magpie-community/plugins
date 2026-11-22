@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.20 · 2026-11-22
+
+The subscriptions can be picked while Magpie is followed, and the list of the
+subscriptions can be read again on the spot: five subscriptions and you want
+four of them on the phone (no minimax)? Untick minimax, and the hiding is
+remembered. A new button reads the gateway again at once and shows which
+subscriptions there are now, so a subscription that was added in Magpie does
+not have to wait for the next reading.
+
+> 跟着 Magpie 走的时候也能挑了：五家订阅只想在手机上留四家（不显示 minimax），勾掉
+> minimax 就行，这个「关掉」是记住了的。插件页多了一个「刷新订阅」按钮，点了立刻重新
+> 读一次网关，把「现在有哪些订阅」摆出来，新出现的标一个「新」，不用等定时刷新。网关没
+> 答上来时明说「没有读到网关」，并保留上一次读到的名单——不拿旧的冒充新的。
+
+### Changed
+
+- **A subscription can be turned off while the whole list of Magpie is followed.** The
+  rows below the star are not locked any more: unticking one hides it, and the hiding is
+  written down, so it does not come back by itself — as long as it is still in Magpie (one
+  that is removed from Magpie as a whole leaves that list).
+- **The reading of the button is the one of this moment.** If a reading is already on
+  its way, it is waited for and the gateway is asked again, so an old answer is never
+  passed for a new one.
+- **A gateway that says "I have none" is not a failure.** When Magpie holds no
+  subscription at all, the list is emptied as it was answered, instead of being kept as
+  an old one for ever.
+- **The order is yours in both ways.** The handle of a row drags it into the order the
+  phone and the widgets follow, and the rows that are turned off keep their place.
+- **A "refresh subscriptions" button.** It reads the gateway again at once and shows which
+  subscriptions there are now; a new one is marked "new". When the gateway does not
+  answer, the page says so plainly and keeps the list it had — an old list is never
+  passed for a new one.
+- **The phone is never left empty.** A choice that turns off every subscription is
+  refused by the service, and the projection has a floor under it: a state file that was
+  written by hand cannot leave the widgets without anything to show.
+- **The saves of the page go one after another**, and a change that was made while an
+  answer was on its way is not lost by that answer.
+- **The script of the phone did not change.** The code here is the code of the standalone
+  plugin: the widget that is installed on the phone needs nothing new, and there is
+  nothing to run again on the phone.
+
+
 ## 0.4.19 · 2026-11-22
 
 The list of vendors leaves the plugin: every subscription Magpie knows is a subscription
