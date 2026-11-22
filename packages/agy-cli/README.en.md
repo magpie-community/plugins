@@ -124,9 +124,14 @@ becomes part of the current turn:
   stops;
 - `AGY_BRIDGE_PREFILL=0` restores the stock 400 reject;
   `AGY_BRIDGE_PREFILL_CARRIER_NOTE` overrides the carrier's note line.
+- A prefill after tool results (magpie continuing a reply cut mid-way, or a
+  client's retry keeping what it got of it) is served as an interrupted tool
+  turn: a call the session still waits on gets its real result and the
+  prefill is the next prompt's carrier; where the session can't take it, the
+  round is replayed with its results.
 
-Known limits: a prefill alongside a live tool_result, or directly after an
-unanswered tool_use, is still rejected; a
+Known limits: a prefill directly after an unanswered tool_use is still
+rejected; a
 contiguous assistant tail with no user message before it is treated as one
 prefill run (that turn degrades to a fresh session and self-heals on the next
 turn); the models a client gets remain agy's decision.

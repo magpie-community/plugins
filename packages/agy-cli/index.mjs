@@ -5185,11 +5185,12 @@ function assistantTextOf(message) {
 // run: runStart = first message of the trailing text-only assistant run,
 // boundary = history split point (after the last assistant message before the
 // run, the session ledger's newest entry). Returns null when the request does
-// not end with a text-only assistant run. Known limits: a request combining a
-// live tool_result with a prefill tail is rejected in validateBody; a run with
-// no user message before it (contiguous assistant tail, e.g. a client re-sending
-// a completed reply with a prefill appended) puts the whole run in the tail, so
-// that one turn degrades to a fresh session (safe, self-healing).
+// not end with a text-only assistant run. A tool round before the run (a reply
+// cut after its tool results, sent back to go on from) is served as an
+// interrupted tool turn (plugins#1319). Known limit: a run with no user message
+// before it (contiguous assistant tail, e.g. a client re-sending a completed
+// reply with a prefill appended) puts the whole run in the tail, so that one
+// turn degrades to a fresh session (safe, self-healing).
 function prefillRun(messages) {
   const last = messages.at(-1)
   if (!last || last.role !== "assistant") return null
@@ -6355,9 +6356,6 @@ function validateBody(body) {
   // A text-only assistant tail is a client-side prefill (see prefillRun).
   const prefillTail = prefillTailEnabled() && lastRole === "assistant" && assistantTextOf(body.messages.at(-1)) !== null
   const validTailRole = lastRole === "user" || lastRole === "system" || lastRole === "developer" || prefillTail
-  if (prefillTail && extractToolResults(body).length) {
-    throw new UnsupportedContent("a request combining a live tool_result with an assistant prefill tail")
-  }
   if (!validTailRole || (!extractToolResults(body).length &&
     !trailing.messages.some((message) => message.role === "user") && !trailing.history.length)) {
     throw new UnsupportedContent(prefillTail
@@ -7915,7 +7913,13 @@ export const AntigravityBridgePlugin = async () => {
                     result: toolResult(block),
                   }))
                   proc.validateResults(rawResults)
-                  let interrupted = isInterruptedToolTurn(body)
+                  // A reply begun after these results and sent back to go on
+                  // from (magpie's continuation of a cut reply, a client's retry
+                  // keeping what it got): the calls get their results and the
+                  // prefill carrier is the next prompt, as a steer is, or the
+                  // round is replayed (plugins#1319).
+                  const prefillTail = prefillTailEnabled() && prefillRun(body.messages) !== null
+                  let interrupted = prefillTail || isInterruptedToolTurn(body)
                   let results = rawResults
                   if (!interrupted) {
                     try {
@@ -7956,7 +7960,8 @@ export const AntigravityBridgePlugin = async () => {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
                     // real results without resolving the old process's calls.
-                    const dropReason = interrupted ? "interrupted"
+                    const dropReason = prefillTail ? "prefill_tail"
+                      : interrupted ? "interrupted"
                       : imageResult ? "image_result"
                       : !historyMatches ? "history_mismatch"
                       : proc.toolsGrew(tools) ? "tools_grew"

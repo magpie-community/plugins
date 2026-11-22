@@ -71,12 +71,10 @@ test("the session ledger stays aligned with the client history across prefill tu
 test("validateBody serves a prefill tail and rejects the unsupported shapes", () => {
   validateBody({ messages: [U("1"), A("p")] })
   validateBody({ messages: [U("1"), A("p1"), A("r1"), U("2"), A("p2")] })
+  // a reply cut after its tool round, sent back to go on from (plugins#1319)
+  validateBody({ messages: [U("1"), toolUseTail(), { role: "user", content: [{ type: "tool_result", tool_use_id: "call_a", content: "done" }] }, A("p")] })
   assert.throws(() => validateBody({ messages: [A("r"), A("p")] }), /no user turn to continue from/)
   assert.throws(() => validateBody({ messages: [U("1"), toolUseTail()] }), /not from the user or a tool-result/)
-  assert.throws(
-    () => validateBody({ messages: [U("1"), A("r1"), { role: "user", content: [{ type: "tool_result", tool_use_id: "call_a", content: "done" }] }, A("p")] }),
-    /tool_result with an assistant prefill/,
-  )
 })
 
 test("a trailing prefill run renders as a continuation carrier, not a system reminder", () => {

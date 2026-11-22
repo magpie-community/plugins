@@ -18,6 +18,7 @@ for (const [name, mocks] of [
   ["platform.mjs", true],
   ["compat.mjs", true],
   ["prefill.mjs", false],
+  ["prefill-tool-result.mjs", false],
   ["usage.mjs", true],
   ["signin.mjs", false],
   ["catalog.mjs", false],
