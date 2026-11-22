@@ -2310,7 +2310,10 @@ class Proc {
       "--log-file", this.logPath,
       "--ide-mcp-port", String(controlServer.address().port),
     ]
-    if (this.workDir) args.push("--add-dir", this.workDir)
+    // agy loads a home directory in its workspace as customizations that
+    // share the tools' budget, and drops the client's largest tools (Bash,
+    // Read) to fit (plugins#1405). The client's tools run there all the same.
+    if (this.workDir && path.resolve(this.workDir) !== path.resolve(os.homedir())) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
     args.push(...await telemetryArgs(this.agyPath))
     const own = await geminiDirArgs(this.agyPath)
