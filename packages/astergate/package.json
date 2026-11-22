@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-astergate-auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AsterGate Claude provider with model discovery and quota windows",
   "type": "module",
   "main": "./opencode.mjs",
