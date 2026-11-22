@@ -2426,3 +2426,58 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+// A Claude or GPT model on an account whose third-party allowance is used
+// up: agy ended the reply with this notice, and the client got it as the
+// whole answer, a 200 billed as a reply, with nothing behind magpie asked.
+// It fails the turn as the Individual quota reached ending does.
+const THIRD_PARTY_LINE = "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 2h37m13s."
+const THIRD_PARTY = "\n" + THIRD_PARTY_LINE + "\n"
+
+test("agy's Third-party quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [THIRD_PARTY],
+    [THIRD_PARTY.slice(0, 9), THIRD_PARTY.slice(9, 47), THIRD_PARTY.slice(47)],
+    [THIRD_PARTY_LINE],
+    ["⚠ Third-party", THIRD_PARTY_LINE.slice(13)],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "third-party-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "rate_limit_error", JSON.stringify(chunks))
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + THIRD_PARTY_LINE.replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's Third-party quota reached ending fails a non-stream request as an HTTP 429", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [THIRD_PARTY])
+    const response = await kit.request(baseBody({ metadata: { user_id: "third-party-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.equal(body.error.type, "rate_limit_error")
+    assert.match(body.error.message, /Third-party quota reached\. .*Resets in 2h37m13s\./)
+  })
+})
+
+test("the model quoting the Third-party quota reached ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Third-party quota", " reached. Resets in 1h.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Third-party quota reached. Resets in 1h.` when Claude is out."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "third-party-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
