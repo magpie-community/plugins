@@ -214,6 +214,8 @@
     },
     { "package": "magpie-aws-bedrock-sso", "name": "AWS Bedrock SSO", "providers": ["bedrock-sso"],
       "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } },
+    { "package": "magpie-aws-quick", "name": "Amazon Quick", "icon": "https://aws.amazon.com/favicon.ico", "providers": ["aws-quick"],
+      "summary": { "en": "Unofficial: your own Amazon Quick account (Quick Lite included) through browser OAuth or the desktop app's saved sign-in. Quick's fast/balanced/smart/advanced modes as models, streaming, thinking effort, tool calls, thread reuse, small images and agent-hour usage.", "zh": "非官方：通过浏览器 OAuth 或桌面端已保存的登录态接入自己的 Amazon Quick 账号（含 Quick Lite）。把 fast/balanced/smart/advanced 四种模式作为模型，支持流式输出、思考强度、工具调用、会话复用、小图片和 Agent 时长用量。" } },
     {
       "package": "magpie-providers-hub",
       "name": "Providers Hub",
