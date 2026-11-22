@@ -44,14 +44,18 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 
 ## 登录方式
 
+本插件**独立登录**：有自己的浏览器配置根目录（`gemini-web-relay-browser`），
+不依附、不复用任何其他插件的登录状态。
+
 | 方式 | 做什么 | 给什么 |
 |---|---|---|
-| **复用已登录的浏览器配置（推荐）** | 填一个含 Gemini 登录态的 Chrome 配置目录；留空则自动挑 magpie 的 `gemini-web-browser` 下最近登录过的 profile | 全部模型 |
-| **在单独的浏览器窗口登录** | 插件拉起独立 Chrome 窗口（独立配置，不碰日常浏览器），你登录 Google 账号，打开 Gemini 后窗口自动关闭 | 全部模型 |
+| **在单独的浏览器窗口登录（推荐）** | 插件拉起独立 Chrome 窗口（本插件自己的配置，不碰日常浏览器），你登录 Google 账号，打开 Gemini 后窗口自动关闭 | 全部模型 |
+| **复用已登录的浏览器配置** | 填一个含 Gemini 登录态的 Chrome 配置目录；留空则自动挑本插件目录下最近登录过的 profile（也可填任意绝对路径，比如别处登录过的） | 全部模型 |
 | **不登录使用（访客）** | 用无登录的独立浏览器；网页版也回答访客 | 仅 `gemini-auto`（经由 Auto，多半是较轻的模型） |
 
 **Profile 边界**：与 moss/quick 插件同规则——只用插件自己的专用 profile
-（默认复用 gemini-web 插件的 `gemini-web-browser` 根目录），绝不碰日常浏览器。
+（`%LOCALAPPDATA%/magpie/gemini-web-relay-browser`），绝不碰日常浏览器，
+也不读写其他插件的目录。
 
 ## OpenAI 兼容接口
 

@@ -20,12 +20,14 @@ const GEMINI_URL = "https://gemini.google.com/app"
 // the cookies a signed-in session must have
 const NEED = ["__Secure-1PSID", "__Secure-1PSIDTS"]
 
-// profileRoot is where the plugin keeps its browser profiles: the old
-// gemini-web plugin's root, so one sign-in serves both.
+// profileRoot is where THIS plugin keeps its own browser profiles. It is
+// the plugin's own directory (like moss's and quick's): a sign-in made
+// through this plugin's window lives here, and nothing outside it is read
+// or written.
 export function profileRoot(env = process.env, platform = process.platform) {
   if (env.GEMINI_WEB_RELAY_PROFILE_ROOT) return env.GEMINI_WEB_RELAY_PROFILE_ROOT
-  if (platform === "win32") return join(env.LOCALAPPDATA || env.APPDATA || tmpdir(), "magpie", "gemini-web-browser")
-  return join(env.XDG_CONFIG_HOME || join(env.HOME || tmpdir(), ".config"), "magpie", "gemini-web-browser")
+  if (platform === "win32") return join(env.LOCALAPPDATA || env.APPDATA || tmpdir(), "magpie", "gemini-web-relay-browser")
+  return join(env.XDG_CONFIG_HOME || join(env.HOME || tmpdir(), ".config"), "magpie", "gemini-web-relay-browser")
 }
 
 // googleCookies keeps the cookies a request to gemini.google.com carries.

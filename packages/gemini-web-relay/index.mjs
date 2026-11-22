@@ -82,63 +82,18 @@ export function createPlugin({ profileDir, headless = true } = {}) {
       maxConcurrency: 2,
       methods: [
         {
-          // reuse a profile that already holds a Gemini sign-in (the old
-          // gemini-web plugin's root, which this plugin shares): the relay
-          // browser opens it and the page's own cookies serve every request
+          // the plugin's own sign-in: a window of its own, the user signs in
+          // there, the cookies are read over DevTools. The profile is kept
+          // as the account's refresh, so the relay browser reuses the very
+          // sign-in. This is the independent way — nothing of any other
+          // plugin is touched.
           type: "oauth",
           icon: ICON,
-          label: "复用已登录的浏览器配置（推荐，无需重新登录）",
-          prompts: [
-            {
-              key: "profileDir",
-              message: "Chrome 配置目录（含 Gemini 登录态），留空则用 magpie 的 gemini-web-browser 最新已登录配置",
-              required: false,
-            },
-          ],
-          authorize: async (inputs) => {
-            // magpie's host finishes every oauth sign-in through a callback,
-            // so the reuse starts here and "finishes" at once
-            return {
-              url: "",
-              method: "auto",
-              instructions: "将直接复用已登录的浏览器配置，无需重新登录。",
-              callback: async () => {
-                const dir = String(inputs?.profileDir ?? "").trim() || latestProfile()
-                if (!dir)
-                  return { type: "failed", error: "没有找到已登录的浏览器配置。请先用窗口登录，或填一个配置目录。" }
-                // name the account by its Google email, as the old plugin
-                // does — a profile dir string means nothing to the user
-                let who = ""
-                try {
-                  const check = new RelayBrowser({ profileDir: dir, headless: true })
-                  try {
-                    const page = await check.ensure()
-                    const t = await page.eval(`(() => {
-                      const html = document.documentElement.innerHTML
-                      return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
-                    })()`)
-                    if (t) who = t
-                  } finally {
-                    await check.stop()
-                  }
-                } catch {}
-                who = who || "Gemini 账号"
-                return { type: "success", access: JSON.stringify({ profileDir: dir }), refresh: dir, expires: 0, accountId: who, name: who }
-              },
-            }
-          },
-        },
-        {
-          // the old gemini-web plugin's way: a window of the plugin's own,
-          // the user signs in there, the cookies are read over DevTools.
-          // The profile is kept as the account's refresh, so the relay
-          // browser reuses the very sign-in.
-          type: "oauth",
-          icon: ICON,
-          label: "在单独的浏览器窗口登录 Google 账号",          authorize: async () => ({
+          label: "在单独的浏览器窗口登录 Google 账号（推荐）",
+          authorize: async () => ({
             url: "",
             method: "auto",
-            instructions: "将打开一个单独的 Chrome 窗口（独立的配置，不影响你平时的浏览器）。请在其中登录 Google 账号，打开 Gemini 后窗口会自动关闭。",
+            instructions: "将打开一个单独的 Chrome 窗口（本插件自己的配置，不碰你平时的浏览器）。请在其中登录 Google 账号，打开 Gemini 后窗口会自动关闭。",
             callback: async () => {
               const profile = join(profileRoot(), randomBytes(6).toString("hex"))
               let cookies
@@ -167,6 +122,55 @@ export function createPlugin({ profileDir, headless = true } = {}) {
               return { type: "success", access: JSON.stringify({ profileDir: profile }), refresh: profile, expires: 0, accountId: who, name: who }
             },
           }),
+        },
+        {
+          // compatibility: reuse a profile that already holds a Gemini
+          // sign-in — by default one of THIS plugin's own windows; any
+          // absolute profile dir is also accepted (e.g. one signed in
+          // elsewhere). The relay browser opens it and the page's own
+          // cookies serve every request.
+          type: "oauth",
+          icon: ICON,
+          label: "复用已登录的浏览器配置（不重新登录）",
+          prompts: [
+            {
+              key: "profileDir",
+              message: "Chrome 配置目录（含 Gemini 登录态）；留空则用本插件目录下最近登录过的配置",
+              required: false,
+            },
+          ],
+          authorize: async (inputs) => {
+            // magpie's host finishes every oauth sign-in through a callback,
+            // so the reuse starts here and "finishes" at once
+            return {
+              url: "",
+              method: "auto",
+              instructions: "将直接复用已登录的浏览器配置，无需重新登录。",
+              callback: async () => {
+                const dir = String(inputs?.profileDir ?? "").trim() || latestProfile()
+                if (!dir)
+                  return { type: "failed", error: "没有找到已登录的浏览器配置。请先用窗口登录，或填一个配置目录。" }
+                // name the account by its Google email — a profile dir
+                // string means nothing to the user
+                let who = ""
+                try {
+                  const check = new RelayBrowser({ profileDir: dir, headless: true })
+                  try {
+                    const page = await check.ensure()
+                    const t = await page.eval(`(() => {
+                      const html = document.documentElement.innerHTML
+                      return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
+                    })()`)
+                    if (t) who = t
+                  } finally {
+                    await check.stop()
+                  }
+                } catch {}
+                who = who || "Gemini 账号"
+                return { type: "success", access: JSON.stringify({ profileDir: dir }), refresh: dir, expires: 0, accountId: who, name: who }
+              },
+            }
+          },
         },
         {
           // the old plugin's 不登录使用: the app answers visitors too
@@ -257,32 +261,27 @@ export default async function GeminiWebRelay({ client, options } = {}) {
 
 import { readFileSync, readdirSync, statSync } from "node:fs"
 
-// latestProfile picks the most recently used signed-in profile under the
-// gemini-web browser root (both plugins share it), so a sign-in made
-// there is reused. A profile counts only when its cookie store holds a
-// session (__Secure-1PSID), not merely analytics cookies.
+// latestProfile picks the most recently used signed-in profile under THIS
+// plugin's own browser root, so a sign-in made through the plugin's window
+// can be reused without signing in again. A profile counts only when its
+// cookie store holds a session (__Secure-1PSID), not merely analytics
+// cookies. Nothing outside the plugin's root is ever read.
 function latestProfile() {
-  const roots = [
-    join(process.env.LOCALAPPDATA || "", "magpie", "gemini-web-browser"),
-    join(process.env.HOME || "", ".config", "magpie", "gemini-web-browser"),
-  ]
-  for (const root of roots) {
-    if (!root || !exists(root)) continue
-    let best = null
-    let bestAt = 0
-    for (const name of readdirSync(root)) {
-      const p = join(root, name)
-      try {
-        const at = statSync(p).mtimeMs
-        if (at > bestAt && hasSessionCookie(p)) {
-          best = p
-          bestAt = at
-        }
-      } catch {}
-    }
-    if (best) return best
+  const root = profileRoot()
+  if (!root || !exists(root)) return undefined
+  let best = null
+  let bestAt = 0
+  for (const name of readdirSync(root)) {
+    const p = join(root, name)
+    try {
+      const at = statSync(p).mtimeMs
+      if (at > bestAt && hasSessionCookie(p)) {
+        best = p
+        bestAt = at
+      }
+    } catch {}
   }
-  return undefined
+  return best ?? undefined
 }
 
 function hasSessionCookie(profile) {
