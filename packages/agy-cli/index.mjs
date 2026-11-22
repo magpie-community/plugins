@@ -31,19 +31,35 @@ const PROVIDER_NAME = "Antigravity (local agy CLI)"
 // 1.5.0. An older agy is refused with a clear message; a version agy doesn't
 // report is not known to be older, so the session goes ahead.
 export const MIN_AGY_VERSION = "1.4.12"
-export function agyTooOld(version) {
-  const parse = value => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
-    return match ? match.slice(1).map(Number) : null
-  }
-  const have = parse(version)
-  if (!have) return null
-  const need = parse(MIN_AGY_VERSION)
+// Empirically measured on agy 1.5.14: a single session/prompt (joined across
+// all text blocks) passes verbatim at 192,000 bytes and is truncated past it.
+// Keep 8,000 bytes of framing headroom; older/unknown agy versions keep 112 KiB.
+const LARGE_PROMPT_AGY_VERSION = "1.5.14"
+const LEGACY_MAX_PROMPT_BYTES = 112 * 1024
+const MODERN_MAX_PROMPT_BYTES = 184_000
+
+function parseAgyVersion(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim())
+  return match ? match.slice(1).map(Number) : null
+}
+
+export function agyAtLeast(version, minimum) {
+  const have = parseAgyVersion(version)
+  const need = parseAgyVersion(minimum)
+  if (!have || !need) return false
   for (let i = 0; i < 3; i++) {
-    if (have[i] > need[i]) return null
-    if (have[i] < need[i]) return `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+    if (have[i] > need[i]) return true
+    if (have[i] < need[i]) return false
   }
-  return null
+  return true
+}
+
+export function agyTooOld(version) {
+  const have = parseAgyVersion(version)
+  if (!have) return null
+  return agyAtLeast(version, MIN_AGY_VERSION)
+    ? null
+    : `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
 }
 // agy is told who is connecting: this plugin, by its own package name.
 const CLIENT_INFO = (() => {
@@ -222,6 +238,12 @@ const minimalAgent = () => process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
 // lines were turned away (cloak.mjs, USER_TURNED_AWAY). AGY_BRIDGE_SYSTEM_APPEND=1
 // goes back to the session instructions.
 const systemAppend = () => /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_SYSTEM_APPEND || "")
+// Opt-in. When a cold replay overflows session/prompt, seed older history in
+// session/new's _meta.antigravity.systemPrompt.append (cloaked with outgoing(),
+// capped at AGY_BRIDGE_HISTORY_SEED_MAX_BYTES, default 512 KiB). Off by default
+// so nothing enters agy's session systemPrompt.append without explicit opt-in.
+const historySeedEnabled = () => /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_HISTORY_SEED || "")
+const maxHistorySeedBytes = () => positiveTimeout(process.env.AGY_BRIDGE_HISTORY_SEED_MAX_BYTES, 512 * 1024)
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
@@ -2171,6 +2193,8 @@ class Proc {
     this.configMethodUnsupported = false
     this.currentSelectionKey = null
     this.instructionsInSession = false
+    this.historySeed = null
+    this.hasHistorySeed = false
     this.resumed = false
     this.child = null
     this.conn = null
@@ -2213,6 +2237,7 @@ class Proc {
     this.openingText = openingTextOf(opts.messages?.[0])
     this.openingImages = openingImagesOf(opts.messages?.[0])
     this.resumeFrom = opts.resume || null
+    this.seedContext = opts.seedContext || null
     this.stateless = statelessRequest(opts)
   }
 
@@ -2258,6 +2283,8 @@ class Proc {
     this.configOptions = []
     this.currentSelectionKey = null
     this.instructionsInSession = false
+    this.historySeed = null
+    this.hasHistorySeed = false
     this.resumed = false
     this.hasSentFirstTurn = false
     this.historyInvalid = false
@@ -2399,7 +2426,13 @@ class Proc {
   async #openSession() {
     const resumable = this.resumable
     this.instructionsInSession = this.appendable && systemAppend() && !!this.instructions
-    const meta = this.instructionsInSession
+    this.historySeed = null
+    this.hasHistorySeed = false
+    const seedContext = this.seedContext
+    this.seedContext = null
+    // agy 1.5.14 retains session/new's systemPrompt.append on session/resume
+    // when _meta is omitted; omitting _meta avoids overwriting a seeded history.
+    const resumeMeta = this.instructionsInSession && !this.resumeFrom?.hasHistorySeed
       ? { _meta: { antigravity: { systemPrompt: { append: outgoing(this.instructions) } } } }
       : {}
 
@@ -2412,11 +2445,12 @@ class Proc {
           sessionId: this.resumeFrom.sessionId,
           cwd: this.workspace,
           mcpServers: [],
-          ...meta,
+          ...resumeMeta,
         })
         if (!session || typeof session !== "object") throw new Error("empty session/resume result")
         this.sessionId = this.resumeFrom.sessionId
         this.resumed = true
+        this.hasHistorySeed = !!this.resumeFrom.hasHistorySeed
         this.hasSentFirstTurn = true
         this.expectedMessages = this.resumeFrom.expectedMessages.map((message) => ({ ...message }))
       } catch {
@@ -2424,7 +2458,23 @@ class Proc {
       }
     }
     if (!this.resumed) {
-      session = await this.conn.request("session/new", { cwd: this.workspace, mcpServers: [], ...meta })
+      if (this.appendable && historySeedEnabled() && seedContext) {
+        this.historySeed = planHistorySeed(
+          seedContext.body,
+          seedContext.callerWorkDir,
+          this.instructionsInSession,
+          seedContext.reserveBytes,
+          this.agentVersion,
+        )
+        this.hasHistorySeed = !!this.historySeed?.text
+      }
+      const appendParts = []
+      if (this.instructionsInSession) appendParts.push(outgoing(this.instructions))
+      if (this.historySeed?.text) appendParts.push(this.historySeed.text)
+      const newMeta = appendParts.length
+        ? { _meta: { antigravity: { systemPrompt: { append: appendParts.join("\n\n") } } } }
+        : {}
+      session = await this.conn.request("session/new", { cwd: this.workspace, mcpServers: [], ...newMeta })
       if (!session?.sessionId) throw new Error("agy session/new returned no sessionId")
       this.sessionId = session.sessionId
     }
@@ -3558,6 +3608,7 @@ function park(proc) {
     instructionsHash: digest(sentInstructionsIdentity(proc.instructions)),
     userCloak: USER_CLOAK,
     instructionsInSession: !!proc.instructionsInSession,
+    hasHistorySeed: !!proc.hasHistorySeed,
     workDir: proc.workDir,
     workspace: proc.workspace,
     at: Date.now(),
@@ -3587,7 +3638,8 @@ function takeParked(convKey, opts) {
     entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
   const incoming = digest(historyKey(opts.history))
   const workspace = resumeWorkspace(entry.workspace)
-  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+  const hasHistorySeed = !!entry.hasHistorySeed
+  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace, hasHistorySeed }
   // Sans-inputs resume needs the hashes written by current park(). Old
   // entries without them still resume on an exact historyHash match only.
   const incomingSans = digest(historyKey(stripToolUseInputs(opts.history)))
@@ -3595,7 +3647,7 @@ function takeParked(convKey, opts) {
   const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
   const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
   if (!idsOk || !sansOk) return null
-  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace, hasHistorySeed }
 }
 
 async function retire(key, proc) {
@@ -5795,11 +5847,15 @@ function renderTurnMessagesParts(messages) {
   return toPromptParts(out)
 }
 
-// agy's ACP server cuts a prompt at 128 KiB and appends "<truncated N bytes>",
-// which would drop </conversation_history> and the whole <current_turn> of a
-// long replay. Keep the initial prompt's text under this budget instead.
-function maxInitialPromptBytes() {
-  return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES, 112 * 1024)
+// agy's ACP server cuts a single session/prompt (joined across all text blocks)
+// and appends "<truncated N bytes>", which would drop </conversation_history>
+// and the whole <current_turn> of a long replay. Older agy cut at 128 KiB
+// (budget 112 KiB); agy 1.5.14 accepts 192,000 bytes verbatim (budget 184,000).
+function maxInitialPromptBytes(agentVersion = null) {
+  const defaultBudget = agyAtLeast(agentVersion, LARGE_PROMPT_AGY_VERSION)
+    ? MODERN_MAX_PROMPT_BYTES
+    : LEGACY_MAX_PROMPT_BYTES
+  return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES, defaultBudget)
 }
 const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
@@ -5815,7 +5871,15 @@ const REPLAY_TURN_SHARE = 1 / 2
 const NUDGE_MAX_BYTES = 280
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
 const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]\n"
+const HISTORY_OMITTED_NOTE_GENERIC = "[... earlier conversation history omitted to fit ACP prompt budget ...]\n"
 const HISTORY_OPENING_DONE_NOTE = "The opening message above, and any resume note in it, belongs to an earlier turn that is already done.\n"
+const HISTORY_SEED_OPEN = "<earlier_conversation_history>\n"
+const HISTORY_SEED_CLOSE = "\n" + HISTORY_RECORD_NOTE + "</earlier_conversation_history>"
+const HISTORY_SEED_OMITTED_NOTE = "[... older history omitted to fit session seed budget ...]\n"
+
+function historyOmittedNote(promptBudget) {
+  return promptBudget <= LEGACY_MAX_PROMPT_BYTES ? HISTORY_OMITTED_NOTE : HISTORY_OMITTED_NOTE_GENERIC
+}
 const utf8 = new TextEncoder()
 
 function utf8Bytes(text) {
@@ -6096,8 +6160,143 @@ function fillHistoryTail(entries, floor, left, noteBytes) {
 }
 
 // `reserveBytes` is text the caller appends after </current_turn>.
-function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
-  return renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes).parts
+function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0, options = {}) {
+  return renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes, options).parts
+}
+
+function buildInitialHead(body, callerWorkDir, instructionsInSession) {
+  const head = []
+  if (!instructionsInSession) {
+    const system = systemText(body)
+    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${outgoing(system)}\n</external_system_instructions>\n`)
+    if (callerWorkDir) appendPrompt(head, `\n${workDirNote(callerWorkDir)}\n\n`)
+  }
+  return head
+}
+
+function renderSeedBlock(entries, maxBytes) {
+  const frameBytes = utf8Bytes(HISTORY_SEED_OPEN + HISTORY_SEED_CLOSE)
+  const room = Math.max(0, maxBytes - frameBytes)
+  if (!entries.length || room < 256) return null
+  const noteBytes = utf8Bytes(HISTORY_SEED_OMITTED_NOTE)
+  const total = entries.reduce((sum, entry) => sum + entry.bytes, 0)
+  const work = entries.map((entry) => ({ ...entry }))
+  let keptIndices
+  if (total <= room) {
+    keptIndices = work.map((_, i) => i)
+  } else {
+    const keep = []
+    if (work[0].bytes <= Math.floor(room / 3)) keep.push(0)
+    let left = room - keep.reduce((sum, i) => sum + work[i].bytes, 0) - noteBytes
+    const tail = []
+    const floor = keep.length ? 0 : -1
+    for (let i = work.length - 1; i > floor; i--) {
+      if (work[i].bytes <= left) {
+        tail.unshift(i)
+        left -= work[i].bytes
+      } else if (!tail.length && left >= 512) {
+        work[i].text = clipMiddle(work[i].text, left)
+        work[i].bytes = utf8Bytes(work[i].text)
+        tail.unshift(i)
+        left = 0
+        break
+      } else {
+        break
+      }
+    }
+    keptIndices = [...keep, ...tail]
+  }
+  if (!keptIndices.length) return null
+  const chunks = []
+  let next = 0
+  for (const i of keptIndices) {
+    if (i > next) chunks.push(HISTORY_SEED_OMITTED_NOTE)
+    chunks.push(work[i].text)
+    next = i + 1
+  }
+  if (next < work.length) chunks.push(HISTORY_SEED_OMITTED_NOTE)
+  const text = HISTORY_SEED_OPEN + chunks.join("") + HISTORY_SEED_CLOSE
+  return { text, bytes: utf8Bytes(text), count: keptIndices.length }
+}
+
+// Plans overflow history to place in session/new's _meta.antigravity.systemPrompt.append
+// when AGY_BRIDGE_HISTORY_SEED=1 and the initial prompt would exceed session/prompt's
+// byte budget. Returns null when the replay already fits in session/prompt.
+function planHistorySeed(body, callerWorkDir, instructionsInSession, reserveBytes = 0, agentVersion = null) {
+  const seedBudget = maxHistorySeedBytes()
+  if (seedBudget < 1024) return null
+  const { history, messages: current } = trailingMessages(body)
+  const budget = Math.max(0, maxInitialPromptBytes(agentVersion) - reserveBytes)
+  const head = buildInitialHead(body, callerWorkDir, instructionsInSession)
+  const headBytes = promptTextBytes(head)
+  const currentParts = renderTurnMessagesParts(current)
+  const currentBytes = promptTextBytes(currentParts)
+
+  if (history.length) {
+    const historyOpen = "<conversation_history>\n"
+    const historyClose = HISTORY_RECORD_NOTE + "</conversation_history>\n\n"
+    const turnOpen = "<current_turn>\n"
+    const turnClose = "\n</current_turn>"
+    const frame = utf8Bytes(historyOpen + historyClose + turnOpen + turnClose)
+    const raw = history.map((message, index) => {
+      const parts = renderHistoryEntry(message)
+      return { index, parts, hasImage: promptHasImage(parts), bytes: promptTextBytes(parts) }
+    })
+    const totalHistoryBytes = raw.reduce((sum, entry) => sum + entry.bytes, 0)
+    if (headBytes + frame + totalHistoryBytes + currentBytes <= budget) return null
+    const pointerReserve = 128
+    const promptRoom = Math.max(0, budget - frame - headBytes - currentBytes - pointerReserve)
+    let keptBytes = 0
+    let split = raw.length
+    for (let i = raw.length - 1; i >= 0; i--) {
+      if (keptBytes + raw[i].bytes > promptRoom) break
+      keptBytes += raw[i].bytes
+      split = i
+    }
+    if (split <= 0) return null
+    const candidates = raw.slice(0, split)
+      .filter((entry) => !entry.hasImage)
+      .map((entry) => {
+        const text = outgoing(entry.parts.map((part) => (part?.type === "text" ? part.text : "")).join(""))
+        return { index: entry.index, text, bytes: utf8Bytes(text) }
+      })
+    if (!candidates.length) return null
+    const seed = renderSeedBlock(candidates, seedBudget)
+    if (!seed) return null
+    return {
+      kind: "history",
+      excludeIndices: new Set(candidates.map((entry) => entry.index)),
+      count: seed.count,
+      text: seed.text,
+      bytes: seed.bytes,
+    }
+  }
+
+  // Compaction / multi-user opening turn (no assistant message yet) that overflows
+  // session/prompt: seed the earlier messages (e.g. a compaction summary) so the
+  // final prompt stays intact in <current_turn>.
+  if (current.length > 1) {
+    const turnFrame = head.length ? utf8Bytes("<current_turn>\n\n</current_turn>") : 0
+    if (headBytes + turnFrame + currentBytes <= budget) return null
+    const prefix = current.slice(0, -1)
+    const entries = []
+    for (let i = 0; i < prefix.length; i++) {
+      const parts = renderHistoryEntry(prefix[i])
+      if (promptHasImage(parts)) return null
+      const text = outgoing(parts.map((part) => (part?.type === "text" ? part.text : "")).join(""))
+      entries.push({ index: i, text, bytes: utf8Bytes(text) })
+    }
+    const seed = renderSeedBlock(entries, seedBudget)
+    if (!seed) return null
+    return {
+      kind: "current_prefix",
+      seededCurrentCount: prefix.length,
+      count: seed.count,
+      text: seed.text,
+      bytes: seed.bytes,
+    }
+  }
+  return null
 }
 
 // The newest user tasks a replay reports on, newest first.
@@ -6126,21 +6325,35 @@ function replayStats(history, raw, kept, keptIndices) {
   }
 }
 
-function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
-  const { history, messages: current } = trailingMessages(body)
-  const budget = Math.max(0, maxInitialPromptBytes() - reserveBytes)
-  const head = []
-  if (!instructionsInSession) {
-    const system = systemText(body)
-    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${outgoing(system)}\n</external_system_instructions>\n`)
-    if (callerWorkDir) appendPrompt(head, `\n${workDirNote(callerWorkDir)}\n\n`)
-  }
+function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0, options = {}) {
+  const { history: fullHistory, messages: fullCurrent } = trailingMessages(body)
+  const historySeed = options?.historySeed || null
+  const history = historySeed?.kind === "history"
+    ? fullHistory.filter((_, i) => !historySeed.excludeIndices.has(i))
+    : fullHistory
+  const current = historySeed?.kind === "current_prefix"
+    ? fullCurrent.slice(historySeed.seededCurrentCount)
+    : fullCurrent
+  const promptBudget = maxInitialPromptBytes(options?.agentVersion ?? null)
+  const budget = Math.max(0, promptBudget - reserveBytes)
+  const omittedNote = historyOmittedNote(promptBudget)
+  const head = buildInitialHead(body, callerWorkDir, instructionsInSession)
   const currentParts = renderTurnMessagesParts(current)
+  const hasSeed = !!historySeed?.count
   // A fresh conversation needs no wrapper; it would only add tokens.
-  if (!head.length && !history.length) return { parts: clipPartsToBytes(currentParts, budget), stats: replayStats(history, [], [], []) }
-  const historyOpen = history.length ? "<conversation_history>\n" : ""
-  const historyClose = history.length ? HISTORY_RECORD_NOTE + "</conversation_history>\n\n" : ""
-  const turnOpen = "<current_turn>\n"
+  if (!head.length && !history.length && !hasSeed) {
+    return { parts: clipPartsToBytes(currentParts, budget), stats: replayStats(history, [], [], []) }
+  }
+  const hasHistoryBlock = history.length > 0 || historySeed?.kind === "history"
+  const seedNote = historySeed?.kind === "history"
+    ? `[... ${historySeed.count} earlier conversation message(s) provided in session context ...]\n`
+    : historySeed?.kind === "current_prefix"
+      ? `[... ${historySeed.count} earlier context message(s) provided in session context ...]\n\n`
+      : ""
+  const historyOpen = hasHistoryBlock ? "<conversation_history>\n" + (historySeed?.kind === "history" ? seedNote : "") : ""
+  const historyClose = hasHistoryBlock ? HISTORY_RECORD_NOTE + "</conversation_history>\n\n" : ""
+  const turnPrefix = historySeed?.kind === "current_prefix" ? seedNote : ""
+  const turnOpen = turnPrefix + "<current_turn>\n"
   const turnClose = "\n</current_turn>"
   const frame = utf8Bytes(historyOpen + historyClose + turnOpen + turnClose)
   // Mandatory segments first: instructions, the frame and the current turn.
@@ -6187,7 +6400,7 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
   let kept = entries
   let showOpeningDone = false
   if (overRoom(entries)) {
-    const noteBytes = utf8Bytes(HISTORY_OMITTED_NOTE)
+    const noteBytes = utf8Bytes(omittedNote)
     const inToolLoop = current.some(isToolResultMessage)
     const loopStart = inToolLoop ? lastCompletedTurnEnd(history) : history.length
     const openingDoneBytes = utf8Bytes(HISTORY_OPENING_DONE_NOTE)
@@ -6315,17 +6528,27 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
   }
   const out = []
   appendPrompt(out, headParts)
-  if (history.length) {
+  if (hasHistoryBlock) {
     appendPrompt(out, historyOpen)
-    for (const entry of kept) appendPrompt(out, entry ? entry.parts : HISTORY_OMITTED_NOTE)
+    for (const entry of kept) appendPrompt(out, entry ? entry.parts : omittedNote)
     if (showOpeningDone) appendPrompt(out, HISTORY_OPENING_DONE_NOTE)
     appendPrompt(out, historyClose)
   }
   appendPrompt(out, turnOpen)
   appendPrompt(out, turn)
   appendPrompt(out, turnClose)
+  const baseStats = replayStats(history, raw, keptIndices.map((i) => entries[i]), keptIndices)
   const stats = {
-    ...replayStats(history, raw, keptIndices.map((i) => entries[i]), keptIndices),
+    ...baseStats,
+    ...(historySeed?.kind === "history" ? {
+      messages_before: fullHistory.length,
+      messages_after: baseStats.messages_after + historySeed.count,
+      seed_messages: historySeed.count,
+      seed_bytes: historySeed.bytes,
+    } : historySeed?.kind === "current_prefix" ? {
+      seed_messages: historySeed.count,
+      seed_bytes: historySeed.bytes,
+    } : {}),
     head_bytes: promptTextBytes(headParts),
     head_clipped: promptTextBytes(headParts) < promptTextBytes(head),
     turn_bytes: promptTextBytes(turn),
@@ -7496,6 +7719,8 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
+  const historySeed = isFirstTurn ? proc.historySeed : null
+  if (isFirstTurn) proc.historySeed = null
   let baseParts
   if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
@@ -7503,10 +7728,11 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       : withoutAnswered(body.messages.slice(history.length), answered))
   } else {
     const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
-      reminder.length ? promptTextBytes(reminder) + 2 : 0)
+      reminder.length ? promptTextBytes(reminder) + 2 : 0,
+      { agentVersion: proc.agentVersion, historySeed })
     baseParts = initial.parts
     // what a replay into a new session kept, in counts (plugins#1401)
-    if (initial.stats.messages_before) {
+    if (initial.stats.messages_before || historySeed?.bytes) {
       logSessionEvent(proc, proc.sessionReason ?? null, { ...initial.stats, prompt_bytes: promptTextBytes(baseParts) }, "replay")
     }
   }
@@ -7522,9 +7748,11 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     const rawEstimate = estimateInputTokens(body)
     const sessionOverhead = (proc.instructionsInSession && body.system
       ? estimateInputTokens({ system: body.system, messages: [] })
-      : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
+      : 0)
+      + (historySeed?.text ? estimateTextTokens(historySeed.text) : 0)
+      + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts))
-    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
+    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes(proc.agentVersion))
     const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
       rawEstimate > sentEstimate + 64
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
@@ -7880,9 +8108,16 @@ export const AntigravityBridgePlugin = async () => {
                 logBridgeEvent(null, null, "layout_flip", "layout_canonicalized",
                   { reqId, convKey, layout, nonstream: body.stream === false })
               }
+              const initialReminder = outputFormatReminder(body)
+              const seedContext = {
+                body,
+                callerWorkDir,
+                reserveBytes: initialReminder.length ? promptTextBytes(initialReminder) + 2 : 0,
+              }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
+                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope,
+                seedContext }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
               let keptSession = false
