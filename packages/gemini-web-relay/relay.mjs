@@ -28,13 +28,12 @@ export class GeminiError extends Error {
 // routes the tier. auto sends no header: Google picks, as the app does.
 // Names say what each route serves today: b14=1 is the free tier's
 // 4 Hydrogen, b14=3 the Pro tier's 4 Neon (measured 2026-11-22); the ids
-// keep the picker's own names for compatibility.
+// keep the picker's own names for compatibility. 4 Neon carries its
+// thinking depth as a reasoning effort (low/medium/high), not as three ids.
 export const MODELS = {
   "gemini-auto": { name: "Auto", hex: "", b14: 1 },
-  "gemini-3.6-flash": { name: "4 Hydrogen（Auto 同档）", hex: "56fdd199312815e2", b14: 1 },
+  "gemini-3.6-flash": { name: "4 Hydrogen", hex: "56fdd199312815e2", b14: 1 },
   "gemini-3.1-pro": { name: "4 Neon", hex: "56fdd199312815e2", b14: 3 },
-  "gemini-3.1-pro-high": { name: "4 Neon High", hex: "56fdd199312815e2", b14: 3, b15: 2 },
-  "gemini-3.1-pro-medium": { name: "4 Neon Medium", hex: "56fdd199312815e2", b14: 3, b15: 4 },
 }
 
 export const slug = (name) =>
@@ -146,6 +145,21 @@ const PAGE_ASK = `(async (prompt, hex, b14, b15, temporaryChat) => {
 // measurements: b14=1 the free tier's 4 Hydrogen, b14=3 the pro tier's
 // 4 Neon, and Auto whatever Google picks. auto is exempt from the check.
 // (the check itself lives in webchannel.mjs so both transports share it)
+
+// the thinking depths 4 Neon can run at (the app's selector offers all
+// three on the same model); 4 Hydrogen has no separate depths
+export const THINKING = ["low", "medium", "high"]
+
+// b15 is the app's thinking-depth byte (measured 2026-11-22: low=1,
+// high=2, medium=4); unset means the app's own default.
+export function thinkingByte(effort) {
+  if (!effort) return undefined
+  const e = String(effort).toLowerCase()
+  if (e === "low") return 1
+  if (e === "high") return 2
+  if (e === "medium") return 4
+  throw new GeminiError(`思考深度只支持 low、medium、high，收到 ${effort}。`, { code: "invalid_request_error", status: 400 })
+}
 
 export class RelaySession {
   constructor({ browser, model = MODELS["gemini-3.6-flash"] } = {}) {

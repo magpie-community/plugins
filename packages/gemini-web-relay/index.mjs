@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 import { RelayBrowser, findChrome, profileRoot, signIn } from "./browser.mjs"
-import { GeminiError, MODELS, RelaySession } from "./relay.mjs"
+import { GeminiError, MODELS, RelaySession, thinkingByte } from "./relay.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
 
@@ -106,7 +106,24 @@ export function createPlugin({ profileDir, headless = true } = {}) {
                 const dir = String(inputs?.profileDir ?? "").trim() || latestProfile()
                 if (!dir)
                   return { type: "failed", error: "没有找到已登录的浏览器配置。请先用窗口登录，或填一个配置目录。" }
-                return { type: "success", access: JSON.stringify({ profileDir: dir }), refresh: dir, expires: 0, accountId: "browser-relay", name: "浏览器中继" }
+                // name the account by its Google email, as the old plugin
+                // does — a profile dir string means nothing to the user
+                let who = ""
+                try {
+                  const check = new RelayBrowser({ profileDir: dir, headless: true })
+                  try {
+                    const page = await check.ensure()
+                    const t = await page.eval(`(() => {
+                      const html = document.documentElement.innerHTML
+                      return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
+                    })()`)
+                    if (t) who = t
+                  } finally {
+                    await check.stop()
+                  }
+                } catch {}
+                who = who || "Gemini 账号"
+                return { type: "success", access: JSON.stringify({ profileDir: dir }), refresh: dir, expires: 0, accountId: who, name: who }
               },
             }
           },
@@ -187,8 +204,17 @@ export function createPlugin({ profileDir, headless = true } = {}) {
           }
           const table = accountKey(auth) === ANONYMOUS ? VISITOR : MODELS
           const model = String(body.model ?? "gemini-auto").replace(/^gemini-web-relay\//, "")
-          const m = table[model] ?? (accountKey(auth) === ANONYMOUS ? undefined : MODELS[model])
+          let m = table[model] ?? (accountKey(auth) === ANONYMOUS ? undefined : MODELS[model])
           if (!m) return json(404, `没有模型 ${model}。可用：${Object.keys(table).join("、")}。`, "model_not_found")
+          // 4 Neon carries its thinking depth as the request's reasoning
+          // effort (the app's own 低/中/高 selector); unset = the app default
+          if (body.reasoning_effort && m.b14 === 3) {
+            try {
+              m = { ...m, b15: thinkingByte(body.reasoning_effort) }
+            } catch (e) {
+              return json(400, String(e?.message ?? e), "invalid_request_error")
+            }
+          }
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = () => Math.ceil(prompt.length / 3)

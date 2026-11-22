@@ -35,10 +35,12 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 | 模型 | mode 字节（b14） | 说明 |
 |---|---|---|
 | `gemini-auto` | 不带头 | Google 自己挑（访客可用） |
-| `gemini-3.6-flash` | 1 | 免费档（4 Hydrogen，与 Auto 同档） |
-| `gemini-3.1-pro` | 3 | Pro 档（4 Neon） |
-| `gemini-3.1-pro-high` | 3, b15=2 | Pro 档 High |
-| `gemini-3.1-pro-medium` | 3, b15=4 | Pro 档 Medium |
+| `gemini-3.6-flash` | 1 | 4 Hydrogen（免费档） |
+| `gemini-3.1-pro` | 3 | 4 Neon（Pro 档），思考深度走 `reasoning_effort` |
+
+`gemini-3.1-pro`（4 Neon）带思考深度三档，用 OpenAI 的 `reasoning_effort`
+传：`low` / `medium` / `high`（对应应用选择器的 低/中/高，协议字节 1/4/2）。
+不传就用应用自己的默认档。
 
 ## 登录方式
 
@@ -60,6 +62,8 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
   `reasoning_content`（同时以 `reasoning` 字段给出，两种 SDK 读法都照顾）
 - 历史：把全部 OpenAI messages 压平成一段文本（system 在前，工具调用与结果
   作为上下文内联）经临时会话发出
+- `reasoning_effort`：`low`/`medium`/`high`，仅 4 Neon（`gemini-3.1-pro`）
+  生效，对应应用选择器的思考深度三档
 - `strict_model: false` 可关掉档位校验（不建议）
 
 ## 自检

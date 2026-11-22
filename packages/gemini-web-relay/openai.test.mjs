@@ -242,3 +242,43 @@ test("the loader's fetch answers a chat request through a stubbed ask", async ()
   }
   await plugin.dispose()
 })
+
+// 4 Neon's thinking depth rides the OpenAI reasoning_effort field, not
+// three separate model ids
+test("reasoning_effort maps to 4 Neon's thinking byte and is rejected for unknown values", async () => {
+  const { createPlugin } = await import("./index.mjs")
+  const { RelaySession } = await import("./relay.mjs")
+  const plugin = createPlugin()
+  const auth = async () => ({ type: "oauth", access: JSON.stringify({ profileDir: "C:/fake/profile" }) })
+  const opts = await plugin.auth.loader(auth)
+  const seen = []
+  const real = RelaySession.prototype.ask
+  RelaySession.prototype.ask = async function (prompt, { model } = {}) {
+    seen.push(model)
+    return { text: "ok", reasoning: "" }
+  }
+  try {
+    const ask = (extra) =>
+      opts.fetch("https://gemini-web-relay.invalid/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gemini-3.1-pro", messages: [{ role: "user", content: "hi" }], ...extra }),
+      })
+    for (const effort of ["low", "medium", "high"]) {
+      const r = await ask({ reasoning_effort: effort })
+      expect(r.status).toBe(200)
+    }
+    expect(seen.map((m) => m.b15)).toEqual([1, 4, 2]) // low, medium, high
+    expect(seen.every((m) => m.name === "4 Neon")).toBe(true)
+    // an unknown depth is a 400, not a silent default
+    const bad = await ask({ reasoning_effort: "ultra" })
+    expect(bad.status).toBe(400)
+    // unset stays the app's own default
+    const plain = await ask({})
+    expect(plain.status).toBe(200)
+    expect(seen[seen.length - 1].b15).toBeUndefined()
+  } finally {
+    RelaySession.prototype.ask = real
+  }
+  await plugin.dispose()
+})
