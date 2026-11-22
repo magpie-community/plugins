@@ -214,6 +214,8 @@
     },
     { "package": "magpie-aws-bedrock-sso", "name": "AWS Bedrock SSO", "providers": ["bedrock-sso"],
       "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } },
+    { "package": "magpie-aws-quick-bridge", "name": "Amazon Quick Bridge", "icon": "https://raw.githubusercontent.com/DaBinBinah/magpie-AWS-Quick-bridge/main/assets/icon-128.png", "providers": ["aws-quick"],
+      "summary": { "en": "Unofficial: your own Amazon Quick (QuickWork) account, personal or IAM Identity Center, signed in in the browser (a pasted callback link works from a remote machine), with token renewal, quota, the account's own fast/balanced/smart/auto/advanced modes as models, thinking, tool calls, thread reuse, and long prompts and images sent as attachments. The same npm package also runs outside magpie as a local API (Anthropic Messages, OpenAI Responses, Chat Completions) with import links for CC Switch, so Claude Code, Codex and OpenCode can use the account there too.", "zh": "非官方：用浏览器登录自己的 Amazon Quick（QuickWork）账号，个人账号和 IAM Identity Center 都行（远程机器可以粘贴回调链接），token 自动续期、额度显示，按账号列出 fast/balanced/smart/auto/advanced 模型，支持思考输出、工具调用、会话复用，超长提示词和图片自动转附件。同一个 npm 包还能脱离 magpie 单独跑成本机 API（Anthropic Messages、OpenAI Responses、Chat Completions），并带 CC Switch 一键导入链接，Claude Code、Codex、OpenCode 在 CC Switch 里也能用这个账号。" } },
     {
       "package": "magpie-providers-hub",
       "name": "Providers Hub",
