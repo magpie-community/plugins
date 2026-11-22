@@ -26,7 +26,7 @@ function chunk(id, model, delta, { finish } = {}) {
 // request's flattened prompt (index.mjs: prompt.length / 3, the same
 // characters-over-three the reply is estimated with — the web app reports
 // no token counts of its own).
-export function completion({ id, model, final, promptTokens = 0, newId }) {
+export function completion({ id, model, final, promptTokens = 0 }) {
   const text = final?.text ?? ""
   const reasoning = final?.reasoning ?? ""
   const completionTokens = Math.ceil((text.length + reasoning.length) / 3)
@@ -64,14 +64,19 @@ export function completion({ id, model, final, promptTokens = 0, newId }) {
 // clients expect. An ask failure rejects here — before any stream is
 // returned — so the caller's error mapping (index.mjs) answers a JSON
 // error instead of a silently empty 200.
-export async function sse({ id, model, promptTokens, newId, ask, signal }) {
+export async function sse({ id, model, promptTokens, ask, signal }) {
   const enc = new TextEncoder()
   let text = ""
   let reasoning = ""
   const deltas = [] // the pieces emitted while ask runs
   const final = await ask(({ text: t, reasoning: r } = {}) => {
     if (typeof r === "string" && r.length > reasoning.length) reasoning = r
-    if (typeof t === "string" && t.length > text.length) {
+    const grew = typeof t === "string" && t.length > text.length
+    // reasoning may grow on its own (the model thinking longer without new
+    // text): it still streams, as its own delta
+    if (!grew && reasoning.length > (deltas.at(-1)?.reasoning_content ?? "").length)
+      deltas.push({ reasoning_content: reasoning })
+    if (grew) {
       deltas.push({ reasoning_content: reasoning, content: t.slice(text.length) })
       text = t
     }
@@ -99,6 +104,10 @@ export async function sse({ id, model, promptTokens, newId, ask, signal }) {
       send({ ...chunk(id, model, {}, { finish: "stop" }), usage })
       controller.enqueue(enc.encode("data: [DONE]\n\n"))
       controller.close()
+    },
+    // a client hanging up must not keep the relay generating for it
+    cancel() {
+      try { signal?.abort?.() } catch {}
     },
   })
   return new Response(stream, {

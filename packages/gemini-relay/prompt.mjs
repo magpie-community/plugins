@@ -18,7 +18,17 @@ export function flatten(bodyOrMessages) {
     const text = typeof m?.content === "string"
       ? m.content
       : Array.isArray(m?.content)
-        ? m.content.map((c) => (typeof c === "string" ? c : c?.text ?? "")).join("\n")
+        ? m.content
+            .map((c) => {
+              if (typeof c === "string") return c
+              if (typeof c?.text === "string") return c.text
+              // a non-text part is not dropped on the floor: the model is
+              // told it was there (this relay cannot carry images yet)
+              if (c?.type === "image_url" || c?.image_url) return "[此消息带有一张图片：本中继暂不支持图片输入]"
+              return ""
+            })
+            .filter(Boolean)
+            .join("\n")
         : ""
     if (role === "system" || role === "developer") lines.push(`[System]\n${text}`)
     else if (role === "tool") lines.push(`[Tool result for ${m.tool_call_id ?? "call"}]\n${text}`)

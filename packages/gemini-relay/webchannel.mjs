@@ -43,7 +43,7 @@ function modelHeaderBin(hex, mode) {
 
 // The page function. Built as a plain string (not a template literal): it is
 // spliced into Runtime.evaluate, and its own string literals must survive.
-const PAGE_WC = `(async (hex, mode, prompt) => {
+const PAGE_WC = `(async (hex, mode, depth, prompt) => {
   const Q = String.fromCharCode(34)
   const NL = String.fromCharCode(13, 10)
   const out = { log: [], served: [], reply: "", reasoning: "" }
@@ -51,13 +51,14 @@ const PAGE_WC = `(async (hex, mode, prompt) => {
   const kidx = html.indexOf("d2zJAe")
   const apiKey = kidx >= 0 ? (html.slice(kidx).match(/AIza[0-9A-Za-z_-]{35}/) || [""])[0] : ""
   if (!apiKey) { out.err = "page: no api key"; return out }
-  function mh(hx, md) {
+  function mh(hx, md, dp) {
     const b = [8, 1]
     if (hx) { b.push(42, hx.length); for (const c of hx) b.push(c.charCodeAt(0)) }
     if (md > 0) b.push(120, md)
+    if (dp > 0) b.push(126, dp)
     let s = ""; b.forEach(x => s += String.fromCharCode(x)); return btoa(s)
   }
-  const hh = encodeURIComponent("X-Goog-Api-Key:" + apiKey + NL + "x-goog-ext-525001261-bin:" + mh(hex, mode) + NL + "X-WebChannel-Content-Type:application/json+protobuf" + NL)
+  const hh = encodeURIComponent("X-Goog-Api-Key:" + apiKey + NL + "x-goog-ext-525001261-bin:" + mh(hex, mode, depth) + NL + "X-WebChannel-Content-Type:application/json+protobuf" + NL)
   const zx = () => [...Array(12)].map(() => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("")
   const EP = "https://geminiweb-pa.clients6.google.com/v1/processSession"
   function xhr(method, url, body) {
@@ -214,12 +215,15 @@ const PAGE_WC = `(async (hex, mode, prompt) => {
   out.reasoning = reasoning
   out.ms = Date.now() - t1
   if (errFrame) out.errFrame = errFrame
-  if (!done && !reply) out.err = "no end frame within 120s"
+  // a stream cut off before its end frame is a failed ask, whether or not
+  // some text had already arrived: a partial reply must never pass as the
+  // whole answer
+  if (!done) out.err = reply ? "stream cut off after " + reply.length + " chars (no end frame within 120s)" : "no end frame within 120s"
   return out
 })`
 
 export function pageWebChannelEval(hex, b14, b15, prompt) {
-  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${b14 ?? 1}, ${JSON.stringify(prompt)}) })()`
+  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${b14 ?? 1}, ${b15 ?? 0}, ${JSON.stringify(prompt)}) })()`
 }
 
 // what a tier byte is expected to serve (2026-11-22 measurements): 1 the

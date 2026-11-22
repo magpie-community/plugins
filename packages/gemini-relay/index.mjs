@@ -5,7 +5,7 @@
 // in-page fetch per chat request, read as it streams.
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
-import { RelayBrowser, findChrome, profileRoot, signIn } from "./browser.mjs"
+import { RelayBrowser, findChrome, pageEmail, profileRoot, signIn } from "./browser.mjs"
 import { GeminiError, MODELS, RelaySession, thinkingByte } from "./relay.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
@@ -25,27 +25,15 @@ const ICON =
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
 
-// accountName reads the account's Google email from its signed-in profile.
-// A page of the app itself names it; when Google's risk control answers a
-// /sorry instead (a per-IP, per-moment state), there is nothing to read and
-// the caller falls back to a neutral label — the name is cosmetic, the
+// accountName reads the account's Google email. It goes through the
+// account's own relay browser (the one already running — a second Chrome
+// on the same profile would lose the singleton lock and fail) and reads
+// the accounts.google.com page, which no /sorry ever replaces. "" when
+// the account is not reachable right now; the name is cosmetic, the
 // cookies decide what is served.
-async function accountName(profileDir, { headless = false } = {}) {
-  try {
-    const check = new RelayBrowser({ profileDir, headless })
-    try {
-      const page = await check.ensure()
-      const t = await page.eval(`(() => {
-        const html = document.documentElement.innerHTML
-        return { email: (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || "" }
-      })()`)
-      return t?.email || ""
-    } finally {
-      await check.stop()
-    }
-  } catch {
-    return ""
-  }
+async function accountName(profileDir) {
+  if (!profileDir) return ""
+  return pageEmail(browserFor(profileDir))
 }
 
 function models(table) {
@@ -74,14 +62,19 @@ export function createPlugin({ profileDir, headless = true } = {}) {
     }
     return b
   }
-  // the account's profile dir from its stored sign-in; anonymous has none
+  // the account's profile dir from its stored sign-in; anonymous has none.
+  // A corrupt record must not silently become the anonymous visitor: the
+  // request would be served by the wrong identity at the wrong tier. It
+  // surfaces as an error instead, telling the user to sign in again.
   const accountKey = (auth) => {
     if (!auth?.access || auth.access === ANONYMOUS) return ANONYMOUS
     try {
       const v = JSON.parse(auth.access)
-      return v?.profileDir || profileDir || ANONYMOUS
+      const dir = v?.profileDir || profileDir
+      if (!dir) throw new Error("no profileDir")
+      return dir
     } catch {
-      return ANONYMOUS
+      throw new GeminiError("账号的登录记录已损坏，请移除后重新登录。", { code: "auth_corrupted", status: 401 })
     }
   }
   const sessionFor = (auth) => new RelaySession({ browser: browserFor(accountKey(auth)) })
@@ -96,22 +89,17 @@ export function createPlugin({ profileDir, headless = true } = {}) {
       id: ID,
       // each account is offered what it can use: a visitor only Auto
       async models(given, { auth } = {}) {
-        return models(accountKey(auth) === ANONYMOUS ? VISITOR : MODELS)
+        const key = accountKey(auth)
+        return models(key === ANONYMOUS ? VISITOR : MODELS)
       },
       // the account's own info, read again on every magpie account-page
-      // visit: a name left as a fallback by a /sorry moment becomes the
-      // account's email as soon as the app serves the page again — no
-      // re-sign-in needed
+      // visit: a name left as a fallback becomes the account's email as
+      // soon as it is readable — no re-sign-in needed
       async accountInfo(_given, { auth } = {}) {
         const key = accountKey(auth)
         if (key === ANONYMOUS) return { name: "访客（未登录）" }
-        try {
-          const { profileDir } = JSON.parse(auth.access)
-          const email = await accountName(profileDir)
-          return email ? { name: email } : {}
-        } catch {
-          return {}
-        }
+        const email = await accountName(key)
+        return email ? { name: email } : {}
       },
     },
     auth: {
@@ -174,14 +162,17 @@ export function createPlugin({ profileDir, headless = true } = {}) {
         baseURL: BASE,
         apiKey: "gemini-relay",
         async fetch(input, init = {}) {
-          const request = input instanceof Request ? new Request(input, init) : null
-          const url = new URL(request ? request.url : String(input))
-          const method = request ? request.method : init.method ?? "GET"
+          // the Request is always built: with a plain-string URL (what the
+          // AI SDK sends) only init carries the caller's abort signal, and
+          // new Request(input, init) merges it in
+          const request = new Request(input, init)
+          const url = new URL(request.url)
+          const method = request.method
           if (url.origin !== new URL(BASE).origin || !url.pathname.endsWith("/chat/completions") || method !== "POST")
             return json(404, "gemini-relay 只提供 chat/completions。", "not_found")
           let body
           try {
-            body = JSON.parse(request ? await request.text() : String(init.body ?? "{}"))
+            body = JSON.parse(await request.text())
           } catch {
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
@@ -190,13 +181,19 @@ export function createPlugin({ profileDir, headless = true } = {}) {
           let m = table[model] ?? (accountKey(auth) === ANONYMOUS ? undefined : MODELS[model])
           if (!m) return json(404, `没有模型 ${model}。可用：${Object.keys(table).join("、")}。`, "model_not_found")
           // 4 Neon carries its thinking depth as the request's reasoning
-          // effort (the app's own 低/中/高 selector); unset = the app default
-          if (body.reasoning_effort && m.b14 === 3) {
+          // effort (the app's own 低/中/高 selector); unset = the app default.
+          // An invalid value is a 400 whatever the model; a valid one on a
+          // model without depths is a 400 too — silently ignoring a client's
+          // requested constraint would mislead it.
+          if (body.reasoning_effort) {
+            let b15
             try {
-              m = { ...m, b15: thinkingByte(body.reasoning_effort) }
+              b15 = thinkingByte(body.reasoning_effort)
             } catch (e) {
               return json(400, String(e?.message ?? e), "invalid_request_error")
             }
+            if (m.b14 !== 3) return json(400, `模型 ${m.name} 没有思考深度选择，reasoning_effort 仅 4 Neon（gemini-3.1-pro）支持。`, "invalid_request_error")
+            m = { ...m, b15 }
           }
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
@@ -206,11 +203,15 @@ export function createPlugin({ profileDir, headless = true } = {}) {
           const strictModel = body.strict_model !== false
           try {
             if (body.stream)
-              return await sse({ id, model, signal: request?.signal, promptTokens, newId: () => "call_" + Math.random().toString(36).slice(2, 14), ask: (onUpdate, sig) => wrapAsk(session, prompt, m, onUpdate, sig, strictModel) })
-            const final = await session.ask(prompt, { model: m, signal: request?.signal, strictModel })
-            return Response.json(completion({ id, model, final, promptTokens: promptTokens(), newId: () => "call_" + Math.random().toString(36).slice(2, 14) }))
+              return await sse({ id, model, signal: request.signal, promptTokens, ask: (onUpdate, sig) => wrapAsk(session, prompt, m, onUpdate, sig, strictModel) })
+            const final = await session.ask(prompt, { model: m, signal: request.signal, strictModel })
+            return Response.json(completion({ id, model, final, promptTokens: promptTokens() }))
           } catch (e) {
-            if (e?.name === "AbortError" || e?.name === "TimeoutError") throw e
+            // a client abort travels as a real AbortError (or as the
+            // relay's own cancelled error): rethrow so the SDK sees the
+            // cancel — never answer it with a body, and never with an
+            // invalid 499 status that the Response constructor rejects
+            if (e?.name === "AbortError" || e?.name === "TimeoutError" || e?.code === "aborted") throw new DOMException("已取消", "AbortError")
             return json(e?.status ?? 502, String(e?.message ?? e), e?.code ?? "gemini_error")
           }
         },

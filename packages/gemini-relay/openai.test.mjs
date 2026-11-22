@@ -57,9 +57,11 @@ test("completion tolerates an empty reply", () => {
 })
 
 // a fake ask: the relay reports once through onUpdate and resolves with
-// the whole reply, exactly as wrapAsk (index.mjs) does
+// the whole reply, exactly as wrapAsk (index.mjs) does. The caller's
+// signal must reach ask (index.mjs always builds a Request), and a
+// hanging-up stream client aborts it.
 const fakeAsk = (final, { updates = 1 } = {}) => async (onUpdate, signal) => {
-  expect(signal).toBeUndefined() // index.mjs passes request?.signal, absent offline
+  expect(signal).toBeDefined() // the caller's cancel must reach ask
   for (let i = 1; i <= updates; i++)
     onUpdate({
       text: final.text.slice(0, Math.ceil((final.text.length * i) / updates)),
@@ -85,7 +87,7 @@ test("sse streams the reply as deltas and closes with [DONE]", async () => {
     id: "chatcmpl-s1",
     model: "gemini-3.6-flash",
     promptTokens: () => 6,
-    newId,
+    signal: new AbortController().signal,
     ask: fakeAsk({ text: "hello world", reasoning: "thinking" }),
   })
   const { chunks, done } = await readSSE(res)
@@ -273,6 +275,14 @@ test("reasoning_effort maps to 4 Neon's thinking byte and is rejected for unknow
     // an unknown depth is a 400, not a silent default
     const bad = await ask({ reasoning_effort: "ultra" })
     expect(bad.status).toBe(400)
+    // a valid depth on a model without depths is a 400 too: the client's
+    // requested constraint must never be silently ignored
+    const notNeon = await opts.fetch("https://gemini-relay.invalid/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gemini-3.6-flash", messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" }),
+    })
+    expect(notNeon.status).toBe(400)
     // unset stays the app's own default
     const plain = await ask({})
     expect(plain.status).toBe(200)

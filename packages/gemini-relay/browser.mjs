@@ -16,6 +16,7 @@ import { join } from "node:path"
 import createWebSocket from "ws"
 
 export const SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?continue=" + encodeURIComponent("https://gemini.google.com/app")
+export const ACCOUNTS_URL = "https://accounts.google.com/"
 const GEMINI_URL = "https://gemini.google.com/app"
 // the cookies a signed-in session must have
 const NEED = ["__Secure-1PSID", "__Secure-1PSIDTS"]
@@ -40,6 +41,43 @@ export function googleCookies(list) {
     if (typeof c.name === "string" && typeof c.value === "string") out[c.name] = c.value
   }
   return out
+}
+
+// googleEmail reads the signed-in account's own email from the profile's
+// cookie jar — the __Secure-1PAPISID cookie's value is the account email
+// base64url-encoded (a long-standing Google convention). This needs no
+// page load at all: no /sorry can hide it, and the jar on disk is the one
+// the sign-in just flushed.
+export function googleEmailFromCookies(cookies) {
+  const v = cookies?.["__Secure-1PAPISID"]
+  if (typeof v !== "string" || v.length < 8) return ""
+  try {
+    const b64 = v.replace(/-/g, "+").replace(/_/g, "/")
+    const s = Buffer.from(b64, "base64").toString("utf8")
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) ? s : ""
+  } catch {
+    return ""
+  }
+}
+
+
+// pageEmail navigates a live relay browser to Google's accounts page (the
+// one page of the ecosystem that is never /sorry-ed) and reads the signed-in
+// account's email from its HTML — the app page itself is the one risk
+// control replaces.
+export async function pageEmail(browser) {
+  try {
+    const page = await browser.ensure()
+    await page.send("Page.navigate", { url: ACCOUNTS_URL })
+    await new Promise((r) => setTimeout(r, 6000))
+    const t = await page.eval(`(() => {
+      const html = document.documentElement.innerHTML
+      return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
+    })()`)
+    return t || ""
+  } catch {
+    return ""
+  }
 }
 
 const hasSession = (cookies) => NEED.every((n) => cookies[n])
@@ -200,17 +238,23 @@ export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settl
   }
 }
 
-export function findChrome(env = process.env) {
+export function findChrome(env = process.env, platform = process.platform) {
   if (env.GEMINI_RELAY_BROWSER && existsSync(env.GEMINI_RELAY_BROWSER)) return env.GEMINI_RELAY_BROWSER
-  const candidates = [
-    join(env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
-    join(env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
-    join(env["PROGRAMFILES(X86)"] || "", "Google/Chrome/Application/chrome.exe"),
-    join(env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-  ]
+  const candidates =
+    platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+      : platform === "win32"
+        ? [
+            join(env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
+            join(env["PROGRAMFILES(X86)"] || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),
+          ]
+        : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"]
   return candidates.find((p) => p && existsSync(p)) ?? ""
 }
 
@@ -244,6 +288,10 @@ export class RelayBrowser {
   }
 
   async _start() {
+    // a previous life of this browser must be gone first: a second Chrome
+    // on the same profile dies on the singleton lock, and the old one
+    // would leak
+    await this.stop().catch(() => {})
     if (!this.profileDir) {
       this.tmpProfile = mkdtempSync(join(tmpdir(), "gwr-"))
       this.profileDir = this.tmpProfile
@@ -264,6 +312,10 @@ export class RelayBrowser {
       "about:blank",
     ]
     this.proc = spawn(chrome, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
+    // keep the pipes drained: a full stdout/stderr buffer would otherwise
+    // stall Chrome's logging (and, observed in testing, its exit)
+    this.proc.stdout?.resume()
+    this.proc.stderr?.resume()
     this.proc.on("exit", () => {
       this.ws = null
       this._page = null
@@ -299,6 +351,12 @@ export class RelayBrowser {
       this.ws = new createWebSocket(url, { perMessageDeflate: false })
       this.ws.once("open", res)
       this.ws.once("error", rej)
+      // a dropped DevTools socket must fail the requests waiting on it —
+      // otherwise every pending send() promise hangs forever
+      this.ws.on("close", () => {
+        for (const { rej } of this.pending.values()) rej(new Error("DevTools 连接已断开"))
+        this.pending.clear()
+      })
       this.ws.on("message", (buf) => {
         const msg = JSON.parse(buf.toString())
         if (msg.id && this.pending.has(msg.id)) {
@@ -313,11 +371,17 @@ export class RelayBrowser {
     })
   }
 
-  send(method, params = {}, sessionId) {
+  send(method, params = {}, sessionId, timeoutMs) {
     const id = ++this.mid
     const payload = { id, method, params }
     if (sessionId) payload.sessionId = sessionId
     return new Promise((res, rej) => {
+      if (timeoutMs) {
+        const t = setTimeout(() => {
+          if (this.pending.delete(id)) rej(new Error(method + " timed out"))
+        }, timeoutMs)
+        t.unref?.()
+      }
       this.pending.set(id, { res, rej })
       this.ws.send(JSON.stringify(payload))
     })
@@ -333,15 +397,28 @@ export class RelayBrowser {
   }
 
   async stop() {
-    try { this.ws?.close() } catch {}
-    try { this.proc?.kill() } catch {}
-    if (this.tmpProfile) {
-      try { rmSync(this.tmpProfile, { recursive: true, force: true }) } catch {}
+    // Browser.close asks Chrome to shut down cleanly, which releases the
+    // files a bare kill leaves "Device or resource busy" on Windows. The
+    // exit is waited for explicitly: only a dead Chrome lets the temp
+    // profile be removed.
+    if (this.ws && this.proc && this.proc.exitCode === null) {
+      try { await this.send("Browser.close", {}, undefined, 5000) } catch {}
     }
-    await new Promise((r) => {
-      this.proc?.once("exit", r)
-      setTimeout(r, 3000)
-    })
+    try { this.ws?.close() } catch {}
+    if (this.proc && this.proc.exitCode === null) {
+      try { this.proc.kill() } catch {}
+      await new Promise((r) => {
+        this.proc.once("exit", r)
+        setTimeout(r, 5000)
+      })
+    }
+    if (this.tmpProfile) {
+      try { rmSync(this.tmpProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }) } catch {}
+      this.tmpProfile = null
+      this.profileDir = null // a temp profile is gone; a restart makes a fresh one
+    }
+    this.ws = null
+    this._page = null
   }
 }
 

@@ -177,17 +177,25 @@ export class RelaySession {
         code: "context_length_exceeded",
         status: 413,
       })
-    const page = await this.browser.ensure()
     let lastError = null
     for (const transport of ["webchannel", "stream"]) {
       if (transport === "stream" && lastError && lastError.fallback === false) break
       for (let attempt = 0; attempt < 2; attempt++) {
+        // the page is read fresh every try: a reopen must be used, not the
+        // closed one this attempt started on
+        const page = await this.browser.ensure()
         try {
           const r =
             transport === "webchannel"
               ? await page.eval(pageWebChannelEval(model.hex, model.b14, model.b15, prompt))
               : await page.eval(streamGenerateEval(model.hex, model.b14, model.b15, prompt))
           if (signal?.aborted) throw new GeminiError("已取消", { code: "aborted", status: 499 })
+          // the page function reports transport trouble in its result (it
+          // resolves instead of throwing): an error, an error frame, or no
+          // reply at all is a failed ask, not a successful empty one — let
+          // the retry/fallback machinery see it
+          if (!r || r.err || r.errFrame || !r.reply)
+            throw new Error(String(r?.err || r?.errFrame || "网页里没有等到回复"))
           // strict: what the server actually served must be the tier asked
           // for, not a silent downgrade
           if (strictModel) {
@@ -202,10 +210,12 @@ export class RelaySession {
           if (e?.code === "model_served_mismatch") throw e // never blind-retry into the same downgrade
           if (e?.code === "aborted") throw e
           lastError = e
-          // the page may have been closed or navigated; reopen once
-          if (attempt === 0 && (!this.browser.started() || /400|401|403|no api key|handshake|cfb2h|SNlM0e/i.test(String(e?.message)))) {
+          // the page may have been closed or navigated; reopen once — and
+          // tear the old browser down first, or the new Chrome hits the
+          // profile's singleton lock and dies
+          if (attempt === 0 && (!this.browser.started() || /400|401|403|no api key|handshake|cfb2h|SNlM0e|没有等到回复/i.test(String(e?.message)))) {
             try { await page.close() } catch {}
-            this.browser._page = null
+            await this.browser.stop().catch(() => {})
             await this.browser.ensure()
             continue
           }
