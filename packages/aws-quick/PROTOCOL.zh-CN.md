@@ -131,7 +131,7 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<整条用户输入>",
-    "custom_prompt": "<调用方系统指令（首轮发送，实测在同 thread 后续轮次持久化）>",
+    "custom_prompt": "<调用方系统指令（空间够时续接轮也附带以稳缓存，大 delta 时自动省略让出整帧）>",
     "send_origin": "composer",
     "auto_routing": false,
     "web_search_enabled": true,
@@ -213,8 +213,9 @@ Quick 自有 agent 工具的服务端执行过程，`message_complete.tool_calls
 可行的桥接（插件采用，已实测跑通）：
 
 1. 把 OpenAI `tools[]` + `tool_choice` 渲染成一段 `[Client tool calling]` 指令，
-   拼进 `user_message.payload.text`，并在 `system_prompt` / `custom_prompt` 头部放入
-   客户端工具规则；同时置 `web_search_enabled:false`，减少模型调用自带联网工具"抢答"。
+   拼进 `user_message.payload.text`（续接轮仅附带一行简短提醒），并在
+   `custom_prompt` 头部放入客户端工具规则；同时置 `web_search_enabled:false`，
+   减少模型调用自带联网工具"抢答"。
 2. 模型把调用输出为纯文本 `<tool_call>{"name":…,"arguments":{…}}</tool_call>`
    （tag 可能跨 `text_delta` 切分，插件做了 holdback 解析，见 `lib/tools.mjs`）。
 3. 解析结果映射为 OpenAI `tool_calls`；`finish_reason:"tool_calls"`。
@@ -250,6 +251,6 @@ OpenAI `tool_calls`。
   聊天 WS 不受影响）。
 - `connected.payload.user` 含邮箱/姓名/账号 id——**不要打印原始事件**。
 - 整个 `user_message` 帧有 64KB 上限（超限服务端拒发 `FrameTooLarge`；
-  已实测 `text` 与 `system_prompt` 共享该预算），插件在
+  `text` 与 `custom_prompt` 共享该预算），插件在
   `lib/handler.mjs`/`lib/translate.mjs`/`lib/tools.mjs` 里做了尺寸预算；
-  渲染文本始终 <60KB。
+  渲染载荷始终 <60KB。

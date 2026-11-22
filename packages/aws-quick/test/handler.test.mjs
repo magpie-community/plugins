@@ -695,8 +695,8 @@ test('reused thread keeps custom_prompt when small, omits it when a 36KB tool_re
   assert.ok(p2.custom_prompt.includes('A'.repeat(100)))
   assert.ok(p2.text.includes('still active'))
 
-  // Huge 36KB tool_result on turn 3 triggers omitting custom_prompt so the full file fits untruncated.
-  const bigBody = 'Z'.repeat(36 * 1024)
+  // Huge 52KB single tool_result on turn 3 triggers omitting custom_prompt and uses full ~59KB frame.
+  const bigBody = 'Z'.repeat(52 * 1024)
   const r3 = await req({
     model: 'fast',
     tools,
@@ -712,8 +712,62 @@ test('reused thread keeps custom_prompt when small, omits it when a 36KB tool_re
   assert.equal(r3.status, 200)
   const j3 = await r3.json()
   const p3 = fake.state.userMessages.at(-1).payload
-  assert.equal(p3.custom_prompt, undefined) // yielded frame room to the 36KB tool_result
+  assert.equal(p3.custom_prompt, undefined) // yielded frame room to the 52KB tool_result
   assert.ok(p3.text.includes('still active'))
-  assert.ok(p3.text.includes(bigBody), '36KB single tool_result fits untruncated on reused thread')
+  assert.ok(p3.text.includes(bigBody), '52KB single tool_result fits untruncated on reused thread')
   assert.ok(!j3.choices[0].message.content.includes('64KB'))
+
+  // Parallel tool_results (2 × 25KB) on turn 4 also fit untruncated via water-filling instead of 16KB cap.
+  const fileA = 'M'.repeat(25 * 1024)
+  const fileB = 'N'.repeat(25 * 1024)
+  const r4 = await req({
+    model: 'fast',
+    tools,
+    messages: [
+      sys,
+      { role: 'user', content: 'read big file' },
+      { role: 'assistant', content: j1.choices[0].message.content },
+      { role: 'user', content: 'short follow-up' },
+      { role: 'assistant', content: j2.choices[0].message.content },
+      { role: 'tool', tool_call_id: 'c1', name: 'read_file', content: bigBody },
+      { role: 'assistant', content: j3.choices[0].message.content },
+      { role: 'tool', tool_call_id: 'c2', name: 'read_file', content: fileA },
+      { role: 'tool', tool_call_id: 'c3', name: 'read_file', content: fileB },
+    ],
+  }, { sessions })
+  assert.equal(r4.status, 200)
+  const j4 = await r4.json()
+  const p4 = fake.state.userMessages.at(-1).payload
+  assert.equal(p4.custom_prompt, undefined)
+  assert.ok(p4.text.includes(fileA), 'first 25KB parallel tool_result fits untruncated')
+  assert.ok(p4.text.includes(fileB), 'second 25KB parallel tool_result fits untruncated')
+  assert.ok(!j4.choices[0].message.content.includes('64KB'))
+})
+
+test('internal tool preamble downgrade to compact signatures surfaces 64KB truncation note', async () => {
+  // 50 tools with 18 properties each exceed PREAMBLE_CAP (36KB) in full JSON
+  // schema (~52KB) while compact signatures stay ~18KB (well under textCap - 8KB),
+  // so only buildToolPreamble's internal downgrade triggers stats.truncated.
+  const tools = Array.from({ length: 50 }, (_, i) => ({
+    type: 'function',
+    function: {
+      name: `verbose_tool_${i}`,
+      description: `does work ${i}`,
+      parameters: {
+        type: 'object',
+        required: ['param_0'],
+        properties: Object.fromEntries(Array.from({ length: 18 }, (_, j) => [`param_${j}`, { type: 'string', minLength: 1, maxLength: 100 }])),
+      },
+    },
+  }))
+  const res = await req({
+    model: 'fast',
+    messages: [{ role: 'user', content: 'use a tool' }],
+    tools,
+  })
+  assert.equal(res.status, 200)
+  const j = await res.json()
+  const sent = fake.state.userMessages.at(-1).payload.text
+  assert.ok(sent.includes('compact signatures'))
+  assert.match(j.choices[0].message.content, /64KB/)
 })

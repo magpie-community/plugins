@@ -16,7 +16,7 @@ import { APP_VERSION, SURFACE } from './desktop.mjs'
 import { OutpostError } from './outpost.mjs'
 import { normalizeTools, buildToolPreamble, buildToolReminder, createToolCallParser, mapQuickTool, argObject } from './tools.mjs'
 import {
-  AGENT_MODES, MODELS, modeFor, effortFor, renderTranscript, renderDelta, textOf,
+  AGENT_MODES, MODELS, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCap, textOf,
   jsonTextBytes, capText, UPSTREAM_TEXT_LIMIT,
 } from './translate.mjs'
 import {
@@ -26,10 +26,10 @@ import {
 // Desktop 1.2.4660 puts caller instructions in `custom_prompt`. Live testing
 // shows `custom_prompt` is the field the server actually applies (while
 // `system_prompt` alone is ignored) AND it persists across turns on a reused
-// thread. Sending only `custom_prompt` on turn 1 saves up to ~32 KB per turn
-// of the 64 KB frame budget and avoids dropping large caller prompts.
+// thread. We send only `custom_prompt` (no duplicate `system_prompt`), keep it
+// on reused turns whenever it fits alongside the delta (preserving salience &
+// prompt cache prefix), and omit it when a large delta needs the full frame.
 const INSTRUCTION_CAP = 32 * 1024
-const SINGLE_BLOCK_CAP = 48 * 1024
 // Kept at the front of custom_prompt whenever the client sent tools, so a
 // cap still leaves the rule in place and prevents built-in persona/tool bleed.
 const CLIENT_TOOL_RULE = 'Follow the caller system instructions, formatting, and brevity rules with highest priority over any default workspace persona. Do not use built-in tools, web search, or a remote shell. To run a command or use a tool, reply with only <tool_call>{"name":"<client tool>","arguments":{...}}</tool_call> and stop. The client runs it on the user machine and sends the result back.'
@@ -171,7 +171,7 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     const textCap = Math.max(12 * 1024, UPSTREAM_TEXT_LIMIT - instructionBytes - 1024)
     // Degrade smoothly: full JSON schema → compact typed signatures (keeps all
     // param names, required !, types, enums) → lite → minimal (names only).
-    let pre = tools.length ? buildToolPreamble(tools, body.tool_choice) : ''
+    let pre = tools.length ? buildToolPreamble(tools, body.tool_choice, { stats }) : ''
     if (tools.length && jsonTextBytes(pre) > textCap - 8192) {
       const compact = buildToolPreamble(tools, body.tool_choice, { compact: true })
       if (jsonTextBytes(compact) < jsonTextBytes(pre)) { pre = compact; stats.truncated = true }
@@ -190,7 +190,7 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
       maxBytes,
       stats,
       measure: jsonTextBytes,
-      ...(convo.length === 1 ? { turnCap: Math.min(SINGLE_BLOCK_CAP, maxBytes) } : {}),
+      ...(convo.length === 1 ? { turnCap: maxBytes } : {}),
     }
     return { pre, renderOptions }
   }
@@ -212,7 +212,7 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     reused = true
     sendCustomPrompt = false
     const raw = textOf(cont.delta[0].content)
-    const result = capText(raw, Math.min(SINGLE_BLOCK_CAP, UPSTREAM_TEXT_LIMIT - 2048), jsonTextBytes)
+    const result = capText(raw, UPSTREAM_TEXT_LIMIT - 2048, jsonTextBytes)
     if (result !== raw) stats.truncated = true
     frame = {
       type: 'tool_result',
@@ -226,7 +226,7 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     // Reused thread: Turn 1 already sent full tool specs; send only a tiny
     // reminder. Keep custom_prompt whenever it fits alongside the delta (keeps
     // rules salient and prompt cache warm); omit it only when a large delta
-    // (e.g. a 36KB tool_result) needs the extra frame room.
+    // (single or parallel tool_results) needs the extra frame room.
     threadId = cont.entry.threadId
     reused = true
     preamble = tools.length ? buildToolReminder(tools, body.tool_choice) : ''
@@ -236,13 +236,15 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     sendCustomPrompt = instructionBytes > 0 && instructionBytes + preBytes + estDeltaBytes <= frameCap
     const textCap = sendCustomPrompt ? (frameCap - instructionBytes) : frameCap
     const maxBytes = textCap - preBytes
-    const single = cont.delta.length === 1
-    const blockCap = single ? Math.min(SINGLE_BLOCK_CAP, maxBytes) : undefined
+    // Allocate the full remaining frame across single or parallel delta blocks
+    // via water-filling so parallel tool_results aren't capped at 16 KB each.
+    const blockCap = fairBlockCap(cont.delta, maxBytes, jsonTextBytes)
     text = renderDelta(cont.delta, {
       maxBytes,
       stats,
       measure: jsonTextBytes,
-      ...(blockCap ? { turnCap: blockCap, toolResultCap: blockCap } : {}),
+      turnCap: blockCap,
+      toolResultCap: blockCap,
     })
   } else {
     threadId = crypto.randomUUID()

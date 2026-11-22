@@ -33,8 +33,8 @@ export function normalizeTools(tools) {
   return [...byName.values()]
 }
 
-function toolSpecLine(t) {
-  const params = JSON.stringify(boundedParameters(t))
+function toolSpecLine(t, stats) {
+  const params = JSON.stringify(boundedParameters(t, stats))
   return `- ${t.name}: ${t.description || '(no description)'}\n  parameters: ${params}`
 }
 
@@ -69,10 +69,11 @@ export function slimSchema(schema, depth = 0) {
 /** Per-tool schema cap: beyond this, degrade to a bare object schema. */
 const SCHEMA_CAP = 3072
 
-function boundedParameters(t) {
+function boundedParameters(t, stats) {
   const slim = slimSchema(t.parameters)
   const json = JSON.stringify(slim)
   if (byteLen(json) <= SCHEMA_CAP) return slim
+  if (stats) stats.truncated = true
   // Still too big: keep only the top-level shape so the model knows it takes an object.
   const required = Array.isArray(t.parameters?.required) ? t.parameters.required : []
   return { type: 'object', properties: {}, ...(required.length ? { required } : {}) }
@@ -159,7 +160,7 @@ export function buildToolReminder(tools, toolChoice) {
   ].filter(Boolean).join('\n')
 }
 
-export function buildToolPreamble(tools, toolChoice, { compact = false, lite = false, minimal = false } = {}) {
+export function buildToolPreamble(tools, toolChoice, { compact = false, lite = false, minimal = false, stats } = {}) {
   if (!tools.length) return ''
   const { shown, must } = forcedRule(tools, toolChoice)
   const assemble = (specs, header) => [
@@ -185,13 +186,15 @@ export function buildToolPreamble(tools, toolChoice, { compact = false, lite = f
   const liteHeader = 'Tools provided by the client (parameter schemas omitted — use the tool name and reasonable arguments):'
   if (lite) return assemble(liteSpecs, liteHeader)
   if (compact) return assemble(compactSpecs, compactHeader)
-  let out = assemble(shown.map(toolSpecLine).join('\n'), 'Tools provided by the client:')
+  let out = assemble(shown.map((t) => toolSpecLine(t, stats)).join('\n'), 'Tools provided by the client:')
   if (byteLen(out) > PREAMBLE_CAP) {
     // Prefer compact typed signatures so parameter names and types stay intact.
     out = assemble(compactSpecs, compactHeader)
+    if (stats) stats.truncated = true
   }
   if (byteLen(out) > PREAMBLE_CAP) {
     out = assemble(liteSpecs, liteHeader)
+    if (stats) stats.truncated = true
   }
   return out
 }

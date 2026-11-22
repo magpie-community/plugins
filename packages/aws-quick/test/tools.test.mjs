@@ -77,7 +77,9 @@ test('preamble falls back to compact typed signatures when toolset is enormous',
       },
     },
   })))
-  const p = buildToolPreamble(tools, 'auto')
+  const stats = {}
+  const p = buildToolPreamble(tools, 'auto', { stats })
+  assert.ok(stats.truncated, 'internal downgrade to compact signatures must set stats.truncated')
   assert.ok(byteLen(p) < 36 * 1024)
   assert.ok(p.includes('compact signatures'))
   assert.ok(p.includes('- tool_0(p0!: string'))

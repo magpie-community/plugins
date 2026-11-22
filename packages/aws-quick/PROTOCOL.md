@@ -131,7 +131,7 @@ Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<the whole user input>",
-    "custom_prompt": "<caller system instructions (turn 1; persists on reused threads)>",
+    "custom_prompt": "<caller system instructions (kept on reused turns when it fits, omitted when a large delta needs the full frame)>",
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",
@@ -217,10 +217,10 @@ serves its own tool loop — an external `user_message` cannot inject a
 The workable bridge (adopted by the plugin, verified end-to-end):
 
 1. Render OpenAI `tools[]` + `tool_choice` into a `[Client tool calling]`
-   instruction block prepended to `user_message.payload.text`, with the client
-   tool rule kept at the front of `system_prompt` / `custom_prompt`. Also set
-   `web_search_enabled:false` to reduce the model "answering first" with its
-   own web-search tool.
+   instruction block prepended to `user_message.payload.text` (reused turns
+   send only a short 1-line reminder), with the client tool rule kept at the
+   front of `custom_prompt`. Also set `web_search_enabled:false` to reduce the
+   model "answering first" with its own web-search tool.
 2. The model emits calls as plain text
    `<tool_call>{"name":…,"arguments":{…}}</tool_call>` (tags may split across
    `text_delta`s; the plugin does holdback parsing — see `lib/tools.mjs`).
@@ -263,6 +263,6 @@ measured `input_tokens≈67k`, `cache_read_tokens≈67k` (prompt-cache hit),
 - `connected.payload.user` contains email/name/account id — **do not print raw
   events**.
 - The whole `user_message` frame has a 64 KB cap (the server rejects larger
-  with `FrameTooLarge`; verified that `text` + `system_prompt` share it),
+  with `FrameTooLarge`; `text` + `custom_prompt` share it),
   which the plugin budgets in `lib/handler.mjs`/`lib/translate.mjs`/
-  `lib/tools.mjs`; rendered text always stays <60 KB.
+  `lib/tools.mjs`; rendered payload always stays <60 KB.

@@ -38,7 +38,7 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
    二进制帧；下行是 AWS event-stream 帧（`:event-type=rawOutputEvent`，body 里同样是
    base64 包的 inner JSON）。应用层 `ping` 间隔 45s，与桌面端一致。
 4. **协议翻译**：OpenAI 的 `messages` 渲染成 Quick 的 `text`（见下）——
-   调用方的 system 指令在首轮通过桌面端 `custom_prompt` 字段发送（实测该字段真正生效且会在同 thread 后续轮次持久化，续接轮省略可释放几乎全部 64 KB 帧预算）；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
+   调用方的 system 指令通过桌面端 `custom_prompt` 字段发送（实测只有该字段真正生效且会在同 thread 后续轮次持久化；续接轮只要帧空间足够会继续附带以保持规则权重和 Prompt Cache 前缀稳定，仅当本轮新增内容过大时自动省略以让出完整 64 KB 帧预算）；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
    `message_complete` 转成 OpenAI 的 `content`/`reasoning_content`/`usage`。
    一个 user turn 以 `message_complete`（`continuation_expected !== true`）
    结束——与桌面渲染端判定一致。
@@ -128,9 +128,10 @@ magpie plugin login aws-quick        # 按提示选择登录方式
 - **会话与账号绑定**：thread 复用的 scope 里包含账号身份哈希；换号后旧 thread 自动失效重建。
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。
 - **消息体积**：整个 `user_message` 帧服务端上限 64KB（`text` 与
-  `system_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
-  压缩（schema 去注解、工具规格 lite 降级、历史从旧到新裁、tool_result 封顶），
-  截断时回复里会带 `> [quick] …已截断` 提示。
+  `custom_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
+  压缩（schema 去注解、紧凑类型签名 / lite / 仅工具名逐级降级、历史从旧到新裁、
+  单条或并行 `tool_result` 按可用帧空间水桶均分），截断时回复里会带
+  `> [quick] …已截断` 提示。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
   可能无法完成——这种情况请改用本地凭据方式。浏览器 OAuth 路径没有本地 outpost，

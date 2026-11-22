@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
+import { textOf, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCap, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
 
 test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf('hi'), 'hi')
@@ -151,4 +151,44 @@ test('renderDelta enforces total byte budget across blocks', () => {
   assert.ok(out.includes('final question')) // newest block always kept
   assert.ok(out.includes('earlier message(s) omitted'))
   assert.ok(!out.includes('[tool_result a c1]')) // oldest dropped
+})
+
+test('fairBlockCap water-fills full frame budget across single and parallel tool results', () => {
+  // Single 52KB file fits inside 58KB budget without any 48KB ceiling.
+  const one = [{ role: 'tool', tool_call_id: 'c1', name: 'read', content: 'A'.repeat(52 * 1024) }]
+  const capOne = fairBlockCap(one, 58 * 1024)
+  assert.ok(capOne >= 52 * 1024)
+
+  // Two parallel 25KB files both fit completely untruncated inside 58KB.
+  const twoFit = [
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'A'.repeat(25 * 1024) },
+    { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'B'.repeat(25 * 1024) },
+  ]
+  const capTwoFit = fairBlockCap(twoFit, 58 * 1024)
+  const outTwoFit = renderDelta(twoFit, { maxBytes: 58 * 1024, toolResultCap: capTwoFit, turnCap: capTwoFit })
+  assert.ok(outTwoFit.includes('A'.repeat(25 * 1024)))
+  assert.ok(outTwoFit.includes('B'.repeat(25 * 1024)))
+  assert.ok(!outTwoFit.includes('[truncated]'))
+
+  // One tiny 2KB + one huge 70KB: tiny keeps full 2KB, huge gets ~56KB instead of 29KB or 16KB.
+  const skewed = [
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'S'.repeat(2 * 1024) },
+    { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'L'.repeat(70 * 1024) },
+  ]
+  const capSkew = fairBlockCap(skewed, 58 * 1024)
+  assert.ok(capSkew > 54 * 1024 && capSkew < 57 * 1024)
+
+  // Two parallel 35KB files inside 58KB: each gets ~29KB instead of 16KB, and both survive.
+  const twoBig = [
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'X'.repeat(35 * 1024) },
+    { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'Y'.repeat(35 * 1024) },
+  ]
+  const capTwoBig = fairBlockCap(twoBig, 58 * 1024)
+  assert.ok(capTwoBig > 28 * 1024 && capTwoBig < 30 * 1024)
+  const stats = {}
+  const outTwoBig = renderDelta(twoBig, { maxBytes: 58 * 1024, stats, toolResultCap: capTwoBig, turnCap: capTwoBig })
+  assert.ok(stats.truncated)
+  assert.ok(byteLen(outTwoBig) <= 58 * 1024)
+  assert.ok(outTwoBig.includes('[tool_result read c1]'))
+  assert.ok(outTwoBig.includes('[tool_result read c2]'))
 })

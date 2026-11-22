@@ -1,9 +1,9 @@
 // OpenAI ⇄ Quick message rendering + model/mode mapping.
 //
 // Quick's user_message carries one `text` field for the conversation.
-// Desktop 1.2.4660 puts caller instructions in `custom_prompt`. This server
-// also honors `system_prompt` as a per-turn override, so the handler sends
-// both. History and tool results still render into `text`.
+// Desktop 1.2.4660 puts caller instructions in `custom_prompt` (live testing
+// confirmed `custom_prompt` is the active field while `system_prompt` alone is
+// ignored). History and tool results render into `text`.
 
 /** Text content of one content-part object (OpenAI/Anthropic/Responses shapes). */
 function partText(p) {
@@ -166,6 +166,42 @@ export function renderTranscript(messages, systemText, {
     head = heading
   }
   return [system, head + kept.reverse().join('\n\n'), last].filter(Boolean).join('\n\n')
+}
+
+/**
+ * Water-filling per-block byte cap for a delta so single or parallel tool
+ * results use the full available frame budget instead of stopping at a fixed
+ * 16 KB / 48 KB ceiling. Short blocks keep their full size and excess room
+ * flows to larger blocks; when everything fits, returns `maxBytes` (no cap).
+ */
+export function fairBlockCap(delta, maxBytes, measure = byteLen) {
+  if (!Number.isFinite(maxBytes) || !Array.isArray(delta) || !delta.length) return maxBytes
+  const sep = measure('\n\n')
+  let overhead = 0
+  const sizes = []
+  for (const m of delta) {
+    if (m.role !== 'user' && m.role !== 'tool' && m.role !== 'function') continue
+    const text = textOf(m.content)
+    const header = (m.role === 'tool' || m.role === 'function')
+      ? `[tool_result ${[m.name, m.tool_call_id].filter(Boolean).join(' ')}]\n`
+      : ''
+    if (!header && !text) continue
+    if (sizes.length) overhead += sep
+    if (header) overhead += measure(header)
+    sizes.push(measure(text))
+  }
+  if (!sizes.length) return maxBytes
+  let budget = Math.max(0, maxBytes - overhead)
+  const sorted = sizes.slice().sort((a, b) => a - b)
+  for (let i = 0; i < sorted.length; i++) {
+    const share = Math.floor(budget / (sorted.length - i))
+    if (sorted[i] <= share) {
+      budget -= sorted[i]
+    } else {
+      return Math.max(1024, share)
+    }
+  }
+  return Math.max(1024, maxBytes - overhead)
 }
 
 /**
