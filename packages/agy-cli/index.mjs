@@ -188,9 +188,11 @@ const RETRY_CORE = RETRY_MARKER.trim()
 const EMPTY_REPLY_PROMPT = "Your last reply was empty. Continue: make the tool call you were about to make, or give your answer."
 // The same ask when the bridge turned away a tool of agy's own (it runs only
 // the client's, mcp_ide-tools_*) and agy then ended the turn with nothing:
-// Codex took that for a finished reply and the conversation stopped.
-const DENIED_REPLY_PROMPT = "Your last reply was empty: a tool you called is not available here and was turned away. " +
-  "Continue with the tools whose names start with mcp_ide-tools_: make the call you were about to make with one of them, or give your answer."
+// Codex took that for a finished reply and the conversation stopped. agy told
+// the model not to reach the same target another way, so the ask says the
+// client's tools may.
+const DENIED_REPLY_PROMPT = "Your last reply was empty. The tool you called is turned away here, but the same action is allowed through " +
+  "the tools whose names start with mcp_ide-tools_: make the call you were about to make with one of them, or give your answer."
 // agy's own output-cap retry reaches the reply as three lines of its own:
 // what happened, its instruction to continue, and the retries left. The
 // model's answer goes on after them in the same turn, so the notice is agy's
