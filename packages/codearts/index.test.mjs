@@ -2437,8 +2437,8 @@ test("auth.usage reports the plan's credit window (the free pool is best-effort)
 
 // ---- daily check-in ----------------------------------------------------------
 
-/** A stand-in for the three ops endpoints: `state` is the USER_LOGIN item. */
-function opsFetcher(state, { claim, confirm } = {}) {
+/** A stand-in for the ops endpoints: `state` is the USER_LOGIN item. */
+function opsFetcher(state, { claim, confirm, trigger } = {}) {
   const calls = []
   const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
   const fetcher = async (url, init) => {
@@ -2446,6 +2446,7 @@ function opsFetcher(state, { claim, confirm } = {}) {
     const headers = new Headers(init.headers)
     const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
     calls.push({ url: u, method: init.method, body, headers })
+    if (u === x.OPS_TRIGGER_URL) return trigger ? trigger(state, body) : ok(null)
     if (u === x.OPS_DELIVERY_URL) {
       const items = [{ campaignId: 7, type: "INVITE_USER", claimable: false }]
       if (state.item) items.push(state.item)
@@ -2467,6 +2468,36 @@ function opsFetcher(state, { claim, confirm } = {}) {
 }
 
 const daily = (extra) => ({ campaignId: 1, type: "USER_LOGIN", title: "每日领取", claimable: true, status: "ENTRY", benefitAmount: 1000, ...extra })
+
+test("checkin reports user.login before claiming a campaign it activates", async () => {
+  const cred = await makeCred()
+  const state = {
+    item: daily({ claimable: false, status: "ENTRY", extra: { triggerEvent: "user.login" } }),
+  }
+  const { fetcher, calls } = opsFetcher(state, {
+    trigger: (st, body) => {
+      if (body?.triggerEvent === "user.login") {
+        st.item = { ...st.item, claimable: true, status: "ELIGIBLE" }
+      }
+      return new Response(JSON.stringify({ code: 0, message: "ok", data: null }), { status: 200 })
+    },
+  })
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+  const r = await plugin.auth.checkin(async () => makeAuth(cred))
+  assert.deepEqual(r, { outcome: "claimed", credit: 1000, message: "+1000 积分" })
+  assert.deepEqual(calls.map((c) => [c.method, c.url]), [
+    ["GET", x.OPS_DELIVERY_URL],
+    ["POST", x.OPS_TRIGGER_URL],
+    ["GET", x.OPS_DELIVERY_URL],
+    ["POST", x.OPS_CLAIM_URL],
+    ["POST", x.OPS_CONFIRM_URL],
+  ])
+  assert.deepEqual(calls[1].body, {
+    triggerEvent: "user.login",
+    channel: "IDE",
+    idempotentKey: `login-${x.beijingDay().replace(/-/g, "")}`,
+  })
+})
 
 test("checkin claims and confirms the daily benefit the way the IDE does", async () => {
   const cred = await makeCred()
