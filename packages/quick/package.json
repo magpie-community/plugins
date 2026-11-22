@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/opencode-quick-auth",
+  "version": "0.1.0",
+  "description": "Amazon Quick (quick.aws.com) for OpenCode and magpie: the chat tiers — quick-fast, quick-balanced, quick-smart — relayed over the app's own CBOR WebSocket, with per-turn model fingerprints (resolved_model_id, cost, wall-clock seconds) and the session/monthly minute pools shown read-only. Sign-in is the account's browser session (Cookie header + mbtc). Unofficial.",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "lib/", "test/", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "quick", "amazon", "quicksight", "aws"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/quick" },
+  "dependencies": { "cbor2": "^2.4.2" },
+  "scripts": { "test": "bun test" }
+}
