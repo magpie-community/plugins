@@ -94,7 +94,9 @@ function decodeStored(raw) {
 
 // parseStored is what a stored value says, "unknown" when it isn't the
 // shape agy writes. It says nothing of who: the account's email isn't kept
-// with the cached read (storedEmail reads it when a sign-in names it).
+// with the cached read (storedEmail reads it when a sign-in names it). who
+// is a hash of it, "" when it names none: heldByAnother tells an account of
+// agy's own from the one agy holds now by it.
 export function parseStored(raw, now = Date.now()) {
   const fp = createHash("sha256").update(String(raw ?? "").trim()).digest("hex").slice(0, 32)
   const stored = decodeStored(raw)
@@ -109,7 +111,34 @@ export function parseStored(raw, now = Date.now()) {
   const at = Date.parse(token.expiry ?? "")
   // Go's zero time (0001-01-01) is "doesn't end"
   const expiresAt = Number.isFinite(at) && at > 0 ? at : 0
-  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt }
+  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt, who: whoOf(emailOf(raw)) }
+}
+
+// whoOf is an email's hash: what a cached read keeps of who it is for.
+export function whoOf(email) {
+  const e = typeof email === "string" ? email.trim().toLowerCase() : ""
+  return e ? createHash("sha256").update(e).digest("hex").slice(0, 32) : ""
+}
+
+// heldByAnother says agy's own sign-in (stored, a storedSignIn read) is
+// for another Google account than saved, the email an account of agy's own
+// was saved as; false when it is the same, or when either can't be told.
+// agy holds one Google account in its keyring: an account saved as agy's
+// own before agy was signed in to another (Switch to another Google account
+// before 0.1.67, a sign-in in a terminal) is no longer there, and its usage
+// and requests would be the other one's (ownsh1p on X: two accounts, both
+// showing the first one's balance).
+export function heldByAnother(stored, saved) {
+  const now = stored?.state === "present" && typeof stored.who === "string" ? stored.who : ""
+  const was = whoOf(saved)
+  return Boolean(now && was && now !== was)
+}
+
+// notHeldError is what an account heldByAnother is told.
+export function notHeldError(saved) {
+  return `agy is signed in to another Google account now, not to ${saved}: agy holds one Google account, so ` +
+    `${saved}'s usage and requests would be the other account's. Sign ${saved} in again with "Add another Google ` +
+    `account" to use both.`
 }
 
 // emailOf is the Google account a stored value is signed in to, "" when

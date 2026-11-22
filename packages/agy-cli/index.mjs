@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, signedInEmail, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -186,11 +186,25 @@ const EMPTY_REPLY_PROMPT = "Your last reply was empty. Continue: make the tool c
 // model's answer goes on after them in the same turn, so the notice is agy's
 // and is dropped (#892). Wording as observed by lili-luo/dsh-plugin-bundle
 // (dsh-llm-antigravity-acp, MIT).
+//
+// agy 1.5.12 words its malformed-function-call retry the same way, its
+// first line naming the call it turned away: "⚠ Your previous response
+// contained an improperly formatted function call: Malformed function call:
+// …", then "Please retry with a properly formatted function call", then
+// "Retries remaining: 3" (@seven_7cx, plugins#1454). Its binary builds every
+// such notice from one "%s\n%s\nRetries remaining: %d", so the notice is
+// matched by its start, "⚠ Your previous response ", and its instruction
+// line by "Please ", whatever reason and instruction follow.
+const NOTICE_CORE = "⚠ Your previous response "
+const NOTICE_MARKER = "\n" + NOTICE_CORE
+const NOTICE_TAIL_START = "Please "
 const CAP_MARKER = "\n⚠ Your previous response was cut off because it exceeded the output token limit\n"
-const CAP_CORE = CAP_MARKER.trim()
 const CAP_TAIL_CORE = "Please continue from where you left off, keeping your response shorter"
 const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
+// agy's lines as they start a reply or a line, with no newline before them:
+// a chunk that ends on the start of one is held (plugins#1454).
+const LINE_CORES = [...AGENT_ERROR_CORES, QUOTA_CORE, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
 const HOLD_MAX = Math.max(
   ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length, BUSY_MARKER.length,
 ) - 1
@@ -1645,6 +1659,9 @@ class Turn {
     this.heldText = ""
     this.textTail = ""
     this.openBanner = -1
+    // Where, in heldText (or the text being cleaned), agy's banner was cut
+    // out with its newlines: a line starts there (plugins#1454).
+    this.cuts = []
     this.capPending = false
     this.attemptDetail = ""
     // What the model gave since the turn began or since its last tool
@@ -1844,39 +1861,51 @@ class Turn {
   }
 
   pushHeld(chunk) {
-    let text = this.dropRetryBanner(this.heldText + chunk)
-    this.heldText = ""
-    if (this.openBanner >= 0) {
-      this.heldText = text.slice(this.openBanner)
-      this.emitText(text.slice(0, this.openBanner))
-      return
-    }
+    const text = this.dropRetryBanner(this.heldText + chunk)
+    this.holdFrom(text, this.heldFrom(text))
+  }
+
+  // Where in text the part withheld for now starts: text.length when none is.
+  heldFrom(text) {
+    if (this.openBanner >= 0) return this.openBanner
     for (const core of AGENT_ERROR_CORES) {
       const marker = text.lastIndexOf(core)
-      if (marker >= 0 && !text.slice(marker + core.length).trim()) {
-        const start = text[marker - 1] === "\n" ? marker - 1 : marker
-        this.heldText = text.slice(start)
-        this.emitText(text.slice(0, start))
-        return
-      }
+      if (marker >= 0 && !text.slice(marker + core.length).trim()) return this.lineFrom(text, marker)
     }
     const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE))
-    if (quota >= 0) {
-      this.heldText = text.slice(quota)
-      this.emitText(text.slice(0, quota))
-      return
-    }
+    if (quota >= 0) return quota
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
       if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
         BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
-          CAP_MARKER.startsWith(tail)))) {
-        this.heldText = tail
-        text = text.slice(0, -keep)
-        break
+          NOTICE_MARKER.startsWith(tail) || CAP_MARKER.startsWith(tail))) ||
+        (this.startsLine(text, text.length - keep) && LINE_CORES.some((core) => core.startsWith(tail)))) {
+        return text.length - keep
       }
     }
-    this.emitText(text)
+    return text.length
+  }
+
+  // Sends text up to `at` and withholds the rest, keeping the cuts that
+  // fall in what is withheld (one at its very start included).
+  holdFrom(text, at) {
+    this.heldText = text.slice(at)
+    this.cuts = this.cuts.filter((cut) => cut >= at).map((cut) => cut - at)
+    this.emitText(text.slice(0, at))
+  }
+
+  // Whether text[at] starts a line: after a newline, where agy's banner was
+  // cut out with its newlines, or at the start when what went before ended
+  // a line or the reply has not begun.
+  startsLine(text, at) {
+    if (this.cuts.includes(at)) return true
+    return at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
+  }
+
+  // Where agy's line at `at` starts with its newline: the newline before it,
+  // unless that is the model's own, left where an earlier banner was cut.
+  lineFrom(text, at) {
+    return at > 0 && text[at - 1] === "\n" && !this.cuts.includes(at) ? at - 1 : at
   }
 
   // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
@@ -1886,9 +1915,8 @@ class Turn {
   quotaEnding(text, core = QUOTA_CORE) {
     const at = text.lastIndexOf(core)
     if (at < 0) return -1
-    const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
-    if (!lineStart || text.slice(at).trimEnd().includes("\n")) return -1
-    return at > 0 ? at - 1 : at
+    if (!this.startsLine(text, at) || text.slice(at).trimEnd().includes("\n")) return -1
+    return this.lineFrom(text, at)
   }
 
   // Removes agy's retry banners, each with its leading and one trailing
@@ -1897,16 +1925,27 @@ class Turn {
   // quotes one mid-line is kept. Until the turn's text is flushed, a banner
   // that ends the buffer is left in place and openBanner says where, so
   // pushText holds it and its newline in the next chunk goes with it.
+  //
+  // A banner's newlines both go with it, so where one was cut out is
+  // remembered as the start of a line (cuts): agy writes banners one after
+  // another with one newline between them, and a quota ending can follow
+  // one (plugins#1454).
   dropRetryBanner(text, final = false) {
     this.openBanner = -1
     let from = 0
+    const cut = (start, end) => {
+      text = text.slice(0, start) + text.slice(end)
+      this.cuts = this.cuts.filter((at) => at < start || at >= end).map((at) => (at < start ? at : at - (end - start)))
+      if (!this.cuts.includes(start)) this.cuts.push(start)
+      from = start
+    }
     for (;;) {
       if (this.capPending) {
         const end = text.indexOf("\n", from)
         const line = text.slice(from, end < 0 ? text.length : end)
         if (CAP_RETRIES_LINE.test(line)) {
           this.capPending = false
-          text = text.slice(0, from) + text.slice(end < 0 ? text.length : end + 1)
+          cut(from, end < 0 ? text.length : end + 1)
           continue
         }
         if (!final && CAP_RETRIES_CORE.startsWith(line)) {
@@ -1917,13 +1956,12 @@ class Turn {
       }
       const at = nextBanner(text, from)
       if (at < 0) return text
-      const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
-      if (!lineStart) {
+      if (!this.startsLine(text, at)) {
         from = at + 1
         continue
       }
-      const start = at > 0 ? at - 1 : at
-      if (text.startsWith(CAP_CORE, at)) {
+      const start = this.lineFrom(text, at)
+      if (text.startsWith(NOTICE_CORE, at)) {
         const cap = capNoticeEnd(text, at, final)
         if (cap.end < 0) {
           // agy's notice is still streaming: hold it with its lines' newlines
@@ -1933,8 +1971,7 @@ class Turn {
         // The notice's "Retries remaining" line is its own line, so it can
         // arrive in the next chunk after the two lines before it.
         this.capPending = cap.retries
-        text = text.slice(0, start) + text.slice(cap.end)
-        from = start
+        cut(start, cap.end)
         continue
       }
       const attempt = !text.startsWith(RETRY_CORE, at)
@@ -1951,8 +1988,7 @@ class Turn {
       if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
       if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
-      text = text.slice(0, start) + text.slice(end)
-      from = start
+      cut(start, end)
     }
   }
 
@@ -1995,8 +2031,7 @@ class Turn {
   flushText() {
     if (!this.heldText || this.agentError) return
     const text = this.dropRetryBanner(this.heldText, true)
-    this.heldText = ""
-    this.emitText(text)
+    this.holdFrom(text, text.length)
   }
 
   complete(result) {
@@ -3334,10 +3369,11 @@ async function lastAgentError(file, offset) {
   return found.trim().slice(0, 1000)
 }
 
-// Where agy's output-cap notice ends, given where it starts. The notice is its
-// notice line, its "please continue" instruction and its "Retries remaining"
-// count; a line that is neither is the model's and stays. -1 means the buffer
-// still ends inside the notice; `retries` says the count line is still owed.
+// Where agy's three-line notice (the output cap's, a malformed call's) ends,
+// given where it starts. The notice is its notice line, its "Please …"
+// instruction and its "Retries remaining" count; a line that is neither is
+// the model's and stays. -1 means the buffer still ends inside the notice;
+// `retries` says the count line is still owed.
 function capNoticeEnd(text, at, final) {
   const lineAt = (from) => {
     const end = text.indexOf("\n", from)
@@ -3347,10 +3383,10 @@ function capNoticeEnd(text, at, final) {
   if (pos < 0) return { end: final ? text.length : -1, retries: false }
   pos += 1
   const tail = lineAt(pos)
-  if (tail.value === CAP_TAIL_CORE) {
+  if (tail.value.startsWith(NOTICE_TAIL_START)) {
     if (tail.end < 0) return { end: final ? text.length : -1, retries: false }
     pos = tail.end + 1
-  } else if (!final && CAP_TAIL_CORE.startsWith(tail.value)) {
+  } else if (!final && tail.end < 0 && NOTICE_TAIL_START.startsWith(tail.value)) {
     return { end: -1, retries: false }
   } else {
     return { end: pos, retries: false }
@@ -3364,7 +3400,7 @@ function capNoticeEnd(text, at, final) {
 
 // Where the next retry banner of either kind starts, from `from` on.
 function nextBanner(text, from) {
-  const found = [RETRY_CORE, ATTEMPT_CORE, CAP_CORE]
+  const found = [RETRY_CORE, ATTEMPT_CORE, NOTICE_CORE]
     .map((core) => text.indexOf(core, from))
     .filter((at) => at >= 0)
   return found.length ? Math.min(...found) : -1
@@ -7517,18 +7553,43 @@ async function importSignIns(texts) {
 // homeOfAuth is the home of the account a saved sign-in is, null for
 // agy's own.
 async function homeOfAuth(getAuth) {
+  return (await accountOfAuth(getAuth)).home
+}
+
+// accountOfAuth is homeOfAuth, with the email an account of agy's own was
+// saved as ("" for one with a home: its home is its own).
+async function accountOfAuth(getAuth) {
   let auth
   try { auth = typeof getAuth === "function" ? await getAuth() : getAuth } catch {}
-  return homeOf(homeIdOfAuth(auth))
+  const home = homeOf(homeIdOfAuth(auth))
+  const email = !home && typeof auth?.metadata?.email === "string" ? auth.metadata.email.trim() : ""
+  return { home, email }
 }
 
 // One usage reader per account: each holds its own last report.
 const usageReaders = new Map()
-function readUsageOf(home) {
+// The accounts of agy's own told agy holds another (by email, lower case):
+// a read once agy holds them again says the sign-in works.
+const toldNotHeld = new Set()
+function readUsageOf(home, email = "") {
   const key = home ?? ""
   let read = usageReaders.get(key)
   if (!read) usageReaders.set(key, (read = createUsageReader(findAgy)))
-  return inAccount(home, () => read())
+  return inAccount(home, async () => {
+    if (email) {
+      let stored = null
+      try { stored = await storedSignIn() } catch {}
+      if (heldByAnother(stored, email)) {
+        toldNotHeld.add(email.toLowerCase())
+        return { windows: [], error: notHeldError(email), signIn: "expired" }
+      }
+    }
+    const result = await read()
+    if (email && !result.error && toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept") {
+      return { ...result, signIn: "renewed" }
+    }
+    return result
+  })
 }
 
 export const AntigravityBridgePlugin = async () => {
@@ -7550,7 +7611,10 @@ export const AntigravityBridgePlugin = async () => {
         },
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
-      usage: async (getAuth) => readUsageOf(await homeOfAuth(getAuth)),
+      usage: async (getAuth) => {
+        const { home, email } = await accountOfAuth(getAuth)
+        return readUsageOf(home, email)
+      },
       // magpie's "Import accounts from a file…" (OpenCode ignores it): the
       // retired Antigravity plugin's sign-ins, which magpie's Move hands over
       importFrom: IMPORT_FROM.en,
@@ -7600,7 +7664,7 @@ export const AntigravityBridgePlugin = async () => {
       loader: async (getAuth) => {
         // the account's own home, null for agy's own sign-in: every agy
         // its requests run is started there
-        const home = await homeOfAuth(getAuth)
+        const { home, email } = await accountOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
@@ -7633,10 +7697,16 @@ export const AntigravityBridgePlugin = async () => {
             // nothing stored to sign agy in with: agy would only start its
             // own Google sign-in, so the account is told to sign in again
             // (from the last read; a request doesn't wait for a new one)
-            const notSignedIn = cannotSignIn(storedSignInNow())
+            const stored = storedSignInNow()
+            const notSignedIn = cannotSignIn(stored)
             if (notSignedIn) {
               return jsonError(401, `${notSignedIn}: sign in again in magpie, or run \`agy\` in a terminal`, undefined,
                 { headers: { "X-Magpie-Sign-In": "expired" } })
+            }
+            // an account of agy's own that agy no longer holds: its request
+            // would go out as the account agy holds now
+            if (heldByAnother(stored, email)) {
+              return jsonError(401, notHeldError(email), undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
             }
             let body
             try {

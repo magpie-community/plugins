@@ -288,6 +288,22 @@ function readAuth() {
 }
 
 class SignedOut extends Error {}
+
+// NotHeld is a desktop account the client is no longer signed in to: the
+// desktop file holds one account, and an account saved from it before the
+// client was signed in to another would read, and spend, the other one's.
+class NotHeld extends Error {}
+
+// desktopAuth is readAuth for the saved desktop account a: NotHeld when the
+// file is another account's now. A saved account or a file without a uid
+// can't be told apart, and reads the file as before.
+function desktopAuth(a) {
+  const file = readAuth()
+  const was = typeof a?.uid === "string" ? a.uid : a?.uid != null ? String(a.uid) : ""
+  if (was && file.uid && file.uid !== was)
+    throw new NotHeld(`妙手桌面端现在登录的是另一个账号，不是 ${a.accountId || a.name || was}：桌面端只保存一个账号。请在妙手桌面端换回这个账号，或用网页登录重新添加它`)
+  return file
+}
 const expired = (message) => Object.assign(new Error(message), { signIn: "expired" })
 
 // the auth.json account name, for the sign-in's display
@@ -783,10 +799,11 @@ export async function CatPawAuthPlugin({ client } = {}) {
               accountName = a.name || a.accountId || (a.source === "web" ? "妙手网页登录" : "手动粘贴")
             } else {
               try {
-                const file = readAuth()
+                const file = desktopAuth(a)
                 token = file.token
                 accountName = authAccount()
               } catch (e) {
+                if (e instanceof NotHeld) return errorResponse(401, e.message, {}, { "X-Magpie-Sign-In": "expired" })
                 return errorResponse(e instanceof SignedOut ? 401 : 502, String(e?.message ?? e))
               }
             }
@@ -1088,9 +1105,9 @@ export async function CatPawAuthPlugin({ client } = {}) {
         if (a?.type === "oauth" && a.access && a.source !== "desktop") token = a.access
         else {
           try {
-            token = readAuth().token
+            token = desktopAuth(a).token
           } catch (e) {
-            return { error: String(e?.message ?? e), signIn: "kept" }
+            return { error: String(e?.message ?? e), signIn: e instanceof NotHeld ? "expired" : "kept" }
           }
         }
         let res

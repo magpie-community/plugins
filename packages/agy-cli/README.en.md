@@ -368,6 +368,11 @@ off unless you turn it on.
   cap triggers a retry ("Your previous response was cut off because it exceeded
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.
+  agy 1.5.12's retry after a malformed function call ("Your previous response
+  contained an improperly formatted function call: …", "Please retry with a
+  properly formatted function call", "Retries remaining: N") is dropped the
+  same way, as is a banner, or a quota or high-traffic ending, right after
+  another banner, or split across chunks at the start of the reply.
   An ending that says "This service has been disabled in this account
   for violation of Terms of Service" (agy 1.5.9 puts "PERMISSION_DENIED
   (code 403):" before it, 1.5.10 doesn't) is returned as a no-retry

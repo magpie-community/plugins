@@ -260,7 +260,11 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   重试中的提示行会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
   （"Your previous response was cut off because it exceeded the output token limit"、
   它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
-  输出。若结尾是 "This service has been disabled in this account for
+  输出。agy 1.5.12 遇到格式错误的函数调用时重试的三行提示（"Your previous response
+  contained an improperly formatted function call: …"、"Please retry with a properly
+  formatted function call" 和 "Retries remaining: N"）也一样去掉；紧跟在另一条提示后的
+  提示、额度或高负载结尾，以及回复开头被拆在两个分片里的提示，同样能认出。
+  若结尾是 "This service has been disabled in this account for
   violation of Terms of Service"（agy 1.5.9 前面带 "PERMISSION_DENIED (code 403):"，1.5.10 不带），会按禁止重试的 403 语义 `permission_error` 返回，而不是
   当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
   并带上 agy 记下的验证链接；没有链接时说明去哪里验证。

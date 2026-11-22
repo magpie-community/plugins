@@ -11,7 +11,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
-  BASE_MODEL_ROWS, CATALOG_TTL_MS, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
+  BASE_MODEL_ROWS, CATALOG_TTL_MS, MESSAGES_URL, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 const FAST_BUDGET_MS = 750 // 计划给的调度容差；补丁内部等待预算是 500ms，远低于 Magpie 的 2s。
@@ -92,6 +92,78 @@ test("agy 没存登录时不在后台跑 agy models、不起探测会话，请�
     await settle(kit)
     assert.ok(kit.modelsSpawns.length >= 1, "有登录却没跑 agy models")
   })
+})
+
+// ownsh1p on X: two accounts in the local agy CLI, and the usage overview
+// showed the first one's balance on both cards. Both were saved as agy's
+// own (no home of their own: Switch to another Google account before
+// 0.1.67, or a sign-in in a terminal), and agy's keyring holds one of
+// them, so each read, and each request, was that one's.
+test("an account of agy's own that agy no longer holds shows no other account's usage, nor sends as it", async () => {
+  const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29." + email, refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: email,
+  })).toString("base64") + "\n"
+  const options = {
+    platform: "darwin", storedSignIn: keyring("b@example.com"), modelsBehavior: DYNAMIC_OK,
+    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
+  }
+  // the quota read agy makes (usage.mjs readQuotaDirect), answered here
+  const asked = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    asked.push(init.headers.Authorization)
+    const left = init.headers.Authorization === "Bearer ya29.a@example.com" ? 0.9 : 0.25
+    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
+      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: left }],
+    }] }
+    return new Response(JSON.stringify(reply), { status: 200 })
+  }
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "B@example.com" } }
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(ua.windows, [], JSON.stringify(ua))
+      assert.equal(ua.signIn, "expired")
+      assert.match(ua.error, /signed in to another Google account now, not to a@example\.com/)
+      assert.match(ua.error, /Add another Google account/)
+      assert.deepEqual(asked, [], "a's card was read with b's sign-in")
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.error, undefined, JSON.stringify(ub))
+      assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"))
+
+      // a's requests would go out as b
+      const la = await kit.plugin.auth.loader(async () => a)
+      const refused = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.equal(refused.status, 401)
+      assert.equal(refused.headers.get("X-Magpie-Sign-In"), "expired")
+      assert.match(await refused.text(), /not to a@example\.com/)
+      assert.equal(kit.acpSpawns.length, 0, "a's request ran agy")
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const served = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401)
+      await served.text()
+
+      // agy holds a again (signed in to it in a terminal): a's card reads
+      // a's quota, and says its sign-in works again
+      options.storedSignIn = keyring("a@example.com")
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const again = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(again.error, undefined, JSON.stringify(again))
+      assert.equal(again.signIn, "renewed")
+      assert.equal(again.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"))
+      const bNow = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(bNow.signIn, "expired")
+      await settle(kit)
+    })
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () => {

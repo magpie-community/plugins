@@ -137,6 +137,7 @@ function createTimers() {
 
 class FakeStream extends EventEmitter {
   setEncoding() { return this }
+  destroy() { return this }
 }
 
 class FakeChild extends EventEmitter {
@@ -563,8 +564,12 @@ export async function createBridgeKit(options = {}) {
     }
     kit.otherSpawns.push({ file, args, opts })
     const child = new FakeChild(kit, file, args)
-    const code = options.onSpawn ? options.onSpawn(file, args, opts) : 0
-    child.finish(code ?? 0)
+    // onSpawn answers an exit code, or { code, stdout }
+    const said = options.onSpawn ? options.onSpawn(file, args, opts) : 0
+    const { code, stdout } = said && typeof said === "object" ? said : { code: said }
+    if (stdout) setImmediate(() => child.stdout.emit("data", Buffer.from(stdout)))
+    if (stdout) setImmediate(() => child.finish(code ?? 0))
+    else child.finish(code ?? 0)
     return child
   }
   const spawnSync = (file, args = [], opts = {}) => {
