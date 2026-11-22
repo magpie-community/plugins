@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, isKeptId, keepOwn, keptFor, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -7545,6 +7545,12 @@ function noAgy() {
 // two accounts whose email can't be read aren't taken for one.
 async function signedInAs(homeId = "") {
   const email = await signedInEmail()
+  // agy's own sign-in: kept, so the account keeps working once agy holds
+  // another
+  if (!homeId && email) {
+    forgetStoredSignIn()
+    await keepOwn(email, await storedSignIn())
+  }
   const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
   return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }
@@ -7588,6 +7594,8 @@ async function homeOfEmail(email) {
   let ids = []
   try { ids = fs.readdirSync(accountsDir()) } catch {}
   for (const id of ids) {
+    // a kept account of agy's own (keptHome) is that account, not another
+    if (isKeptId(id)) continue
     const home = homeOf(id)
     if (home && (await storedEmail({ home })).toLowerCase() === want) return id
   }
@@ -7641,7 +7649,20 @@ async function importSignIns(texts) {
 // homeOfAuth is the home of the account a saved sign-in is, null for
 // agy's own.
 async function homeOfAuth(getAuth) {
-  return (await accountOfAuth(getAuth)).home
+  const { home, email } = await accountOfAuth(getAuth)
+  return home ?? ownHome(email, inAccount(null, () => storedSignInNow()))
+}
+
+// ownHome is where an account of agy's own (saved as email) runs, given
+// stored, agy's keyring read: agy's own (null) while agy holds it, or
+// can't tell, and its kept home (keptFor) while agy holds another. With
+// none kept, it is agy's own still, and is told agy holds another.
+// While agy holds it, it is kept again when agy's sign-in has changed.
+function ownHome(email, stored) {
+  if (!email) return null
+  if (heldByAnother(stored, email)) return keptFor(email)
+  inAccount(null, () => keepOwn(email, stored)).catch(() => {})
+  return null
 }
 
 // accountOfAuth is homeOfAuth, with the email an account of agy's own was
@@ -7668,9 +7689,16 @@ function readUsageOf(home, email = "") {
       let stored = null
       try { stored = await storedSignIn() } catch {}
       if (heldByAnother(stored, email)) {
+        // kept while agy held it: read with its own sign-in
+        const kept = keptFor(email)
+        const result = kept ? await readUsageOf(kept) : null
+        if (result && result.signIn !== "expired") {
+          return toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept" ? { ...result, signIn: "renewed" } : result
+        }
         toldNotHeld.add(email.toLowerCase())
         return { windows: [], error: notHeldError(email), signIn: "expired" }
       }
+      await keepOwn(email, stored)
     }
     const result = await read()
     if (email && !result.error && toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept") {
@@ -7752,11 +7780,17 @@ export const AntigravityBridgePlugin = async () => {
       loader: async (getAuth) => {
         // the account's own home, null for agy's own sign-in: every agy
         // its requests run is started there
-        const { home, email } = await accountOfAuth(getAuth)
+        const { home: savedHome, email } = await accountOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
-          fetch: (fetchInput, init = {}) => inAccount(home, async () => {
+          // an account of agy's own runs in its kept home while agy holds
+          // another (ownHome), from the last keyring read
+          // (none yet after a start: it is waited for, so the first
+          // request isn't sent as the account agy holds)
+          fetch: async (fetchInput, init = {}) => inAccount(savedHome ?? ownHome(email,
+            inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null)), async () => {
+            const home = currentHome()
             const requestUrl = typeof fetchInput === "string"
               ? fetchInput
               : fetchInput instanceof URL

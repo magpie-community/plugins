@@ -192,6 +192,13 @@ After installing, sign in from Magpie; no terminal needed.
    and agy keeps its sign-in in a file there, leaving the account in the
    system keyring as it is. Each account has its own row and its own usage,
    and is switched and rotated like any provider's accounts.
+   agy itself holds one Google account. So that the account agy holds now
+   keeps working after agy is signed in to another (in a terminal, say), the
+   plugin keeps a copy of its sign-in, as agy stored it, in a home of its own
+   there (`own…`, the file readable by you only). While agy holds another
+   account, that account's usage, models and requests run agy with this
+   copy. The keyring is only read, never written. An account agy stopped
+   holding before 0.1.113 has no copy: sign it in again once.
    Accounts signed in on the retired Antigravity plugin (`antigravity`) move
    over from the line Magpie shows over its Providers list (Move), or from
    agy-cli's Import accounts from a file…, which takes that plugin's sign-in or
