@@ -2323,3 +2323,106 @@ for (const shape of ["big current turn", "big instructions"]) {
     assert.equal(replay[shape === "big current turn" ? "turn_clipped" : "head_clipped"], true)
   })
 }
+
+// plugins#1454 (@seven_7cx, agy 1.5.12 through agy-cli 0.1.109, DSH): agy's
+// retry after a malformed function call, byte for byte from the report.
+// agy writes each banner as "\n⚠ %s\n".
+const MALFORMED_HEAD = "\n⚠ Your previous response contained an improperly formatted function call: Malformed function call: call:...\n"
+const MALFORMED_TAIL = "Please retry with a properly formatted function call\n"
+const MALFORMED = MALFORMED_HEAD + MALFORMED_TAIL + "Retries remaining: 3\n"
+// agy 1.5.14's binary words the instruction "Please use a properly formatted function call".
+const MALFORMED_1514 = MALFORMED_HEAD + "Please use a properly formatted function call\nRetries remaining: 2\n"
+
+async function replyOf(chunks, user) {
+  let parsed
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const response = await kit.request(baseBody({ metadata: { user_id: user },
+      messages: [{ role: "user", content: "edit the file" }] }))
+    const text = await response.text()
+    parsed = { ...(await readSse(new Response(text))), raw: text }
+  })
+  return parsed
+}
+
+test("plugins#1454: agy's malformed-function-call retry notice never reaches the client, however it is split", async () => {
+  const answer = "Calling the tool again."
+  const cases = [
+    [[MALFORMED + answer], answer],
+    [[MALFORMED, answer], answer],
+    [[MALFORMED_1514 + answer], answer],
+    [["Let me edit it.", MALFORMED, answer], "Let me edit it." + answer],
+    [[MALFORMED_HEAD + MALFORMED_TAIL, "Retries remaining: 3\n" + answer], answer],
+    [[MALFORMED], ""],
+  ]
+  // every chunk boundary the notice can be split at, in the reporter's bytes
+  for (const at of [1, 2, 5, 14, 26, 60, MALFORMED_HEAD.length, MALFORMED_HEAD.length + 3, MALFORMED_HEAD.length + MALFORMED_TAIL.length + 9]) {
+    cases.push([[MALFORMED.slice(0, at), MALFORMED.slice(at) + answer], answer])
+  }
+  for (const [chunks, want] of cases) {
+    const parsed = await replyOf(chunks, "malformed-call")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+  }
+})
+
+test("plugins#1454: the model quoting the malformed-call notice mid-line keeps it", async () => {
+  const chunks = ["agy prints `⚠ Your previous response contained an improperly formatted function call`", " when it retries."]
+  const parsed = await replyOf(chunks, "malformed-quoted")
+  assert.equal(parsed.error, null)
+  assert.equal(replyText(parsed), chunks.join(""))
+})
+
+test("plugins#1454: a banner right after another is still agy's, once the first is cut out with its newlines", async () => {
+  const answer = "the retry's answer"
+  for (const chunks of [
+    ["Let me look." + EOF_ATTEMPT(1) + EOF_ATTEMPT(2) + "\n" + answer],
+    ["Let me look.", EOF_ATTEMPT(1) + "\n", EOF_ATTEMPT(2).slice(1) + "\n" + answer],
+    ["Let me look.\n⚠ Model produced invalid output.\n⚠ Model produced invalid output.\n" + answer],
+    ["Let me look.\n⚠ Model produced invalid output." + MALFORMED + answer],
+    ["Let me look.\n⚠ Model produced invalid output.\n", MALFORMED.slice(1, 20), MALFORMED.slice(20) + answer],
+  ]) {
+    const parsed = await replyOf(chunks, "banner-after-banner")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(replyText(parsed), "Let me look." + answer, JSON.stringify(chunks))
+  }
+})
+
+test("plugins#1454: agy's quota and high-traffic endings right after a banner still fail the turn", async () => {
+  for (const [chunks, type] of [
+    [["Let me look.\n⚠ Model produced invalid output.\n" + QUOTA_LINE + "\n"], "rate_limit_error"],
+    [["Let me look.\n⚠ Model produced invalid output.\n", "⚠ Individual", " quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."], "rate_limit_error"],
+    [["Let me look." + MALFORMED + BUSY_LINE + "\n"], "overloaded_error"],
+    [["Let me look." + EOF_ATTEMPT(1) + "\n" + QUOTA_LINE], "rate_limit_error"],
+  ]) {
+    const parsed = await replyOf(chunks, "ending-after-banner")
+    assert.equal(replyText(parsed), "Let me look.", JSON.stringify(chunks))
+    assert.equal(sseError(parsed.raw).type, type, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), "no banner reaches the client")
+  }
+})
+
+test("plugins#1454: a reply that starts with agy's line split before its end is held, not sent", async () => {
+  for (const [chunks, want, type] of [
+    [["⚠ Individual", " quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."], "", "rate_limit_error"],
+    [["⚠ Our servers", " are experiencing high traffic right now, please try again in a minute."], "", "overloaded_error"],
+    [["⚠ Your previous", MALFORMED.slice(16) + "Calling the tool again."], "Calling the tool again.", null],
+    [["⚠ Model produced", " invalid output.\n", "the retry's answer"], "the retry's answer", null],
+    [["⚠", " API error (attempt 1): EOF\n", "the retry's answer"], "the retry's answer", null],
+  ]) {
+    const parsed = await replyOf(chunks, "split-at-start")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), `no banner reaches the client: ${JSON.stringify(chunks)}`)
+    if (type) assert.equal(sseError(parsed.raw).type, type)
+    else assert.equal(parsed.error, null)
+  }
+})
+
+test("plugins#1454: a reply that only starts with ⚠ is still sent whole", async () => {
+  for (const chunks of [["⚠", " careful: this deletes the branch."], ["⚠ Your previous", " answer was right."]]) {
+    const parsed = await replyOf(chunks, "warning-sign")
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  }
+})
