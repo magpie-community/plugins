@@ -289,6 +289,7 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 - 没有遥测，也没有账号。唯一的网络调用就是你自己发起的那些：代理测试、信任分页面、身份检测页面、运行时下载，以及供应商自己的登录。
 - 代理、账号、指纹和浏览器配置都在 `~/.config/magpie/magpie-clean-login/`（用 `MAGPIE_CLEAN_LOGIN_DATA` 覆盖；配置根本身用 `MAGPIE_CONFIG_DIR`）。市场目录从 `~/.cache/magpie/` 读取（`MAGPIE_CACHE_DIR`）。续期托管的开通状态与最近记录在同一个目录下的 `renew-hosting.json`，里面只有开关、时间和结果，没有任何凭据。
 - 登录浏览器在 Windows 上解包到 `%LOCALAPPDATA%/magpie-clean-login/camoufox`，在 macOS 上解包到 `~/Library/Caches/magpie-clean-login/camoufox`，在 Linux 上解包到 `$XDG_CACHE_HOME/magpie-clean-login/camoufox`（均可用 `MAGPIE_CLEAN_LOGIN_BROWSER_DIR` 覆盖）。
+- 在无界面的 Linux 上，若未设置 `DISPLAY` 和 `WAYLAND_DISPLAY` 且需要把登录浏览器指向指定 X11 显示（如 `:99`），可用 `MAGPIE_CLEAN_LOGIN_DISPLAY` 显式开启；若需改用系统字体配置而非 Camoufox 默认的防指纹字体配置，可设置 `MAGPIE_CLEAN_LOGIN_FONTCONFIG=system`（`/etc/fonts/fonts.conf`）或自定义的 `fonts.conf` 路径（不会覆盖已有的 `FONTCONFIG_FILE`）。
 - 存下来的代理密码不会到达页面，也不会写进日志。页面 token 每进程一份，只存在于服务送出的页面里。
 
 <a id="contributing"></a>

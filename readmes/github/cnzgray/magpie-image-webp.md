@@ -28,19 +28,19 @@ Requires Magpie 0.1.1273 or newer for async gateway hooks; page-saved options re
 
 ## Install
 
-Install with Magpie's git spec:
+Install with Magpie's git spec, which follows the default branch:
 
 ```sh
 magpie plugin add cnzgray/magpie-image-webp
 ```
 
-Pin a release with `#v0.1.0`:
+Pin a commit:
 
 ```sh
-magpie plugin add cnzgray/magpie-image-webp#v0.1.0
+magpie plugin add cnzgray/magpie-image-webp#074a8f5
 ```
 
-The plugin is not published to npm; Magpie installs it from this repository and shows an update when the branch or the pinned ref moves. You can also add the folder or the hooks file from Plugins. The plugin's options live in `plugins.json`; the settings page edits the same object:
+The plugin is not published to npm; Magpie installs it from this repository and shows an update when the branch moves or the pinned commit differs. Pin by commit, not by an annotated tag: Bun records the tag object's ID, while Magpie's update check compares commits, so an annotated tag such as `v0.1.0` reports a new commit forever. You can also add the folder or the hooks file from Plugins. The plugin's options live in `plugins.json`; the settings page edits the same object:
 
 ```json
 {

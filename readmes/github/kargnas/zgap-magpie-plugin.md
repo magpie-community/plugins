@@ -22,7 +22,8 @@ panel keep the steps in the app. Right-click a provider or agent and choose **ZG
 open the relevant step. The plugin follows magpie’s light/dark theme and language.
 
 Open **ZGAP** in the sidebar. Before sign-in you’ll see the connection guide. After sign-in,
-**Live activity** opens the same request timeline as the ZGAP web console. Choose **Usage stats**
+**Live activity** opens the same request timeline as the ZGAP web console, with ZGAP's remaining usage
+per provider at the top. Choose **Usage stats**
 for the weekly report, time ranges, chart metrics and breakdowns by model, API key, project or device.
 If you use more than one ZGAP account, choose one at the top. These views cover that account’s
 usage across devices. **Connection guide** stays available, and signing out clears the account’s data.
