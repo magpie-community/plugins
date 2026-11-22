@@ -147,6 +147,17 @@ export async function openWindow(profile, url, { headless = false, browser = fin
       return googleCookies(r?.cookies)
     },
     async close() {
+      // Browser.close asks Chrome to shut itself down cleanly, which is
+      // what flushes the cookie jar to the profile's disk database. A
+      // signal kill (SIGTERM is TerminateProcess on Windows) dies before
+      // that flush: the sign-in's session cookies would never land in the
+      // profile. Signals stay only as a last resort.
+      if (!exited) {
+        try {
+          await cdpOnce(await ready, "Browser.close", {}, 8000)
+          await waitExit(child, 8000)
+        } catch {}
+      }
       if (!exited) {
         try { child.kill("SIGTERM") } catch {}
         await waitExit(child, 2000)
@@ -175,6 +186,13 @@ export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settl
         return (await b.cookies().catch(() => null)) ?? c
       }
       await sleep(poll)
+    }
+    // the user may have closed the window right after signing in — a
+    // graceful close that flushed the cookies. One last read before
+    // giving up decides between "signed in" and "gave up".
+    if (b.exited) {
+      const c = await b.cookies().catch(() => null)
+      if (c && hasSession(c)) return c
     }
     return null
   } finally {

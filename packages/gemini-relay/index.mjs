@@ -141,11 +141,12 @@ export function createPlugin({ profileDir, headless = true } = {}) {
                 return { type: "failed", error: "打开浏览器失败：" + String(e?.message ?? e) }
               }
               if (!cookies) return { type: "failed", error: "五分钟内没有在窗口里登录 Google 账号，请再试一次。" }
-              // name the account by its Google email, from the app's own
-              // page. If Google's risk control is /sorry-ing this network
-              // right now the name falls back — the next sign-in or a later
-              // request's account refresh picks the email up.
-              const who = (await accountName(profile)) || "Google 账号"
+              // name the account by its Google email. The sign-in window
+              // itself was on accounts.google.com, which never /sorry-s;
+              // a second look through the just-signed profile names the
+              // account. If that fails too, the profile's own suffix keeps
+              // two accounts from rendering as one name.
+              const who = (await accountName(profile)) || `Google 账号 (${profile.slice(-4)})`
               return { type: "success", access: JSON.stringify({ profileDir: profile }), refresh: profile, expires: 0, accountId: who, name: who }
             },
           }),
