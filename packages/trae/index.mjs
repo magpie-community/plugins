@@ -1718,6 +1718,52 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   return body
 }
 
+// MAGPIE_TRAE_DEBUG=1 in magpie's environment writes each chat request the
+// plugin sends and how Trae's answer ended to stderr, which magpie keeps in
+// app.log (plugins#1366: a seat's replies stopped at 2000 output tokens,
+// and the reporter could see only TLS to Trae). Read on every request, so
+// it is on for the next one after a restart and off by default. What goes
+// out is the URL and the body with nothing of the user's in it: each
+// message is its role and its length, each tool its name. The headers,
+// which carry the sign-in, are never written.
+const traeDebug = () => !!process.env.MAGPIE_TRAE_DEBUG && process.env.MAGPIE_TRAE_DEBUG !== "0"
+
+function debugBody(sent) {
+  const out = { ...sent }
+  if (Array.isArray(sent.messages)) {
+    out.messages = sent.messages.map((m) => ({ role: m?.role, chars: JSON.stringify(m?.content ?? "").length, ...(m?.tool_calls ? { tool_calls: m.tool_calls.length } : {}) }))
+  }
+  if (Array.isArray(sent.tools)) out.tools = sent.tools.map((t) => t?.function?.name ?? t?.name ?? "?")
+  return out
+}
+
+function debugSent(url, rid, sent) {
+  if (traeDebug()) console.error(`trae debug: request ${rid} POST ${url} ${JSON.stringify(debugBody(sent))}`)
+}
+
+// debugEnd passes the answer's parts on and, when the stream ends, writes
+// what Trae said of it: its finish (Trae's "stop", or none, reads as ""),
+// its usage, and the reply's length
+async function* debugEnd(rid, parts, limit, cut) {
+  let usage = null
+  let finish = ""
+  let text = 0
+  let reasoning = 0
+  let calls = 0
+  try {
+    for await (const p of parts) {
+      if (p.usage) usage = p.usage
+      if (p.finish) finish = p.finish
+      if (p.text) text += p.text.length
+      if (p.reasoning) reasoning += p.reasoning.length
+      if (p.call) calls++
+      yield p
+    }
+  } finally {
+    console.error(`trae debug: reply ${rid} trae_finish=${JSON.stringify(finish)} usage=${JSON.stringify(usage)} text_chars=${text} reasoning_chars=${reasoning} calls=${calls} finish_sent=${calls ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop"}`)
+  }
+}
+
 // sse reads Trae's events: {event, data} for each, data parsed when JSON
 async function* sse(stream) {
   const reader = stream.getReader()
@@ -4334,12 +4380,15 @@ const makePlugin = (site) => async ({ client }) => {
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
                 const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                const rid = randomUUID()
+                debugSent(host + "/api/agent/v3/llm_utils_chat", rid, sent)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
-                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": rid }),
                   body: JSON.stringify(sent),
                   signal: ac.signal,
                 })
+                if (traeDebug()) console.error(`trae debug: request ${rid} answered ${res.status} ${res.headers.get("content-type") ?? ""}`)
                 if (!res.ok) {
                   const text = await res.text()
                   const e = errorOf(text)
@@ -4381,7 +4430,9 @@ const makePlugin = (site) => async ({ client }) => {
                   break
                 }
                 fnOf.set(who, fn)
-                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0)
+                const cut = enterpriseModel(entry) ? TRAE_CUT : 0
+                const answer = done ? held : chain(held, it)
+                const out = await openai(req, traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer, () => ac.abort(), site, sent.max_tokens || 0, cut)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }

@@ -403,6 +403,24 @@ IDE may therefore ask you to sign in again after magpie renews.
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
 
+### Seeing what is sent
+
+Start magpie with `MAGPIE_TRAE_DEBUG=1` in its environment and each chat
+request writes two or three lines to magpie's log (`app.log`, and the
+terminal or `docker logs` when magpie runs as `magpie serve`):
+
+- `trae debug: request <id> POST <url> <body>`: the body the plugin sends
+  Trae's `llm_utils_chat`, `max_tokens` and `enterprise_custom_hyper_params`
+  included. Each message is only its role and length, each tool only its
+  name; the headers, which carry the sign-in, are never written.
+- `trae debug: request <id> answered <status> <content-type>`.
+- `trae debug: reply <id> trae_finish=… usage=… finish_sent=…`: the finish
+  Trae gave (`""` is Trae's "stop" or none), its usage, and the finish the
+  agent was sent.
+
+The request goes to Trae, not to an enterprise model's own gateway: Trae's
+cloud makes that request, so its body is not in magpie's log.
+
 ## Usage
 
 magpie's usage card shows the account's plan and allowance, from whichever
