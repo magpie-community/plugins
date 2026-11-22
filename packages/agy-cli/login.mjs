@@ -83,9 +83,14 @@ export function startLogin(agy, { waitMs = LOGIN_WAIT_MS, startMs = LOGIN_START_
       if (pending === child) pending = null
       exited = exited ?? { code }
       for (const w of waiters.splice(0)) w()
-      // agy before 1.5 has no --login: it prints acp's usage and exits
-      if (/Usage:/.test(out) && !SIGN_IN_LINK.test(out)) {
-        settle({ error: "this agy can't sign in from magpie (it has no `agy acp --login`). Update it with `agy update`, or run `agy` in a terminal once to sign in, then try again." })
+      // agy before 1.5 has no `acp --login`: it either refuses the `acp`
+      // subcommand outright (pflag prints `unexpected argument` plus a line
+      // about where prompts may come from) or runs acp and prints its usage.
+      // Read any of those as "too old to sign in from magpie", not as a
+      // sign-in that failed for some other reason.
+      if (!SIGN_IN_LINK.test(out) &&
+          (/Usage:/.test(out) || /unexpected argument/.test(out) || /Prompts are read only from/.test(out))) {
+        settle({ error: "this agy can't sign in from magpie (it has no `agy acp --login`, added in agy 1.5). Update agy to 1.5 or later (run `agy update`, or reinstall), or run `agy` in a terminal once to sign in, then try again." })
       }
       settle({ error: `agy exited before printing a sign-in link${lastLine(out) ? `: ${lastLine(out)}` : ""}` })
     })
