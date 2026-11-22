@@ -128,55 +128,6 @@ export function createPlugin({ profileDir, headless = true } = {}) {
           }),
         },
         {
-          // compatibility: reuse a profile that already holds a Gemini
-          // sign-in — by default one of THIS plugin's own windows; any
-          // absolute profile dir is also accepted (e.g. one signed in
-          // elsewhere). The relay browser opens it and the page's own
-          // cookies serve every request.
-          type: "oauth",
-          icon: ICON,
-          label: "复用已登录的浏览器配置（不重新登录）",
-          prompts: [
-            {
-              key: "profileDir",
-              message: "Chrome 配置目录（含 Gemini 登录态）；留空则用本插件目录下最近登录过的配置",
-              required: false,
-            },
-          ],
-          authorize: async (inputs) => {
-            // magpie's host finishes every oauth sign-in through a callback,
-            // so the reuse starts here and "finishes" at once
-            return {
-              url: "",
-              method: "auto",
-              instructions: "将直接复用已登录的浏览器配置，无需重新登录。",
-              callback: async () => {
-                const dir = String(inputs?.profileDir ?? "").trim() || latestProfile()
-                if (!dir)
-                  return { type: "failed", error: "没有找到已登录的浏览器配置。请先用窗口登录，或填一个配置目录。" }
-                // name the account by its Google email — a profile dir
-                // string means nothing to the user
-                let who = ""
-                try {
-                  const check = new RelayBrowser({ profileDir: dir, headless: true })
-                  try {
-                    const page = await check.ensure()
-                    const t = await page.eval(`(() => {
-                      const html = document.documentElement.innerHTML
-                      return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
-                    })()`)
-                    if (t) who = t
-                  } finally {
-                    await check.stop()
-                  }
-                } catch {}
-                who = who || "Gemini 账号"
-                return { type: "success", access: JSON.stringify({ profileDir: dir }), refresh: dir, expires: 0, accountId: who, name: who }
-              },
-            }
-          },
-        },
-        {
           // the old plugin's 不登录使用: the app answers visitors too
           // (today 3.5 Flash-Lite via Auto); its own browser, signed out
           type: "oauth",
@@ -259,54 +210,10 @@ function wrapAsk(session, prompt, model, onUpdate, signal, strictModel = false) 
 }
 
 export default async function GeminiWebRelay({ client, options } = {}) {
-  const dir = options?.profileDir || process.env.GEMINI_RELAY_PROFILE || latestProfile()
+  // the sign-in made through the plugin's window is the one source of an
+  // account; options.profileDir is for selftest/manual runs only
+  const dir = options?.profileDir || process.env.GEMINI_RELAY_PROFILE
   return createPlugin({ profileDir: dir, headless: options?.headless ?? true })
-}
-
-import { readFileSync, readdirSync, statSync } from "node:fs"
-
-// latestProfile picks the most recently used signed-in profile under THIS
-// plugin's own browser root, so a sign-in made through the plugin's window
-// can be reused without signing in again. A profile counts only when its
-// cookie store holds a session (__Secure-1PSID), not merely analytics
-// cookies. Nothing outside the plugin's root is ever read.
-function latestProfile() {
-  const root = profileRoot()
-  if (!root || !exists(root)) return undefined
-  let best = null
-  let bestAt = 0
-  for (const name of readdirSync(root)) {
-    const p = join(root, name)
-    try {
-      const at = statSync(p).mtimeMs
-      if (at > bestAt && hasSessionCookie(p)) {
-        best = p
-        bestAt = at
-      }
-    } catch {}
-  }
-  return best ?? undefined
-}
-
-function hasSessionCookie(profile) {
-  for (const f of [join(profile, "Default", "Network", "Cookies"), join(profile, "Cookies")]) {
-    try {
-      if (statSync(f).size <= 0) continue
-      // the value is encrypted; the name in plain text is enough here
-      const buf = readFileSync(f)
-      return buf.includes("__Secure-1PSID")
-    } catch {}
-  }
-  return false
-}
-
-function exists(p) {
-  try {
-    statSync(p)
-    return true
-  } catch {
-    return false
-  }
 }
 
 export const _internal = { createPlugin, MODELS, GeminiError, findChrome }
