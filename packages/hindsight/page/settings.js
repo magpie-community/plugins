@@ -17,6 +17,8 @@ let loaded = false;
 function status(message, error = false) {
   $("status").textContent = message;
   $("status").dataset.error = String(error);
+  $("save-status").textContent = message;
+  $("save-status").dataset.error = String(error);
 }
 
 function setBusy(value) {
@@ -131,8 +133,7 @@ $("form").addEventListener("input", () => {
   status("有未保存的修改。");
 });
 
-$("form").addEventListener("submit", async event => {
-  event.preventDefault();
+async function saveSettings() {
   if (busy || !loaded) return;
   let values;
   try { values = readForm(); }
@@ -160,7 +161,16 @@ $("form").addEventListener("submit", async event => {
   } finally {
     setBusy(false);
   }
+}
+
+// Magpie's plugin iframe blocks native form submission.
+$("save").addEventListener("click", saveSettings);
+$("form").addEventListener("keydown", event => {
+  if (event.key !== "Enter" || event.isComposing || !event.target.matches('input:not([type="checkbox"])')) return;
+  event.preventDefault();
+  void saveSettings();
 });
+$("form").addEventListener("submit", event => event.preventDefault());
 
 $("test-connection").addEventListener("click", async () => {
   if (busy || !loaded) return;

@@ -89,9 +89,10 @@
     </section>
 
     <footer class="actions">
-      <button id="save" type="submit" disabled>保存配置</button>
+      <button id="save" type="button" disabled>保存配置</button>
       <button id="test-connection" class="secondary" type="button" disabled>测试连接</button>
     </footer>
+    <p id="save-status" class="action-help" role="status" aria-live="polite"></p>
     <p id="test-help" class="action-help">测试使用已保存的配置，通过插件 loopback 服务调用 GET /health；请先保存修改。不会读取记忆内容或密钥。</p>
   </form>
 </main>

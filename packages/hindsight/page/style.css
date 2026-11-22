@@ -43,7 +43,8 @@ h2 { margin-bottom: 12px; font-size: 13px; font-weight: 650; }
 .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .section-heading h2 { margin: 0; }
 #status { color: var(--muted); font-size: 12px; text-align: right; }
-#status[data-error=true] { color: var(--danger); }
+#status[data-error=true], #save-status[data-error=true] { color: var(--danger); }
+#save-status:empty { display: none; }
 .status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 15px 0 0; }
 .status-grid div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-soft); }
 .status-grid dt { color: var(--muted); font-size: 11px; }

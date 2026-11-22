@@ -38,6 +38,32 @@ test("settings script parses and uses only the released options/service bridge",
   assert.match(source, /location\.assign/);
 });
 
+test("save uses the Magpie bridge even when the sandbox blocks form submission", async () => {
+  const fields = new Map();
+  const field = id => {
+    if (!fields.has(id)) fields.set(id, {
+      dataset: {}, events: {}, checked: false,
+      addEventListener(name, callback) { this.events[name] = callback; }
+    });
+    return fields.get(id);
+  };
+  let options = { bank: "hermes", agents: ["claude", "codex", "opencode"], gatewayTimeoutMs: 8000, custom: true };
+  const ready = Promise.resolve();
+  new Script(await read("settings.js")).runInNewContext({
+    document: { getElementById: field }, window: { addEventListener() {} }, URL,
+    magpie: { ready, options: { get: async () => options, set: async next => { options = next; return options; } } }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  field("agents").value = "claude,opencode";
+  field("form").events.input();
+  await field("save").events.click?.();
+  assert.deepEqual(Array.from(options.agents), ["claude", "opencode"]);
+  assert.equal(options.gatewayTimeoutMs, 8000);
+  assert.equal(options.custom, true);
+  assert.match(field("status").textContent, /配置已保存/);
+  assert.match(field("save-status").textContent, /配置已保存/);
+});
+
 test("health probe performs a minimal GET without reading memories", async () => {
   let seen;
   const result = await testConnection({ hindsight_api: "http://127.0.0.1:8888", bank: "hermes" }, async (url, init) => {
