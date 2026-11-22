@@ -168,40 +168,62 @@ export function renderTranscript(messages, systemText, {
   return [system, head + kept.reverse().join('\n\n'), last].filter(Boolean).join('\n\n')
 }
 
-/**
- * Water-filling per-block byte cap for a delta so single or parallel tool
- * results use the full available frame budget instead of stopping at a fixed
- * 16 KB / 48 KB ceiling. Short blocks keep their full size and excess room
- * flows to larger blocks; when everything fits, returns `maxBytes` (no cap).
- */
-export function fairBlockCap(delta, maxBytes, measure = byteLen) {
-  if (!Number.isFinite(maxBytes) || !Array.isArray(delta) || !delta.length) return maxBytes
-  const sep = measure('\n\n')
-  let overhead = 0
-  const sizes = []
-  for (const m of delta) {
-    if (m.role !== 'user' && m.role !== 'tool' && m.role !== 'function') continue
-    const text = textOf(m.content)
-    const header = (m.role === 'tool' || m.role === 'function')
-      ? `[tool_result ${[m.name, m.tool_call_id].filter(Boolean).join(' ')}]\n`
-      : ''
-    if (!header && !text) continue
-    if (sizes.length) overhead += sep
-    if (header) overhead += measure(header)
-    sizes.push(measure(text))
-  }
-  if (!sizes.length) return maxBytes
-  let budget = Math.max(0, maxBytes - overhead)
+const MIN_BLOCK_CAP = 256
+
+function waterFill(sizes, budget, floor) {
+  if (!sizes.length) return Math.max(floor, budget)
+  let remaining = Math.max(0, budget)
   const sorted = sizes.slice().sort((a, b) => a - b)
   for (let i = 0; i < sorted.length; i++) {
-    const share = Math.floor(budget / (sorted.length - i))
+    const share = Math.floor(remaining / (sorted.length - i))
     if (sorted[i] <= share) {
-      budget -= sorted[i]
+      remaining -= sorted[i]
     } else {
-      return Math.max(1024, share)
+      return Math.max(floor, share)
     }
   }
-  return Math.max(1024, maxBytes - overhead)
+  return Math.max(floor, budget)
+}
+
+/**
+ * Water-filling per-block byte caps for a delta so single or parallel tool
+ * results use the full available frame budget instead of stopping at a fixed
+ * 16 KB / 48 KB ceiling. User turns are budgeted first (never sacrificed for
+ * earlier tool results); remaining room is water-filled across tool results.
+ */
+export function fairBlockCaps(delta, maxBytes, measure = byteLen) {
+  if (!Number.isFinite(maxBytes) || !Array.isArray(delta) || !delta.length) {
+    return { turnCap: maxBytes, toolResultCap: maxBytes }
+  }
+  const sep = measure('\n\n')
+  const floor = Math.min(MIN_BLOCK_CAP, Math.max(0, maxBytes))
+  const userSizes = []
+  const toolSizes = []
+  let toolHeaderBytes = 0
+  for (const m of delta) {
+    if (m.role === 'user') {
+      const text = textOf(m.content)
+      if (text) userSizes.push(measure(text))
+    } else if (m.role === 'tool' || m.role === 'function') {
+      const header = `[tool_result ${[m.name, m.tool_call_id].filter(Boolean).join(' ')}]\n`
+      toolHeaderBytes += measure(header)
+      toolSizes.push(measure(textOf(m.content)))
+    }
+  }
+  const totalBlocks = userSizes.length + toolSizes.length
+  if (!totalBlocks) return { turnCap: maxBytes, toolResultCap: maxBytes }
+
+  const sepOverhead = totalBlocks > 1 ? (totalBlocks - 1) * sep : 0
+  const userSepOverhead = userSizes.length > 1 ? (userSizes.length - 1) * sep : 0
+  const turnCap = userSizes.length
+    ? waterFill(userSizes, Math.max(0, maxBytes - userSepOverhead), floor)
+    : maxBytes
+  const userUsed = userSizes.reduce((n, s) => n + Math.min(s, turnCap), 0) + userSepOverhead
+  const toolOverhead = toolHeaderBytes + (sepOverhead - userSepOverhead)
+  const toolResultCap = toolSizes.length
+    ? waterFill(toolSizes, Math.max(0, maxBytes - userUsed - toolOverhead), floor)
+    : maxBytes
+  return { turnCap, toolResultCap }
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { textOf, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCap, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
+import { textOf, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCaps, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
 
 test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf('hi'), 'hi')
@@ -153,19 +153,19 @@ test('renderDelta enforces total byte budget across blocks', () => {
   assert.ok(!out.includes('[tool_result a c1]')) // oldest dropped
 })
 
-test('fairBlockCap water-fills full frame budget across single and parallel tool results', () => {
+test('fairBlockCaps water-fills full frame budget across single and parallel tool results', () => {
   // Single 52KB file fits inside 58KB budget without any 48KB ceiling.
   const one = [{ role: 'tool', tool_call_id: 'c1', name: 'read', content: 'A'.repeat(52 * 1024) }]
-  const capOne = fairBlockCap(one, 58 * 1024)
-  assert.ok(capOne >= 52 * 1024)
+  const capsOne = fairBlockCaps(one, 58 * 1024)
+  assert.ok(capsOne.toolResultCap >= 52 * 1024)
 
   // Two parallel 25KB files both fit completely untruncated inside 58KB.
   const twoFit = [
     { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'A'.repeat(25 * 1024) },
     { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'B'.repeat(25 * 1024) },
   ]
-  const capTwoFit = fairBlockCap(twoFit, 58 * 1024)
-  const outTwoFit = renderDelta(twoFit, { maxBytes: 58 * 1024, toolResultCap: capTwoFit, turnCap: capTwoFit })
+  const capsTwoFit = fairBlockCaps(twoFit, 58 * 1024)
+  const outTwoFit = renderDelta(twoFit, { maxBytes: 58 * 1024, ...capsTwoFit })
   assert.ok(outTwoFit.includes('A'.repeat(25 * 1024)))
   assert.ok(outTwoFit.includes('B'.repeat(25 * 1024)))
   assert.ok(!outTwoFit.includes('[truncated]'))
@@ -175,20 +175,52 @@ test('fairBlockCap water-fills full frame budget across single and parallel tool
     { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'S'.repeat(2 * 1024) },
     { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'L'.repeat(70 * 1024) },
   ]
-  const capSkew = fairBlockCap(skewed, 58 * 1024)
-  assert.ok(capSkew > 54 * 1024 && capSkew < 57 * 1024)
+  const capsSkew = fairBlockCaps(skewed, 58 * 1024)
+  assert.ok(capsSkew.toolResultCap > 54 * 1024 && capsSkew.toolResultCap < 57 * 1024)
 
   // Two parallel 35KB files inside 58KB: each gets ~29KB instead of 16KB, and both survive.
   const twoBig = [
     { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'X'.repeat(35 * 1024) },
     { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'Y'.repeat(35 * 1024) },
   ]
-  const capTwoBig = fairBlockCap(twoBig, 58 * 1024)
-  assert.ok(capTwoBig > 28 * 1024 && capTwoBig < 30 * 1024)
+  const capsTwoBig = fairBlockCaps(twoBig, 58 * 1024)
+  assert.ok(capsTwoBig.toolResultCap > 28 * 1024 && capsTwoBig.toolResultCap < 30 * 1024)
   const stats = {}
-  const outTwoBig = renderDelta(twoBig, { maxBytes: 58 * 1024, stats, toolResultCap: capTwoBig, turnCap: capTwoBig })
+  const outTwoBig = renderDelta(twoBig, { maxBytes: 58 * 1024, stats, ...capsTwoBig })
   assert.ok(stats.truncated)
   assert.ok(byteLen(outTwoBig) <= 58 * 1024)
   assert.ok(outTwoBig.includes('[tool_result read c1]'))
   assert.ok(outTwoBig.includes('[tool_result read c2]'))
+})
+
+test('fairBlockCaps prioritizes user question over earlier tool results and keeps dense parallel results', () => {
+  // 30KB budget with 40KB tool_result + 20KB user question: user stays 100% intact,
+  // earlier tool_result gets the remaining ~10KB instead of cutting both to ~15KB.
+  const question = 'Q'.repeat(20 * 1024)
+  const mixed = [
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'T'.repeat(40 * 1024) },
+    { role: 'user', content: question },
+  ]
+  const capsMixed = fairBlockCaps(mixed, 30 * 1024)
+  const mixedStats = {}
+  const outMixed = renderDelta(mixed, { maxBytes: 30 * 1024, stats: mixedStats, ...capsMixed })
+  assert.ok(mixedStats.truncated)
+  assert.ok(byteLen(outMixed) <= 30 * 1024)
+  assert.ok(outMixed.includes(question), 'user question must stay untruncated')
+  assert.ok(outMixed.includes('[tool_result read c1]'), 'earlier tool_result keeps remaining ~10KB')
+  assert.ok(capsMixed.toolResultCap > 9 * 1024 && capsMixed.toolResultCap < 11 * 1024)
+
+  // 30 × 5KB tool results in 20KB budget: all 30 survive (~650B each) instead of dropping 11.
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    role: 'tool', tool_call_id: `c${i}`, name: 'read', content: `R${i}_` + 'Z'.repeat(5 * 1024),
+  }))
+  const capsMany = fairBlockCaps(many, 20 * 1024)
+  const manyStats = {}
+  const outMany = renderDelta(many, { maxBytes: 20 * 1024, stats: manyStats, ...capsMany })
+  assert.ok(manyStats.truncated)
+  assert.ok(byteLen(outMany) <= 20 * 1024)
+  assert.ok(!outMany.includes('earlier message(s) omitted'))
+  for (let i = 0; i < 30; i++) {
+    assert.ok(outMany.includes(`[tool_result read c${i}]`), `tool_result c${i} should be preserved`)
+  }
 })

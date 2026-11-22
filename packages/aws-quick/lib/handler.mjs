@@ -16,7 +16,7 @@ import { APP_VERSION, SURFACE } from './desktop.mjs'
 import { OutpostError } from './outpost.mjs'
 import { normalizeTools, buildToolPreamble, buildToolReminder, createToolCallParser, mapQuickTool, argObject } from './tools.mjs'
 import {
-  AGENT_MODES, MODELS, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCap, textOf,
+  AGENT_MODES, MODELS, modeFor, effortFor, renderTranscript, renderDelta, fairBlockCaps, textOf,
   jsonTextBytes, capText, UPSTREAM_TEXT_LIMIT,
 } from './translate.mjs'
 import {
@@ -236,15 +236,16 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     sendCustomPrompt = instructionBytes > 0 && instructionBytes + preBytes + estDeltaBytes <= frameCap
     const textCap = sendCustomPrompt ? (frameCap - instructionBytes) : frameCap
     const maxBytes = textCap - preBytes
-    // Allocate the full remaining frame across single or parallel delta blocks
-    // via water-filling so parallel tool_results aren't capped at 16 KB each.
-    const blockCap = fairBlockCap(cont.delta, maxBytes, jsonTextBytes)
+    // Allocate the full remaining frame across delta blocks: user turns are
+    // budgeted first (never sacrificed for earlier tool results), and remaining
+    // room is water-filled across single or parallel tool_results.
+    const { turnCap, toolResultCap } = fairBlockCaps(cont.delta, maxBytes, jsonTextBytes)
     text = renderDelta(cont.delta, {
       maxBytes,
       stats,
       measure: jsonTextBytes,
-      turnCap: blockCap,
-      toolResultCap: blockCap,
+      turnCap,
+      toolResultCap,
     })
   } else {
     threadId = crypto.randomUUID()
