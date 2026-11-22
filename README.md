@@ -17,6 +17,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [antigravity](packages/antigravity) | Withdrawn for new users: Google suspends accounts it sees used this way. Kept working for whoever has it; use agy-cli instead | `antigravity` |
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
+| [aws-quick](packages/aws-quick) | Amazon Quick (AWS Quick), with browser OAuth or the desktop app's saved credentials (Windows Credential Manager / bundled outpost), bidi WebSocket chat, thread reuse and client tool calling (unofficial) | `aws-quick` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
