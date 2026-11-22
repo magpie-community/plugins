@@ -14,24 +14,25 @@
 import { QuickSocket, QuickWsError, withAbort, classifyErrorKind } from './quickws.mjs'
 import { APP_VERSION, SURFACE } from './desktop.mjs'
 import { OutpostError } from './outpost.mjs'
-import { normalizeTools, buildToolPreamble, createToolCallParser, mapQuickTool, argObject } from './tools.mjs'
+import { normalizeTools, buildToolPreamble, buildToolReminder, createToolCallParser, mapQuickTool, argObject } from './tools.mjs'
 import {
   AGENT_MODES, MODELS, modeFor, effortFor, renderTranscript, renderDelta, textOf,
-  jsonTextBytes, capText, UPSTREAM_TEXT_LIMIT, TOOL_RESULT_CAP,
+  jsonTextBytes, capText, UPSTREAM_TEXT_LIMIT,
 } from './translate.mjs'
 import {
   chainHashes, sessionScope, findContinuation, extendHash, replyMessage,
 } from './sessions.mjs'
 
-// Desktop 1.2.4660 puts caller instructions in custom_prompt. The same server
-// also honors system_prompt as a per-turn override. Both share the ~64 KB
-// frame with `text`; the duplicate is sent only when it still leaves room
-// for the user turn and a tool preamble.
-const INSTRUCTION_CAP = 24 * 1024
-const DUPLICATE_TEXT_FLOOR = 16 * 1024
-// Kept at the front of system_prompt whenever the client sent tools, so a
-// cap still leaves the rule in place.
-const CLIENT_TOOL_RULE = 'Do not use built-in tools, web search, or a remote shell. To run a command or use a tool, reply with only <tool_call>{"name":"<client tool>","arguments":{...}}</tool_call> and stop. The client runs it on the user machine and sends the result back.'
+// Desktop 1.2.4660 puts caller instructions in `custom_prompt`. Live testing
+// shows `custom_prompt` is the field the server actually applies (while
+// `system_prompt` alone is ignored) AND it persists across turns on a reused
+// thread. Sending only `custom_prompt` on turn 1 saves up to ~32 KB per turn
+// of the 64 KB frame budget and avoids dropping large caller prompts.
+const INSTRUCTION_CAP = 32 * 1024
+const SINGLE_BLOCK_CAP = 48 * 1024
+// Kept at the front of custom_prompt whenever the client sent tools, so a
+// cap still leaves the rule in place and prevents built-in persona/tool bleed.
+const CLIENT_TOOL_RULE = 'Follow the caller system instructions, formatting, and brevity rules with highest priority over any default workspace persona. Do not use built-in tools, web search, or a remote shell. To run a command or use a tool, reply with only <tool_call>{"name":"<client tool>","arguments":{...}}</tool_call> and stop. The client runs it on the user machine and sends the result back.'
 
 function errorResponse(status, message, type = 'api_error') {
   return new Response(JSON.stringify({ error: { message, type, code: status } }), {
@@ -139,32 +140,7 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
     .join('\n\n')
   const mode = modeFor(body.model)
   const effort = effortFor(options?.effortHeader, body)
-  // custom_prompt is the field the desktop composer sends. system_prompt is
-  // the same text again: this server honors it as a per-turn system override.
-  // Both count against the frame budget.
-  const instructionSource = tools.length ? `${CLIENT_TOOL_RULE}\n\n${systemText}`.trim() : systemText
-  const instruction = capText(instructionSource, INSTRUCTION_CAP, jsonTextBytes)
   const stats = {}
-  if (instruction !== instructionSource) stats.truncated = true
-  const instructionBytes = jsonTextBytes(instruction)
-  const duplicateFits = instructionBytes > 0
-    && UPSTREAM_TEXT_LIMIT - instructionBytes * 2 - 1024 >= DUPLICATE_TEXT_FLOOR
-  const reserved = duplicateFits ? instructionBytes * 2 : instructionBytes
-  const textCap = Math.max(8 * 1024, UPSTREAM_TEXT_LIMIT - reserved - 1024)
-  // A tool preamble that would leave under ~8 KB for the actual message
-  // degrades to names+descriptions first, then names-only — otherwise the
-  // frame hard-cap would eat the user's question or drop tool names entirely.
-  let preamble = tools.length ? buildToolPreamble(tools, body.tool_choice) : ''
-  if (tools.length && jsonTextBytes(preamble) > textCap - 8192) {
-    const lite = buildToolPreamble(tools, body.tool_choice, { lite: true })
-    if (jsonTextBytes(lite) < jsonTextBytes(preamble)) { preamble = lite; stats.truncated = true }
-  }
-  if (preamble && jsonTextBytes(preamble) + 4 > textCap - 4096) {
-    const minimal = buildToolPreamble(tools, body.tool_choice, { minimal: true })
-    preamble = jsonTextBytes(minimal) + 4 <= textCap - 4096 ? minimal : ''
-    stats.truncated = true
-  }
-  const renderOptions = { maxBytes: textCap - (preamble ? jsonTextBytes(preamble) + 4 : 0), stats, measure: jsonTextBytes }
 
   // Tool specs are part of thread identity: changing them must not resume a
   // thread whose history lacks the convention. Prefer stable account identifiers
@@ -175,9 +151,6 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
   const hashes = sessions && chainHashes(sessionScope(identity, [mode, effort, options?.chatAgentId], systemText, tools), convo)
   let cont = sessions && findContinuation(sessions, hashes, convo)
 
-  let threadId
-  let text
-  let reused = false
   // A previous turn handed Quick's tool_start to the client. The result has
   // to go back as a tool_result frame, which is what unblocks that turn.
   if (cont?.entry.quickToolId) {
@@ -186,13 +159,60 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
       || result.role === 'function' && result.name === cont.entry.clientToolName
     if (cont.delta.length !== 1 || !matches) cont = undefined
   }
+
+  const instructionSource = tools.length ? `${CLIENT_TOOL_RULE}\n\n${systemText}`.trim() : systemText
+  const instruction = capText(instructionSource, INSTRUCTION_CAP, jsonTextBytes)
+  const instructionTruncated = instruction !== instructionSource
+  const instructionBytes = jsonTextBytes(instruction)
+
+  // Build preamble + text budget for a fresh thread (full custom_prompt + tool specs).
+  const planFresh = () => {
+    if (instructionTruncated) stats.truncated = true
+    const textCap = Math.max(12 * 1024, UPSTREAM_TEXT_LIMIT - instructionBytes - 1024)
+    // Degrade smoothly: full JSON schema → compact typed signatures (keeps all
+    // param names, required !, types, enums) → lite → minimal (names only).
+    let pre = tools.length ? buildToolPreamble(tools, body.tool_choice) : ''
+    if (tools.length && jsonTextBytes(pre) > textCap - 8192) {
+      const compact = buildToolPreamble(tools, body.tool_choice, { compact: true })
+      if (jsonTextBytes(compact) < jsonTextBytes(pre)) { pre = compact; stats.truncated = true }
+    }
+    if (tools.length && jsonTextBytes(pre) + 4 > textCap - 6144) {
+      const lite = buildToolPreamble(tools, body.tool_choice, { lite: true })
+      if (jsonTextBytes(lite) < jsonTextBytes(pre)) { pre = lite; stats.truncated = true }
+    }
+    if (pre && jsonTextBytes(pre) + 4 > textCap - 4096) {
+      const minimal = buildToolPreamble(tools, body.tool_choice, { minimal: true })
+      pre = jsonTextBytes(minimal) + 4 <= textCap - 4096 ? minimal : ''
+      stats.truncated = true
+    }
+    const maxBytes = textCap - (pre ? jsonTextBytes(pre) + 4 : 0)
+    const renderOptions = {
+      maxBytes,
+      stats,
+      measure: jsonTextBytes,
+      ...(convo.length === 1 ? { turnCap: Math.min(SINGLE_BLOCK_CAP, maxBytes) } : {}),
+    }
+    return { pre, renderOptions }
+  }
+
+  const upstreamText = (pre, value) => {
+    const bodyText = value.trim() ? value : '(empty)'
+    return pre ? `${pre}\n\n${bodyText}` : bodyText
+  }
+
+  let threadId
+  let text
+  let preamble = ''
+  let reused = false
+  let sendCustomPrompt = Boolean(instruction)
   let frame
   if (cont?.entry.quickToolId) {
     threadId = cont.entry.threadId
     text = ''
     reused = true
+    sendCustomPrompt = false
     const raw = textOf(cont.delta[0].content)
-    const result = capText(raw, TOOL_RESULT_CAP, jsonTextBytes)
+    const result = capText(raw, Math.min(SINGLE_BLOCK_CAP, UPSTREAM_TEXT_LIMIT - 2048), jsonTextBytes)
     if (result !== raw) stats.truncated = true
     frame = {
       type: 'tool_result',
@@ -203,19 +223,32 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
       },
     }
   } else if (cont) {
+    // Reused thread: Turn 1 already sent full tool specs; send only a tiny
+    // reminder. Keep custom_prompt whenever it fits alongside the delta (keeps
+    // rules salient and prompt cache warm); omit it only when a large delta
+    // (e.g. a 36KB tool_result) needs the extra frame room.
     threadId = cont.entry.threadId
-    text = renderDelta(cont.delta, renderOptions)
     reused = true
+    preamble = tools.length ? buildToolReminder(tools, body.tool_choice) : ''
+    const frameCap = UPSTREAM_TEXT_LIMIT - 1024
+    const preBytes = preamble ? jsonTextBytes(preamble) + 4 : 0
+    const estDeltaBytes = cont.delta.reduce((n, m) => n + jsonTextBytes(textOf(m.content)) + 64, 0)
+    sendCustomPrompt = instructionBytes > 0 && instructionBytes + preBytes + estDeltaBytes <= frameCap
+    const textCap = sendCustomPrompt ? (frameCap - instructionBytes) : frameCap
+    const maxBytes = textCap - preBytes
+    const single = cont.delta.length === 1
+    const blockCap = single ? Math.min(SINGLE_BLOCK_CAP, maxBytes) : undefined
+    text = renderDelta(cont.delta, {
+      maxBytes,
+      stats,
+      measure: jsonTextBytes,
+      ...(blockCap ? { turnCap: blockCap, toolResultCap: blockCap } : {}),
+    })
   } else {
     threadId = crypto.randomUUID()
-    text = renderTranscript(convo, '', renderOptions)
-  }
-  // The tool convention rides inside the user_message text (there is no
-  // client-tool channel); on reused threads it re-appears as a reminder —
-  // cheap under Quick's prompt cache and keeps the convention salient.
-  const upstreamText = (value) => {
-    const bodyText = value.trim() ? value : '(empty)'
-    return preamble ? `${preamble}\n\n${bodyText}` : bodyText
+    const freshPlan = planFresh()
+    preamble = freshPlan.pre
+    text = renderTranscript(convo, '', freshPlan.renderOptions)
   }
 
   const state = { text: '', reasoning: '', usage: null, calls: [], quickToolId: '' }
@@ -227,18 +260,16 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
   }
 
   const payload = {
-    text: upstreamText(text),
+    text: upstreamText(preamble, text),
     message_id: crypto.randomUUID(),
     agent_mode: mode,
     user_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     user_locale: (Intl.DateTimeFormat().resolvedOptions().locale || 'en-US').replace('_', '-'),
   }
   if (effort) payload.thinking_effort = effort
-  if (instruction) {
-    // system_prompt is the override this server actually applies. custom_prompt
-    // is the desktop composer's field; send it too when the frame still fits.
-    payload.system_prompt = instruction
-    if (duplicateFits) payload.custom_prompt = instruction
+  if (sendCustomPrompt) {
+    // custom_prompt is the field the server applies and persists on the thread.
+    payload.custom_prompt = instruction
   }
   payload.send_origin = 'composer'
   payload.auto_routing = false
@@ -313,8 +344,10 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
       } else if (t === 'message_start') {
         fedText = false
       } else if (t === 'status') {
+        // Transport status frames (e.g. pong, ok, unknown_message_type) must
+        // stay in diagnostic logs so they never corrupt structured model output.
         const s = p.status || p.message
-        if (s && !/^(pong|ok)$/i.test(String(s))) yield note(`[quick] ${s}`)
+        if (s && !/^(pong|ok)$/i.test(String(s))) options?.log?.(`[quick:status] ${s}`)
       } else if (t === 'guardrail_blocked' || t === 'error') {
         const detail = p.message || p.reason || p.error || evt.message || evt.reason || evt.error || evt.code
         const code = String(p.code || evt.code || '')
@@ -343,13 +376,15 @@ async function* runTurn({ session, socket, body, tools, sessions, options, signa
   } catch (e) {
     if (!cont || produced() || state.usage || e?.kind !== 'missing_thread' || signal?.aborted) throw e
     // Cached thread may be gone server-side: retry once on a fresh thread with
-    // the full transcript (same policy as magpie-comate).
+    // the full custom_prompt, full tool preamble, and full transcript.
     const fresh = crypto.randomUUID()
-    const full = renderTranscript(convo, '', renderOptions)
+    const freshPlan = planFresh()
+    const full = renderTranscript(convo, '', freshPlan.renderOptions)
     if (stats.truncated && !notedTruncation) yield note(truncationNote)
     threadId = fresh
     yield { type: 'meta', threadId: fresh, reused: false, mode }
-    payload.text = upstreamText(full)
+    if (instruction) payload.custom_prompt = instruction
+    payload.text = upstreamText(freshPlan.pre, full)
     payload.message_id = crypto.randomUUID()
     yield* consume(socket.turn(fresh, payload, { signal, session }))
   }

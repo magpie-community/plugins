@@ -38,8 +38,7 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
    二进制帧；下行是 AWS event-stream 帧（`:event-type=rawOutputEvent`，body 里同样是
    base64 包的 inner JSON）。应用层 `ping` 间隔 45s，与桌面端一致。
 4. **协议翻译**：OpenAI 的 `messages` 渲染成 Quick 的 `text`（见下）——
-   调用方的 system 指令同时放进桌面端的 `custom_prompt` 和服务端认的
-   `system_prompt`；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
+   调用方的 system 指令在首轮通过桌面端 `custom_prompt` 字段发送（实测该字段真正生效且会在同 thread 后续轮次持久化，续接轮省略可释放几乎全部 64 KB 帧预算）；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
    `message_complete` 转成 OpenAI 的 `content`/`reasoning_content`/`usage`。
    一个 user turn 以 `message_complete`（`continuation_expected !== true`）
    结束——与桌面渲染端判定一致。
@@ -101,7 +100,7 @@ Quick 的 `user_message` 用 `agent_mode` 选择档位，服务端再路由到�
 
 ```bash
 magpie plugin add @magpie-community/opencode-aws-quick-auth
-magpie plugin login aws-quick # 按提示选择登录方式
+magpie plugin login aws-quick        # 按提示选择登录方式
 ```
 
 **两种登录方式**

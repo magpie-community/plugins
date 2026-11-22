@@ -64,19 +64,23 @@ test('preamble compacts schema annotations and caps giant schemas', () => {
   assert.ok(!p.includes('field_1'))
 })
 
-test('preamble falls back to name+description when toolset is enormous', () => {
+test('preamble falls back to compact typed signatures when toolset is enormous', () => {
   const tools = normalizeTools(Array.from({ length: 60 }, (_, i) => ({
     type: 'function',
     function: {
       name: `tool_${i}`,
       description: `description ${i} `.repeat(30),
-      parameters: { type: 'object', properties: Object.fromEntries(Array.from({ length: 15 }, (_, j) => [`p${j}`, { type: 'string', description: 'x'.repeat(60) }])) },
+      parameters: {
+        type: 'object',
+        required: ['p0'],
+        properties: Object.fromEntries(Array.from({ length: 15 }, (_, j) => [`p${j}`, { type: 'string', description: 'x'.repeat(60) }])),
+      },
     },
   })))
   const p = buildToolPreamble(tools, 'auto')
-  assert.ok(byteLen(p) < 45 * 1024)
-  assert.ok(p.includes('parameter schemas omitted'))
-  assert.ok(p.includes('- tool_0:'))
+  assert.ok(byteLen(p) < 36 * 1024)
+  assert.ok(p.includes('compact signatures'))
+  assert.ok(p.includes('- tool_0(p0!: string'))
   assert.ok(!p.includes('"properties"'))
 })
 
@@ -184,9 +188,37 @@ test('mapQuickTool preserves command even when optional properties also match', 
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'Read',
+        parameters: {
+          type: 'object',
+          properties: { file_path: { type: 'string' } },
+          required: ['file_path'],
+        },
+      },
+    },
   ])
   // Quick passes `command` + `timeout`; client schema expects `cmd` + `timeout`.
   const mapped = mapQuickTool('run_terminal_command', '{"command":"ls -la","timeout":5000}', tools)
   assert.deepEqual(mapped, { name: 'Shell', arguments: { cmd: 'ls -la', timeout: 5000 } })
+  // Built-in file tools map to aliased client tools with parameter name aliasing.
+  const mappedRead = mapQuickTool('read_file', { path: 'src/app.js' }, tools)
+  assert.deepEqual(mappedRead, { name: 'Read', arguments: { file_path: 'src/app.js' } })
   assert.equal(mapQuickTool('web_search', { query: 'test' }, tools), null)
+})
+
+test('parser handles literal </tool_call> inside JSON string arguments and repairs minor JSON glitches', () => {
+  const p = createToolCallParser()
+  const r1 = p.push('ok <tool_call>{"name":"edit","arguments":{"code":"const tag = \\"</tool_call>\\";"}}</tool_call> after')
+  assert.equal(r1.text, 'ok  after')
+  assert.equal(r1.calls.length, 1)
+  assert.equal(r1.calls[0].arguments.code, 'const tag = "</tool_call>";')
+
+  // Unescaped raw newline inside JSON string + trailing comma
+  const p2 = createToolCallParser()
+  const r2 = p2.push('<tool_call>{"name":"write","arguments":{"content":"line1\nline2",},}</tool_call>')
+  assert.equal(r2.calls.length, 1)
+  assert.deepEqual(r2.calls[0], { name: 'write', arguments: { content: 'line1\nline2' } })
 })

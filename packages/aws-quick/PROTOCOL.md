@@ -131,8 +131,7 @@ Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<the whole user input>",
-    "custom_prompt": "<desktop composer instructions>",
-    "system_prompt": "<same text, when it still fits the frame>",
+    "custom_prompt": "<caller system instructions (turn 1; persists on reused threads)>",
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",

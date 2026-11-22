@@ -99,7 +99,7 @@ test('agent_mode is sent per request model; unknown models default to smart', as
   assert.ok(msgs.at(-1).payload.thread_id)
 })
 
-test('system prompt rides the system_prompt field; history renders into text', async () => {
+test('system prompt rides the custom_prompt field; history renders into text', async () => {
   await req({
     model: 'fast',
     messages: [
@@ -111,23 +111,23 @@ test('system prompt rides the system_prompt field; history renders into text', a
   })
   const p = fake.state.userMessages.at(-1).payload
   assert.equal(p.custom_prompt, 'be terse')
-  assert.equal(p.system_prompt, 'be terse')
+  assert.equal(p.system_prompt, undefined)
   assert.ok(!p.text.includes('[system instructions]'))
   assert.ok(p.text.includes('user: q1'))
   assert.ok(p.text.includes('assistant: a1'))
   assert.ok(p.text.endsWith('\n\nq2'))
 })
 
-test('no system_prompt field when the request has no system messages', async () => {
+test('no custom_prompt field when the request has no system messages', async () => {
   await req({ model: 'fast', messages: [{ role: 'user', content: 'plain' }] })
   const p = fake.state.userMessages.at(-1).payload
   assert.equal(p.custom_prompt, undefined)
   assert.equal(p.system_prompt, undefined)
 })
 
-test('system prompt shares the 64KB frame budget with text', async () => {
-  const bigSys = 'S'.repeat(40 * 1024) // over the 24KB instruction cap
-  const bigUser = 'U'.repeat(30 * 1024)
+test('custom_prompt shares the 64KB frame budget with text without duplication', async () => {
+  const bigSys = 'S'.repeat(40 * 1024) // over the 32KB instruction cap
+  const bigUser = 'U'.repeat(35 * 1024)
   const res = await req({
     model: 'fast',
     messages: [
@@ -137,18 +137,16 @@ test('system prompt shares the 64KB frame budget with text', async () => {
   })
   const json = await res.json()
   const p = fake.state.userMessages.at(-1).payload
-  assert.ok(byteLen(p.system_prompt) <= 24 * 1024 + 64)
-  assert.ok(p.system_prompt.endsWith('…[truncated]'))
-  // A 24KB instruction plus its duplicate would starve the user text, so only
-  // the override field is sent. The truncation is visible on the reply.
-  assert.equal(p.custom_prompt, undefined)
-  assert.ok(byteLen(p.text) + byteLen(p.system_prompt) <= 60 * 1024)
+  assert.ok(byteLen(p.custom_prompt) <= 32 * 1024 + 64)
+  assert.ok(p.custom_prompt.endsWith('…[truncated]'))
+  assert.equal(p.system_prompt, undefined)
+  assert.ok(byteLen(p.text) + byteLen(p.custom_prompt) <= 60 * 1024)
   assert.match(json.choices[0].message.content, /64KB/)
 })
 
-test('huge system prompt + large toolset still delivers the user question', async () => {
-  // Regression: a preamble exceeding the frame budget used to be tail-cut,
-  // which ate the user's message entirely — the model saw only tool specs.
+test('huge system prompt + large toolset degrades to compact typed signatures and keeps user question', async () => {
+  // Regression: a preamble exceeding the frame budget used to be tail-cut or
+  // strip all parameter names. Compact signatures keep parameter names + question.
   const tools = Array.from({ length: 25 }, (_, i) => ({
     type: 'function',
     function: {
@@ -172,7 +170,8 @@ test('huge system prompt + large toolset still delivers the user question', asyn
   const p = fake.state.userMessages.at(-1).payload
   assert.ok(p.text.includes('FINAL_QUESTION_MARKER'), 'user question must survive the frame cap')
   assert.ok(p.text.includes('[Client tool calling]'), 'tool convention must survive too')
-  assert.ok(byteLen(p.system_prompt) + byteLen(p.custom_prompt) + byteLen(p.text) <= 62 * 1024)
+  assert.ok(p.text.includes('tool_0(arg!: string)'), 'compact typed signature preserves parameter names')
+  assert.ok(byteLen(p.custom_prompt) + byteLen(p.text) <= 62 * 1024)
 })
 
 test('thread reuse: extended conversation continues the same thread with delta only', async () => {
@@ -619,7 +618,7 @@ test('thread reuse survives token refresh when session has email but no actor_ar
 })
 
 test('enormous tool descriptions fall back to names-only preamble instead of dropping tools', async () => {
-  const tools = Array.from({ length: 80 }, (_, i) => ({
+  const tools = Array.from({ length: 180 }, (_, i) => ({
     type: 'function',
     function: {
       name: `mega_tool_${i}`,
@@ -641,5 +640,80 @@ test('enormous tool descriptions fall back to names-only preamble instead of dro
   assert.ok(p.text.includes('USER_PROMPT_SURVIVES'))
   assert.ok(p.text.includes('Tools provided by the client (names only):'))
   assert.ok(p.text.includes('mega_tool_0'))
-  assert.ok(p.text.includes('mega_tool_79'))
+  assert.ok(p.text.includes('mega_tool_179'))
+})
+
+test('transport status events (e.g. unknown_message_type) are logged instead of polluting content', async () => {
+  const statusFake = await startFakeQuick({
+    script: () => [
+      { type: 'status', payload: { status: 'unknown_message_type' } },
+      { type: 'text_delta', payload: { delta: '{"ok":true}' } },
+      { type: 'message_complete', payload: { text: '{"ok":true}' } },
+    ],
+  })
+  try {
+    const logs = []
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'st-1',
+        session: async () => ({ ws_host: statusFake.wsHost, id_token: 't', actor_arn: 'arn:st', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'json' }] },
+      outpostMgr: mgr,
+      options: { identity: 'st-acct', log: (l) => logs.push(l) },
+    })
+    assert.equal(res.status, 200)
+    const j = await res.json()
+    assert.equal(j.choices[0].message.content, '{"ok":true}')
+    assert.ok(logs.some((l) => l.includes('unknown_message_type')))
+  } finally {
+    await statusFake.close()
+  }
+})
+
+test('reused thread keeps custom_prompt when small, omits it when a 36KB tool_result needs the frame', async () => {
+  const sessions = createSessionStore()
+  const tools = [{ type: 'function', function: { name: 'read_file', description: 'Read file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } }]
+  const sys = { role: 'system', content: 'A'.repeat(28 * 1024) }
+  const r1 = await req({ model: 'fast', tools, messages: [sys, { role: 'user', content: 'read big file' }] }, { sessions })
+  const j1 = await r1.json()
+  // Small follow-up keeps custom_prompt for salience + cache warmth, while still using short tool reminder.
+  const r2 = await req({
+    model: 'fast',
+    tools,
+    messages: [
+      sys,
+      { role: 'user', content: 'read big file' },
+      { role: 'assistant', content: j1.choices[0].message.content },
+      { role: 'user', content: 'short follow-up' },
+    ],
+  }, { sessions })
+  const j2 = await r2.json()
+  const p2 = fake.state.userMessages.at(-1).payload
+  assert.ok(p2.custom_prompt.includes('A'.repeat(100)))
+  assert.ok(p2.text.includes('still active'))
+
+  // Huge 36KB tool_result on turn 3 triggers omitting custom_prompt so the full file fits untruncated.
+  const bigBody = 'Z'.repeat(36 * 1024)
+  const r3 = await req({
+    model: 'fast',
+    tools,
+    messages: [
+      sys,
+      { role: 'user', content: 'read big file' },
+      { role: 'assistant', content: j1.choices[0].message.content },
+      { role: 'user', content: 'short follow-up' },
+      { role: 'assistant', content: j2.choices[0].message.content },
+      { role: 'tool', tool_call_id: 'c1', name: 'read_file', content: bigBody },
+    ],
+  }, { sessions })
+  assert.equal(r3.status, 200)
+  const j3 = await r3.json()
+  const p3 = fake.state.userMessages.at(-1).payload
+  assert.equal(p3.custom_prompt, undefined) // yielded frame room to the 36KB tool_result
+  assert.ok(p3.text.includes('still active'))
+  assert.ok(p3.text.includes(bigBody), '36KB single tool_result fits untruncated on reused thread')
+  assert.ok(!j3.choices[0].message.content.includes('64KB'))
 })

@@ -114,14 +114,14 @@ function bounded(text, limit, measure, stats) {
   return result
 }
 
-function transcriptLine(m, measure, stats) {
+function transcriptLine(m, measure, stats, toolResultCap = TOOL_RESULT_CAP) {
   const text = textOf(m.content)
   if (m.role === 'assistant') {
     const calls = renderToolCalls(m.tool_calls)
     return `assistant: ${[text, calls].filter(Boolean).join('\n')}`
   }
   if (m.role === 'tool' || m.role === 'function') {
-    return `[tool_result ${[m.name, m.tool_call_id].filter(Boolean).join(' ')}]\n${bounded(text, TOOL_RESULT_CAP, measure, stats)}`
+    return `[tool_result ${[m.name, m.tool_call_id].filter(Boolean).join(' ')}]\n${bounded(text, toolResultCap, measure, stats)}`
   }
   return `${m.role}: ${text}`
 }
@@ -132,10 +132,13 @@ function transcriptLine(m, measure, stats) {
  * `maxBytes` bounds the result (oldest history dropped first); `stats` is
  * mutated with {truncated:true} when anything was cut.
  */
-export function renderTranscript(messages, systemText, { maxBytes = Infinity, stats, measure = byteLen } = {}) {
+export function renderTranscript(messages, systemText, {
+  maxBytes = Infinity, stats, measure = byteLen,
+  turnCap = USER_TURN_CAP, toolResultCap = TOOL_RESULT_CAP,
+} = {}) {
   const lastMsg = messages.at(-1)
-  const raw = lastMsg?.role === 'user' ? textOf(lastMsg.content) : lastMsg && transcriptLine(lastMsg, measure, stats)
-  const last = bounded(raw || '(empty)', Math.min(USER_TURN_CAP, maxBytes), measure, stats)
+  const raw = lastMsg?.role === 'user' ? textOf(lastMsg.content) : lastMsg && transcriptLine(lastMsg, measure, stats, toolResultCap)
+  const last = bounded(raw || '(empty)', Math.min(turnCap, maxBytes), measure, stats)
   const sep = measure('\n\n')
   let room = maxBytes - measure(last)
   let system = ''
@@ -152,7 +155,7 @@ export function renderTranscript(messages, systemText, { maxBytes = Infinity, st
   let used = 0
   let head = ''
   for (let i = messages.length - 2; i >= 0; i--) {
-    const line = transcriptLine(messages[i], measure, stats)
+    const line = transcriptLine(messages[i], measure, stats, toolResultCap)
     const heading = i ? `[conversation so far — ${i} earlier message(s) omitted]\n` : '[conversation so far]\n'
     used += measure(line) + sep
     if (used + measure(heading) > room) {
@@ -167,18 +170,21 @@ export function renderTranscript(messages, systemText, { maxBytes = Infinity, st
 
 /**
  * Delta text for a REUSED thread: only the new user/tool content.
- * Per-block caps apply first (TOOL_RESULT_CAP / USER_TURN_CAP); then the
+ * Per-block caps apply first (`toolResultCap` / `turnCap`); then the
  * NEWEST blocks are kept within `maxBytes` — the current turn's question is
  * never sacrificed for older tool results.
  */
-export function renderDelta(delta, { maxBytes = Infinity, stats, measure = byteLen } = {}) {
+export function renderDelta(delta, {
+  maxBytes = Infinity, stats, measure = byteLen,
+  turnCap = USER_TURN_CAP, toolResultCap = TOOL_RESULT_CAP,
+} = {}) {
   const kept = []
   let used = 0
   for (let i = delta.length - 1; i >= 0; i--) {
     const m = delta[i]
     let block
-    if (m.role === 'user') block = bounded(textOf(m.content), USER_TURN_CAP, measure, stats)
-    else if (m.role === 'tool' || m.role === 'function') block = transcriptLine(m, measure, stats)
+    if (m.role === 'user') block = bounded(textOf(m.content), turnCap, measure, stats)
+    else if (m.role === 'tool' || m.role === 'function') block = transcriptLine(m, measure, stats, toolResultCap)
     if (!block) continue
     const size = measure(block) + (kept.length ? measure('\n\n') : 0)
     if (used + size > maxBytes) {

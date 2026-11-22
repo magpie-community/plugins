@@ -131,8 +131,7 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<整条用户输入>",
-    "system_prompt": "<调用方指令；服务端按逐轮 system 覆盖处理>",
-    "custom_prompt": "<同一段指令，帧还放得下时才附带，对应桌面 composer>",
+    "custom_prompt": "<调用方系统指令（首轮发送，实测在同 thread 后续轮次持久化）>",
     "send_origin": "composer",
     "auto_routing": false,
     "web_search_enabled": true,

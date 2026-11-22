@@ -50,9 +50,10 @@ What the plugin does:
    body likewise base64-wrapped inner JSON). An application-level `ping` goes
    out every 45s, matching the desktop client.
 4. **Protocol translation**: OpenAI `messages` are rendered into Quick's
-   `text` (below) — caller system instructions ride both `system_prompt` (which
-   the server applies per turn) and the desktop composer's `custom_prompt` when
-   the frame budget allows; downlink
+   `text` (below) — caller system instructions ride the desktop composer's
+   `custom_prompt` field on turn 1 (verified live: `custom_prompt` is the field
+   the server applies and persists across reused turns, freeing nearly the
+   entire 64 KB frame on follow-up turns); downlink
    `text_delta`/`thinking_delta`/`turn_usage`/`message_complete` become
    OpenAI `content`/`reasoning_content`/`usage`. A user turn ends at
    `message_complete` with `continuation_expected !== true` — the same
@@ -125,7 +126,7 @@ matching the desktop client).
 
 ```bash
 magpie plugin add @magpie-community/opencode-aws-quick-auth
-magpie plugin login aws-quick # pick a sign-in method when prompted
+magpie plugin login aws-quick        # pick a sign-in method when prompted
 ```
 
 **Sign-in methods**
