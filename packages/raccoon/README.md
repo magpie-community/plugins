@@ -18,7 +18,7 @@ OpenCode & Magpie provider plugin for **SenseTime Raccoon (商汤小浣熊, `xia
 ## Thinking levels
 
 The vendor does not read OpenAI's `reasoning_effort`. It reads a private field,
-`raccoon_thinking_level`, whose values are `level_1` … `level_5`, and **each model
+`raccoon_thinking_level`, whose values are `level_1` ... `level_5`, and **each model
 publishes only some of them** — `sn-qwen4-max` has `level_1/3/5`,
 `sn-sensenova-6-8-flash-lite` has `level_1/2/4/5`. The catalog says which
 (`params.raccoon_thinking`, with the vendor's own labels), and this plugin reads
@@ -60,11 +60,11 @@ knob and thinks *less* when it sees one.
 
 ### 思考强度
 
-商汤小浣熊不认 OpenAI 的 `reasoning_effort`，认的是私有字段 `raccoon_thinking_level`，取值为 `level_1` … `level_5`。**不同模型发布的档位并不相同**：`sn-qwen4-max` 只有 `level_1/3/5`，`sn-sensenova-6-8-flash-lite` 是 `level_1/2/4/5`。这些信息写在目录接口的 `params.raccoon_thinking` 里（带厂商自己的标签），插件直接读它，不再靠猜。
+商汤小浣熊不认 OpenAI 的 `reasoning_effort`，认的是私有字段 `raccoon_thinking_level`，取值为 `level_1` ... `level_5`。**不同模型发布的档位并不相同**：`sn-qwen4-max` 只有 `level_1/3/5`，`sn-sensenova-6-8-flash-lite` 是 `level_1/2/4/5`。这些信息写在目录接口的 `params.raccoon_thinking` 里（带厂商自己的标签），插件直接读它，不再靠猜。
 
 档位按编号一一对应；模型没有该档时**向上取最近的一档**，只有在最高处才回落到它能给的最高档：
 
-| 强度 | 档位 | level |
+| 强度 | 档位 | effort |
 |---|---|---|
 | 最低 Minimal | `level_1` | `minimal` |
 | 低 Low | `level_2` | `low` |

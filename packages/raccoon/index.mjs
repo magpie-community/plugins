@@ -398,7 +398,7 @@ function numOf(v) {
 // ---- thinking levels --------------------------------------------------------
 //
 // The vendor does not take OpenAI's reasoning_effort: it takes a private field,
-// raccoon_thinking_level, whose values are level_1 … level_5 and whose valid set
+// raccoon_thinking_level, whose values are level_1 ... level_5 and whose valid set
 // differs per model (a model may publish level_1/level_3/level_5 or
 // level_1/level_2/level_4/level_5). The catalog publishes both in
 // params.raccoon_thinking, so the levels are read from it rather than guessed.
@@ -440,14 +440,14 @@ function levelsOf(thinking) {
 // levelForEffort turns an effort name into one of the levels this model
 // publishes, or null when the model publishes none. A model missing the level an
 // effort names (qwen4 has level_1/3/5, not 2 or 4) takes the next level up; when
-// it publishes nothing above, the nearest below.
+// it publishes nothing above, the highest it has.
 function levelForEffort(effort, thinking) {
   if (!thinking || !levelsOf(thinking).length) return null
   const name = String(effort ?? "").trim().toLowerCase()
   if (!name) return null
   if (name === "off" || name === "none") return thinking.canDisable ? "off" : null
   const ordered = levelsOf(thinking)
-  // the name itself may be a level ("level_3") or a label ("Medium")
+  // the name itself may be a level ("level_3"), its number ("3"), or a label ("Medium")
   const byName = ordered.find(
     (l) =>
       l.value.toLowerCase() === name ||
@@ -459,7 +459,6 @@ function levelForEffort(effort, thinking) {
   if (target === undefined) return null
   const numbers = ordered.map((l) => levelNumber(l.value))
   if (numbers.every((n) => Number.isFinite(n))) {
-    // the next level up, else the highest it does publish
     const above = ordered.find((l) => levelNumber(l.value) >= target)
     if (above) return above.value
     return ordered[ordered.length - 1].value
@@ -514,9 +513,9 @@ function variantsFor(thinking) {
 }
 
 // thinkingOf finds a model's levels in the cached catalog. Three spellings of the
-// same model have to meet: the id the catalog carries, the id a client asks for
-// (which may be the bare one) and the id the gateway prefixes with its provider.
-// The catalog also suffixes some models with "-p", which a request may omit.
+// same model have to meet: the id the catalog carries (which some builds suffix
+// with "-p"), the bare id a client asks for, and the id the gateway prefixes with
+// its provider.
 function thinkingOf(modelId, models = catalogCache.models) {
   const id = String(modelId ?? "").trim()
   if (!id) return null
@@ -593,6 +592,14 @@ async function fetchLiveModels(token) {
   if (!models.length) throw new Error("empty catalog")
   catalogCache = { origin: base, models, at: Date.now() }
   return models
+}
+
+// fellBack marks a list that isn't the account's own: magpie's plugin host
+// reads Symbol.for("magpie.fellBack"), and never routes by such a list as
+// if it were the account's plan (bitssly on X: a paid account left out of
+// sn-kimi-k3-1-pro, which the defaults lack).
+function fellBack(models) {
+  return Object.assign({ ...(models ?? {}) }, { [Symbol.for("magpie.fellBack")]: true })
 }
 
 function configModels() {
@@ -1357,10 +1364,12 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             token = a.access
           }
           const ms = await fetchLiveModels(token)
-          if (!ms.length) return provider.models
+          if (!ms.length) return fellBack(provider.models)
           return Object.fromEntries(ms.map((m) => [m.id, runtimeModel(provider, m)]))
         } catch {
-          return provider.models
+          // the defaults aren't this account's list: magpie keeps the one
+          // it read last, or takes the account to serve every model
+          return fellBack(provider.models)
         }
       },
     },
@@ -1422,9 +1431,10 @@ export const RaccoonAuthPlugin = async ({ client }) => {
                 },
               )
             }
-            // The levels a model takes come from the catalog. Warm it here so a
-            // request that arrives before any model listing still gets levelled.
-            if (!catalogCache.models) {
+            // The levels a model takes come from the catalog. Warm it here, and
+            // again when the base URL changed, so a request that arrives before
+            // any model listing still gets levelled.
+            if (!catalogCache.models || catalogCache.origin !== llmBase()) {
               try {
                 await fetchLiveModels(a.access)
               } catch {}
