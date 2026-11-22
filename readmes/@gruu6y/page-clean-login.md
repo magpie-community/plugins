@@ -298,6 +298,19 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 
 欢迎 pull request。测试套件就是契约：`bun test` 跑全部，一个没有测试的改动就是以后没人敢信的改动。改 `lib/`、`ui/`、`page/` 或 `index.mjs` **不需要自己升版本号**——版本由合并方在合并点分配；`node scripts/check-version-bump.mjs` 仍会拒绝降级或等于已发布的版本号。动手前先读 [AGENTS.md](AGENTS.md) 与 [docs/releasing.md](docs/releasing.md)。
 
+### 提交 Issue 与双线自动分流
+
+提交问题或功能建议时，Issue 表单中的 **预计改动范围 / 风险区域**（`route_scope` 字段）用于自动分流处理执行器（完整规则见 [docs/auto-maintainer.md](docs/auto-maintainer.md)）：
+
+- **`agent:cindy`（Cindy 自动线）**：处理范围明确的低风险 / 简单任务。仅当 `route_scope` 选择以下之一时才会路由到此线：
+  - `纯文档 / README / Issue 模板修改`
+  - `纯文案或不涉及逻辑的简单样式修改`
+  - `纯测试补充`
+  - `单个非核心文件小 Bug（已附完整复现步骤与验收条件）`（须同时填写非空的 **复现步骤** 与 **验收条件**）
+  - 若为功能建议（Feature Request），还要求 **是否需要对应 CLI 支持** 选择 `不需要（仅涉及页面展示或内部逻辑）`。
+- **`agent:agy`（agy 代理线）**：处理常规、复杂、跨平台或涉及核心逻辑 / CLI 的任务。当 `route_scope` 保留默认的 `核心功能 / 复杂改动 / 跨平台 / 不确定`，或缺少上述必要字段、功能建议需要或不确定是否同步 CLI、空白 Issue 以及卡片 **报告问题**（`from-plugin`）提交的 Issue 时，均由 `agent:agy` 接管。
+- **拿不准怎么选？** 直接保留默认的 `核心功能 / 复杂改动 / 不确定` 即可。维护者也可随时手工增删 `agent:cindy` / `agent:agy` 标签改判；若 Cindy 评估后发现超出范围，也会自动退回给 `agent:agy` 接管。
+
 <a id="license"></a>
 
 ## 许可

@@ -13,7 +13,7 @@
 ## 功能特性
 
 - **复用桌面端登录（只读）**：读取 `~/.quickwork/profiles.json` 及系统凭据库（`quickwork-<provider>-<id>`，支持 Windows 凭据管理器中的 UTF-16-LE 分片凭证及 macOS Keychain / Linux `secret-tool`），绝不覆盖或消耗桌面端自身的刷新令牌。
-- **AWS IAM Identity Center OIDC PKCE 登录**：支持通过 `sso-oidc` `RegisterClient` + PKCE 与本地回环回调（`http://127.0.0.1:<port>/callback`）在浏览器完成授权。
+- **AWS IAM Identity Center OIDC PKCE / Device Code 登录**：支持通过 `sso-oidc` `RegisterClient` + PKCE 本地回环回调（`http://127.0.0.1:<port>/callback`）在浏览器完成授权，以及无需 `127.0.0.1` 回调的 **Device Code（设备码）授权**，适用于 VPS / Docker / 远程网页端 Magpie 部署。
 - **从 JSON 文件导入**：支持在 Magpie 中从导出的 Amazon Quick 凭证 JSON 文件导入账号。
 - **SNCS WebSocket 对话桥接**：将 OpenAI 兼容的 `/chat/completions` 请求（支持流式 SSE 与非流式 JSON、`reasoning_effort` / `thinking_delta` → `reasoning_content` 输出）适配到 Amazon Quick 的 SpaceNeedleConversationService（`SNCS`）双向 WebSocket（同时兼容 `AIDP` 与 `Gateway` 传输模式），并提供 `https://quick.aws.com/v1` / 账号 `tenantUrl` 基准地址支持。
 - **联网搜索与客户端工具调用**：
@@ -39,16 +39,20 @@ https://github.com/3056810551/magpie-amazon-quick
 
 ## 登录方式
 
-1. **Amazon Quick account (browser)** *（推荐，尤其在 macOS 上：一键浏览器授权，独立会话，不触碰系统钥匙串）*
+1. **Amazon Quick 浏览器登录（推荐）** *（尤其在 macOS 上：一键浏览器授权，独立会话，不触碰系统钥匙串）*
    - 直接打开浏览器前往 AWS IAM Identity Center（支持 Google / Amazon / Builder ID 等登录），完成授权后自动回传独立的 `access_token` 与 `refresh_token`，不依赖桌面端保持运行（`tenantUrl` 会从本机 `~/.quickwork/profiles.json` 自动识别）。
-2. **Amazon Quick desktop's sign-in** *（复用桌面端登录；Windows / Linux 开箱即用，macOS 会触发钥匙串授权）*
+   - **若浏览器打开后提示 `Your session has expired`**：通常是浏览器里残留了过期的 AWS Builder ID 会话 Cookie（`signin.aws`）。在浏览器地址栏左侧进入「Cookie 和网站数据 → 管理设备上的网站数据」（或 Chrome 打开 `chrome://settings/content/all?searchSubpage=signin.aws`）清除 `signin.aws` / `us-east-1.signin.aws` 的全部 Cookie 后重试即可；也可将授权链接复制到无痕窗口打开完成登录。
+2. **复用 Amazon Quick 桌面端登录** *（Windows / Linux 开箱即用，macOS 会触发钥匙串授权）*
    - 自动复用当前桌面端已登录账号，不会改动磁盘或凭据库中的刷新令牌。
    - 若桌面端关闭期间访问令牌过期，只需打开一次 Amazon Quick 桌面端（或在桌面端重新登录），插件会在下次请求时自动读取更新后的令牌。
-   - **macOS 注意**：Quick 桌面端写入 Keychain 的条目仅信任自身 ACL，首次通过 `security` 读取需输入登录密码并点击**「始终允许」**；当 Quick 桌面端刷新并重建条目后 ACL 会重置，可能需要再次授权。macOS 强烈推荐使用方式 1（网页登录）或方式 4（JSON 导入）以避免弹框。
-3. **Amazon Quick Enterprise / Custom OIDC (browser)**
-   - 用于尚未在本地登录过桌面端或需要指定企业专属 `issuerUrl` / `tenantUrl` 的场景，手动填入后在浏览器完成 OIDC PKCE 登录。
-4. **Import accounts from a file…**（Magpie）
-   - 导入包含 Amazon Quick 凭证字段（如 `access_token`、`refresh_token`、`client_id`、`issuer_url`、`tenant_url`）的 JSON 文件。
+   - **macOS 注意**：Quick 桌面端写入 Keychain 的条目仅信任自身 ACL，首次通过 `security` 读取需输入登录密码并点击**「始终允许」**；当 Quick 桌面端刷新并重建条目后 ACL 会重置，可能需要再次授权。macOS 强烈推荐使用方式 1（浏览器登录）、方式 3（设备码登录）或方式 5（JSON 导入）以避免弹框。
+3. **Amazon Quick 设备码登录（VPS / 远程网页端推荐）** *（无需 `127.0.0.1` 回调）*
+   - 适用于服务器未安装桌面端、在本地电脑浏览器打开远程 Magpie 网页端的场景。
+   - 填入账号对应的 `tenantUrl` 与 `issuerUrl`（可从任意登录过桌面端的电脑 `~/.quickwork/profiles.json` 中复制 `tenant_url` 和 `issuer_url`；注意不同账号所在 cell 的两个 URL 需配对使用），随后在任意设备浏览器打开返回的 AWS 授权链接确认即可，服务端会自动轮询换取独立的 `access_token` 与 `refresh_token`。
+4. **Amazon Quick 企业版 / 自定义 OIDC（浏览器）**
+   - 用于尚未在本地登录过桌面端或需要指定企业专属 `issuerUrl` / `tenantUrl` 的本机场景，手动填入后在浏览器完成 OIDC PKCE 登录。
+5. **Import accounts from a file…**（Magpie）
+   - 导入包含 Amazon Quick 凭证字段（如 `access_token`、`refresh_token`、`client_id`、`issuer_url`、`tenant_url`）的 JSON 文件（亦可用于本地登录后直接导入到 VPS）。
 
 ## 可用模型
 
@@ -101,7 +105,7 @@ Works with **OpenCode 1.x**, **OpenCode 2.x**, and **Magpie** with zero external
 ## Features
 
 - **Amazon Quick desktop's sign-in**: Reads `~/.quickwork/profiles.json` and the OS credential store (`quickwork-<provider>-<id>`, including chunked UTF-16-LE blobs in Windows Credential Manager and macOS Keychain / Linux `secret-tool`) read-only — never overwrites or invalidates the desktop app's own session.
-- **AWS IAM Identity Center OIDC PKCE**: Browser-based sign-in via `sso-oidc` `RegisterClient` + PKCE + loopback redirect (`http://127.0.0.1:<port>/callback`).
+- **AWS IAM Identity Center OIDC PKCE & Device Code**: Browser-based sign-in via `sso-oidc` `RegisterClient` + PKCE + loopback redirect (`http://127.0.0.1:<port>/callback`), plus OAuth 2.0 **Device Code** authorization requiring no `127.0.0.1` callback for VPS / Docker / remote Magpie web UI deployments.
 - **Import from JSON**: Supports importing exported Amazon Quick credential JSON files.
 - **SNCS WebSocket Bridge**: Adapts OpenAI-compatible `/chat/completions` (both streaming SSE and non-streaming JSON, including `reasoning_effort` / `thinking_delta` → `reasoning_content`) onto Amazon Quick's SpaceNeedleConversationService (`SNCS`) bidirectional WebSocket (`AIDP` and `Gateway` transports), backed by the account's `tenantUrl` or `https://quick.aws.com/v1` base URL.
 - **Web Search & Client Tool Calling**:
@@ -128,14 +132,17 @@ https://github.com/3056810551/magpie-amazon-quick
 
 1. **Amazon Quick account (browser)** *(recommended, especially on macOS — one-click browser login, independent session, never touches OS Keychain)*
    - Opens your browser directly to AWS IAM Identity Center (supporting Google / Amazon / Builder ID sign-in) using `quicksight:read_write` PKCE and obtains an independent `access_token` + `refresh_token` without disturbing your desktop session (auto-detects `tenantUrl` from local `~/.quickwork/profiles.json`).
+   - **If the browser shows `Your session has expired`**: This is caused by a stale AWS Builder ID session cookie under `signin.aws`. Clear all cookies and site data for `signin.aws` / `us-east-1.signin.aws` (e.g., via Chrome's address bar lock/settings icon → *Cookies and site data* → *Manage on-device site data*, or `chrome://settings/content/all?searchSubpage=signin.aws`) and retry, or open the authorization URL in an incognito/private window.
 2. **Amazon Quick desktop's sign-in** *(reuses desktop session; seamless on Windows/Linux, prompts Keychain on macOS)*
    - Uses your already signed-in Amazon Quick Desktop account automatically without touching its refresh token on disk/keyring.
    - If the desktop token expires while Amazon Quick Desktop is closed, open Amazon Quick Desktop (or sign in again there) and retry — the plugin re-reads the updated token on the next request.
    - **macOS note**: Amazon Quick Desktop writes its Keychain item with an ACL trusting only the desktop app itself, so reading it via `/usr/bin/security` requires entering your macOS login password and clicking **Always Allow** (and may prompt again whenever Quick Desktop recreates the Keychain item on session refresh). On macOS, **browser sign-in** or **JSON import** is strongly recommended.
-3. **Amazon Quick Enterprise / Custom OIDC (browser)**
-   - Prompts for custom/enterprise `issuerUrl` and `tenantUrl` before opening browser OIDC PKCE sign-in.
-4. **Import accounts from a file…** (Magpie)
-   - Import a JSON file containing Amazon Quick credential fields (`access_token`, `refresh_token`, `client_id`, `issuer_url`, `tenant_url`).
+3. **Amazon Quick Device Code (VPS / Remote / Headless)** *(recommended for VPS / Docker / remote Magpie web UI — no `127.0.0.1` loopback callback needed)*
+   - Prompts for your account's `tenantUrl` and `issuerUrl` (copy `tenant_url` and `issuer_url` from `~/.quickwork/profiles.json` on any machine where Amazon Quick Desktop has signed in — keep the pair matched per cell), then returns an AWS authorization link you can approve from any local PC or phone browser while Magpie polls for an independent `access_token` + `refresh_token`.
+4. **Amazon Quick Enterprise / Custom OIDC (browser)**
+   - Prompts for custom/enterprise `issuerUrl` and `tenantUrl` before opening browser OIDC PKCE sign-in on a local machine.
+5. **Import accounts from a file…** (Magpie)
+   - Import a JSON file containing Amazon Quick credential fields (`access_token`, `refresh_token`, `client_id`, `issuer_url`, `tenant_url`) — also handy for signing in locally and importing onto a VPS.
 
 ## Available Models
 

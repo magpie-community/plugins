@@ -3,7 +3,7 @@
 AStudio（讯飞星辰 Agent Studio）作为 [agent2api](https://github.com/zp-innovation/agent2api) / magpie provider：**微信扫码登录 + Responses 协议对话 + 模型目录 + 积分余额 + 每日登录签到**。
 
 > Provider id: `astudio`　对话: `https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1`　账号面: `https://agent.xfyun.cn/xingchen-studio/`
-> 仓库: https://github.com/zp-innovation/agent2api-plugin-astudio　当前版本: `0.7.2`
+> 仓库: https://github.com/zp-innovation/agent2api-plugin-astudio　当前版本: `0.8.3`
 
 ---
 
@@ -212,7 +212,9 @@ agent2api-server 二进制（`web_shim.rs:47`），只要 `login/start` 回了�
 | `verify-modal.py` | 用 playwright 取一张**真二维码**跑补丁：断言弹窗出现、图片真加载、`context.pages` 仍是 1、取消按钮生效、非图片 URL 仍开新标签页 |
 
 `host-patch/` 里还有两个补丁，各自在下面单独一节：`astudio-sms-login.js`（手机验证码登录搬进面板）、
-`astudio-usage-compact.js`（余额列改成单条读数 + 弹窗）。`install.sh` 一次把三个都装上。
+`astudio-usage-compact.js`（老镜像的余额列补丁）。`install.sh` 默认装前两个；新镜像
+（`agent2api:gov403-credits2-20261122` 起）已经原生画 WorkBuddy 式胶囊 + 弹窗，余额补丁不再需要，
+老镜像需要时可用 `FILES_ALL=1 sudo bash install.sh` 一起装。
 
 ```bash
 # 在网关宿主机上（容器名默认 agent2api，可用 CONTAINER=xxx 覆盖）
@@ -340,89 +342,6 @@ WorkBuddy 那种是**一行「可用 466 ▾」**、明细收进浮层。这件�
 
 这个字段还有第二个用处：它会落进 `account_usage_records.remaining`（`core/usage_records.rs:319-332`），转发选路时按「余额不足跳过」用。本插件没有申报 `defaultLimiters`，所以宿主用默认阈值 `1.0`——两池同时为 0 的账号会被选路跳过（这种账号本来也打不动上游，行为可接受，但别把它当成 bug）。
 
-**会员**：`membership/me` 的 `planName` 作计划名、`endTime` 作到期时间、`uid` 作账号标识。
+**积分倒计时（WorkBuddy 同款）**：面板只画**一条胶囊 + 弹窗**，不要「分窗口额度」那块。
 
-读不到时不会染红整列：带 `plan` 的返回会被 `host/reports.mjs:29` 降级成 warnings 里的一条提示。
-
-**签到**：`checkin` 读一次积分 → `POST tenant-app/v2/init-app` → **领取推广位里的登录积分** → 等 2.5 秒再读一次积分，用实际差额报告结果。
-
-第三段是关键，0.5.0 才补上：`init-app` 只记录「今天登录过」，**不发积分**。积分在推广服务里，面板左下角「限时每日福利 · 今日可领 100 积分 · 领取」按钮发出的就是这条请求：
-
-1. `GET client-popups/pending` → 当天的 `DAILY_LOGIN_REWARD_V1`（`componentType: "DAILY_REWARD_DIALOG"`，`instanceKey` 是当天日期如 `20261121`）；
-2. `POST client-popups/complete {popupId, instanceKey, completed: true}` → 到账。
-
-实测（2026-11-21，账号 18122032590）：只调 `init-app`，余额 1300 一动不动；补一次 `complete`，2 秒后 1400。**所以以前「面板显示已签到、积分没到账」不是上游延迟，而是少调了这一步。** 这两个接口必须带 `clientType` + `studioVersion` 身份头，缺了上游回 `{"code":11001001,"desc":"客户端平台、版本或构建号无效"}`（Linux 容器里没有 `process.platform`，插件按官方 Windows 桌面端身份 `clientType: 21` 兜底）。
-
-| outcome | 什么时候 |
-| --- | --- |
-| `claimed` | 领到了：观测到新增积分（`credit` 形如「通用积分 +100」），或服务端已确认领取但余额读数还没刷新 |
-| `done` | 登录已完成，今天没有待领取的登录积分（已经领过） |
-| `inactive` | `membership/plan-config` 的 `dailyLoginEnabled` 为 false |
-| `ineligible` | 只有 Bearer、没有会话（粘贴方式登录的账号） |
-| `failed` | 上游拒绝（含「登录成功但没领到登录积分」）、或读数不完整 |
-
-## 模型目录
-
-两份来源合并（`lib/catalog.mjs`）：
-
-1. **账号目录** `GET bot/models/configs` —— 这个账号能用哪些模型，带 `api_key`/`is_default`；
-2. **平台目录** `GET /api/v1/model-manager/models`（Bearer） —— 元数据：`context_window`、`max_output_tokens`、`supported_reasoning_levels`、`input_modalities`、`badge`。
-
-账号目录在前，平台目录按 `slug` / `display_name` 去重后追加；两份都拿不到时用官方兜底清单，并打上 `magpie.fellBack` 标记，让宿主保留已有模型而不是清空目录：
-
-| id | 名称 | 上下文 | 输出 |
-| --- | --- | --- | --- |
-| `astronclaw-auto` | Auto（默认） | 262,144 | 32,768 |
-| `spark-x2.6` | Spark-X2.6 | 262,144 | 32,768 |
-| `spark-x2.6-4b` | Spark-X2.6-Lite | 1,048,576 | 110,000 |
-| `spark-x2.5` | Spark-X2.5 | 262,144 | 32,768 |
-| `xopglm52` | GLM-5.2 | 1,048,576 | 32,768 |
-| `xopdeepseekv4pro0813` | DeepSeek-V4-Pro | 1,048,576 | 32,768 |
-| `xopdsv4flash0731in` | DeepSeek-V4-Flash | 1,048,576 | 32,768 |
-
-## 已知边界
-
-1. **二维码只有 60 秒**，上游定的，不能延长；过期只能重开一次登录（宿主自己在 10 分钟时判「登录等待超时」）。
-2. **没扫码时 `uids` 一定返回业务拒绝，而且文案会变**：实测两种 —— `code=20003`「请求地址错误」、`code=-1`「暂无数据」。这都是正常态而不是故障，插件把已知的这两种（以及**任何**「还没扫到人」的业务拒绝）翻译成「等待微信扫码…」，绝不把上游文案抛给用户；取码那一步的业务拒绝才是真失败。
-3. **扫了但没绑定**：`infoList` 为空表示这个微信没有绑定星辰账号，提示去网页端绑定，而不是判失败。
-4. **内嵌窗口能显示二维码**，是因为宿主 `host/login-policy.mjs:95-135` 对非 `wps-lingxi`/`joycode` 的 provider 返回 `allowedHosts: []`，而壳 `login.rs` 的 `DynamicNavigation` 把空数组解释为「HTTPS 不限域」。老的 `run_embedded` 静态白名单（`WORKBUDDY_ALLOWED_HOSTS` 那条路径）不参与动态登录。
-5. **`browserMode` 写的是 `plugin` 而不是 `embedded`** —— 面板校验只接受 `choice|external|plugin|none`；真正强制内嵌窗口的是 `embeddedOnly: true`。
-6. **不声明思考档位（variants）**：`supported_reasoning_levels` 里的 `effort` 值还没在上游验证过，随便给可能让对话请求直接 400，所以只把 `reasoning: true` 摆出来。
-7. **粘贴方式没有会话**，所以余额 / 签到不可用，面板会明说「只有模型凭据（没有网页会话）」，不假装读到了数字。
-8. **`studioVersion` 参与门控**：客户端版本 3.4.4 的目录只有 7 条，3.6.0 起 8 条。请求头必须带 `clientType`/`studioVersion`/`User-Agent: AStudio/3.6.0`，否则目录会被裁。
-9. 扫码取码 / 轮询两条 SSO 请求**不带 Cookie、不带 clientType/studioVersion**，只有 `Accept: application/json` 与 `User-Agent`；账号面请求才带 Cookie 与身份头。
-10. 手机验证码的**发码**卡在极验滑块上，**账号密码登录**也卡在同一处（`login/check-account` 强制极验，盲试的 7 条替代路径全回 80000，geetest v3 离线兜底公式被判 20009）。0.7.0 起滑块由宿主补丁画在面板里（见上文），没装补丁时退回「打开 AStudio 网页自己取码」；**账号密码登录仍然不提供**。
-11. **粘贴框只认短信里的数字**：宿主 `core/login.rs:820-830` 会把提交内容整条当 code 交给插件（URL 里带 `code`/`authorization_code` 才会先被摘出来），所以粘地址栏只会白费这一次登录。插件按提交内容分别回「这是网页地址」/「这是手机号」/「里面没有 4-8 位验证码」，并顺带接受带 `?code=` 的回调地址。
-12. **方法 1 的验证码只有一次机会**：宿主的登录回调是一次性的（`login.mjs:126-133`），填错就得重新点「登录并添加」并重新取码；插件对非 4-8 位数字的粘贴在本地拦下，不消耗那次机会。方法 2 可以重填（但码本身是一次性的，重填也要重新取码）。
-13. **`github:` 安装走的是官方 CDN 中转，不是直连 GitHub**：宿主 `script/website.rs:35-47` 把 `api.github.com/repos/*/commits` 与 `codeload.github.com/*/tar.gz` 换成 `agent2api.dev/api/plugins/community/github-commits|github-archive`。那个中转会限流，实测返回 `429 {"error":"社区插件来源暂时限流，请稍后再试"}`（此时直连 GitHub 是 200）。碰上就隔几分钟重试，或改用下面的 `file:` 路径安装 —— 与仓库内容无关。
-14. **二维码弹窗是宿主侧补丁，不是插件能力**：面板怎么展示 `authUrl` 由编译进二进制的桥接脚本决定（`web_shim.rs:1206-1225` 的 `window.open("about:blank","_blank")`），插件无法影响。`host-patch/` 覆盖 `window.open` 把「图片 URL」改画成面板内弹窗；**镜像升级会覆盖 `/app/ui`**，升级后要重跑 `sudo bash install.sh`。
-15. 动态登录流程里宿主的超时是 **5 分钟**（壳 `LOGIN_TIMEOUT`），比二维码的 60 秒长得多 —— 过期提示是插件自己按 `expires_at` 判的，宿主不会替你关窗口。
-16. **短信登录的滑块同样是宿主侧补丁**（`host-patch/astudio-sms-login.js`）：它依赖上游 CORS 全开与 `document.referrer` 可伪造，也依赖宿主 `manualCallback` 可被响应改写的既有行为。镜像升级后要重跑 `install.sh`；补丁缺失时方法 1 自动退回「开网页 + 粘码」。
-
-## 开发
-
-```bash
-node --test "test/*.test.mjs"     # 76 条：协议常量、SSO 状态机、六种登录方式、验证码解析、滑块发码、目录合并、登录/续期/余额/签到全链路、老账号升级
-python scripts/gen-icon.py        # 重画图标（需要 Pillow），同时写 assets/icon.png 与 icon.mjs
-```
-
-源码结构：
-
-| 文件 | 职责 |
-| --- | --- |
-| `index.mjs` | 插件工厂（**唯一导出**，宿主会把每个导出函数当候选调用，多导出会炸整包） |
-| `lib/endpoints.mjs` | 上游地址与常量（版本号、TTL、轮询间隔、兜底模型名） |
-| `lib/http.mjs` | 信封解析、Cookie 头、身份头、超时、错误分类（`failed`/`expired`） |
-| `lib/scan.mjs` | SSO 取码 / 轮询、提示文案状态机 |
-| `lib/login.mjs` | 六种 `authorize`：扫码、手机验证码（面板内滑块 / 开网页 + 粘码两种形态）、手机验证码（先取码再填）、凭据 JSON、本机登录态 |
-| `lib/sms.mjs` | 极验三件的归一化与校验、手机号打码、multipart 发码（`login/mobile/send-verify-code`） |
-| `lib/import.mjs` | 凭据解析（Cookie 串 / JSON / 嵌套 secret）与本机文件、目录读取 |
-| `lib/session.mjs` | 会话与凭据（`settle` / `accountSecret` / `renew`） |
-| `lib/legacy.mjs` | 把 wasm 时代落盘的 api 型 secret 升级成 oauth 型（先验会话，换到新凭据才写盘） |
-| `lib/catalog.mjs` | 两份目录的合并与兜底 |
-| `lib/provider.mjs` | 运行时模型清单与 `config` 写入 |
-| `lib/usage.mjs` / `lib/checkin.mjs` | 余额与签到 |
-| `host-patch/astudio-qr-modal.js` | 宿主补丁①：二维码改在面板内弹窗 |
-| `host-patch/astudio-sms-login.js` | 宿主补丁②：手机号 + 极验滑块 + 短信验证码全在面板内完成 |
-| `host-patch/install.sh` | 把三个补丁 `docker cp` 进容器并注入 `index.html`（`uninstall` 还原） |
-| `host-patch/verify-modal.py` / `verify-sms.py` / `verify-usage.py` | 三个补丁的无头验证（真二维码 / 真极验滑块 / 面板真 CSS 下的余额列） |
+1. **不上报 `windows`**：面板 `LOe()` 的分支顺序是 `totalLeft → windows → available`，只要 `windows` 非空就渲染「分窗口额度」整块卡片（体验版 / 额度详情 / 通用积分 / 星火积分 / 分窗口额度）。插件停止构造 `windows`，面板直接落到 `available` 分支，胶囊上只显示「可用 N 积分」，积分明细由 `credits` 在弹窗里展示。

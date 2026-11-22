@@ -6,7 +6,7 @@
 ## 功能
 
 - **供应商注册**：`modelscope-ai`，`@ai-sdk/openai-compatible`，`https://api-inference.modelscope.ai/v1`。用户已自定义的 provider 配置不会被覆盖。
-- **模型**：登录后从 `GET /v1/models` 拉取账号可见模型，按 OpenCode 完整形态返回（limit / capabilities / api / release_date）。拉不到时用实测可用的内置列表。模型名由 id 推导（`deepseek-ai/DeepSeek-V4.1-Flash-1017` → `DeepSeek V4.1 Flash 1017`），`created` 填成 `release_date`。实测不可调用的条目标 `deprecated`，宿主会过滤掉。
+- **模型**：登录后从 `GET /v1/models` 拉取账号可见模型，按 OpenCode 完整形态返回（limit / capabilities / api / release_date）。拉不到时用实测可用的内置列表。模型名由 id 推导（`deepseek-ai/DeepSeek-V4.1-Flash-1017` → `DeepSeek V4.1 Flash 1017`），`created` 填成 `release_date`。实测不可调用的条目标 `deprecated`，宿主会过滤掉。实测表没有的新 id，上下文窗口从模型仓库 `config.json` 的 `max_position_embeddings` 实取（顶层 / `text_config` / `llm_config` 三处都认，命中缓存 30 分钟、未命中 24 小时），不再一律按 128K 兜底。
 - **推理**：转发时加 `Authorization: Bearer`，上游响应原样返回，故障转移交给 magpie。
 - **每日签到**：每账号每北京日调一次 `GET /api/v1/users/login/info`，该请求即发放触发（服务端幂等）。签到前后读 `/openapi/v1/magicubes/transactions` 校验到账，结果分 `claimed`（新到账）/ `done`（今日已有）/ `inactive`（已触达但无到账）/ `failed`（账单读不到，宿主 30 分钟后重试）。
 - **余额与窗口**：`GET /openapi/v1/magicubes/balance` 取 `available_balance`；卡面按 `expire_days` 分桶报「今日发放」「长期魔粒」，外加参与路由的「合计」。
@@ -128,8 +128,12 @@
   不误伤账号。网页接口同理，只有 401 算过期。
 - **模型列表的 403 保留内置列表**，不标过期（是 scope / 风控，不是丢令牌）。
 - **时区**：账本 `gmt_created` 是北京钟面字符串（`2026-10-29 01:02:24`），读成 UTC 会让到期早 8 小时；统一按北京解析后转 ISO。
-- **并发**：每账号 2 路（`magpie.maxConcurrency: 2`）。厂商标称单并发，但 11 天生产日志（3134 次、
-  96.5% 成功）零 429；真瓶颈是单账号日耗 93% 额度。再现 429 峰值可降回 1。
+- **并发**：每账号 1 路（`magpie.maxConcurrency: 1`），插件内再在转发点按 token 复核一遍
+  （`gateAcquire`）——同账号第二个请求等待，账号之间并行。2026-11-23 五账号 2 路叠加
+  曾把当日 1000 魔粒 100 分钟烧干（519 次旗舰调用）。
+- **逐笔魔粒归因**：已实测价格的模型，200 响应回写 `usage.credit`（计价 = 该模型档位单价；
+  流式响应在 `[DONE]` 前补一条 usage chunk，请求未带时自动加 `stream_options.include_usage`），
+  magpie 账本逐行显示这次调用花了几魔粒。未知价格的模型不写，不猜。
 - 所有网络调用 20 秒超时；状态按令牌为键并限量修剪（256），常驻宿主不会无限增长。
 
 ## 安装
@@ -170,7 +174,8 @@ model 决定这次调用价**、**账本 50 行分页**、**耗尽冷却一天**
 
 插件契约：`index.ts` 默认导出 `ModelScopeAuthPlugin`（`config` / `auth` / `provider` 三个钩子），
 测试用的内部函数放在导出的 `_internal` **对象**里——magpie 把每个导出的*函数*当插件，对象不会
-被误认。`package.json` 的 `magpie.maxConcurrency` 声明每账号在途数。
+被误认。`package.json` 的 `magpie.maxConcurrency` 声明每账号在途数；转发点的
+`gateAcquire` 按 token 复核同账号串行。
 
 ## 范围
 
