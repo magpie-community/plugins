@@ -8,8 +8,10 @@
 // order, tool calls named and their results inlined (they are context,
 // not executable here).
 
-// flatten turns the OpenAI messages into one prompt string
-export function flatten(messages) {
+// flatten turns the OpenAI request (its `messages` array) into one
+// prompt string
+export function flatten(bodyOrMessages) {
+  const messages = Array.isArray(bodyOrMessages) ? bodyOrMessages : bodyOrMessages?.messages
   const lines = []
   for (const m of messages ?? []) {
     const role = m?.role ?? "user"

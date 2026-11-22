@@ -58,55 +58,53 @@ export function completion({ id, model, final, promptTokens = 0, newId }) {
 
 // sse answers the streamed form. ask(onUpdate, signal) runs the relay
 // turn; onUpdate({ text, reasoning }) may fire more than once, and each
-// longer text goes out as one delta (the relay's page fetch is already
+// longer text becomes one delta (the relay's page fetch is already
 // streamed server-side; the wrapper emits the pieces as they are read).
 // The reply closes with the finish chunk and [DONE], as OpenAI's SSE
-// clients expect. An ask failure closes the stream short and rethrows so
-// the caller's error mapping (index.mjs) can answer a JSON error instead.
+// clients expect. An ask failure rejects here — before any stream is
+// returned — so the caller's error mapping (index.mjs) answers a JSON
+// error instead of a silently empty 200.
 export async function sse({ id, model, promptTokens, newId, ask, signal }) {
   const enc = new TextEncoder()
   let text = ""
   let reasoning = ""
-  let failure = null
+  const deltas = [] // the pieces emitted while ask runs
+  const final = await ask(({ text: t, reasoning: r } = {}) => {
+    if (typeof r === "string" && r.length > reasoning.length) reasoning = r
+    if (typeof t === "string" && t.length > text.length) {
+      deltas.push({ reasoning_content: reasoning, content: t.slice(text.length) })
+      text = t
+    }
+  }, signal)
+  // the relay's ask resolves with the whole reply; fold it in, in case
+  // onUpdate never fired or fired short of the end
+  const t = final?.text ?? ""
+  const r = final?.reasoning ?? ""
+  if (r.length > reasoning.length) reasoning = r
+  if (t.length > text.length) {
+    deltas.push({ reasoning_content: reasoning, content: t.slice(text.length) })
+    text = t
+  }
+  // promptTokens arrives as the caller's function (index.mjs) — call it
+  // here, at the same moment the JSON path would
+  const usage = usageOf(typeof promptTokens === "function" ? promptTokens() : promptTokens, text, reasoning)
   const stream = new ReadableStream({
-    async start(controller) {
+    start(controller) {
       const send = (obj) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`))
-      try {
-        const final = await ask(({ text: t, reasoning: r } = {}) => {
-          if (typeof r === "string" && r.length > reasoning.length) reasoning = r
-          if (typeof t === "string" && t.length > text.length) {
-            send(chunk(id, model, { reasoning_content: reasoning, content: t.slice(text.length) }))
-            text = t
-          }
-        }, signal)
-        // the relay's ask resolves with the whole reply; if onUpdate never
-        // fired (or fired short), emit what is still missing once
-        const t = final?.text ?? ""
-        const r = final?.reasoning ?? ""
-        if (r.length > reasoning.length) reasoning = r
-        if (t.length > text.length) {
-          send(chunk(id, model, { reasoning_content: reasoning, content: t.slice(text.length) }))
-          text = t
-        }
-        // the finish chunk goes out twice, as quick's relay does: the
-        // first carries nothing (some SDKs read it as content's end), the
-        // second rides the usage block for those that read it there
-        send(chunk(id, model, {}, { finish: "stop" }))
-        send({ ...chunk(id, model, {}, { finish: "stop" }), usage: usageOf(promptTokens, text, reasoning) })
-        controller.enqueue(enc.encode("data: [DONE]\n\n"))
-        controller.close()
-      } catch (e) {
-        failure = e
-        try { controller.close() } catch {}
-      }
+      for (const d of deltas) send(chunk(id, model, d))
+      // the finish chunk goes out twice, as quick's relay does: the
+      // first closes the content, the second rides the usage block for
+      // the SDKs that read it there
+      send(chunk(id, model, {}, { finish: "stop" }))
+      send({ ...chunk(id, model, {}, { finish: "stop" }), usage })
+      controller.enqueue(enc.encode("data: [DONE]\n\n"))
+      controller.close()
     },
   })
-  const res = new Response(stream, {
+  return new Response(stream, {
     status: 200,
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
   })
-  if (failure) throw failure
-  return res
 }
 
 // usageOf estimates the token counts (characters over three, as index.mjs
