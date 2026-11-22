@@ -34,9 +34,8 @@ const LOGIN_URL = `${ORIGIN}/`
 // the cookie-jar domains the sign-in completes on: quick.aws.com itself and
 // the auth hosts the console redirects through (us-east-1.signin.aws). A
 // fresh row on any of these that this launch did not already have means the
-// sign-in landed — this is the profile-side completion signal (the window
-// title on quick.aws.com settles immediately even signed out, so it cannot
-// be the signal; see waitForConsoleWindow).
+// sign-in landed — the profile-side completion signal off Windows (see
+// waitForConsoleWindow; on Windows the db is locked while the window runs).
 const SESSION_COOKIE_DOMAINS = ["quick.aws.com", "signin.aws"]
 const cookieDomainMatches = (hostKey) => {
   const h = String(hostKey ?? "").replace(/^\./, "").toLowerCase()
@@ -98,7 +97,10 @@ export function cookieBaseline(profile, opts = {}) {
 }
 
 // is the sign-in finished? a quick.aws.com / signin.aws session-cookie row
-// that was not in the baseline and is unexpired (0 = session cookie, counts)
+// that was not in the baseline and is unexpired (0 = session cookie, counts).
+// Off Windows only: Chromium holds the Cookies sqlite with an exclusive
+// handle while the window runs, so on Windows this probe is blind until the
+// browser exits and waitForConsoleWindow falls back to the window title.
 export function profileHasNewCookie(profile, baseline = [], { sqliteOpen, nowMs = Date.now() } = {}) {
   const seen = new Set(baseline)
   return cookieRows(profile, { sqliteOpen }).some((r) => {
@@ -337,14 +339,16 @@ function killTree(child) {
 }
 
 // the sign-in window carries NO debug port: it should look and behave like
-// a normal browser. Completion is NOT the window title — the landing page's
-// title ("AWS Quick - …") is indistinguishable from the signed-in console's
-// without the very pages that distinguish them. The signal is the profile's
-// Cookies database: a quick.aws.com / signin.aws session row newer than this
-// launch. On a locked database (the running browser's exclusive handle) the
-// probe reads "not yet" and the poll retries — Chrome flushes cookies to
-// disk on its own ~30s timer. The title remains as a cross-check only where
-// it can genuinely confirm a login page (SSO/账号页), never as completion.
+// a normal browser. Completion is the WINDOW TITLE: the signed-out landing
+// page settles on "AWS Quick - …" while the signed-in console settles on
+// "Home - …" (both verified live), so a settled title that is neither a
+// sign-in page nor the landing page means the console is showing. The
+// landing title alone cannot complete the wait (that was the original bug:
+// ANY settled title closed the window on the landing page). The profile's
+// cookie store backs this up off Windows: a quick.aws.com / signin.aws row
+// newer than this launch. The db cannot be read while the window runs on
+// Windows (the browser holds an exclusive handle), so the title is the
+// primary signal there and the cookie probe the off-Windows one.
 // The window is closed by the plugin, not the user.
 export async function waitForConsoleWindow(
   child,
@@ -363,28 +367,31 @@ export async function waitForConsoleWindow(
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
   const canReadTitle = platform === "win32"
-  const canProbeCookies = Boolean(profile) && typeof cookieProbe === "function"
+  const canProbeCookies = !canReadTitle && Boolean(profile) && typeof cookieProbe === "function"
   if (canProbeCookies) {
     log("watching the profile's cookie store for the Quick session")
+  } else if (canReadTitle) {
+    log("watching the window title for the Quick console")
   }
   const SIGNIN_PAGE = /sign.?in|login|auth|sso|register|captcha|验证|登录|登入/i
+  // the signed-out landing page's title; staying on it means still waiting
+  const LANDING_PAGE = /aws quick/i
   let lastTitle = ""
   let hits = 0
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) return "closed"
     if (signal?.aborted) return "aborted"
-    // the profile's cookie store is the completion signal (a row newer than
-    // this launch); a locked db reads as false and the poll retries
+    // the profile's cookie store is the off-Windows completion signal (a
+    // row newer than this launch); a locked db reads as false and retries
     if (canProbeCookies && cookieProbe(profile)) {
       log("the Quick session is in the profile; closing the window")
       return "console"
     }
-    // the title is only consulted to keep waiting honestly on a visible
-    // sign-in page; it can never complete the wait (the landing page's
-    // title matches a signed-out window)
-    if (canReadTitle && !canProbeCookies) {
+    // on Windows the title is the signal: a settled title that is neither
+    // a sign-in page nor the landing page means the signed-in console
+    if (canReadTitle) {
       const title = Date.now() - started >= settleMs ? titleOf(child.pid) : ""
-      if (title && !SIGNIN_PAGE.test(title)) {
+      if (title && !SIGNIN_PAGE.test(title) && !LANDING_PAGE.test(title)) {
         if (title === lastTitle) {
           hits += 1
           if (hits >= 1) {
