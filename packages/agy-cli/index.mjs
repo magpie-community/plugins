@@ -3139,6 +3139,7 @@ class Proc {
       ready: true,
       socket,
       result: null,
+      rawResultKey: null,
       deferred: false,
       lateDelivered: false,
       deadline: null,
@@ -3229,15 +3230,15 @@ class Proc {
     const unique = new Map()
     for (const item of results) {
       const id = item.block.tool_use_id
-      const serialized = JSON.stringify(item.result)
+      const rawKey = item.rawKey ?? JSON.stringify(item.result)
       const previous = unique.get(id)
-      if ((previous && JSON.stringify(previous.result) !== serialized) ||
-        (item.call.result && JSON.stringify(item.call.result) !== serialized)) {
+      const storedKey = item.call.rawResultKey ?? (item.call.result ? JSON.stringify(item.call.result) : null)
+      if ((previous && previous.rawKey !== rawKey) || (storedKey !== null && storedKey !== rawKey)) {
         const error = new Error(`agy bridge: conflicting duplicate result for ${id}`)
         error.statusCode = 409
         throw error
       }
-      if (!previous) unique.set(id, item)
+      if (!previous) unique.set(id, item.rawKey === rawKey ? item : { ...item, rawKey })
     }
     return unique
   }
@@ -3246,17 +3247,19 @@ class Proc {
     const turn = this.turn
     if (!turn || turn.finalized) throw new BusyError("agy bridge: no response is waiting for these tool results")
     turn.touchClient()
-    for (const { call, result } of this.validateResults(results).values()) {
+    for (const { call, result, rawKey } of this.validateResults(results).values()) {
       clearTimeout(call.deadline)
       if (call.deferred) {
         if (!call.result) {
           call.result = result
+          call.rawResultKey = rawKey
           this.#deliverLate(turn, call)
         }
         continue
       }
       if (call.mcpResponded || !call.ready || turn.done) continue
       call.result = result
+      call.rawResultKey = rawKey
       this.#respondMcp(call, { result })
     }
     turn.arm()
@@ -4307,11 +4310,15 @@ function replayHistoryProblem(body, resultBlocks) {
 async function keepDroppedTurn(proc, turn, opts) {
   if (proc.toolsGrew(opts.tools) || proc.workDir !== opts.workDir ||
     !sameInstructions(proc.instructions, opts.instructions)) return false
-  const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => ({
-    block: { tool_use_id: call.id },
-    call,
-    result: { content: [{ type: "text", text: DROPPED_NOTE }], isError: true },
-  }))
+  const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => {
+    const result = { content: [{ type: "text", text: DROPPED_NOTE }], isError: true }
+    return {
+      block: { tool_use_id: call.id },
+      call,
+      result,
+      rawKey: JSON.stringify(result),
+    }
+  })
   try {
     return await proc.steerInSession(turn, results, opts.history)
   } catch {
@@ -8356,11 +8363,17 @@ export const AntigravityBridgePlugin = async () => {
                   if (proc.turn !== turn) return jsonError(409, "agy bridge: the tool response has already completed")
                   if (turn.attached) throw new BusyError("agy bridge: this conversation already has an active response")
                   if (turn.steering) throw new BusyError("agy bridge: this conversation is already steering this tool turn")
-                  const rawResults = matches.map(({ block, match }) => ({
-                    block,
-                    call: match.call,
-                    result: toolResult(block),
-                  }))
+                  // Notices appended by inspectToolTurn belong in call.result for
+                  // agy, while duplicate checks compare the raw tool_result (#1475).
+                  const rawResults = matches.map(({ block, match }) => {
+                    const result = toolResult(block)
+                    return {
+                      block,
+                      call: match.call,
+                      result,
+                      rawKey: JSON.stringify(result),
+                    }
+                  })
                   proc.validateResults(rawResults)
                   let interrupted = isInterruptedToolTurn(body)
                   let results = rawResults
