@@ -249,8 +249,8 @@ const sessions = new Map()
 const toolCalls = new Map()
 let cachedAgyPath
 let cachedAgySearchKey
-let controlServer
 let controlServerPromise
+let fallbackControlDir
 let shimDir
 // Only a shim dir this process made is removed at exit; the shared Windows nc.exe dir stays.
 let shimDirOwned = false
@@ -2287,8 +2287,8 @@ class Proc {
 
   async #spawn() {
     this.launchKey = await launchKey(this.agyPath, this.workDir)
-    await ensureControlServer()
     const bin = await ensureShimDir()
+    const { port, socketPath } = await ensureControlServer(bin)
     sessions.set(this.token, this)
     if (this.workspace) {
       // agy's prompt cache follows the folder it runs in: a session resumed
@@ -2308,7 +2308,7 @@ class Proc {
       "acp",
       "--agent", AGENT_NAME,
       "--log-file", this.logPath,
-      "--ide-mcp-port", String(controlServer.address().port),
+      "--ide-mcp-port", port,
     ]
     if (this.workDir) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
@@ -2334,7 +2334,8 @@ class Proc {
         env: {
           ...childEnv,
           PATH: bin + path.delimiter + inheritedPath,
-          AGY_BRIDGE_CONTROL_PORT: String(controlServer.address().port),
+          AGY_BRIDGE_CONTROL_PORT: port,
+          AGY_BRIDGE_CONTROL_SOCKET: socketPath,
           AGY_BRIDGE_TOKEN: this.token,
         },
       })
@@ -6748,16 +6749,56 @@ function workDirectory(directory) {
   return null
 }
 
-function ensureControlServer() {
-  if (controlServerPromise) return controlServerPromise
-  controlServerPromise = new Promise((resolve, reject) => {
-    const server = net.createServer((socket) => handleControlConnection(socket))
+function listenControlServer(...address) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer(handleControlConnection)
     server.once("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      controlServer = server
+    server.listen(...address, () => {
       server.unref()
-      resolve(server.address().port)
+      resolve(server)
     })
+  })
+}
+
+async function listenControlSocket(bin) {
+  const socketPath = path.join(bin, "s")
+  // Darwin's sun_path fits 103 bytes. TMPDIR can also be on a filesystem
+  // that cannot bind a socket, so keep the shim there and try /tmp for IPC.
+  if (Buffer.byteLength(socketPath) <= 103) {
+    try {
+      await listenControlServer(socketPath)
+      return socketPath
+    } catch {}
+  }
+  const dir = await fs.promises.mkdtemp(path.join("/tmp", "magpie-agy-control-"))
+  const fallback = path.join(dir, "s")
+  try {
+    await listenControlServer(fallback)
+    fallbackControlDir = dir
+    return fallback
+  } catch (error) {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {})
+    throw error
+  }
+}
+
+function ensureControlServer(bin) {
+  if (controlServerPromise) return controlServerPromise
+  controlServerPromise = (async () => {
+    const server = await listenControlServer(0, "127.0.0.1")
+    const port = String(server.address().port)
+    if (process.platform !== "darwin") return { port, socketPath: "" }
+    // agy needs a numeric port to start the shim. Use a private Unix socket
+    // for the shim's control traffic, which a firewall may block over TCP.
+    try {
+      return { port, socketPath: await listenControlSocket(bin) }
+    } catch (error) {
+      server.close()
+      throw error
+    }
+  })().catch(error => {
+    controlServerPromise = undefined
+    throw error
   })
   return controlServerPromise
 }
@@ -8146,6 +8187,9 @@ function reapOnExit() {
   }
   if (shimDir && shimDirOwned) {
     try { fs.rmSync(shimDir, { recursive: true, force: true }) } catch {}
+  }
+  if (fallbackControlDir) {
+    try { fs.rmSync(fallbackControlDir, { recursive: true, force: true }) } catch {}
   }
 }
 
