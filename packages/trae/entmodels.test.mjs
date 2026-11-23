@@ -258,3 +258,73 @@ test("cutFinish keeps what Trae said of a reply it didn't cut", () => {
   expect(_internal.cutFinish("stop", u(4096), 4096, 0)).toBe("length")
   expect(_internal.cutFinish("stop", null, 4096, _internal.TRAE_CUT)).toBe("stop")
 })
+
+// the reporter's next case (plugins#1366, 0.2.47, debug log): max_tokens
+// 32768 sent, completion_tokens exactly 2000, one call, finish_sent
+// tool_calls, and the client sent no next request. Trae cut the reply in
+// the call's arguments, and the half call went on as a whole one. The call
+// comes as Trae's native tool_calls do (an id and index, the arguments so
+// far in each event), its arguments the write a long reply is.
+const WRITE = [{ type: "function", function: { name: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } } }]
+const lines = (n) => Array.from({ length: n }, (_, k) => `LINE-${String(k + 1).padStart(3, "0")}: ${LINE}`).join("\\n")
+const cutCall = (out, args) => sse([
+  ["output", { response: "Writing the file." }],
+  ["output", { tool_calls: [{ id: "call_w1", index: 0, function: { name: "write", arguments: "" } }] }],
+  ["output", { tool_calls: [{ id: "call_w1", index: 0, function: { name: "write", arguments: args.slice(0, 40) } }] }],
+  ["output", { tool_calls: [{ id: "call_w1", index: 0, function: { name: "write", arguments: args } }] }],
+  ["done", { usage: { prompt_tokens: 42032, completion_tokens: out } }],
+])
+const HALF = `{"path":"lines.txt","content":"${lines(60)}`
+const WHOLE = `{"path":"lines.txt","content":"${lines(3)}"}`
+
+test("a call Trae cut at 2000 goes out as no call: the reply ends for length, its text kept, in a body and in a stream", async () => {
+  const hooks = await plugin([preset, ...listed])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  let out = 2000
+  let args = HALF
+  f.route("POST /api/agent/v3/llm_utils_chat", () => cutCall(out, args))
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (extra = {}) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, max_tokens: 32768, tools: WRITE, ...extra }) })
+    expect(res.status).toBe(200)
+    if (!extra.stream) {
+      const c = (await res.json()).choices[0]
+      return { finish: c.finish_reason, text: c.message.content, calls: (c.message.tool_calls ?? []).map((t) => t.function.arguments) }
+    }
+    const ds = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6))).filter((x) => x.choices?.length)
+    return {
+      finish: ds.map((x) => x.choices[0].finish_reason).filter(Boolean).join(),
+      text: ds.map((x) => x.choices[0].delta.content ?? "").join(""),
+      calls: ds.flatMap((x) => x.choices[0].delta.tool_calls ?? []).map((t) => t.function.arguments),
+    }
+  }
+  // cut in the call: no call, length, the text before it kept
+  expect(await ask()).toEqual({ finish: "length", text: "Writing the file.", calls: [] })
+  expect(await ask({ stream: true })).toEqual({ finish: "length", text: "Writing the file.", calls: [] })
+  // the limit sent, used up in the call: the same
+  out = 1000
+  expect(await ask({ max_tokens: 1000 })).toEqual({ finish: "length", text: "Writing the file.", calls: [] })
+  // a whole call at 2000 is the model's and goes out as one
+  out = 2000
+  args = WHOLE
+  expect(await ask()).toEqual({ finish: "tool_calls", text: "Writing the file.", calls: [WHOLE] })
+  expect(await ask({ stream: true })).toEqual({ finish: "tool_calls", text: "Writing the file.", calls: [WHOLE] })
+  // a reply short of the cut goes out as it came, whole or not
+  out = 1999
+  args = HALF
+  expect((await ask()).calls).toEqual([HALF])
+  expect(await ask({ stream: true })).toEqual({ finish: "tool_calls", text: "Writing the file.", calls: [HALF] })
+})
+
+test("ending drops only the cut calls of a cut reply", () => {
+  const u = (c) => ({ completion_tokens: c })
+  const whole = { id: "a", name: "read", arguments: '{"path":"a"}' }
+  const half = { id: "b", name: "write", arguments: '{"path":"b","content":"x' }
+  const cut = _internal.TRAE_CUT
+  expect(_internal.ending([whole, half], "", u(2000), 32768, cut)).toEqual({ calls: [whole], finish: "length", dropped: 1 })
+  expect(_internal.ending([half], "length", u(1500), 32768, cut)).toEqual({ calls: [], finish: "length", dropped: 1 })
+  expect(_internal.ending([whole], "", u(2000), 32768, cut)).toEqual({ calls: [whole], finish: "tool_calls", dropped: 0 })
+  expect(_internal.ending([half], "", u(2000), 32768, 0)).toEqual({ calls: [half], finish: "tool_calls", dropped: 0 })
+  expect(_internal.ending([], "", u(2000), 32768, cut)).toEqual({ calls: [], finish: "length", dropped: 0 })
+  expect(_internal.ending([], "", u(10), 32768, cut)).toEqual({ calls: [], finish: "stop", dropped: 0 })
+})

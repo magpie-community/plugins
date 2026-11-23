@@ -18,11 +18,13 @@ const ent = { config_name: "AI/deekseek-v4.1-flash", usage: "chat_completion", c
   model_detail_list: [{ model_name: "deekseek-v4.1-flash", provider: "AI", max_tokens: 32768 }] }
 const SECRET = "LINE-001 the user's own words"
 
-async function asked(extra = {}) {
+const LONG = [["output", { response: "LINE-001" }], ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }]]
+
+async function asked(extra = {}, reply = LONG) {
   f?.close()
   f = fakeTrae()
   f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [{ function: "chat_v3", config_info_list: [ent] }] }))
-  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "LINE-001" }], ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }]]))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse(reply))
   const hooks = await TraeCNAuthPlugin({ client: {} })
   await hooks.provider.models({ models: {} }, { auth: signedIn() })
   const opts = await hooks.auth.loader(async () => signedIn())
@@ -68,4 +70,17 @@ test("without MAGPIE_TRAE_DEBUG nothing is written", async () => {
   expect(await asked()).toEqual([])
   process.env.MAGPIE_TRAE_DEBUG = "0"
   expect(await asked()).toEqual([])
+})
+
+// the reporter's case (0.2.47): a call Trae cut at 2000 said
+// finish_sent=tool_calls; the line says what was sent instead
+test("MAGPIE_TRAE_DEBUG says a call cut at Trae's 2000 went out as no call, the reply as length", async () => {
+  process.env.MAGPIE_TRAE_DEBUG = "1"
+  for (const stream of [false, true]) {
+    const lines = await asked({ stream }, [
+      ["output", { tool_calls: [{ id: "call_r1", index: 0, function: { name: "read", arguments: '{"path":"src/' } }] }],
+      ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }],
+    ])
+    expect(lines.at(-1)).toEndWith("calls=1 cut_calls=1 finish_sent=length")
+  }
 })

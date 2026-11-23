@@ -283,7 +283,12 @@ CN 3.4.22's own agent task puts it — read from the binary, **not verified
 with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
 after using every token it was let have — the `max_tokens` sent, or 2000
 for an enterprise model — ends with `finish_reason: "length"`, so an agent
-knows it was cut. A model with a `__max` model and
+knows it was cut. Since 0.2.48 a tool call such a reply was cut in (its
+arguments not whole JSON) is not sent as a call: the reply ends with
+`length` and the text before the call (plugins#1366, a call cut at 2000
+went out as `tool_calls` and the agent stopped on it). A whole call in a
+cut reply goes out as a call; a stream holds back only a call whose
+arguments aren't whole until it ends. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -414,9 +419,10 @@ terminal or `docker logs` when magpie runs as `magpie serve`):
   included. Each message is only its role and length, each tool only its
   name; the headers, which carry the sign-in, are never written.
 - `trae debug: request <id> answered <status> <content-type>`.
-- `trae debug: reply <id> trae_finish=… usage=… finish_sent=…`: the finish
-  Trae gave (`""` is Trae's "stop" or none), its usage, and the finish the
-  agent was sent.
+- `trae debug: reply <id> trae_finish=… usage=… calls=… finish_sent=…`: the
+  finish Trae gave (`""` is Trae's "stop" or none), its usage, the calls
+  Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
+  finish the agent was sent.
 
 The request goes to Trae, not to an enterprise model's own gateway: Trae's
 cloud makes that request, so its body is not in magpie's log.
