@@ -1,129 +1,90 @@
-# 讯飞 Loomy for magpie
+# 讯飞 Loomy · 原生供应商
 
-**每个账号 25,000 一次性永久积分 + 每天 5,000 积分**
+把讯飞 Loomy 的模型接进 magpie 的**原生 API Key 体验**：纯网络登录、逐头复刻官方聊天请求、
+不依赖官方客户端、不注入官方系统提示词。
 
-讯飞 Loomy 的编程订阅接进 magpie。
+> npm 与 GitHub 两条安装路径都可用。
+> 不要把这里的内容贴到公开仓库/公开文档里。
 
-```
-永久积分   最多 25,000    一次性，用完不再有
-今日积分   每天  5,000    每天重置
-```
+## 它和公开版有什么区别
 
-> **改代码 / 发版本之前**：先看 [AGENTS.md](./AGENTS.md) —— 按「你在哪一步」给阅读顺序，
-> 外加本仓库 18 条**会静默出错**的坑（症状 → 判据 → 出处）。交付与发版逐条走
-> [CHECKLIST.md](./CHECKLIST.md) 的两张表。
-> 发布是**七步**，`git push` 只是第 4 步。
-
----
-
-## 功能
-
-- **一次性 25,000 永久积分** —— 注册、新手任务、邀请与被邀请，全部自动领取
-- **每天 5,000 积分** —— 签到自动刷新，不用点
-- **10 个模型** —— 上下文最大 1M，支持看图与工具调用
-- **两种模型免费** —— `spark-x2.6` / `spark-x` 不扣积分
-- **三种登录** —— 桌面端一键导入 / 手机号短信 / 粘贴 session
-- **积分算得准** —— 空号就显示空，不会被优先派活
-- **免重登** —— 从别的 Loomy 插件换过来，登录态直接用
-
----
-
-## 模型
-
-| 模型 | 上下文 | 看图 | 倍率 |
-|---|---|---|---|
-| `deepseek-v4-flash-1017` | 1M | ✓ | x2.0 |
-| `MiniMax-M3` | 1M | ✓ | x4.0 |
-| `GLM-5.3-Flash` | 1M | ✓ | x0.8 |
-| `qwen3.8-flash` | 1M | ✓ | x0.8 |
-| `mimo-v2.5` | 1M | ✓ | x3.3 |
-| `qwen-3.8-max` | 1M | ✗ | x12.0 |
-| `Kimi-k2.6` | 256K | ✓ | x6.5 |
-| `spark-x2.6` | 1M | ✗ | 免费 |
-| `spark-x` | 1M | ✗ | 免费 |
-| `auto` | — | ✗ | 自动选 |
-
-思考档位 `none / low / medium / high / xhigh`，默认 `low`。
-
-> DeepSeek 只列日期固定的 `deepseek-v4-flash-1017`，不再给裸名 `DeepSeek-V4.1-Flash` ——
-> 裸名不带快照日期，不能保证始终拿到 1017，可能落到更旧的 `0731` 快照。
-
----
-
-## 签到
-
-magpie 每天调一次，一次做完三件事：刷新今日额度、领新手任务、兑换邀请码。
-全部幂等，失败不影响签到本身。
-
----
+| | 公开版 `magpie-loomy-auth` | 本仓库 `magpie-plugin-loomy-auth` |
+|---|---|---|
+| 登录 | 三种：读本机客户端 / 短信 / 粘贴 | 两种：**短信 / 粘贴**（不读本机任何文件） |
+| 官方客户端 | 可从中导入登录态 | **完全不依赖**，装了也不用 |
+| 系统提示词 | 不注入（但与官方共存时可能被客户端注入） | **不注入**，且会把误抄进来的官方 soul prompt 剥掉 |
+| 安全 | 基础 | 凭据脱敏、上游白名单、redirect 拒绝、隐私扫描（见 `docs/security.md`） |
+| 请求头 | 官方 7 个追踪头 | 同左，逐头一致 |
 
 ## 安装
 
-在 magpie 的 **插件 → 发现** 搜 `讯飞 Loomy`，点**安装**。
-
-先卸掉别的 Loomy 插件 —— 会抢同一个供应商。
-
-### 命令行
-
 ```bash
-# 从 npm（推荐）
-magpie plugin add magpie-plugin-loomy-auth
-
-# 从仓库源码（拿最新代码，不走 npm）
-magpie plugin add github:MYCF711/magpie-loomy-auth
-
-# 本地 tgz（自己改了代码）
-npm pack --pack-destination ./dist
-cp dist/magpie-plugin-loomy-auth-*.tgz ~/.config/magpie/plugins/dist/
-# plugins.json          追加 { "spec": "magpie-plugin-loomy-auth" }
-# plugins/package.json  追加 "magpie-plugin-loomy-auth": "./dist/magpie-plugin-loomy-auth-*.tgz"
-cd ~/.config/magpie/plugins && ~/.cache/magpie/bun/1.4.4/magpie-bun.exe install
+magpie plugin add magpie-plugin-loomy-auth          # npm
+magpie plugin add github:MYCF711/magpie-loomy-auth  # 或直接跟 git
+magpie plugin list            # 应看到 loomy (讯飞 Loomy (native))
 ```
 
-⚠ **`magpie plugin add <tgz路径>` 用不了** —— 它把 tgz 当 JS 模块 `import()`，报
-`exports no OpenCode plugin function`（实测 0.1.1254）。本地包必须走上头那套
-`plugins.json` 登记 + `bun install`。
+## 登录
 
-装完确认：
+只走网络，两条路：
 
-```bash
-magpie plugin list
-# magpie-plugin-loomy-auth  on
-#   loomy (讯飞 Loomy, 10 models)  signed in as 138****8000
-```
+1. **手机号 + 短信验证码**（推荐）：在 magpie 账号页选这条，输入手机号，收到验证码填入。
+2. **粘贴 session**：已经有 session 的话直接粘。
 
-⚠ 改了代码要 **bump `version` 再打包** —— 同一版本号重打，bun 会命中缓存（输出 `no changes`）。
+拿到的 session 就是凭据，等价于「原生 API Key」。
 
----
+## 模型
 
-## 常见问题
+目录来自 `GET /api/v1/models`（进程内缓存 10 分钟），**实时过滤**：
 
-**积分 0，但 App 里还有？** 今日额度用光了，等北京时间 0 点重置。
+- `deepseek-v4-flash-1017`（DeepSeek V4.1 Flash 1017，x2.0）
+- `GLM-5.3-Flash`（x0.8）
+- `qwen3.8-flash`（x0.8）
+- `spark-x2.6`（x2.5，已不再免费）
+- `auto`（自动）
 
-**登录已失效？** 会话 14 天到期，重新登录一次。
+裸名 `DeepSeek-V4.1-Flash` 不进目录：它不保证固定快照，选了可能落到旧版本。
 
-**会花我的积分吗？** 不会，只读余额和领奖励。
+## 提示词
 
-**25,000 怎么来的？** 25,000 = 注册 5,000 + 新手任务 10,000 + 邀请 5,000 + 被邀 5,000。
-后两笔需要本机有两个以上账号（互相邀请），平台允许。全是**一次性**，领完就没了；
-日常用的是每天 5,000 的今日积分。
+- 本插件**不加**任何 system / developer 消息，不改写调用方的 messages。
+- 官方客户端的「灵魂提示词」是客户端本地注入的，服务端不注入 —— 实测带自定义 system 的请求，
+  回复会被尊重（`SENTINEL42` 用例）。
+- 如果你把客户端那整段 soul prompt 抄进了请求，插件会在发送前剥掉（`src/prompt.mjs`），
+  避免模型变成「Loomy 办公助手」口吻。
 
----
+## 自动邀请
 
-## 参考源
+老版本靠扫本机其它 Loomy 登录态来「自动邀请」；这一版**不读官方客户端**，改成插件自己的码库：
 
-本插件的协议实现参考了这几处，按各自许可在此声明（完整版权声明见 [`NOTICE.md`](NOTICE.md)）：
+- 每次登录顺手把自己的邀请码记进本地库（Windows：`%APPDATA%\magpie-plugin-loomy-auth\invites.json`，
+  其它平台：`~/.config/magpie-plugin-loomy-auth/invites.json`，可用 `LOOMY_INVITE_STORE` 覆盖路径）；
+- 新账号登录时，从库里挑一个**不属于自己**、且本号还没兑换过的码自动兑换，双方各 +5000；
+- 库里只有邀请码和归属指纹（session 的 sha256 前 12 位），**没有 session**；
+- 库文件损坏或目录不可写时静默跳过，登录不受影响；
+- **兜底码**：库为空时（第一次装）用 `src/invite-store.mjs` 里的 `FALLBACK_INVITE_CODES`，
+  可用环境变量 `LOOMY_INVITE_CODE=CODE1,CODE2` 整组覆盖。兜底排在自己攒的码之后，
+  只放当前 `active` 的码（用尽的不放，否则会挑出来白跑一次）。
 
-| 来源 | 用在哪 |
+## 额度
+
+今日池 / 永久池 / 团队池按 magpie 的路由语义上报（见 `docs/internals.md`）。
+插件在聊天前用缓存的额度读数做本地闸，耗尽直接 429，不去撞上游报错。
+
+## 故障排查
+
+| 现象 | 看这里 |
 |---|---|
-| [yetone/magpie](https://github.com/yetone/magpie)（MIT） | 插件契约：`usage` 窗口字段、`used` 归一化、`aside` 语义、签到 outcome 清单、`free` 判据 |
-| [sucooer/magpie-plugins](https://github.com/sucooer/magpie-plugins)（MIT） | 账号接口的 HMAC-SHA1 签名构造、桌面端登录态（leveldb）读取方式 |
-| [agent2api](https://github.com/aimod-cc/agent2api) | deepseek 系模型只认 `<image_base64>` 标记、不认 `image_url` 的结论 |
+| `503 no_provider_error`（`metadata.provider_name=venus`） | 上游可调度实例为 0，换模型或等一会；不是鉴权问题 |
+| `openresty 504` | 上游网关超时，宿主会换号重试 |
+| 首字几十秒 | 上游容量；同时段换模型对照可确认 |
+| `100002` / `401` | session 过期，重新登录 |
 
----
+## 安全
 
-> 更新记录：[CHANGELOG.md](./CHANGELOG.md)
+见 [docs/security.md](./docs/security.md)。一句话：凭据只进不回、只连两个官方域、不碰本机其它应用的数据。
 
-## 许可
+## 协议与逆向证据
 
-MIT。
+见 [docs/internals.md](./docs/internals.md)：基线版本、asar 哈希、请求头表、系统提示词结论、
+「反代风控」的实测边界、性能基线。

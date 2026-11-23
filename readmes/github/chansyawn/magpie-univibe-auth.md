@@ -23,6 +23,8 @@ magpie plugin login univibe
 1. 在 [UniVibe API 密钥](https://www.univibe.cc/console/api-keys) 创建的 API Key。
 2. UniVibe 账号的手机号和密码。
 
+在 Magpie 中添加另一个账号时，选择新增登录或再次运行 `magpie plugin login univibe`，填写该账号的 API Key、手机号和密码。
+
 API Key 用于模型请求。手机号和密码用于读取积分，并在网页登录 Token 失效时重新登录。登录信息由 Magpie 写入配置目录下的 `plugin-auth.json`，文件权限为 `600`；其中包含明文密码，请只在自己的用户目录中妥善保管。
 
 安装后，在 Magpie 用量页的 Univibe 卡片中打开“自动签到”。也可以在供应商编辑页点击“立即签到”手动执行一次。

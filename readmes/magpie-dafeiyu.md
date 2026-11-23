@@ -1,5 +1,13 @@
 <div align="center">
 
+<a href="https://cdn.jsdelivr.net/gh/wolfvoid/magpie-DaFeiYu@4d6a3f283c992819e9a16406af35064b56aaa97e/docs/media/promo.mp4"><img src="docs/media/promo-preview.gif" alt="点击播放 magpie-DaFeiYu 中文配音宣传片，时长 39 秒" width="800"></a>
+
+[▶ 播放宣传片（39 秒 · 中文配音）](https://cdn.jsdelivr.net/gh/wolfvoid/magpie-DaFeiYu@4d6a3f283c992819e9a16406af35064b56aaa97e/docs/media/promo.mp4) · [下载 MP4](https://github.com/wolfvoid/magpie-DaFeiYu/raw/refs/heads/main/docs/media/promo.mp4)
+
+<img src="docs/images/desktop.png" alt="magpie-DaFeiYu：蓝色大肥鱼、请求灯泡与多账号额度" width="520">
+
+*演示图为合成账号与额度。角色动画来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)。*
+
 # 🐋 magpie-DaFeiYu
 
 ### 让 AI 的忙碌，变成桌边的一条鱼。
@@ -12,10 +20,6 @@
 ![Version](https://img.shields.io/badge/version-0.1.5-4C78A8)
 ![Code MIT](https://img.shields.io/badge/code-MIT-538476)
 ![Artwork noncommercial](https://img.shields.io/badge/artwork-noncommercial-D19A35)
-
-<img src="docs/images/desktop.png" alt="magpie-DaFeiYu：蓝色大肥鱼、请求灯泡与多账号额度" width="520">
-
-*演示图为合成账号与额度。角色动画来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)。*
 
 [下载 App](https://github.com/wolfvoid/magpie-DaFeiYu/releases/latest) · [功能](#为什么是它) · [安装](#安装) · [致谢](#致谢与许可)
 

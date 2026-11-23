@@ -112,14 +112,14 @@ Magpie 的检索逻辑在 `internal/plugin/github.go`：用 GitHub Search 查 `t
 
 ## 页面
 
-插件在 Magpie 侧栏提供「WorkBuddy Sync」页面（字体、颜色、按钮都跟随 Magpie 的 `--magpie-*` 主题 token）：
+插件在 Magpie 侧栏提供「WorkBuddy Sync」页面（字体、颜色、按钮都跟随 Magpie 的 `--magpie-*` 主题 token），页面按 **概览 / 账号 / 从机 / 诊断** 分栏：
 
-- 每 20 秒自动刷新状态，不需要手动点“重新读取”；
+- 每 20 秒自动刷新状态，只重新加载状态脚本，不整页刷新，不会跳回顶部；
 - 页面里的“角色”可以直接切换 `自动 / 主机 / 从机`，应用后写入本机 `workbuddy-sync.json`，只影响这台电脑；
 - 非跟随机器默认是“未设置”，避免第二台双向同步的机器自动变成另一个主机；
 - “立即同步”会重载插件并马上执行一次发布/拉取；
-- 状态区显示账号数、generation、最后发布/拉取时间和错误信息；主机页面还会显示在线从机数量、显示名和最后心跳。
-- 从机在本机 `workbuddy-sync.json` 设置 `name` 后，主机的从机列表会显示这个名字。
+- 状态区显示账号数、generation、最后发布/拉取时间和错误信息；连接详情里还能看到最近检查时间、检查耗时、轮询间隔、最近成功和最近错误；主机页面还会显示账号健康、在线/离线从机数量、显示名和最后心跳。
+- 页面可以直接填写“本机显示名”，会写入本机 `workbuddy-sync.json` 的 `name`；主机的从机列表会显示这个名字。主机也可以在从机列表里直接给某台从机改名，名称写入 `workbuddy/followers/names.json`，从机下次心跳时生效。心跳文件只含 machineId、显示名和 lastSeen，不含 token。
 - Magpie 可能同时启动多个插件宿主（窗口、页面、CLI）；只有拿到 `workbuddy-sync.lock` 的宿主会写状态，其他宿主静默重试，不会把 “another process” 覆盖到页面。
 
 ## 配置
@@ -142,14 +142,14 @@ Magpie 的检索逻辑在 `internal/plugin/github.go`：用 GitHub Search 查 `t
 | `path` | 覆盖快照文件路径；默认 `<prefix>/workbuddy/workbuddy-auth.magpie-data` |
 | `branch` | 覆盖分支 |
 | `token` | 覆盖 GitHub token |
-| `passphrase` | 覆盖加密口令（主机和从机必须一致） |
 | `allowEmpty` | 主机没有 WorkBuddy 账号时也发布空快照；默认 `false` |
 | `allowMasterChange` | 只允许一次的主机接管开关；默认 `false`，用于接管旧主机 |
-| `name` | 本机显示名，例如 `书房 Mac`，用于主机页面的从机列表 |
+| `name` | 本机显示名，例如 `书房 Mac`，也可以在页面直接编辑，用于主机页面的从机列表 |
+| `includeAccounts` | 主机页面勾选后写入的账号 key 列表；由页面维护，不需要手写 |
 | `presenceMinutes` | 从机心跳间隔，5–1440 分钟，默认 60 |
 | `presenceStaleMinutes` | 超过多少分钟没有心跳算离线，默认 180 |
 
-`workbuddy-sync.json` 是本机文件，不会进入 Magpie 的同步。整个同步链路只应有一台 `master`。
+`workbuddy-sync.json` 是本机文件，不会进入 Magpie 的同步。整个同步链路只应有一台 `master`；从机晋升为主机时会使用本机自己的 `localMasterId`，不会复用远端主机的身份。
 
 ### 主机切换
 
@@ -166,7 +166,7 @@ Magpie 的检索逻辑在 `internal/plugin/github.go`：用 GitHub Search 查 `t
 ## 安全
 
 - 快照用 **AES-256-GCM** 加密，格式与 Magpie 的 `internal/backup/data.go` 的 `SealData` / `OpenData` 完全一致（`magpie-data`、PBKDF2-SHA256 600,000 次、12 字节 nonce）。
-- 复用 `sync.json.passphrase`。如果你的 Magpie 同步口令很短，建议在 `workbuddy-sync.json` 中为 WorkBuddy 快照单独指定一个长口令（所有机器保持一致）。
+- 直接复用 `sync.json.passphrase`；口令跟随 Magpie 本身管理，插件不另外维护第二个口令。
 - 只写 GitHub 私有仓库；Magpie 的 GitHub 同步本身已要求仓库为 private。
 - 从机永远不保存 refresh token；即使有人在从机点“重新登录”，插件也会在下一轮把它移除，只留下 access token。
 - 从机不要登录 WorkBuddy 桌面版同一账号：`source: "desktop"` 会让官方插件读取桌面 app 自己的 token，绕过本插件的约束。
@@ -189,7 +189,10 @@ npm test
 - `magpie-data` 格式的加密/解密；
 - 多账号 key 对齐；
 - 从机 access-only 清理；
-- 主机发布 → 从机应用的完整流程（内存 GitHub store）。
+- 主机发布 → 从机应用的完整流程（内存 GitHub store）；
+- 主机租约、接管和旧主机 fencing；
+- 从机心跳、在线/离线统计；
+- 从机晋升主机时使用本机身份，不复用远端 masterId。
 
 ## 发现与发布
 

@@ -183,6 +183,36 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 
 环境变量兜底：`MUSE2API_GATEWAY_AUTOLAUNCH=0`、`MUSE2API_GATEWAY_KEEPALIVE=0`、`MUSE2API_GATEWAY_DIR`、`MUSE2API_PYTHON`。
 
+### 外部看门狗（v0.2.1 起，v0.2.2 修正巡检触发）
+
+插件内保活有个前提：**Magpie 得先把插件加载起来**。实测 Magpie 启动期给每个插件的加载预算是
+20 秒，插件多时会被挤爆，日志里出现
+`plugin github:teddyztd/magpie-plugin-muse2api didn't load: the plugin's load didn't finish in 20s`——
+这时插件里的任何代码都不会执行，保活自然不生效。
+
+兜底方案是把保活挪到系统层，完全绕开 Magpie：
+
+```powershell
+# 注册（登录时立刻巡检一次 + 之后每分钟巡检一次；实测杀掉网关后约 50 秒自愈）
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\install-watchdog.ps1
+
+# 卸载
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\uninstall-watchdog.ps1
+```
+
+看门狗只做一件事：探测 `127.0.0.1:18610`，不通就以隐藏窗口启动
+`python -m uvicorn app:app --host 127.0.0.1 --port 18610`。
+
+- 日志：`<网关目录>/data/logs/gateway-watchdog.log`（端口已活时每小时最多一条心跳）
+- uvicorn 自身输出：`<网关目录>/data/logs/gateway-uvicorn.out.log` / `.err.log`
+- 参数：`install-watchdog.ps1 -GatewayDir <目录> -Port <端口> -IntervalMinutes <分钟> -PythonPath <解释器>`
+
+### 加载标记（排查插件到底有没有跑起来）
+
+插件入口会往 `<网关目录>/data/logs/plugin-load-marker.log` 追加一行
+`<ISO 时间> loaded pid=<宿主 esbuild/bun 进程 pid> entry=<入口 URL>`。
+重启 Magpie 后看这个文件：**没有新行 = 插件没被执行到**，问题在宿主加载而不是插件逻辑。
+
 ## 故障排查
 
 | 现象 | 处理 |
@@ -190,6 +220,7 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 | 登录报「API key 无效（401）」 | 核对 `MUSE2API_KEY` 是否与 muse2api 实例一致（注意 muse2api 的 `MUSE2API_KEY` 为空时是不校验的，这时填任何 key 都能过） |
 | 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍。v0.2.0 起插件会自动拉起本机实例（见上节），拉起失败时错误里会带网关日志末尾 |
 | 重启机器后 Magpie 报连不上 | v0.2.0 起插件加载即自动拉起 + 保活；若仍失败，检查 `gatewayDir` 是否指向真实网关目录、`.venv` 里有没有 uvicorn，或看 `data/logs/gateway-keepalive.log` |
+| 重启后仍不自动拉起，`data/logs/gateway-keepalive.log` 没有新行 | 插件没被执行到。看 Magpie 的 `%LOCALAPPDATA%\magpie\logs\app.log` 是否有 `plugin … didn't load: the plugin's load didn't finish in 20s`；再对本插件的 `data/logs/plugin-load-marker.log` 确认入口有没有跑。这种情况下用 v0.2.1 的外部看门狗（`scripts\install-watchdog.ps1`）兜底 |
 | 对话 404 或 400 | `baseURL` 拼错了；本插件固定用 `<地址>/v1`，登录时地址**不要带** `/v1`（带了会被 validate 拦下） |
 | 工具说「没有配置 muse2api 连接信息」 | 去 **插件 → 已安装 → muse2api → 选项** 填 `baseUrl` / `apiKey`，或设环境变量后重启 Magpie |
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |

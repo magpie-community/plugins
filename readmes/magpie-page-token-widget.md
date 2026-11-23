@@ -1,6 +1,6 @@
 # magpie-page-token-widget
 
-> [English](README.en.md) · 中文 · 当前版本 0.4.19（变更见 [CHANGELOG.md](CHANGELOG.md)）
+> [English](README.en.md) · 中文 · 当前版本 0.4.23（变更见 [CHANGELOG.md](CHANGELOG.md)）
 
 把 iPhone 桌面的额度组件接进 Magpie：装上这个插件，扫一次码，手机上就能显示 Magpie 里每一家订阅（Codex、MiniMax、GLM，以及你后来加的那些）的剩余额度与真实 Token 用量。
 

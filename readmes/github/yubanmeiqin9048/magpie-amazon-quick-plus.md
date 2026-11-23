@@ -1,4 +1,4 @@
-# magpie-amazon-quick
+# magpie-amazon-quick-plus
 
 [中文](#中文说明) | [English](#english)
 
@@ -22,7 +22,7 @@
 - **有状态线程增量续传（1M 上下文）与 64 KB 帧压缩 / 云端附件兜底**：
   - 按「账号 + 会话 ID / 首轮消息前缀哈希 + 工具集合摘要」缓存并复用服务端 `thread_id`（`session_connect` 携带 `session_id` 与 `focus_only: true`），在连续多轮工具调用与对话中**仅增量发送新增的 `User` / `<tool_result>`**；当 IDE 动态系统上下文（打开文件、光标、诊断信息等）变化时自动发送轻量 `<system_context_update>` 增量段，同时保持线程连续性与 1M 上下文记忆。
   - 若发生切号、编辑或回退历史，或缓存线程已在服务端失效，自动无缝回退到新建 `thread_id` 与全量重传。
-  - 对单次请求始终按 `AIDP` Base64 出站帧字节数（安全控制在 58 KB 以内，低于 AWS Quick 的 64 KB 单消息上限）自动分级压缩；遇到超长用户文本溢出或多模态 `image_url`（`data:` Base64 / `http(s):` URL），支持自动规范化 MIME 类型并上传至 Quick 云端附件存储（兼容 `AIDP` 与 `Gateway` 路径 + DLP 安全扫描 + `files/upload` 注入），将 `prompt_context.txt` 或图片以 `attachments` 元数据随消息发送。若上游仍报大小超限则返回 HTTP `400` 避免无效重试。（如需纯无状态版可切换至 Git 分支 `v0.1.3`。）
+  - 对单次请求始终按 `AIDP` Base64 出站帧字节数（安全控制在 62 KB 以内，低于 AWS Quick 的 64 KB 单消息上限）自动分级压缩；遇到超长用户文本或并行工具结果溢出、多模态 `image_url`（`data:` Base64 / `http(s):` URL），支持按比例保留 inline 预算并将完整当前回合文本上传至 Quick 云端附件存储（兼容 `AIDP` 与 `Gateway` 路径 + DLP 安全扫描 + `files/upload` 注入），仅在附件上传成功后附带 `prompt_context.txt` 说明。若上游仍报大小超限则返回 HTTP `400` 避免无效重试。（如需纯无状态版可切换至 Git 分支 `v0.1.3`。）
 - **长连接分片重组与稳定性强化**：
   - 支持入站 `_chunked_frame` 分片重组，避免超长响应跨多帧被截断；内置 WebSocket 建连（15s）与流式空闲（90s）超时保护并返回明确 HTTP `504`。
   - 桌面端凭证基于 `profiles.json` 文件 `mtime` 与 Token 过期时间（支持数字时间戳与 ISO-8601 字符串）智能缓存，避免每轮重复拉起系统凭据进程；Quick 账号配置（`settings`）按账号缓存 2 分钟；浏览器 OAuth 回调服务支持超时自动关闭，防止放弃登录时残留本地端口占用。
@@ -31,10 +31,10 @@
 
 ## 安装方式（Magpie）
 
-在 Magpie 的 **Plugins** 页面直接填入 GitHub 仓库地址安装，或在 `Discover → Unofficial` 中搜索 `magpie-amazon-quick`：
+在 Magpie 的 **Plugins** 页面直接填入 GitHub 仓库地址安装，或在 `Discover → Unofficial` 中搜索 `magpie-amazon-quick-plus`：
 
 ```text
-https://github.com/3056810551/magpie-amazon-quick
+https://github.com/yubanmeiqin9048/magpie-amazon-quick-plus
 ```
 
 ## 登录方式
@@ -114,7 +114,7 @@ Works with **OpenCode 1.x**, **OpenCode 2.x**, and **Magpie** with zero external
 - **Stateful Thread Continuation (1M Context), 64 KB Frame Fitting & Cloud Attachments**:
   - Tracks active `(account, session / message-prefix, tools digest)` threads and reuses Quick's server-side `thread_id` (`session_connect` with `session_id` + `focus_only: true`), sending **only the incremental `User` / `<tool_result>` delta** on matching follow-up turns; when dynamic IDE `system` context (open files, cursor, diagnostics) updates between turns, appends a compact `<system_context_update>` delta without breaking `thread_id` continuity.
   - Automatically isolates accounts and transparently falls back to a fresh `thread_id` whenever history is edited or a resumed server thread expires.
-  - Measures the encoded `AIDP` Base64 outbound frame size (kept within 58 KB, safely below Amazon Quick's 64 KB limit) and progressively compacts verbose schemas, older turns, and oversized system text while preserving the latest turn and `<client_tool_directive>`, mapping upstream size-limit errors to HTTP `400`. Also supports multimodal `image_url` inputs (`data:` URLs and `http(s):` URLs) and oversized user-message spillover (`prompt_context.txt`) via Quick cloud attachment uploads (`AIDP` + `Gateway` presigned upload with normalized MIME types, DLP status polling, and `files/upload/{threadId}` delivery). (Branch `v0.1.3` preserves the earlier purely stateless release.)
+  - Measures the encoded `AIDP` Base64 outbound frame size (kept within 62 KB, safely below Amazon Quick's 64 KB limit) and progressively compacts verbose schemas, older turns, and oversized system text while protecting the current turn's parallel tool results with proportional inline budgets and `<client_tool_directive>`, mapping upstream size-limit errors to HTTP `400`. Also supports multimodal `image_url` inputs (`data:` URLs and `http(s):` URLs) and full current-turn spillover (`prompt_context.txt`) via Quick cloud attachment uploads (`AIDP` + `Gateway` presigned upload with normalized MIME types, DLP status polling, and `files/upload/{threadId}` delivery), notifying the model about `prompt_context.txt` only after upload succeeds. (Branch `v0.1.3` preserves the earlier purely stateless release.)
 - **Inbound Chunked Frames & Connection Hardening**:
   - Reassembles inbound `_chunked_frame` payloads across out-of-order chunks, guards WebSocket connects (`15s`) and response idle stalls (`90s`) with HTTP `504` timeouts, caches desktop credentials against `profiles.json` `mtime` + token expiry (supporting numeric epochs and ISO-8601 strings), caches account settings for 2 minutes, and auto-closes abandoned OAuth loopback listeners.
 - **Dynamic Models & Usage**: Discovers active model slots from `api/ws-rpc` (`get_settings`) and reports monthly & session quota windows from `profile/usage`.
@@ -122,10 +122,10 @@ Works with **OpenCode 1.x**, **OpenCode 2.x**, and **Magpie** with zero external
 
 ## Installation (Magpie)
 
-Install directly from GitHub in Magpie **Plugins**, or find `magpie-amazon-quick` under **Discover → Unofficial**:
+Install directly from GitHub in Magpie **Plugins**, or find `magpie-amazon-quick-plus` under **Discover → Unofficial**:
 
 ```text
-https://github.com/3056810551/magpie-amazon-quick
+https://github.com/yubanmeiqin9048/magpie-amazon-quick-plus
 ```
 
 ## Sign-In Methods
