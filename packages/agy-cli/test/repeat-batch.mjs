@@ -1494,6 +1494,49 @@ test("the model quoting the Individual quota reached ending with more text after
   }
 })
 
+// @Airan_FS on X (11-23): once the account's Claude quota was used up,
+// every Claude request's whole reply was agy's ending for the third-party
+// (Claude and GPT-OSS) pool, with Gemini's quota left.
+const THIRD_PARTY_LINE = "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 3h22m19s."
+const THIRD_PARTY = "\n" + THIRD_PARTY_LINE + "\n"
+
+test("agy's Third-party quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [THIRD_PARTY],
+    [THIRD_PARTY.slice(0, 9), THIRD_PARTY.slice(9, 33), THIRD_PARTY.slice(33)],
+    [THIRD_PARTY_LINE],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "third-party-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error?.type, "rate_limit_error", text)
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + THIRD_PARTY_LINE.replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [THIRD_PARTY])
+    const response = await kit.request(baseBody({ metadata: { user_id: "third-party-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.match(body.error.message, /Third-party quota reached\. .*Resets in 3h22m19s\./)
+  })
+  // the model quoting it, with more text after, is the model's
+  await withKit({}, async (kit) => {
+    const chunks = ["agy said\n⚠ Third-party quota", " reached. Resets in 1h.\nThat line is agy's, not mine."]
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "third-party-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
 // ifccod (opencode-agy-cli-auth FORK.md, 11-18): when every retry met
 // Google's "no capacity" 503, agy ended the reply with this notice, and the
 // client got it as the whole answer, a 200 nothing behind magpie retried.

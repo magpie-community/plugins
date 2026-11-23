@@ -140,8 +140,15 @@ const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 // its own that nothing follows. Answered as text, it was the whole reply
 // and the next account was never asked (@Airan_FS on X, 11-17).
 const QUOTA_CORE = "⚠ Individual quota reached"
-const QUOTA_MARKER = "\n" + QUOTA_CORE
-const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
+// The same ending for the account's quota of the models agy calls third
+// party, Claude and GPT-OSS, used up while Gemini's is left: "⚠ Third-party
+// quota reached. Please switch to Gemini models or upgrade your subscription
+// to increase your limits. Resets in 3h22m19s." It was the whole reply to
+// every Claude request once that quota was out (@Airan_FS on X, 11-23).
+const THIRD_PARTY_CORE = "⚠ Third-party quota reached"
+const QUOTA_CORES = [QUOTA_CORE, THIRD_PARTY_CORE]
+const QUOTA_MARKERS = QUOTA_CORES.map((core) => "\n" + core)
+const quotaReached = (detail) => /\b(?:individual|third-party) quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
 const DISABLED_CORE = AGENT_ERROR_CORES[6]
@@ -202,9 +209,9 @@ const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 // agy's lines as they start a reply or a line, with no newline before them:
 // a chunk that ends on the start of one is held (plugins#1454).
-const LINE_CORES = [...AGENT_ERROR_CORES, QUOTA_CORE, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
+const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length, BUSY_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, ...QUOTA_MARKERS.map((marker) => marker.length), BUSY_MARKER.length,
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1853,7 +1860,7 @@ class Turn {
     if (quota >= 0) return quota
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKERS.some((marker) => marker.startsWith(tail)) ||
         BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           NOTICE_MARKER.startsWith(tail) || CAP_MARKER.startsWith(tail))) ||
         (this.startsLine(text, text.length - keep) && LINE_CORES.some((core) => core.startsWith(tail)))) {
@@ -1885,11 +1892,12 @@ class Turn {
     return at > 0 && text[at - 1] === "\n" && !this.cuts.includes(at) ? at - 1 : at
   }
 
-  // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
-  // start (BUSY_CORE), starts in text, with the newline before it: a line of
-  // its own that only whitespace follows, so far. -1 when there is none; one
-  // more text follows was the model quoting it.
-  quotaEnding(text, core = QUOTA_CORE) {
+  // Where agy's quota ending (either of QUOTA_CORES), or another ending
+  // matched by its start (BUSY_CORE), starts in text, with the newline
+  // before it: a line of its own that only whitespace follows, so far. -1
+  // when there is none; one more text follows was the model quoting it.
+  quotaEnding(text, core) {
+    if (!core) return Math.max(...QUOTA_CORES.map((quota) => this.quotaEnding(text, quota)))
     const at = text.lastIndexOf(core)
     if (at < 0) return -1
     if (!this.startsLine(text, at) || text.slice(at).trimEnd().includes("\n")) return -1

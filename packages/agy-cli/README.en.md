@@ -391,6 +391,11 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Third-party quota reached. Please switch to Gemini models … Resets
+  in 3h22m19s." ending (the account's Claude and GPT-OSS quota is used up,
+  Gemini's is not) ends the turn the same way, so magpie rests that model
+  until then, asks the next account or model, and keeps asking this
+  account's Gemini models.
   The "⚠ Our servers are experiencing high traffic right now …" ending
   (Google has no capacity for the model now, and agy's own retries met the
   same 503) ends the turn as `overloaded_error` (HTTP 503 without
