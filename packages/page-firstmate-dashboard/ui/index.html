@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="fm-write-token" content="__FM_WRITE_TOKEN__"><title>First Mate 船员配置</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="settings.css"><script src="bridge.js" defer></script><script src="app.js" defer></script></head>
+<body data-view="secondmate"><main>
+<header><div><h1>First Mate</h1><p>工作配置与派工</p></div><span class="readonly">v__FM_VERSION__</span></header>
+<div class="service-notice"><span id="build-status">正在读取配置…</span><button id="go-dispatch" type="button">查看同步</button></div>
+<div class="toolbar"><div class="home-switch"><span class="toolbar-label">工作空间</span><button id="home" type="button" aria-label="工作 Home" value="0"></button><span id="home-context" class="home-context"></span></div><label class="search">查找模型或船员<input id="search" type="search" placeholder="搜索任务、Harness、模型…"></label><button id="refresh" type="button">刷新</button></div>
+<div id="error" role="alert" hidden></div>
+<div id="saved" role="status" hidden></div>
+<div id="sync-result" role="status" hidden></div>
+<div class="metrics"><span><strong id="record-count">—</strong> 条启动记录</span><span><strong id="rule-count">—</strong> <span id="rule-count-label">条派工规则</span></span><span><strong id="primary-count">—</strong> 位大副</span><span><strong id="mate-count">—</strong> 位二副</span><span id="supervision-count">后台监督：未读取</span></div>
+<nav class="tabs" aria-label="配置视图"><button type="button" data-tab="secondmate" aria-selected="true">大副与二副</button><button type="button" data-tab="dispatch" aria-selected="false">派工规则</button><button type="button" data-tab="settings" aria-selected="false">Firstmate 设置</button><button type="button" data-tab="launch" aria-selected="false">派工记录</button><button type="button" data-tab="sources" aria-selected="false">来源与说明</button></nav>
+<section class="panel" id="settings-panel" hidden>
+<div class="section-title"><h2>Firstmate 设置</h2><span class="tag" id="settings-role"></span></div>
+<p class="caption" id="settings-origin"></p>
+<div class="settings-destinations"><button type="button" data-settings-tab="dispatch"><span>船员模型与派工</span><small>按任务规则选择工具、模型和强度</small><i>›</i></button><button type="button" data-settings-tab="secondmate"><span>副手启动配置</span><small>由大副管理，影响副手下次启动</small><i>›</i></button></div>
+<div id="settings-harnesses" class="settings-harnesses" role="group" aria-label="适用 Harness"></div>
+<p id="settings-scope-note" class="settings-scope-note"></p>
+<div class="settings-toolbar"><div id="settings-categories" class="settings-categories" role="group" aria-label="设置分类"></div><label class="settings-search"><input id="settings-search" type="search" aria-label="搜索设置" placeholder="搜索设置…"></label></div>
+<div id="settings-view" class="settings-view"></div>
+<p id="settings-count" class="settings-count"></p>
+<div id="settings-list"></div>
+</section>
+<section class="panel" id="dispatch-panel" hidden>
+<section class="quota-panel" id="quota-panel" aria-labelledby="quota-title" hidden>
+<div class="section-title"><h2 id="quota-title">额度来源</h2><button id="quota-read" type="button" disabled>读取当前额度</button></div>
+<p class="caption" id="quota-source-caption">额度读数来自所选位置。选「此 Home 所在主机」时，由该 Home 的 Firstmate 读取。</p>
+<form id="quota-form" method="post" action="api/quota/save" aria-labelledby="quota-title" hidden>
+<fieldset><legend>读取位置</legend><div id="quota-options"></div></fieldset>
+<button type="submit" id="quota-save">保存额度来源</button>
+</form>
+<p id="quota-status" role="status"></p>
+<div id="quota-readings"></div>
+</section>
+<div class="section-title"><h2>默认派工规则</h2><span id="quota" class="tag"></span></div>
+<p class="caption" id="rule-source"></p>
+<div class="seat-filters" id="seat-filters" role="group" aria-label="按副手筛选" hidden></div>
+<div id="rules" class="rule-list"></div>
+<p id="seat-empty" class="caption" hidden></p>
+<div class="dispatch-bar"><button id="preview" type="button" class="primary">预览差异并保存</button><button id="sync" type="button">推送已保存的派工规则</button><button id="restore" type="button" hidden>恢复最近一次保存前的备份</button></div>
+<p class="caption" id="sync-caption"></p>
+</section>
+<section class="panel" id="launch-panel" hidden><div class="section-title"><h2>派工执行统计</h2><span class="tag">保留记录 · 非在线状态</span></div><p class="caption">点击图表可联动筛选职责、Harness 与核对结果，并显示对应任务。仅统计所选 Home；未读取二副独立 Home，“0”不代表二副从未派工。</p><div id="dispatch-summary" class="audit-metrics"></div><div id="dispatch-charts"></div><div id="dispatch-audit"></div><aside class="notice">只统计此 Home 保留的 ship / scout 启动记录，二副登记单列。核对保存的派工选择与启动参数，不代表职责判断正确，也不能证明所有工作都已派工。</aside><details class="raw-records"><summary>查看原始启动记录（含二副登记）</summary><div class="table-wrap"><table><thead><tr><th>船员 / 任务</th><th>Harness</th><th>启动时模型</th><th>推理强度</th><th>当前模型</th></tr></thead><tbody id="records"></tbody></table></div><button id="more" class="secondary" type="button" hidden>展开全部记录</button></details><p class="caption table-note" id="records-note">来源：state/*.meta、任务 brief.md 与 dispatch-resolution.json。最多读取 300 条保留记录；清理、重启或重新解析可能改变记录，不是完整历史。</p></section>
+<section class="panel" id="secondmate-panel">
+<div class="section-title"><h2>大副、二副与后台监督</h2><span class="tag">配置席位 · 非在线人数</span></div>
+<div id="supervisors" class="supervisors"></div>
+<p class="caption" id="mate-scope">下面管理各二副的独立启动配置。未设置的二副将回退到船员默认工具。</p>
+<p class="caption" id="mate-source"></p>
+<p class="group-label" id="mate-label" hidden>各二副的启动配置</p>
+<div id="mates" class="mate-list"></div>
+<p id="mate-empty" class="caption" hidden></p>
+<div class="dispatch-bar"><button id="mate-preview" type="button" class="primary">预览差异并保存</button><button id="mate-sync" type="button">同步到远端二副</button><button id="mate-restore" type="button" hidden>恢复最近一次保存前的备份</button></div>
+</section>
+<section class="panel sources" id="sources-panel" hidden><h2>来源与边界</h2><dl><dt>Home</dt><dd id="home-path">—</dd><dt>最近读取</dt><dd id="observed">—</dd><dt>可以修改</dt><dd id="sources-writable"></dd><dt>不能修改</dt><dd id="sources-unwritable">state/*.meta、运行中的模型、船员和副手的生命周期。保存不会重启任何席，也不会改它当前正在用的配置。</dd><dt>保存前</dt><dd id="sources-before">派工用 First Mate 现有的 crew-dispatch 校验。副手启动配置用 fm-harness.sh 的 secondmate 解析器，解析失败会原样显示，不会跳过那一行。写入前展示差异，并确认文件自读取后没有被别人改过。</dd><dt>备份</dt><dd id="sources-backup">备份保存在插件配置的备份目录，保存后会读回核对。</dd><dt>远端席</dt><dd>只展示本机保存的远端登记，不声称已验证远端运行状态。</dd></dl><div id="warnings"></div></section>
+<section id="operation" hidden>
+<div id="operation-dialog" role="dialog" aria-modal="true" aria-labelledby="operation-title" aria-describedby="operation-phase" tabindex="-1">
+<div class="operation-heading"><span class="action-spinner" aria-hidden="true"></span><h2 id="operation-title"></h2><span id="operation-time"></span></div>
+<p id="operation-phase" role="status" aria-live="polite"></p>
+<p id="operation-slow" hidden>仍在等待当前步骤的回执。远端连接可能需要一些时间，请勿重复提交。</p>
+<ul id="operation-targets"></ul>
+<details id="operation-history"><summary>执行记录</summary><ol id="operation-steps"></ol></details>
+<div class="operation-actions"><button id="operation-close" type="button" disabled>执行中…</button></div>
+</div>
+</section>
+<section id="setting-editor" hidden>
+<div class="setting-dialog" role="dialog" aria-modal="true" aria-labelledby="setting-editor-title" aria-describedby="setting-editor-description">
+<div class="setting-dialog-head"><h2 id="setting-editor-title"></h2><p id="setting-editor-description"></p></div>
+<div id="setting-editor-body"></div><p id="setting-editor-error" role="alert" hidden></p>
+<div class="setting-dialog-actions"><button id="setting-editor-restore" type="button" class="text-action" hidden>恢复备份…</button><span class="grow"></span><button id="setting-editor-cancel" type="button">取消</button><button id="setting-editor-preview" type="button" class="primary">预览更改</button></div>
+</div>
+</section>
+<section id="review" hidden>
+<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
+<h2 id="review-title">确认写入</h2>
+<p class="caption" id="review-note"></p>
+<p id="review-error" role="alert" hidden></p>
+<div class="diff-toolbar"><code id="diff-file"></code><button type="button" id="diff-context">展开整个文件</button></div>
+<pre id="diff"></pre>
+<div class="actions"><button id="confirm" type="button" class="primary">确认写入</button><button id="cancel" type="button">取消</button></div>
+</div>
+</section>
+<footer>First Mate 拥有派工与生命周期。派工页只改后续派工；副手页只改下一次启动配置。<span id="version">本地插件 v__FM_VERSION__</span></footer>
+</main></body></html>

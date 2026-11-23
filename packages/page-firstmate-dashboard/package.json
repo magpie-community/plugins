@@ -1,0 +1,66 @@
+{
+  "name": "@magpie-community/page-firstmate-dashboard",
+  "version": "0.8.9",
+  "description": "View and manage Firstmate configuration from MagPie.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./main.mjs",
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "firstmate"
+  ],
+  "magpie": {
+    "name": "First Mate 船员配置",
+    "summary": {
+      "en": "Manage Firstmate dispatch rules, secondmate startup settings, and quota sources.",
+      "zh": "管理 Firstmate 派工规则、二副启动配置和额度来源。"
+    },
+    "page": {
+      "title": "First Mate",
+      "titles": {
+        "zh": "First Mate 船员配置"
+      },
+      "file": "page/index.html",
+      "service": {
+        "port": 35871,
+        "option": "port"
+      }
+    },
+    "permissions": []
+  },
+  "files": [
+    "main.mjs",
+    "server.mjs",
+    "remote-home.mjs",
+    "firstmate-config.mjs",
+    "quota-source.mjs",
+    "settings.mjs",
+    "model-icons.mjs",
+    "page/index.html",
+    "page/loader.js",
+    "ui/actions.js",
+    "ui/app.js",
+    "ui/bridge.js",
+    "ui/controls.js",
+    "ui/index.html",
+    "ui/models.js",
+    "ui/quota.js",
+    "ui/recovery.js",
+    "ui/settings-scope.js",
+    "ui/settings.css",
+    "ui/settings.js",
+    "ui/style.css",
+    "ui/icons/",
+    "README.md",
+    "native-models.mjs",
+    "magpie-agent-reader.mjs",
+    "native-icons.json",
+    "model-parameters.mjs",
+    "LICENSE",
+    "MAGPIE-LICENSE",
+    "validation-cache.mjs",
+    "settings-catalog.mjs"
+  ]
+}
