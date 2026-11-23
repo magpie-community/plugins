@@ -11,7 +11,7 @@
 // the app's storage endpoint, and a background cookie rotator.
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
-import { RelayBrowser, findChrome, pageEmail, profileRoot, signIn } from "./browser.mjs"
+import { ACCOUNTS_URL, RelayBrowser, findChrome, pageEmail, profileRoot, signIn } from "./browser.mjs"
 import { GeminiError, MODELS, RelaySession, thinkingByte } from "./relay.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
@@ -34,17 +34,6 @@ const ICON =
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
 
-// accountName reads the account's Google email. It goes through the
-// account's own relay browser (the one already running — a second Chrome
-// on the same profile would lose the singleton lock and fail) and reads
-// the accounts.google.com page, which no /sorry ever replaces. "" when
-// the account is not reachable right now; the name is cosmetic, the
-// cookies decide what is served.
-async function accountName(profileDir) {
-  if (!profileDir) return ""
-  return pageEmail(browserFor(profileDir))
-}
-
 function models(table) {
   const out = {}
   for (const [id, m] of Object.entries(table))
@@ -59,9 +48,13 @@ function models(table) {
   return out
 }
 
-export function createPlugin({ profileDir, headless = true } = {}) {
-  // one relay browser and session per account, kept across requests: the
-  // anonymous account runs its own signed-out browser
+export function createPlugin({ profileDir, headless = true, signInImpl = signIn, pageEmailImpl = pageEmail, accountNameImpl = null } = {}) {
+  // signInImpl / pageEmailImpl / accountNameImpl exist so the auth callback
+  // can be exercised offline: signIn() is the user's window, the other two
+  // read the account's name afterwards.
+  //
+  // One relay browser and session per account, kept across requests: the
+  // anonymous account runs its own signed-out browser.
   const browsers = new Map()
   const browserFor = (key) => {
     let b = browsers.get(key)
@@ -83,6 +76,28 @@ export function createPlugin({ profileDir, headless = true } = {}) {
   // message history, across all accounts (entries are bound to their
   // account/browser/model, so sharing the map is safe)
   const pool = new SessionPool()
+
+  // accountName reads an account's Google email with a browser of its own
+  // on the account's already-signed profile. It deliberately does NOT
+  // borrow the account's long-lived relay browser: reading a name means
+  // sitting on accounts.google.com, and the relay's chat runs inside the
+  // app's own page (its cookies and session context decide the tier) —
+  // a name read must never move that page. The profile is signed in, so a
+  // quiet headless window started on the accounts page costs one short
+  // load and answers the account; "" when Google's risk control hides it
+  // right now, since the name is cosmetic and the cookies decide what is
+  // served.
+  const accountName = accountNameImpl ?? (async (profileDir) => {
+    if (!profileDir) return ""
+    const check = new RelayBrowser({ profileDir, headless: true, startUrl: ACCOUNTS_URL })
+    try {
+      return await pageEmailImpl(check)
+    } catch {
+      return ""
+    } finally {
+      await check.stop().catch(() => {})
+    }
+  })
 
   // the account's profile dir from its stored sign-in; anonymous has none.
   // A corrupt record must not silently become the anonymous visitor: the
@@ -149,7 +164,7 @@ export function createPlugin({ profileDir, headless = true } = {}) {
               const profile = join(profileRoot(), randomBytes(6).toString("hex"))
               let cookies
               try {
-                cookies = await signIn(profile)
+                cookies = await signInImpl(profile)
               } catch (e) {
                 return { type: "failed", error: "打开浏览器失败：" + String(e?.message ?? e) }
               }

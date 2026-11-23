@@ -56,6 +56,29 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
 （`%LOCALAPPDATA%/magpie/gemini-relay-browser`），绝不碰日常浏览器，
 也不读写其他插件的目录。
 
+### 代理（大陆等直连不通的网络必须配）
+
+Chrome **不会**自己读 `HTTPS_PROXY`（Node 会，Chrome 不会）。直连打不开
+`gemini.google.com` / `accounts.google.com` 的网络里，不配代理的表现是：
+登录窗口能打开、也能登录，但随后读账号页一定失败，回调卡住直到超时。
+
+插件在拉起每一个 Chrome 时按下列顺序取代理，并传 `--proxy-server`：
+
+1. `GEMINI_RELAY_PROXY`（显式指定；值 `none`/`direct` 表示强制直连）
+2. `HTTPS_PROXY` / `https_proxy`
+3. `HTTP_PROXY` / `http_proxy`
+4. `ALL_PROXY` / `all_proxy`（`socks5://` 亦可）
+
+裸 `host:port` 会自动补成 `http://host:port`。给 magpie 配上代理后重启它
+（宿主进程的环境变量才是插件读到的那些）：
+
+```
+setx HTTPS_PROXY http://127.0.0.1:7890
+```
+
+只想给本插件配时，用 `GEMINI_RELAY_PROXY`。DevTools 调试端口走 loopback，
+Chrome 默认绕过，不受代理影响。
+
 ## OpenAI 兼容接口
 
 - `model`：上表之一（可带 `gemini-relay/` 前缀）

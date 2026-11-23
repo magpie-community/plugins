@@ -61,20 +61,39 @@ export function googleEmailFromCookies(cookies) {
 }
 
 
-// pageEmail navigates a live relay browser to Google's accounts page (the
-// one page of the ecosystem that is never /sorry-ed) and reads the signed-in
-// account's email from its HTML — the app page itself is the one risk
-// control replaces.
-export async function pageEmail(browser) {
+// pageEmail starts a browser of its own on the signed profile, sitting on
+// Google's accounts page (the one page of the ecosystem that is never
+// /sorry-ed), and reads the signed-in account's email from its HTML — the
+// app page itself is the one risk control replaces. The caller passes a
+// browser already started on ACCOUNTS_URL (see RelayBrowser's startUrl):
+// nothing is navigated, because the relay's chat lives in its own page and
+// a name read must never move it.
+//
+// The account page is a heavy page that resolves and hydrates at its own
+// pace (a cold profile, a slow proxy), so the email is polled for instead
+// of assumed after one fixed wait: a fixed 6 s read came back empty on a
+// first launch and lost the name for no reason.
+export async function pageEmail(browser, { timeout = 30_000, poll = 1000 } = {}) {
   try {
     const page = await browser.ensure()
-    await page.send("Page.navigate", { url: ACCOUNTS_URL })
-    await new Promise((r) => setTimeout(r, 6000))
-    const t = await page.eval(`(() => {
+    if (!page) return ""
+    const read = `(() => {
       const html = document.documentElement.innerHTML
       return (html.match(/"oPEP7c":"([^"]+)"/) || [])[1] || ""
-    })()`)
-    return t || ""
+    })()`
+    const end = Date.now() + timeout
+    let last = ""
+    while (Date.now() < end) {
+      try {
+        const t = await page.eval(read)
+        if (t) return t
+        last = t || last
+      } catch {
+        // the page may still be navigating; keep polling
+      }
+      await new Promise((r) => setTimeout(r, poll))
+    }
+    return last || ""
   } catch {
     return ""
   }
@@ -140,7 +159,7 @@ async function cdpOnce(port, method, params = {}, timeout = 5000) {
 
 // openWindow starts Chrome on profile at url and answers a handle that
 // reads its cookies and closes it.
-export async function openWindow(profile, url, { headless = false, browser = findChrome() } = {}) {
+export async function openWindow(profile, url, { headless = false, browser = findChrome(), proxy = proxyFor() } = {}) {
   if (!browser) {
     throw Object.assign(new Error("没有找到 Chrome、Edge 或 Chromium。请先安装 Chrome，或用 GEMINI_RELAY_BROWSER 指定浏览器。"), { code: "browser_missing" })
   }
@@ -150,6 +169,7 @@ export async function openWindow(profile, url, { headless = false, browser = fin
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${port}`,
     "--remote-debugging-address=127.0.0.1",
+    ...proxyArgs(proxy),
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-sync",
@@ -238,6 +258,34 @@ export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settl
   }
 }
 
+// proxyFor answers the proxy URL Chrome should be launched with. On many
+// networks gemini.google.com and accounts.google.com are unreachable
+// directly and only answer through a local proxy — and Chrome does NOT pick
+// one up from HTTPS_PROXY the way Node does, so a launch without it dies on
+// chrome-error://chromewebdata and every sign-in ends after five minutes of
+// nothing. An explicit GEMINI_RELAY_PROXY wins; otherwise the standard
+// proxy variables are read. "" means "no proxy flag" (a direct connection).
+export function proxyFor(env = process.env) {
+  const direct = env.GEMINI_RELAY_PROXY
+  if (direct === "none" || direct === "direct") return ""
+  if (direct) return String(direct).trim()
+  const raw =
+    env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || ""
+  const v = String(raw).trim()
+  if (!v) return ""
+  // Chrome wants http(s)://host:port; socks5:// is understood too, but a
+  // bare host:port needs its scheme spelled out
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "http://" + v
+}
+
+// proxyArgs is the Chrome flag list for a proxy (none when there is none).
+// Chrome bypasses loopback by default, and that is what the DevTools port
+// needs — no bypass override is passed, so 127.0.0.1 stays direct.
+export function proxyArgs(proxy) {
+  if (!proxy) return []
+  return [`--proxy-server=${proxy}`]
+}
+
 export function findChrome(env = process.env, platform = process.platform) {
   if (env.GEMINI_RELAY_BROWSER && existsSync(env.GEMINI_RELAY_BROWSER)) return env.GEMINI_RELAY_BROWSER
   const candidates =
@@ -259,9 +307,19 @@ export function findChrome(env = process.env, platform = process.platform) {
 }
 
 export class RelayBrowser {
-  constructor({ profileDir, headless = true } = {}) {
+  constructor({ profileDir, headless = true, startUrl = null, proxy = proxyFor() } = {}) {
     this.profileDir = profileDir
     this.headless = headless
+    // where the page starts. The relay itself wants the app page (its chat
+    // runs inside it); a name read wants accounts.google.com instead, so it
+    // asks for that page up front rather than navigating away later.
+    this.startUrl = startUrl
+    // the app page needs its own script to come up before a chat runs in it;
+    // a name read polls the page itself (pageEmail), so it waits less here
+    this.startSettle = startUrl ? 2000 : 9000
+    // Chrome does not read HTTPS_PROXY by itself; without this the page
+    // never loads on a network where Google is only reachable through one
+    this.proxy = proxy ?? ""
     this.proc = null
     this.ws = null
     this.port = null
@@ -307,6 +365,7 @@ export class RelayBrowser {
       `--user-data-dir=${this.profileDir}`,
       this.headless ? "--headless=new" : "--window-size=1280,900",
       `--remote-debugging-port=${this.port}`,
+      ...proxyArgs(this.proxy),
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
@@ -328,9 +387,10 @@ export class RelayBrowser {
     await this._waitPort()
     const ver = await fetch(`http://127.0.0.1:${this.port}/json/version`).then((r) => r.json())
     await this._connect(ver.webSocketDebuggerUrl)
-    this._page = await this.newPage("https://gemini.google.com/app")
-    await this._page.send("Page.navigate", { url: "https://gemini.google.com/app" })
-    await new Promise((r) => setTimeout(r, 9000))
+    const startUrl = this.startUrl || "https://gemini.google.com/app"
+    this._page = await this.newPage(startUrl)
+    await this._page.send("Page.navigate", { url: startUrl })
+    await new Promise((r) => setTimeout(r, this.startSettle))
     // the session cookies rotate on Google's own schedule; keep them fresh
     // best-effort (a failure is logged upstream, never fatal)
     this.rotator = this.rotatorFactory?.(this) ?? null
