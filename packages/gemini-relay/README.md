@@ -69,6 +69,51 @@ Gemini 自己的页面里发出（用页面自己的 Cookie、自己的 TLS）�
   生效，对应应用选择器的思考深度三档
 - `strict_model: false` 可关掉档位校验（不建议）
 
+## 多账号池与风控调度（可选高级入口）
+
+默认的单账号路径不变。要多账号轮转、把封号风险压到最低时，用 `wire.mjs`
+的 `createAccountAwareRelay`（`@nonamelane/magpie-gemini-relay/pool`）：
+
+```js
+import { createAccountAwareRelay } from "./wire.mjs"
+
+const relay = createAccountAwareRelay({
+  accounts: [
+    { id: "a1", profileDir: ".../gemini-relay-browser/xxxx", weight: 1 },
+    { id: "a2", profileDir: ".../gemini-relay-browser/yyyy", weight: 2 },
+  ],
+  options: { headless: true }, // 另有 perAccountRpm=6 / globalRpm=20 / cooldownMs / banMs 等
+})
+
+const r = await relay.ask("你好", { model: "gemini-3.1-pro", reasoningEffort: "high" })
+const usage = await relay.usage("a1") // 该账号的额度快照（60s 缓存，尽力而为）
+const s = relay.stats()               // 账号池状态（ok/fail/冷却/封禁/在飞）
+```
+
+风控策略（`accounts.mjs`，全部离线可测）：
+
+- **least_used 轮转**：成功+失败最少的账号优先，weight 高的多承担，
+  最久未用的优先，同分随机抖动——避免流量集中在一个账号上。
+- **并发闸**：每账号在飞请求默认 ≤2，满了自动换号。
+- **限速**：每账号 6 rpm + 全局 20 rpm 令牌桶（`TokenBucket`），请求之间
+  再加 300–1500ms 的拟人随机停顿（`Jitter.humanPause`），避免机器节奏。
+- **失败分级记责**（`AccountPool.release`）：
+  - `429` / `usage_limit_exceeded`(1037)：只冷却“账号×模型档位”15 分钟
+    （额度按模型档位算，不牵连整号）；
+  - `401` / `auth_corrupted` / `rotate_401`：连续失败 +1，满 3 次封禁 2 小时；
+  - `ip_blocked`(1060)：出口 IP 的问题，不记账号头上，连续失败计数重置；
+  - 其他失败：连续 3 次也封禁，避免带病账号反复撞风控。
+- **熔断**（`CircuitBreaker`）：连续 5 次失败熔断 2 分钟，冷却后放一个
+  探测请求，成功才闭合。
+- 全部账号不可用时抛 `GeminiError`（status 429，code
+  `all_accounts_exhausted`），message 里带最早解封时间。
+
+用量与配额（`usage.mjs`）：在账号自己的页面里发 batchexecute（`jSf9Qc`
+GET_USAGE_INFO + `qpEbW` CHECK_GEMINI_QUOTA），解出订阅档位（FREE/PRO/
+ULTRA/PLUS）、5 小时窗口、周窗口、AI credits，以及 Pro/Flash/
+FlashThinking 的 remaining/total/用量百分比/重置时间。失败不致命：返回
+`{ error }` 并保留上一次快照（标 `stale`），聊天路径完全不受影响。
+
 ## 自检
 
 ```bash

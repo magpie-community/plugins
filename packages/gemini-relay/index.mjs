@@ -3,12 +3,21 @@
 // networks; the same request sent from inside the app's own page (its
 // cookies, its TLS) is served. The browser stays up across requests; one
 // in-page fetch per chat request, read as it streams.
+//
+// Beyond the old temporary-chat relay this adds: server-side
+// conversation continuation (the shared SessionPool — a follow-up sends
+// only the new user text), the full model table with per-tier thinking
+// depths, tool calls over the ```tool_call fence, image upload through
+// the app's storage endpoint, and a background cookie rotator.
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 import { RelayBrowser, findChrome, pageEmail, profileRoot, signIn } from "./browser.mjs"
 import { GeminiError, MODELS, RelaySession, thinkingByte } from "./relay.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
+import { SessionPool } from "./session_pool.mjs"
+import { uploadFile } from "./upload.mjs"
+import { CookieRotator } from "./rotate.mjs"
 
 const ID = "gemini-relay"
 const BASE = "https://gemini-relay.invalid/v1"
@@ -20,7 +29,7 @@ const VISITOR = { "gemini-auto": MODELS["gemini-auto"] }
 // the Gemini sparkle as a vector: crisp at any size (the favicon PNG got
 // blurry on the provider card)
 const ICON =
-  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iZzEiIHgxPSI4IiB5MT0iNDAiIHgyPSI0MCIgeTI9IjgiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNDI4NUY0Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjMzIiBzdG9wLWNvbG9yPSIjOUI3MkNCIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjY2IiBzdG9wLWNvbG9yPSIjRDk2NTcwIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI0YyQTYwQyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+CiAgPHBhdGggZmlsbD0idXJsKCNnMSkiIGQ9Ik0yNCA0YzEuMSA3LjkgNC4yIDEzLjYgOC40IDE3LjJDMzYgMjQuNSA0MSAyNi40IDQ0IDI2LjZ2LjhjLTMgLjItOCAyLjEtMTEuNiA1LjRDMjguMiAzNi40IDI1LjEgNDIuMSAyNCA1MGMtMS4xLTcuOS00LjItMTMuNi04LjQtMTcuMkMxMiAyOS41IDcgMjcuNiA0IDI3LjR2LS44YzMtLjIgOC0yLjEgMTEuNi01LjRDMTkuOCAxNy42IDIyLjkgMTEuOSAyNCA0eiIgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMCAtMykiLz4KPC9zdmc+Cg=="
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iZzEiIHgxPSI4IiB5MT0iNDAiIHgyPSI0MCIgeTI9IjgiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNDI4NUY0Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjMzIiBzdG9wLWNvbG9yPSIjOUI3MkNCIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjY2IiBzdG9wLWNvbG9yPSIjRDk2NTcwIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI0YyQTYwQyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8cGF0aCBmaWxsPSJ1cmwoI2cxKSIgZD0iTTI0IDRjMS4xIDcuOSA0LjIgMTMuNiA4LjQgMTcuMkMzNiAyNC41IDQxIDI2LjQgNDQgMjYuNnYuOGMtMyAuMi04IDIuMS0xMS42IDUuNEMyOC4yIDM2LjQgMjUuMSA0Mi4xIDI0IDUwYy0xLjEtNy45LTQuMi0xMy42LTguNC0xNy4yQzEyIDI5LjUgNyAyNy42IDQgMjcuNHYtLjhjMy0uMiA4LTIuMSAxMS42LTUuQzE5LjggMTcuNiAyMi45IDExLjkgMjQgNHoiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDAgLTMpIi8+Cjwvc3ZnPgo="
 
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
@@ -43,9 +52,9 @@ function models(table) {
       name: m.name,
       limit: { context: 128000, output: 32768 },
       tool_call: true,
-      reasoning: false,
-      attachment: false,
-      modalities: { input: ["text"], output: ["text"] },
+      reasoning: m.mode === 3 || m.mode === 8,
+      attachment: true,
+      modalities: { input: ["text", "image"], output: ["text"] },
     }
   return out
 }
@@ -58,10 +67,23 @@ export function createPlugin({ profileDir, headless = true } = {}) {
     let b = browsers.get(key)
     if (!b) {
       b = new RelayBrowser({ profileDir: key === ANONYMOUS ? undefined : key, headless })
+      // the cookie rotator rides the browser's own lifecycle: started with
+      // the page, stopped with the browser, failures only logged
+      b.rotatorFactory = (browser) =>
+        new CookieRotator({
+          page: () => browser._page,
+          cookies: () => browser.cookies?.(),
+          onError: (e) => console.warn("[gemini-relay] cookie 轮换失败：", String(e?.message ?? e)),
+        })
       browsers.set(key, b)
     }
     return b
   }
+  // the shared conversation pool: one server-side conversation per
+  // message history, across all accounts (entries are bound to their
+  // account/browser/model, so sharing the map is safe)
+  const pool = new SessionPool()
+
   // the account's profile dir from its stored sign-in; anonymous has none.
   // A corrupt record must not silently become the anonymous visitor: the
   // request would be served by the wrong identity at the wrong tier. It
@@ -77,7 +99,10 @@ export function createPlugin({ profileDir, headless = true } = {}) {
       throw new GeminiError("账号的登录记录已损坏，请移除后重新登录。", { code: "auth_corrupted", status: 401 })
     }
   }
-  const sessionFor = (auth) => new RelaySession({ browser: browserFor(accountKey(auth)) })
+  const sessionFor = (auth) => {
+    const key = accountKey(auth)
+    return new RelaySession({ browser: browserFor(key), pool, accountKey: key })
+  }
 
   return {
     config: async (cfg) => {
@@ -180,31 +205,50 @@ export function createPlugin({ profileDir, headless = true } = {}) {
           const model = String(body.model ?? "gemini-auto").replace(/^gemini-relay\//, "")
           let m = table[model] ?? (accountKey(auth) === ANONYMOUS ? undefined : MODELS[model])
           if (!m) return json(404, `没有模型 ${model}。可用：${Object.keys(table).join("、")}。`, "model_not_found")
-          // 4 Neon carries its thinking depth as the request's reasoning
-          // effort (the app's own 低/中/高 selector); unset = the app default.
-          // An invalid value is a 400 whatever the model; a valid one on a
-          // model without depths is a 400 too — silently ignoring a client's
+          // thinking depth rides the request's reasoning effort (the app's
+          // own 低/中/高 selector); unset = the app default. An invalid
+          // value is a 400 whatever the model; a valid one on a model
+          // without depths is a 400 too — silently ignoring a client's
           // requested constraint would mislead it.
           if (body.reasoning_effort) {
-            let b15
+            let think
             try {
-              b15 = thinkingByte(body.reasoning_effort)
+              think = thinkingByte(body.reasoning_effort)
             } catch (e) {
               return json(400, String(e?.message ?? e), "invalid_request_error")
             }
-            if (m.b14 !== 3) return json(400, `模型 ${m.name} 没有思考深度选择，reasoning_effort 仅 4 Neon（gemini-3.1-pro）支持。`, "invalid_request_error")
-            m = { ...m, b15 }
+            if (!(m.mode === 3 || m.mode === 8)) return json(400, `模型 ${m.name} 没有思考深度选择，reasoning_effort 仅 4 Neon / 4 Carbon 支持。`, "invalid_request_error")
+            m = { ...m, think }
           }
-          const prompt = flatten(body)
+          // images ride the OpenAI content parts; they are uploaded
+          // through the app's storage endpoint and carried in inner[0][3].
+          // An upload failure is not fatal: the turn degrades to the same
+          // text placeholder a non-carried image gets. The page is only
+          // reached when there is something to upload.
+          const files = []
+          const messages = await extractImages(body.messages, async (data, mime) => {
+            const page = await session.browser.ensure()
+            const ref = await uploadFile(page, { data, filename: "image.png", mime })
+            files.push(ref)
+          })
+          const prompt = flatten({ messages, tools: body.tools })
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = () => Math.ceil(prompt.length / 3)
           // strict by default: a silent tier downgrade (asked Neon, served
           // Hydrogen) must fail loudly rather than pass as if fine
           const strictModel = body.strict_model !== false
+          // the inner[0][3] file references ride the ask's options
+          const askOptions = {
+            model: files.length ? { ...m, files } : m,
+            signal: request.signal,
+            strictModel,
+            messages,
+            continueConversation: body.continue_conversation !== false,
+          }
           try {
             if (body.stream)
-              return await sse({ id, model, signal: request.signal, promptTokens, ask: (onUpdate, sig) => wrapAsk(session, prompt, m, onUpdate, sig, strictModel) })
-            const final = await session.ask(prompt, { model: m, signal: request.signal, strictModel })
+              return await sse({ id, model, signal: request.signal, promptTokens, ask: (onUpdate, sig) => wrapAsk(session, prompt, { ...askOptions, signal: sig }, onUpdate) })
+            const final = await session.ask(prompt, askOptions)
             return Response.json(completion({ id, model, final, promptTokens: promptTokens() }))
           } catch (e) {
             // a client abort travels as a real AbortError (or as the
@@ -224,11 +268,45 @@ export function createPlugin({ profileDir, headless = true } = {}) {
   }
 }
 
+// extractImages walks the messages' content arrays: every image_url part
+// with a data: URL is decoded and uploaded, and its part is replaced by
+// plain text (the flattened prompt carries text only). A failed upload
+// degrades to the placeholder text instead of failing the turn.
+async function extractImages(messages, upload) {
+  const out = []
+  for (const m of messages ?? []) {
+    if (!Array.isArray(m?.content)) {
+      out.push(m)
+      continue
+    }
+    const parts = []
+    for (const c of m.content) {
+      const url = c?.image_url?.url ?? c?.image_url
+      const isData = typeof url === "string" && url.startsWith("data:")
+      if (c?.type === "image_url" && isData) {
+        try {
+          const [head, b64] = url.split(",", 2)
+          const mime = (head.match(/data:([^;]+)/) ?? [])[1] || "image/png"
+          await upload(Buffer.from(b64, "base64"), mime)
+          parts.push({ type: "text", text: "[图片已上传，随本条消息发送]" })
+          continue
+        } catch {
+          parts.push({ type: "text", text: "[此消息带有一张图片：图片上传失败]" })
+          continue
+        }
+      }
+      parts.push(c)
+    }
+    out.push({ ...m, content: parts })
+  }
+  return out
+}
+
 // ask with streaming updates: the relay reads the whole reply at once (the
 // page's fetch is already streamed), so onUpdate fires once with the final
 // text — enough for the SSE wrapper to emit it as one chunk set.
-function wrapAsk(session, prompt, model, onUpdate, signal, strictModel = false) {
-  return session.ask(prompt, { model, signal, strictModel }).then((final) => {
+function wrapAsk(session, prompt, options, onUpdate) {
+  return session.ask(prompt, options).then((final) => {
     onUpdate({ text: final.text, reasoning: final.reasoning })
     return final
   })
@@ -241,4 +319,4 @@ export default async function GeminiWebRelay({ client, options } = {}) {
   return createPlugin({ profileDir: dir, headless: options?.headless ?? true })
 }
 
-export const _internal = { createPlugin, MODELS, GeminiError, findChrome }
+export const _internal = { createPlugin, MODELS, GeminiError, findChrome, SessionPool, CookieRotator, uploadFile }

@@ -21,21 +21,24 @@
 // The reply text sits at inner[4][0][1][0] of the response frames and the
 // served model name at inner[42] — the same spots the old protocol uses.
 //
-// Every relayed ask stays a temporary chat (inner[45] = 1): nothing is kept
-// in the account's history.
+// The 99-slot inner request arrives prebuilt (relay.mjs's buildInner):
+// a fresh temporary chat, or a continuation carrying the server-side
+// conversation metadata in inner[2]. The prompt rides inside inner[0][0];
+// the continuation's new user text rides in the ofs1 frame.
 
 export const WC_ENDPOINT = "https://geminiweb-pa.clients6.google.com/v1/processSession"
 
 // modelHeaderBin builds the x-goog-ext-525001261-bin value: a protobuf
-// (08 01 = field 1 varint 1) + the model hex as field 5 + the tier byte as
-// field 15, base64'd.
-function modelHeaderBin(hex, mode) {
+// (08 01 = field 1 varint 1) + the model hex as field 5 + the tier mode
+// as field 15 + the thinking depth as field 16, base64'd.
+function modelHeaderBin(hex, mode, think = 1) {
   const bytes = [0x08, 0x01]
   if (hex) {
     bytes.push(0x2a, hex.length)
     for (const c of hex) bytes.push(c.charCodeAt(0))
   }
-  if (mode > 0) bytes.push(0x78, mode)
+  if (mode > 0) bytes.push(0x78, mode) // field 15 varint: the tier
+  if (think > 0) bytes.push(0x80, 0x01, think) // field 16 varint: the depth
   let s = ""
   for (const b of bytes) s += String.fromCharCode(b)
   return btoa(s)
@@ -43,7 +46,7 @@ function modelHeaderBin(hex, mode) {
 
 // The page function. Built as a plain string (not a template literal): it is
 // spliced into Runtime.evaluate, and its own string literals must survive.
-const PAGE_WC = `(async (hex, mode, depth, prompt) => {
+const PAGE_WC = `(async (hex, mode, depth, inner) => {
   const Q = String.fromCharCode(34)
   const NL = String.fromCharCode(13, 10)
   const out = { log: [], served: [], reply: "", reasoning: "" }
@@ -55,7 +58,7 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
     const b = [8, 1]
     if (hx) { b.push(42, hx.length); for (const c of hx) b.push(c.charCodeAt(0)) }
     if (md > 0) b.push(120, md)
-    if (dp > 0) b.push(126, dp)
+    if (dp > 0) b.push(128, 1, dp)
     let s = ""; b.forEach(x => s += String.fromCharCode(x)); return btoa(s)
   }
   const hh = encodeURIComponent("X-Goog-Api-Key:" + apiKey + NL + "x-goog-ext-525001261-bin:" + mh(hex, mode, depth) + NL + "X-WebChannel-Content-Type:application/json+protobuf" + NL)
@@ -144,7 +147,8 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
   if (!sid || !gsid) { out.err = "handshake incomplete (status " + h0.status + ")"; return out }
   const sess = "gsessionid=" + encodeURIComponent(gsid) + "&SID=" + encodeURIComponent(sid)
   // ---- downstream collector: polls with a growing AID until done ----
-  let done = false, ack = false, lastAid = 0, errFrame = ""
+  let done = false, ack = false, lastAid = 0, errFrame = "", errCode = ""
+  let cid = "", rid = "", rcid = "", marker = ""
   const served = new Set(); let reply = ""; let reasoning = ""
   let collecting = true
   ;(async () => {
@@ -162,36 +166,31 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
           if (ev.inner) {
             const b = ev.inner
             if (typeof b[42] === "string" && b[42]) served.add(b[42])
+            if (b[1] && typeof b[1][0] === "string" && b[1][0]) cid = b[1][0]
+            if (b[1] && typeof b[1][1] === "string" && b[1][1]) rid = b[1][1]
+            if (typeof b[25] === "string" && b[25]) marker = b[25]
             const c = b[4] && b[4][0]
             if (Array.isArray(c)) {
+              if (typeof c[0] === "string" && c[0].slice(0, 3) === "rc_") rcid = c[0]
               if (c[1] && typeof c[1][0] === "string" && c[1][0].length > reply.length) reply = c[1][0]
               const th = c[37] && c[37][0] && c[37][0][0]
               if (typeof th === "string" && th.length > reasoning.length) reasoning = th
             }
           }
         })
+        if (!rcid) { const m = r.text.match(/"rc_[A-Za-z0-9_-]{6,}"/); if (m) rcid = m[0].slice(1, -1) }
       }
       if (done) break
       await new Promise(r2 => setTimeout(r2, 350))
     }
     collecting = false
   })()
-  // ---- inner request (99 slots, temporary chat) ----
-  const inner = new Array(99).fill(null)
-  inner[0] = ["", 0, null, null, null, null, 0]
-  inner[1] = ["en"]; inner[2] = ["", "", "", null, null, null, null, null, null, ""]
-  inner[6] = [0]; inner[7] = 1; inner[10] = 1; inner[11] = 0
-  inner[17] = [[0]]; inner[18] = 0; inner[27] = 1; inner[30] = [4]
-  inner[41] = [1]
-  inner[45] = 1 // temporary chat, always
-  inner[53] = 0
-  inner[59] = Math.random().toString(36).slice(2, 14) + Date.now().toString(36)
-  inner[61] = []; inner[68] = 1; inner[79] = 1; inner[80] = 1
-  const meta = [1, hex, "en", "u" + Math.random().toString(36).slice(2) + Date.now().toString(36)]
-  let rid = 10001 + Math.floor(Math.random() * 80000)
+  // ---- inner request arrives prebuilt (temporary or continuation) ----
+  const meta = [1, hex, "en", inner[59]]
+  let ridn = 10001 + Math.floor(Math.random() * 80000)
   async function post(ofs, data) {
-    const u = EP + "?VER=8&" + sess + "&RID=" + rid + "&AID=" + lastAid + "&zx=" + zx() + "&t=1"
-    rid++
+    const u = EP + "?VER=8&" + sess + "&RID=" + ridn + "&AID=" + lastAid + "&zx=" + zx() + "&t=1"
+    ridn++
     return xhr("POST", u, "count=1&ofs=" + ofs + "&req0___data__=" + encodeURIComponent(JSON.stringify(data)))
   }
   // ---- ofs0 (setup), wait for ack, ofs1 (the prompt) ----
@@ -202,7 +201,7 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
   const t0 = Date.now()
   while (!ack && !done && Date.now() - t0 < 12000) await new Promise(r => setTimeout(r, 300))
   let p1
-  try { p1 = await post(1, [null, [1, null, null, null, null, null, null, null, [prompt]]]) }
+  try { p1 = await post(1, [null, [1, null, null, null, null, null, null, null, [inner[0][0]]]]) }
   catch (e) { out.err = "ofs1: " + String(e && e.message || e); collecting = false; return out }
   if (p1.status !== 200) { out.err = "ofs1 status " + p1.status; collecting = false; return out }
   // ---- wait for the end frame ----
@@ -214,7 +213,8 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
   out.reply = reply
   out.reasoning = reasoning
   out.ms = Date.now() - t1
-  if (errFrame) out.errFrame = errFrame
+  out.cid = cid; out.rid = rid; out.rcid = rcid; out.finalMarker = marker
+  if (errFrame) { out.errFrame = errFrame; const m = errFrame.match(/(10[0-9]{2}|16|7)/); if (m) out.code = m[1] }
   // a stream cut off before its end frame is a failed ask, whether or not
   // some text had already arrived: a partial reply must never pass as the
   // whole answer
@@ -222,21 +222,30 @@ const PAGE_WC = `(async (hex, mode, depth, prompt) => {
   return out
 })`
 
-export function pageWebChannelEval(hex, b14, b15, prompt) {
-  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${b14 ?? 1}, ${b15 ?? 0}, ${JSON.stringify(prompt)}) })()`
+// pageWebChannelEval splices the page function with the inner request
+// passed as an argument (never interpolated): hex for the model header,
+// mode the tier byte, depth the thinking depth, inner the 99-slot
+// request built by relay.mjs's buildInner.
+export function pageWebChannelEval(hex, mode, depth, inner) {
+  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${mode ?? 1}, ${depth ?? 1}, ${JSON.stringify(inner)}) })()`
 }
 
 // what a tier byte is expected to serve (2026-11-22 measurements): 1 the
-// free tier's 4 Hydrogen, 3 the pro tier's 4 Neon/Carbon. auto (hex "") is
-// exempt from the check.
+// free tier's 4 Hydrogen, 3 the paid 4 Neon, 8 the paid 4 Carbon, 6 the
+// 3.5 Flash-Lite. auto (hex "") is exempt from the check.
 const EXPECTED_SERVED = {
   1: ["4 Hydrogen"],
-  3: ["4 Neon", "4 Carbon"],
+  3: ["4 Neon"],
+  6: ["3.5 Flash-Lite"],
+  8: ["4 Carbon"],
 }
 
 export function servedMismatch(served, model) {
   if (!served?.length || !model.hex) return null // auto: anything goes
-  const ok = EXPECTED_SERVED[model.b14 ?? 1] ?? []
+  const mode = model.mode ?? model.b14 ?? 1
+  const ok = EXPECTED_SERVED[mode] ?? []
   if (ok.some((name) => served.some((s) => s.includes(name)))) return null
   return `请求的是 ${model.name}，但 Gemini 实际服务的是 ${served.join("、") || "未知模型"}（路由被降级）。`
 }
+
+export { modelHeaderBin }

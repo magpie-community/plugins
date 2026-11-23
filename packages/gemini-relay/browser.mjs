@@ -272,6 +272,10 @@ export class RelayBrowser {
     this._page = null
     this._starting = null
     this.tmpProfile = null
+    this.rotator = null
+    // the rotator factory is injectable so tests can stub it; production
+    // wires the real one in index.mjs via browser.rotatorFactory
+    this.rotatorFactory = null
   }
 
   started() {
@@ -319,6 +323,7 @@ export class RelayBrowser {
     this.proc.on("exit", () => {
       this.ws = null
       this._page = null
+      this.rotator?.stop?.()
     })
     await this._waitPort()
     const ver = await fetch(`http://127.0.0.1:${this.port}/json/version`).then((r) => r.json())
@@ -326,6 +331,10 @@ export class RelayBrowser {
     this._page = await this.newPage("https://gemini.google.com/app")
     await this._page.send("Page.navigate", { url: "https://gemini.google.com/app" })
     await new Promise((r) => setTimeout(r, 9000))
+    // the session cookies rotate on Google's own schedule; keep them fresh
+    // best-effort (a failure is logged upstream, never fatal)
+    this.rotator = this.rotatorFactory?.(this) ?? null
+    this.rotator?.start?.()
     return this._page
   }
 
@@ -417,6 +426,8 @@ export class RelayBrowser {
       this.tmpProfile = null
       this.profileDir = null // a temp profile is gone; a restart makes a fresh one
     }
+    this.rotator?.stop?.()
+    this.rotator = null
     this.ws = null
     this._page = null
   }
