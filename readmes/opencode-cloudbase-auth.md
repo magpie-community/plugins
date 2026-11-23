@@ -59,6 +59,14 @@ flowchart LR
 
 Editable sources: [`docs/architecture.drawio`](docs/architecture.drawio) (open with [app.diagrams.net](https://app.diagrams.net)).
 
+### What's new in 0.2.0
+
+- SSE is **chunked** (200 chars per frame over `ReadableStream`, plus `x-accel-buffering: no`) instead of one lump.
+- Models carry `context` / `output` limits so agents size their window correctly.
+- Upstream error codes map to HTTP statuses (`EXCEED_TOKEN_QUOTA_LIMIT` → 429, `MODEL_NOT_ALLOWED` → 400, `AI_CHANNEL_NOT_ALLOWED` → 500 …) so clients fail fast instead of retrying blindly.
+- `region` (cn / intl) and `timeoutMs` (default 150 s) are configurable at login / via options.
+- The cloud function validates every request: ≤200 messages, ≤100K chars each, ≤400K total, ≤512 KB body, plus a model allowlist (`AI_PROXY_ALLOWED_MODELS` env var) and an `action: "ping"` health check.
+
 ## Install
 
 ```bash
@@ -132,13 +140,15 @@ magpie provider test cloudbase      # should print: ✓ chat <ms> · hy3
 
 ## Models
 
-| Model id | Notes |
-| --- | --- |
-| `hy3` | Hunyuan 3, cheapest |
-| `hy4` | Hunyuan 4 |
-| `hy4-preview` | Hunyuan 4 preview |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash, peak/off-peak pricing |
-| `deepseek-v4.1-flash-1017` | DeepSeek V4.1 Flash 1017 snapshot |
+| Model id | Context | Max output | Notes |
+| --- | --- | --- | --- |
+| `hy3` | 256K | 16,384 | Hunyuan 3, cheapest |
+| `hy4` | 1M | 16,384 | Hunyuan 4 |
+| `hy4-preview` | 1M | 16,384 | Hunyuan 4 preview |
+| `deepseek-v4.1-flash` | 1M | 16,384 | DeepSeek V4.1 Flash, peak/off-peak pricing |
+| `deepseek-v4.1-flash-1017` | 1M | 16,384 | DeepSeek V4.1 Flash 1017 snapshot |
+
+Every model advertises `limit.context` / `limit.output`, so the agent sizes its context window correctly (hy3 is 256K, not the 128K some clients assume by default).
 
 Call them as `cloudbase/hy3` from any agent.
 
@@ -151,8 +161,8 @@ curl -s http://127.0.0.1:3425/v1/chat/completions \
 
 ## Limitations
 
-- **Not real streaming.** The upstream returns one complete JSON body; the plugin synthesizes SSE frames, so time-to-first-token equals full generation time. Short answers feel fine (1–3 s), long ones will not.
-- **Cloud function timeout.** Default 60 s (`timeout` in `cloudbaserc.json`, max 900 s). Very long outputs get truncated.
+- **Not real streaming.** The upstream returns one complete JSON body, so time-to-first-token still equals full generation time. The plugin splits that body into 200-character SSE frames over a `ReadableStream`, so the client paints progressively instead of receiving one lump — but felt latency is still bounded by the model's total generation time (measured: 43 s for a ~470-character `hy3` answer).
+- **Cloud function timeout.** 120 s by default (`timeout` in `cloudbaserc.json`, max 900 s); the plugin's own `timeoutMs` option defaults to 150 s. Very long outputs get truncated.
 - **Quota expires.** The growth-plan grant lasts 6 months. After it runs out, change `provider` in the cloud function from `hunyuan-v3` to `cloudbase` to bill against resource points.
 - **Channel is fixed.** The plugin never calls `/v1/ai/*` directly — that path is blocked for growth-plan quota by design.
 

@@ -13,10 +13,9 @@
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
+- **诊断落盘 + 风控冷却提前解除**（`0.4.2`，来自 [@CGAdmin544](https://github.com/CGAdmin544) 的 [PR #11](https://github.com/miaocell/magpie-doubao-work-auth/pull/11)）。上游拒绝时会存一份脱敏后的请求体（正文只留长度和前 120 字，Cookie/token 不入盘），能看出是哪个部分撑大的；风控冷却期内会探测服务端是否放行，用户在网页过掉验证后不用干等 5 分钟。
 - **设备上下文用真实值**（`0.4.1`）。`fp` 不再拿 `deviceId` 拼假指纹，直接用 Cookie 里的 `s_v_web_id`；`ttwid` 也真正随请求发送了。SSE 同时认 CRLF / CR 行尾，完整消息放在 `content` 里也能取到。
-- **支持 Linux**（`0.4.1`）。Linux 上可用「粘贴 Cookie」登录，对话 / 流式 / 工具调用 / 额度 / 签到都正常；浏览器登录和客户端读取在 Linux 上不显示。保管库也改成本地 key + AES-GCM，非 Windows 平台不再明文落盘。
 - **模型菜单按账号类型走**（`0.4.1`）。有订阅的账号能出到 12 个模型（多出 Qwen 4 Max、Qwen 3.8 Max、Qwen 3.8 Flash），飞书登录的账号仍是 9 个——菜单来自网页 SSR，和基线取并集，只增不减。
-- **工具回复容错**（`0.3.3`/`0.3.4`）。模型中途停下、工具 JSON 没闭合时，先救回写完的调用，救不回来就把正文当普通回复返回，不再整轮报 502；JSON 包在 Markdown 围栏里或前后带解释也能解析。
 
 ## 拿到的模型
 

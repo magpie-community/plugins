@@ -14,7 +14,7 @@ magpie plugin add /path/to/gestwork-magpie-plugin
 magpie plugin add github:DuskLin/gestwork-magpie-plugin
 ```
 
-安装后打开 **Magpie → Agent**，找到 **GestaWorks**。如果 Keel 的 `keel` CLI 在 PATH 中，或 Magpie 的连接文件已经存在，该行会显示为已检测。
+安装后打开 **Magpie → Agent**，找到 **GestaWorks**。插件通过旧版 Hong 的 `~/.hong` 数据目录检测安装；新版 Keel 会保留它指向 `~/.keel` 的兼容链接，因此新旧版本都可识别。不需要安装或使用 `keel` CLI。
 
 ## 使用
 
@@ -46,7 +46,11 @@ Keel 侧使用：
 - `providers.getModels`：读取实时模型目录。
 - `providers.getModelConfig` / `providers.setModelConfig`：启用 Provider 并设置默认模型。
 
-插件不会直接读写 Keel 的 SQLite 数据库。
+插件通过 Keel 的本地 API 注册 Provider 和设置模型，并在获得授权后直接事务更新 Keel 的模型存档，补齐显示名、上下文窗口、输出上限、视觉/推理能力和价格。不会修改 Keel 源码。
+
+模型存档写入前会在同目录创建 `agents.db.magpie-backup-<时间>` 一致性备份。已有注册表条目会合并保留，不会替换其他 Provider 的配置。
+
+**首次同步或模型元数据更新后需要重启 GestaWorks。** Keel 只在启动时读取模型注册表存档；不重启时，运行中进程可能仍显示旧名称和旧上下文。
 
 ### 断开恢复
 
@@ -97,7 +101,7 @@ magpie plugin options gestwork-magpie-plugin '{
 
 **Agent 行显示 not detected**
 
-确保 Keel 已安装，并且 `keel` 命令在 Magpie 的 PATH 中。该行仍可通过 `magpie gestaworks` 操作；连接文件出现后也会显示为已检测。
+确认桌面 App 已至少启动一次，并存在 `~/.hong` 数据目录（新版通常链接到 `~/.keel`）。插件不依赖 Keel CLI。
 
 **模型已选择，但 Keel 没有变化**
 

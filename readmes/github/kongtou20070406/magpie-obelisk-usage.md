@@ -6,7 +6,7 @@ A [magpie](https://usemagpie.ai) sidebar page that shows how often your coding a
 
 - **Heatmap** of calls per day, switching to hourly bars when you pick "today"
 - **By agent**: which agent (Claude Code, Codex, …) made the calls
-- **`--query` vs `--attune`** share
+- **`--query` / `--attune` / `--search`** share
 - **Recent calls** list
 
 Everything is computed locally from obelisk's own database. The page has no network access and asks magpie for no permissions.
@@ -43,7 +43,7 @@ If you use coding agents every day, it is worth a star and a try. This plugin is
 | Host hook | Every 30 s runs the CLI, which reads the database **read-only** and writes `page/live.js` |
 | Page | Reloads `live.js` every 5 s and draws the charts |
 
-A "call" is a row in obelisk's `tool_calls` whose input contains `obelisk … --query` or `--attune`; its time comes from `messages`, its agent from `sessions.source`. Rows without a timestamp count toward totals but are not placed on the charts.
+A "call" is a row in obelisk's `tool_calls` whose input contains `obelisk … --query`, `--attune` or `--search`; its time comes from `messages`, its agent from `sessions.source`. Rows without a timestamp count toward totals but are not placed on the charts.
 
 ### Standalone CLI
 
@@ -51,7 +51,7 @@ A "call" is a row in obelisk's `tool_calls` whose input contains `obelisk … --
 node bin/obelisk-usage.mjs [--db PATH] [--out PATH]
 ```
 
-Prints a one-line summary (total, query, attune, undated) and writes the data file.
+Prints a one-line summary (total, query, attune, search, undated) and writes the data file.
 
 ## Develop
 

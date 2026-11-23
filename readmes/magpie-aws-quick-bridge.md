@@ -97,6 +97,7 @@ Key 用 `npx magpie-aws-quick-bridge status` 看。
 
 - **真实账号（我自己的个人账号）**：Magpie 插件的登录、对话、工具调用、线程复用、附件、额度；CC Switch 模式下 Claude Code、Codex、OpenCode 经本机 API 读文件、写文件。
 - **只用模拟服务测过**：企业账号、`advanced` 模型、图片附件、额度用完后的休息时间（我没把额度用完过）。
+- 企业账号的租户地址是 `….enterprise.quick.aws.com` 时，走的是 Amazon Quick 的 Gateway 线路：登录时自动识别，账号名和 AWS 账号 ID 取自令牌，令牌里没有时再问租户一次，都取不到就显示租户地址。这条线路的登录和对话我都只用模拟服务测过，登录或对话失败请把报错发到 issue。
 - 工具调用是靠提示词约定的文本协议做的，模型偶尔会不按约定来，重试一下通常就好。
 - Amazon Quick 每轮会带上它自己的一大段系统提示词，所以 token 数看起来很大；额度按它的 credits 算。
 

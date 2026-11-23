@@ -7,6 +7,12 @@ provider (`aws-quick`), so agents routed through magpie — Claude Code, Codex,
 Gemini CLI, OpenCode, etc. — can use the models behind Quick
 (see `magpie models | grep aws-quick`).
 
+> **Recommended clients: Claude Code or pi (pi-agent).** The plugin is
+> developed against these two. In Claude Code, tool calls, thread reuse
+> across turns, interrupts and large file writes are tested end-to-end; pi's
+> session-affinity headers are used to keep reusing the same Quick thread.
+> Other clients work too, but get less testing.
+
 > ⚠️ For personal use with your own account only. This drives the desktop
 > client's internal bidirectional WebSocket protocol (not a public API) and
 > very likely violates AWS terms of service; your account may be limited or

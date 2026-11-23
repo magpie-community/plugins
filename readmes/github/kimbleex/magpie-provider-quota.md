@@ -194,9 +194,9 @@ Readings older than five minutes, or with an unknown update time, appear in a li
 鼠标停在更新时间或额度上可查看详情。  
 Hover over an update time or quota to view details.
 
-点击刷新会通过 `GET /v1/magpie/quotas` 主动查询订阅额度、密钥套餐和 API 余额。Magpie 可能复用刚获取的读数。
+点击刷新会调用 `POST /v1/magpie/quotas/refresh`，让网关重新查询所有订阅额度、密钥套餐和 API 余额，再读取更新后的额度报告。Magpie 对连续的全量刷新有 30 秒限频。手动刷新失败时，页面保留当前读数并提示更新失败。
 
-Click Refresh to query subscription quotas, key plans and API balances through `GET /v1/magpie/quotas`. Magpie may reuse recent provider readings.
+Click Refresh to ask the gateway to refresh all subscriptions, key plans and API balances through `POST /v1/magpie/quotas/refresh`, then read the updated quota report. Magpie limits full refreshes to once every 30 seconds. If a manual refresh fails, the page keeps the current readings and displays an error.
 
 自动读取间隔为 60 秒；页面不可见时暂停。  
 Automatic reads run every 60 seconds and pause while the page is hidden.

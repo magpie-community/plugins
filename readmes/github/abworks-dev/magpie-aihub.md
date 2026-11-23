@@ -2,9 +2,9 @@
 
 面向 **aihub.top 普通消费者** 的 Magpie Provider 插件。用自己的账户或分组 Key，在 Magpie 中提供一个 `aihub-auto` 上游入口，按倍率和延迟选组、保留会话线路、在首次响应前有限重试。
 
-**版本：v0.8.0（预发布）。** v0.8.0 起，未显式配置上下文窗口时按平台与模型名取一组保守默认值（AIHub 的 `/v1/models` 与模型卡都不发布该字段），模型行尾可用 `|context|output` 覆盖。 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。v0.7.1 起用 Magpie 的 `auth.usage` 钩子在宿主「用量 → 概览」给出本账户的卡片：钱包余额，以及按平台配额汇总的今日/本周/本月预算使用。
+**版本：v0.9.3（预发布）。** v0.9.3 让监控页扛得住插件宿主重载：连不上页面服务时先自动重试一次，仍失败就显示「宿主刚重载」的说明和重试按钮，而不是把浏览器的 NetworkError 原样甩出来（更新插件、保存设置都会触发宿主重载，页面服务会短暂停摆）。v0.9.2 把默认端点改成 `aihub.top` 与 `aihub.dog` 两行（两者同一账号库），并把边缘故障的判据收紧为「HTML 网关页，或非 JSON 的 502/504」——纯文本 503 属于上游繁忙，不换入口。v0.9.0 新增「AIHub 端点」：可配置多个入口主机，只在**边缘故障**（DNS 失败、连接重置、非 JSON 的 502/504、网关 HTML 页）时换到下一个，AIHub 自己返回的 JSON 错误不换；另加 `spread` 流量分散（P2C / 加权随机，默认关）与 `maxInflightPerGroup` 单分组在途上限（默认 0 = 不限），默认行为不变。v0.8.0 起，未显式配置上下文窗口时按平台与模型名取一组保守默认值（AIHub 的 `/v1/models` 与模型卡都不发布该字段），模型行尾可用 `|context|output` 覆盖。 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。v0.7.1 起用 Magpie 的 `auth.usage` 钩子在宿主「用量 → 概览」给出本账户的卡片：钱包余额，以及按平台配额汇总的今日/本周/本月预算使用。
 
-已通过 285 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
+已通过 296 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
 
 ## 安装
 
@@ -84,6 +84,10 @@ github:abworks-dev/magpie-aihub
 | `platformCaps` | `{}` | 按平台覆盖上面的上限，例如 `{"deepseek":1,"zhipu":1.2}`；没写到的平台沿用 `maxMultiplier` |
 | `maxAttempts` | `3` | 每次请求最多推理尝试数，包含首次；范围 1–5 |
 | `poolSize` | `4` | 一次路由最多依次尝试的候选分组数，范围 1–32；它不再限制专用 Key 总数 |
+| `spread` | `off` | `off` / `p2c`（在最优附近的多组里随机抽两组取优）/ `weighted`（按 1/score 加权随机）；默认关，会话粘性始终优先 |
+| `maxInflightPerGroup` | `0` | 同一分组同时等待首字节的请求数上限，0–1000，0 表示不限 |
+| `endpoints` | `[{url:https://aihub.top,label:默认},{url:https://aihub.dog,label:优化}]` | 入口主机列表，最多 8 个；地址归一成协议+主机 |
+| `endpointMode` | `failover` | `failover` / `sticky`（只用主端点）/ `balance`（按延迟分流；`aihub.top` 与 `aihub.dog` 属同一账号库） |
 | `allowedGroups` / `excludedGroups` | `[]` | 分组 ID 白名单/排除名单，排除优先 |
 | `requirePassed` | `false` | 仅使用大厅 `passed` 分组；手工模式不支持 |
 | `autoCreateKeys` | `false` | 允许账户模式按需创建 Key；关闭不撤销已有 Key |
@@ -137,7 +141,7 @@ Key 准备失败返回稳定的 `error.code` 和脱敏信息，停止本次请�
 - 推理限流、401/403、5xx、网络错误与首字节超时触发冷却，并在同平台同模型候选间切换；遵守 `Retry-After`。普通 400/404 不泛化重试。Key 准备错误直接停止。
 - 已返回首字节后，流中断直接报错，不重放请求。首次响应前重试仍可能导致上游重复计费；与 Magpie 外层重试共同控制总预算。
 - 客户端需发送完整对话历史。`previous_response_id` 和服务端 `conversation` 状态续接会明确拒绝。
-- 远端固定 `https://aihub.top`：Responses / Chat Completions / models 使用 `/v1`；原生 Gemini 仅允许 `/v1beta/models/<model>:generateContent` 和 `:streamGenerateContent`，流式只接受可选 `alt=sse`。拒绝其他路径、query、重定向和自定义上游。
+- 入口主机来自「AIHub 端点」列表（默认只有 `https://aihub.top`，入站只接受列表中的 origin）：Responses / Chat Completions / models 使用 `/v1`；原生 Gemini 仅允许 `/v1beta/models/<model>:generateContent` 和 `:streamGenerateContent`，流式只接受可选 `alt=sse`。拒绝其他路径、query、重定向和自定义上游。
 - 请求头按白名单重建；Bearer 分组 Key 或原生 Gemini 的 `x-goog-api-key` 仅在服务端注入，不转发客户端 Cookie、Magpie API Key 或管理令牌。
 - 没有后台付费探测、外发遥测或自动计划任务；目录按需刷新，回环页面服务只提供只读视图。
 
