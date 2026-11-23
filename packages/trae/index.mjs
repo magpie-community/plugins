@@ -2984,6 +2984,103 @@ function ending(calls, finish, usage, limit, cut) {
   return { calls, finish: calls.length ? "tool_calls" : ended, dropped: 0 }
 }
 
+// GO_ON is the turn a reply Trae cut is asked to go on with, after the
+// text it had written so far as the assistant's own
+const GO_ON = "Continue exactly where your previous message stopped. Do not repeat anything already written and do not add any preface."
+
+// CUT_ROUNDS bounds the asks one reply takes: 16 of TRAE_CUT is 32000
+// tokens, an enterprise model's usual max_tokens
+const CUT_ROUNDS = 16
+
+// addUsage is two asks' usage as one: each ask is billed on its own, so
+// both its prompt and its reply count
+function addUsage(a, b) {
+  if (!a) return b
+  if (!b) return a
+  const out = {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
+  }
+  const cached = (u) => Number(u.prompt_tokens_details?.cached_tokens) || 0
+  if (a.prompt_tokens_details || b.prompt_tokens_details) out.prompt_tokens_details = { cached_tokens: cached(a) + cached(b) }
+  if (a.magpie_cache_unknown || b.magpie_cache_unknown) out.magpie_cache_unknown = true
+  return out
+}
+
+// continued is an enterprise model's reply carried past Trae's cut. Trae's
+// llm_utils_chat ends an enterprise model's reply at exactly TRAE_CUT
+// output tokens whatever max_tokens it is sent (top-level, or under
+// enterprise_custom_hyper_params, plugins#1366: 32768 sent, 2000 back).
+// Trae's own client never asks it for a long reply: its chat with an
+// enterprise model is the agent task (create_agent_task), whose cloud
+// swaps in Trae's own system prompt and tools, and its own llm_utils_chat
+// asks (titles, commit messages, branch names) carry no output limit at
+// all (libharness 3.4.22), so there is no field of Trae's own to send.
+// So a round that came to the cut with text written and no whole call is
+// asked again (more: the request with that text as the assistant's and
+// GO_ON after it), and what it answers is sent on as the same reply,
+// until a round ends short of the cut, makes a whole call, the asked
+// limit is spent, or CUT_ROUNDS is reached. A call cut mid-arguments is
+// dropped from the round it was cut in: the next round writes it whole.
+// The usage sent is every round's together; a reply still cut at the end
+// ends for length.
+async function* continued(answer, limit, cut, more) {
+  let text = ""
+  let total = null
+  let parts = answer
+  for (let round = 1; ; round++) {
+    let usage = null
+    let finish = ""
+    let whole = 0
+    let wrote = false
+    let failed = false
+    const held = []
+    for await (const p of parts) {
+      if (p.error) {
+        // a later ask that failed leaves the reply as Trae cut it
+        if (round === 1) {
+          yield p
+          return
+        }
+        failed = true
+        break
+      }
+      if (p.usage) {
+        usage = p.usage
+        continue
+      }
+      if (p.finish) {
+        finish = p.finish
+        continue
+      }
+      if (p.call && !wholeArgs(p.call.arguments)) {
+        held.push(p)
+        continue
+      }
+      if (p.call) whole++
+      if (p.text) {
+        text += p.text
+        wrote = true
+      }
+      yield p
+    }
+    total = addUsage(total, usage)
+    const wasCut = failed || (cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length"))
+    const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
+    const next = !failed && wasCut && wrote && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left).catch(() => null) : null
+    if (next) {
+      parts = next
+      continue
+    }
+    if (!wasCut || round === 1) yield* held
+    if (total) yield { usage: total }
+    if (wasCut && round > 1) yield { finish: "length" }
+    else if (finish) yield { finish }
+    return
+  }
+}
+
 // finishOf is OpenAI's finish_reason for the one Trae's last event gives,
 // "" for none it says or one it has no word for
 function finishOf(d) {
@@ -4473,7 +4570,37 @@ const makePlugin = (site) => async ({ client }) => {
                 fnOf.set(who, fn)
                 const cut = enterpriseModel(entry) ? TRAE_CUT : 0
                 const answer = done ? held : chain(held, it)
-                const out = await openai(req, traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer, () => ac.abort(), site, sent.max_tokens || 0, cut)
+                const got = traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer
+                // the next ask of a reply Trae cut (continued): the same
+                // request, function, host and session, with the text so far
+                // as the assistant's, asked for what is left of the limit.
+                // null when Trae doesn't answer it with a stream: the reply
+                // then ends cut, as one ask's did.
+                const more = async (text, left) => {
+                  const again = {
+                    ...req,
+                    max_completion_tokens: undefined,
+                    max_tokens: left > 0 ? left : undefined,
+                    messages: [...(Array.isArray(req.messages) ? req.messages : []), { role: "assistant", content: text }, { role: "user", content: GO_ON }],
+                  }
+                  const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                  const id = randomUUID()
+                  debugSent(host + "/api/agent/v3/llm_utils_chat", id, body)
+                  const r = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                    method: "POST",
+                    headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": id }),
+                    body: JSON.stringify(body),
+                    signal: ac.signal,
+                  })
+                  if (traeDebug()) console.error(`trae debug: request ${id} answered ${r.status} ${r.headers.get("content-type") ?? ""}`)
+                  if (!r.ok || !(r.headers.get("content-type") ?? "").includes("event-stream")) {
+                    r.body?.cancel?.().catch(() => {})
+                    return null
+                  }
+                  const p = parts(sse(r.body), Array.isArray(req.tools) ? req.tools : [])
+                  return traeDebug() ? debugEnd(id, p, body.max_tokens || 0, cut) : p
+                }
+                const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more) : got, () => ac.abort(), site, sent.max_tokens || 0, cut)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
@@ -4501,4 +4628,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, CUT_ROUNDS, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

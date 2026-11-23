@@ -19,12 +19,15 @@ const ent = { config_name: "AI/deekseek-v4.1-flash", usage: "chat_completion", c
 const SECRET = "LINE-001 the user's own words"
 
 const LONG = [["output", { response: "LINE-001" }], ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }]]
+const REST = [["output", { response: "LINE-002" }], ["done", { finish_reason: "stop", usage: { prompt_tokens: 90, completion_tokens: 50 } }]]
 
 async function asked(extra = {}, reply = LONG) {
   f?.close()
   f = fakeTrae()
   f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [{ function: "chat_v3", config_info_list: [ent] }] }))
-  f.route("POST /api/agent/v3/llm_utils_chat", () => sse(reply))
+  // the next ask of a cut reply (continued) is answered short and whole
+  let n = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", () => (n++ === 0 ? sse(reply) : sse(REST)))
   const hooks = await TraeCNAuthPlugin({ client: {} })
   await hooks.provider.models({ models: {} }, { auth: signedIn() })
   const opts = await hooks.auth.loader(async () => signedIn())
@@ -44,9 +47,10 @@ for (const stream of [false, true]) {
   test(`MAGPIE_TRAE_DEBUG writes the request sent and the reply's end, without the sign-in or the words (stream ${stream})`, async () => {
     process.env.MAGPIE_TRAE_DEBUG = "1"
     const lines = await asked({ stream })
-    expect(lines.length).toBe(3)
-    const [req, status, end] = lines
-    const sentAt = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1)
+    // the cut reply's ask, then the ask that goes on from it
+    expect(lines.length).toBe(6)
+    const [req, status, end, req2, status2, end2] = lines
+    const sentAt = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-2)
     // the id the line names is the one the request carried
     const rid = req.split(" ")[3]
     expect(sentAt.headers.get("x-request-id")).toContain(rid)
@@ -59,6 +63,13 @@ for (const stream of [false, true]) {
     expect(status).toStartWith(`trae debug: request ${rid} answered 200 text/event-stream`)
     expect(end).toStartWith(`trae debug: reply ${rid} trae_finish="" usage={"prompt_tokens":80,"completion_tokens":2000,`)
     expect(end).toContain("finish_sent=length")
+    const rid2 = req2.split(" ")[3]
+    expect(rid2).not.toBe(rid)
+    expect(f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1).headers.get("x-request-id")).toContain(rid2)
+    expect(JSON.parse(req2.slice(req2.indexOf("{"))).max_tokens).toBe(32768 - 2000)
+    expect(status2).toStartWith(`trae debug: request ${rid2} answered 200 text/event-stream`)
+    expect(end2).toStartWith(`trae debug: reply ${rid2} `)
+    expect(end2).toContain("finish_sent=stop")
     for (const l of lines) {
       expect(l).not.toContain("jwt-1")
       expect(l).not.toContain(SECRET)

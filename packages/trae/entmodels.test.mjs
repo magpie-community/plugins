@@ -22,6 +22,9 @@ const own = { config_name: "custom_model_mine", usage: "chat_completion", config
 const preset = { config_name: "glm-5", usage: "chat_completion", config_source: 1, is_preset: true, display_config: { display_name: "GLM-5" } }
 
 async function plugin(configs) {
+  // a test that asks twice closes the first fake: a second over it would
+  // keep the first's origin as the hosts to put back
+  f?.close()
   f = fakeTrae()
   f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [{ function: "chat_v3", config_info_list: configs }] }))
   return TraeCNAuthPlugin({ client: {} })
@@ -274,6 +277,8 @@ const cutCall = (out, args) => sse([
   ["output", { tool_calls: [{ id: "call_w1", index: 0, function: { name: "write", arguments: args } }] }],
   ["done", { usage: { prompt_tokens: 42032, completion_tokens: out } }],
 ])
+// a message's text, as Trae is sent it
+const said = (m) => (Array.isArray(m?.content) ? m.content.map((c) => c.text ?? "").join("") : m?.text ?? m?.content)
 const HALF = `{"path":"lines.txt","content":"${lines(60)}`
 const WHOLE = `{"path":"lines.txt","content":"${lines(3)}"}`
 
@@ -282,7 +287,9 @@ test("a call Trae cut at 2000 goes out as no call: the reply ends for length, it
   await hooks.provider.models({ models: {} }, { auth: signedIn() })
   let out = 2000
   let args = HALF
-  f.route("POST /api/agent/v3/llm_utils_chat", () => cutCall(out, args))
+  // the next ask of a cut reply (continued) is turned away here: the reply
+  // ends as one ask cut it
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => said(r.json.messages.at(-1)) === _internal.GO_ON ? json({ code: 500, message: "busy" }, 502) : cutCall(out, args))
   const opts = await hooks.auth.loader(async () => signedIn())
   const ask = async (extra = {}) => {
     const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, max_tokens: 32768, tools: WRITE, ...extra }) })
@@ -327,4 +334,121 @@ test("ending drops only the cut calls of a cut reply", () => {
   expect(_internal.ending([half], "", u(2000), 32768, 0)).toEqual({ calls: [half], finish: "tool_calls", dropped: 0 })
   expect(_internal.ending([], "", u(2000), 32768, cut)).toEqual({ calls: [], finish: "length", dropped: 0 })
   expect(_internal.ending([], "", u(10), 32768, cut)).toEqual({ calls: [], finish: "stop", dropped: 0 })
+})
+
+// the reporter's last ask (plugins#1366, 0.2.48): Trae's llm_utils_chat
+// stops an enterprise model's reply at exactly 2000 output tokens with
+// max_tokens 32768 sent, top-level and in enterprise_custom_hyper_params,
+// and Trae's own requests there carry no limit field to send instead. The
+// LINE-001…LINE-120 ask needs more than 2000, so a cut reply is asked on:
+// the same request with the text so far as the assistant's and GO_ON
+// after it, and the rounds go out as one reply.
+const part = (from, to) => Array.from({ length: to - from + 1 }, (_, k) => `LINE-${String(from + k).padStart(3, "0")}: ${LINE}\n`).join("")
+const round = (text, out, finish = "stop", prompt = 80) => sse([["output", { response: text }], ["done", { finish_reason: finish, usage: { prompt_tokens: prompt, completion_tokens: out } }]])
+
+async function carried(answers) {
+  const hooks = await plugin([preset, ...listed.map((m) => ({ ...m, model_detail_list: m.model_detail_list.map((d) => ({ ...d, max_tokens: 32768 })) }))])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  const asks = []
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    asks.push(r.json)
+    return answers(asks.length, r.json)
+  })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (extra = {}) => {
+    asks.length = 0
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, max_tokens: 32768, ...extra }) })
+    expect(res.status).toBe(200)
+    if (!extra.stream) {
+      const b = await res.json()
+      const c = b.choices[0]
+      return { finish: c.finish_reason, text: c.message.content, calls: (c.message.tool_calls ?? []).map((t) => t.function.arguments), usage: b.usage, asks: asks.length }
+    }
+    const ds = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)))
+    const cs = ds.filter((x) => x.choices?.length)
+    return {
+      finish: cs.map((x) => x.choices[0].finish_reason).filter(Boolean).join(),
+      text: cs.map((x) => x.choices[0].delta.content ?? "").join(""),
+      calls: cs.flatMap((x) => x.choices[0].delta.tool_calls ?? []).map((t) => t.function.arguments),
+      usage: ds.find((x) => x.usage)?.usage,
+      asks: asks.length,
+    }
+  }
+  return { ask, asks }
+}
+
+test("a reply Trae cut at 2000 is asked on and goes out whole, in a body and in a stream", async () => {
+  const { ask, asks } = await carried((n) => n === 1 ? round(part(1, 40), 2000) : n === 2 ? round(part(41, 80), 2000, "") : round(part(81, 120), 900, "stop", 95))
+  for (const stream of [false, true]) {
+    const got = await ask({ stream })
+    expect(got.text).toBe(part(1, 120))
+    expect(got.finish).toBe("stop")
+    expect(got.calls).toEqual([])
+    expect(got.asks).toBe(3)
+    expect(got.usage.completion_tokens).toBe(4900)
+    expect(got.usage.prompt_tokens).toBe(255)
+    // each next ask: the same session and model, the text so far as the
+    // assistant's turn, GO_ON after it, and what is left of the limit
+    expect(asks[1].session_id).toBe(asks[0].session_id)
+    expect(asks[1].config_name).toBe(asks[0].config_name)
+    expect(asks[1].messages.slice(0, -2)).toEqual(asks[0].messages)
+    expect(asks[1].messages.at(-2).role).toBe("assistant")
+    expect(said(asks[1].messages.at(-2))).toBe(part(1, 40))
+    expect(asks[1].messages.at(-1).role).toBe("user")
+    expect(said(asks[1].messages.at(-1))).toBe(_internal.GO_ON)
+    expect(said(asks[2].messages.at(-2))).toBe(part(1, 80))
+    expect(asks[1].max_tokens).toBe(32768 - 2000)
+    expect(asks[1].enterprise_custom_hyper_params.max_tokens).toBe(32768 - 2000)
+    expect(asks[2].max_tokens).toBe(32768 - 4000)
+  }
+  // GO_ON names neither magpie nor Trae nor a limit: it goes to the vendor
+  expect(_internal.GO_ON).not.toMatch(/magpie|trae|2000|token|limit|cut/i)
+})
+
+test("a cut reply is asked on only while the limit lasts, and still cut it ends for length", async () => {
+  const { ask } = await carried(() => round(part(1, 40), 2000))
+  // 4096 asked: 2000, then 2000 of the 2096 left, then 96 left: a third ask,
+  // which Trae answers with 2000 again; nothing is left after it
+  expect(await ask({ max_tokens: 4096 })).toMatchObject({ finish: "length", asks: 3, text: part(1, 40).repeat(3) })
+  // 2000 asked is spent by the first answer
+  expect(await ask({ max_tokens: 2000 })).toMatchObject({ finish: "length", asks: 1 })
+  // with the limit far off, CUT_ROUNDS bounds the asks
+  expect(await ask({ max_tokens: 32768, stream: true })).toMatchObject({ finish: "length", asks: _internal.CUT_ROUNDS })
+})
+
+test("a cut reply's call is written whole by the next ask; a whole call ends the asking", async () => {
+  const { ask } = await carried((n) => n === 1 ? cutCall(2000, HALF) : sse([
+    ["output", { tool_calls: [{ id: "call_w2", index: 0, function: { name: "write", arguments: WHOLE } }] }],
+    ["done", { usage: { prompt_tokens: 90, completion_tokens: 300 } }],
+  ]))
+  for (const stream of [false, true]) {
+    expect(await ask({ tools: WRITE, stream })).toMatchObject({ finish: "tool_calls", text: "Writing the file.", calls: [WHOLE], asks: 2 })
+  }
+  // a whole call at the cut is the model's: it goes out, nothing asked on
+  const { ask: once } = await carried(() => cutCall(2000, WHOLE))
+  expect(await once({ tools: WRITE })).toMatchObject({ finish: "tool_calls", calls: [WHOLE], asks: 1 })
+})
+
+test("a cut reply with no text, a short one and a preset's are not asked on", async () => {
+  // only reasoning, or a call cut with nothing written before it: there is
+  // nothing to go on from
+  let { ask } = await carried(() => sse([["output", { reasoning_content: "thinking" }], ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }]]))
+  expect(await ask()).toMatchObject({ finish: "length", asks: 1 })
+  ;({ ask } = await carried(() => round(part(1, 3), 1999)))
+  expect(await ask()).toMatchObject({ finish: "stop", asks: 1 })
+  ;({ ask } = await carried(() => round(part(1, 40), 2000)))
+  expect(await ask({ model: "glm-5" })).toMatchObject({ finish: "stop", asks: 1 })
+  // a next ask that fails mid-answer leaves the reply as Trae cut it
+  ;({ ask } = await carried((n) => n === 1 ? round(part(1, 40), 2000) : sse([["output", { response: "LINE-041" }], ["error", { code: 500, message: "busy" }]])))
+  const got = await ask({ stream: true })
+  expect(got).toMatchObject({ finish: "length", asks: 2 })
+  expect(got.text.startsWith(part(1, 40))).toBe(true)
+})
+
+test("addUsage counts both asks", () => {
+  const a = { prompt_tokens: 80, completion_tokens: 2000, total_tokens: 2080, prompt_tokens_details: { cached_tokens: 10 } }
+  const b = { prompt_tokens: 90, completion_tokens: 5, total_tokens: 95, magpie_cache_unknown: true }
+  expect(_internal.addUsage(a, b)).toEqual({ prompt_tokens: 170, completion_tokens: 2005, total_tokens: 2175, prompt_tokens_details: { cached_tokens: 10 }, magpie_cache_unknown: true })
+  expect(_internal.addUsage(null, b)).toBe(b)
+  expect(_internal.addUsage(a, null)).toBe(a)
 })

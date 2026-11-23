@@ -288,7 +288,19 @@ arguments not whole JSON) is not sent as a call: the reply ends with
 `length` and the text before the call (plugins#1366, a call cut at 2000
 went out as `tool_calls` and the agent stopped on it). A whole call in a
 cut reply goes out as a call; a stream holds back only a call whose
-arguments aren't whole until it ends. A model with a `__max` model and
+arguments aren't whole until it ends. Trae CN 3.4.22's own llm_utils_chat
+requests carry no field that lifts the 2000, so since 0.2.49 an
+enterprise model's reply that Trae cut at exactly 2000 with text written
+and no whole call is asked on: the same request, session and function
+again, the text so far as the assistant's turn and a short ask to go on
+where it stopped after it, with what is left of the agent's limit as
+`max_tokens`. The answers go out as one reply, in a body or a stream, its
+usage summed, its end the last answer's. A cut call is left out and the
+next answer writes it. Asking stops at a whole call, at the agent's limit,
+after 16 answers, or when a next ask fails (the reply then ends cut, with
+`length`). A cut reply with only reasoning, or a call with nothing written
+before it, is not asked on. **Not verified with a real enterprise seat**,
+nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
