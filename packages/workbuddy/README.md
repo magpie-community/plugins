@@ -51,17 +51,23 @@ A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
 marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode keeps it in
 `auth.json`; magpie keeps it in `plugin-auth.json`. The access token is
-refreshed a minute before it ends, and the new one is saved. If the refresh
-fails, the old token is used while it lasts.
+refreshed a minute before it ends, and the new one is saved; one minted to
+live long (the browser sign-in's access token lasts 28 days, its refresh
+token 30) is instead renewed before a request while it still has 10 days
+left, so a sign-in used every so often never runs out of refresh token. If
+the refresh fails, the old token is used while it lasts; an early renewal
+that fails is tried again after a minute, and after twice as long for each
+failure in a row.
 
 In magpie (0.1.684 or later) the plugin also gives `auth.refresh` with
-`refreshLead` of 5 minutes: magpie renews a browser sign-in (an hour's
-token) 5 minutes before it ends, once for the account, before its
-requests, models and usage ask, and saves what it gives. It goes through
-the same one-refresh-at-a-time as a request's refresh, so a refresh token
-is never spent twice. A failed renewal, a refresh token past its end
-included, doesn't mark the account, as the built-in never did; magpie
-tries again later, and the old token is used meanwhile.
+`refreshLead` of 10 days: magpie renews a sign-in as it comes due, once
+for the account, before its requests, models and usage ask, and saves what
+it gives. (magpie's host clamps the lead to a day, which still lands well
+inside the 30-day refresh token's life.) It goes through the same
+one-refresh-at-a-time as a request's refresh, so a refresh token is never
+spent twice. A failed renewal, a refresh token past its end included,
+doesn't mark the account, as the built-in never did; magpie tries again
+later, and the old token is used meanwhile.
 OpenCode doesn't call `auth.refresh`; the check before each request stays.
 
 An enterprise (team) account is asked for as the enterprise. A browser

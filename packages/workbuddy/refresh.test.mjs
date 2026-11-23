@@ -17,6 +17,7 @@ afterEach(() => {
   globalThis.fetch = offline
   _internal.renewing.clear()
   _internal.renewed.clear()
+  _internal.aheadHeld.clear()
 })
 
 const ok = (data) => new Response(JSON.stringify({ code: 0, msg: "ok", data }))
@@ -38,6 +39,11 @@ function serve(answer, gate) {
 const refreshes = (calls) => calls.filter((c) => c.url.pathname === "/v2/plugin/auth/token/refresh")
 const soon = () => Date.now() + 3 * 60 * 1000 // within the lead, past EARLY_MS
 const auth = (over = {}) => ({ type: "oauth", access: "old", refresh: "r1", expires: soon(), uid: "u1", domain: "", ...over })
+const tokenOf = (lifeDays, leftDays) => {
+  const now = Date.now()
+  const c = { iat: Math.floor((now - lifeDays * 86400_000) / 1000), exp: Math.floor((now + leftDays * 86400_000) / 1000) }
+  return "h." + Buffer.from(JSON.stringify(c)).toString("base64url") + ".s"
+}
 const NEW = { accessToken: "new", refreshToken: "r2", expiresIn: 3600, refreshExpiresIn: 7200 }
 
 test("auth.refresh renews and gives the new fields, saving nothing itself", async () => {
@@ -122,4 +128,61 @@ test("nothing to renew with gives nothing", async () => {
   expect(await hooks.auth.refresh({ type: "oauth", source: "desktop", refresh: "", access: "", expires: 0, uid: "u" }, "workbuddy")).toBeUndefined()
   expect(await hooks.auth.refresh({ type: "api", key: "k" }, "workbuddy")).toBeUndefined()
   expect(refreshes(calls).length).toBe(0)
+})
+
+test("a sign-in with 9 days left is renewed before a request and saved", async () => {
+  const calls = serve(() => ok(NEW))
+  const sets = []
+  const hooks = await WorkBuddyAuthPlugin({ client: { auth: { set: async (x) => sets.push(x) } } })
+  const stored = auth({ access: tokenOf(28, 9), expires: Date.now() + 9 * 86400_000 })
+  const opts = await hooks.auth.loader(async () => stored)
+  const res = await opts.fetch("https://copilot.tencent.com/v2/chat/completions", { method: "POST", body: "{}" })
+  expect(res.status).toBe(200)
+  expect(refreshes(calls).length).toBe(1)
+  expect(sets.length).toBe(1)
+  expect(sets[0].body.access).toBe("new")
+  const chat = calls.find((c) => c.url.pathname === "/v2/chat/completions")
+  expect(chat.headers.get("authorization")).toBe("Bearer new")
+})
+
+test("11 days left is not renewed ahead", async () => {
+  const calls = serve(() => ok(NEW))
+  const hooks = await WorkBuddyAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const stored = auth({ access: tokenOf(28, 11), expires: Date.now() + 11 * 86400_000 })
+  const opts = await hooks.auth.loader(async () => stored)
+  await opts.fetch("https://copilot.tencent.com/v2/chat/completions", { method: "POST", body: "{}" })
+  expect(refreshes(calls).length).toBe(0)
+  const chat = calls.find((c) => c.url.pathname === "/v2/chat/completions")
+  expect(chat.headers.get("authorization")).toBe(`Bearer ${stored.access}`)
+})
+
+test("an hours-long token is not renewed ahead", async () => {
+  const calls = serve(() => ok(NEW))
+  const hooks = await WorkBuddyAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const stored = auth({ access: tokenOf(1, 0.002), expires: Date.now() + 3 * 60 * 1000 })
+  const opts = await hooks.auth.loader(async () => stored)
+  await opts.fetch("https://copilot.tencent.com/v2/chat/completions", { method: "POST", body: "{}" })
+  expect(refreshes(calls).length).toBe(0)
+})
+
+test("desktop's sign-in is never renewed ahead", async () => {
+  const calls = serve(() => ok(NEW))
+  const stored = auth({ access: tokenOf(28, 9), expires: Date.now() + 9 * 86400_000, source: "desktop" })
+  const got = await _internal.fresh(_internal.SITES.workbuddy, null, stored)
+  expect(got).toBe(stored)
+  expect(refreshes(calls).length).toBe(0)
+})
+
+test("a failed ahead renewal keeps the old token and holds the next try", async () => {
+  let fail = true
+  const calls = serve(() => (fail ? new Response("busy", { status: 502 }) : ok(NEW)))
+  const stored = auth({ access: tokenOf(28, 9), expires: Date.now() + 9 * 86400_000 })
+  const first = await _internal.fresh(_internal.SITES.workbuddy, null, stored)
+  expect(first.access).toBe(stored.access)
+  expect(refreshes(calls).length).toBe(1)
+  fail = false
+  const second = await _internal.fresh(_internal.SITES.workbuddy, null, stored)
+  expect(second.access).toBe(stored.access)
+  expect(refreshes(calls).length).toBe(1)
+  expect(_internal.aheadHeld.get("workbuddy\nr1").n).toBe(1)
 })
