@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 口令由服务端在发这份 HTML 时填进来；文件里留空，别写死。 -->
+    <meta name="pace-token" content="" />
+    <title>AI_额度节奏盘</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="top">
+        <div class="top-main">
+          <h1>AI_额度节奏盘</h1>
+          <p class="sub" id="sub">正在读取…</p>
+        </div>
+        <div class="top-side">
+          <span class="top-note">每 60 秒自动重读。排名只在 magpie 真发过请求后才更新</span>
+        </div>
+      </header>
+
+      <section class="formula" id="formula" hidden>
+        <div class="formula-line">
+          <span class="mono">pace = (100 − 已用%) ÷ max(距到期小时, 1)</span>
+          <span class="hint">分子是剩余百分比，分母是还能撑多久。越快到期、剩得越多，越该先用。</span>
+        </div>
+        <div class="nextup" id="nextup"></div>
+      </section>
+
+      <div id="warnings" class="warnings"></div>
+
+      <nav class="tabs" id="tabs">
+        <button class="tab is-on" data-tab="rank" type="button">排名 <span class="pill" id="cRank">0</span></button>
+        <button class="tab" data-tab="waste" type="button">到期账 <span class="pill" id="cWaste">0</span></button>
+        <button class="tab" data-tab="all" type="button">全部账号 <span class="pill" id="cAll">0</span></button>
+      </nav>
+
+      <main id="panels">
+        <section class="panel is-on" id="panel-rank"></section>
+        <section class="panel" id="panel-waste"></section>
+        <section class="panel" id="panel-all"></section>
+      </main>
+
+      <footer class="foot" id="foot"></footer>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
