@@ -106,8 +106,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
   instead of rejected; the session ledger stays aligned across turns. See
   "Assistant prefill" below.
-- **Usage visibility**: Magpie shows the agy subscription usage windows. They are
-  informational only; running out of quota does not block requests automatically.
+- **Usage visibility**: Magpie shows the agy subscription usage windows. Each
+  model's window (its pool's most used one) is what Magpie's routing weighs the
+  account by for that model, so a routing group puts it by what it has left,
+  and a model whose pool is used up is passed over for the next member.
 
 ## Assistant prefill
 

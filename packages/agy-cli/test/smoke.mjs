@@ -728,7 +728,7 @@ const legacyModel = "agy-cli/gemini-test-low"
   const pw = usage.windows?.find(w => !w.model)
   check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
   check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
+  check("auth.usage sets the pools' windows aside, its models' not, and keeps bridge auth", usage.windows?.every(w => (w.aside === true) === !w.model) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
