@@ -299,7 +299,15 @@ usage summed, its end the last answer's. A cut call is left out and the
 next answer writes it. Asking stops at a whole call, at the agent's limit,
 after 16 answers, or when a next ask fails (the reply then ends cut, with
 `length`). A cut reply with only reasoning, or a call with nothing written
-before it, is not asked on. **Not verified with a real enterprise seat**,
+before it, is not asked on. Since 0.2.50 a later answer that Trae cut in
+the model's reasoning or in a call, with no text of its own, is asked on
+too, from the text the earlier answers wrote (a reasoning model asked to go
+on reasons again first, and its round 2 was 7683 characters of reasoning
+cut at 2000), up to 3 such answers in a row. While a next ask waits, the
+stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
+sent, so the agent doesn't take the pause for a dead stream; with
+`MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
+`wait_ms=`. **Not verified with a real enterprise seat**,
 nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's

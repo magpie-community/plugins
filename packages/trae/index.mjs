@@ -2992,6 +2992,24 @@ const GO_ON = "Continue exactly where your previous message stopped. Do not repe
 // tokens, an enterprise model's usual max_tokens
 const CUT_ROUNDS = 16
 
+// tune holds the waits tests shorten. keepEvery: how long an enterprise
+// model's stream may go with nothing sent before it is sent an SSE
+// comment. A reply Trae cut is asked on (continued), and nothing comes
+// while the next ask waits for its first word; the agent, or a proxy
+// before it, took the quiet for a dead stream and reconnected
+// (plugins#1366, 0.2.49, Codex). magpie hears the comment as the plugin
+// still answering, and keeps its own agent alive (a Responses agent gets
+// response.in_progress, which Codex's idle timeout counts).
+const tune = { keepEvery: 2000 }
+
+// THOUGHT_ROUNDS bounds the asks in a row Trae cut in the model's
+// reasoning, nothing written: a reasoning model asked to go on reasons
+// again first, and a round can go to the cut in it (plugins#1366, 0.2.49:
+// round 1 text_chars=1834, round 2 text_chars=0 reasoning_chars=7683,
+// both completion_tokens=2000). Its reasoning isn't sent back, so a model
+// that never gets past it would spend every round on it.
+const THOUGHT_ROUNDS = 3
+
 // addUsage is two asks' usage as one: each ask is billed on its own, so
 // both its prompt and its reply count
 function addUsage(a, b) {
@@ -3021,14 +3039,19 @@ function addUsage(a, b) {
 // asked again (more: the request with that text as the assistant's and
 // GO_ON after it), and what it answers is sent on as the same reply,
 // until a round ends short of the cut, makes a whole call, the asked
-// limit is spent, or CUT_ROUNDS is reached. A call cut mid-arguments is
-// dropped from the round it was cut in: the next round writes it whole.
+// limit is spent, or CUT_ROUNDS is reached. A round cut in its reasoning or
+// in a call, nothing written in it, is asked on too once an earlier round
+// wrote text to go on from (up to THOUGHT_ROUNDS in a row); a first round
+// with no text isn't, as there is nothing to go on from. A call cut
+// mid-arguments is dropped from the round it was cut in: the next round
+// writes it whole.
 // The usage sent is every round's together; a reply still cut at the end
 // ends for length.
 async function* continued(answer, limit, cut, more) {
   let text = ""
   let total = null
   let parts = answer
+  let thought = 0 // the rounds in a row that wrote no text
   for (let round = 1; ; round++) {
     let usage = null
     let finish = ""
@@ -3068,7 +3091,8 @@ async function* continued(answer, limit, cut, more) {
     total = addUsage(total, usage)
     const wasCut = failed || (cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length"))
     const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
-    const next = !failed && wasCut && wrote && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left).catch(() => null) : null
+    thought = wrote ? 0 : thought + 1
+    const next = !failed && wasCut && text && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left, round + 1).catch(() => null) : null
     if (next) {
       parts = next
       continue
@@ -3259,6 +3283,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
   // account's failure reads as Trae Global's
   const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
+  let keep = null
   const stream = new ReadableStream({
     async start(ctl) {
       let calls = 0
@@ -3269,9 +3294,16 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
       let usage = null
       let finish = ""
       let failed = false
+      let quietFrom = Date.now()
       const put = (b) => {
+        quietFrom = Date.now()
         if (!gone) ctl.enqueue(b)
       }
+      // an enterprise model's reply may be asked on (continued): the
+      // stream is kept alive while the next ask waits (tune.keepEvery)
+      keep = cut > 0 ? setInterval(() => {
+        if (!gone && Date.now() - quietFrom >= tune.keepEvery) put(enc.encode(": keepalive\n\n"))
+      }, tune.keepEvery) : null
       const putCall = (c) => {
         sent.push(c)
         put(chunk({ tool_calls: [{ index: calls++, id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }] }))
@@ -3305,6 +3337,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
           put(error(e?.message ?? e))
         } catch {}
       }
+      clearInterval(keep)
       try {
         put(enc.encode("data: [DONE]\n\n"))
         if (!gone) ctl.close()
@@ -3312,6 +3345,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
     },
     cancel() {
       gone = true
+      clearInterval(keep)
       abort?.()
       it.return?.()
     },
@@ -4576,7 +4610,8 @@ const makePlugin = (site) => async ({ client }) => {
                 // as the assistant's, asked for what is left of the limit.
                 // null when Trae doesn't answer it with a stream: the reply
                 // then ends cut, as one ask's did.
-                const more = async (text, left) => {
+                const more = async (text, left, round) => {
+                  const asked = Date.now()
                   const again = {
                     ...req,
                     max_completion_tokens: undefined,
@@ -4592,7 +4627,7 @@ const makePlugin = (site) => async ({ client }) => {
                     body: JSON.stringify(body),
                     signal: ac.signal,
                   })
-                  if (traeDebug()) console.error(`trae debug: request ${id} answered ${r.status} ${r.headers.get("content-type") ?? ""}`)
+                  if (traeDebug()) console.error(`trae debug: request ${id} answered ${r.status} ${r.headers.get("content-type") ?? ""} round=${round} wait_ms=${Date.now() - asked}`)
                   if (!r.ok || !(r.headers.get("content-type") ?? "").includes("event-stream")) {
                     r.body?.cancel?.().catch(() => {})
                     return null
@@ -4628,4 +4663,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, CUT_ROUNDS, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

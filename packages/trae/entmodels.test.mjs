@@ -445,6 +445,102 @@ test("a cut reply with no text, a short one and a preset's are not asked on", as
   expect(got.text.startsWith(part(1, 40))).toBe(true)
 })
 
+// the reporter's 0.2.49 debug log (plugins#1366): a non-stream LINE ask
+// with max_tokens 8192. Round 1: completion_tokens=2000, text_chars=1834,
+// reasoning_chars=1363, finish_sent=length. Round 2, asked with
+// max_tokens=6192 and the text as the assistant's: completion_tokens=2000,
+// text_chars=0, reasoning_chars=7683, finish_sent=length, and no round 3,
+// so the reply stopped mid-line. Trae's events here are as in the fake's
+// other rounds (output, then done with no finish), at those lengths.
+const ALL = part(1, 120)
+const THINK = "The user wants exactly 120 numbered lines in a fixed format; keep counting from where the text stopped. "
+const thinking = (n) => THINK.repeat(Math.ceil(n / THINK.length)).slice(0, n)
+const reasoned = (reasoning, text, out, finish = "") => sse([
+  ["output", { reasoning_content: reasoning }],
+  ...(text ? [["output", { response: text }]] : []),
+  ["done", { ...(finish ? { finish_reason: finish } : {}), usage: { prompt_tokens: 120, completion_tokens: out } }],
+])
+
+test("a round Trae cut in the model's reasoning is asked on once text was written, in a body and in a stream", async () => {
+  const { ask, asks } = await carried((n) => n === 1 ? reasoned(thinking(1363), ALL.slice(0, 1834), 2000)
+    : n === 2 ? reasoned(thinking(7683), "", 2000)
+    : reasoned(thinking(400), ALL.slice(1834), 1500, "stop"))
+  for (const stream of [false, true]) {
+    const got = await ask({ max_tokens: 8192, stream })
+    expect(got).toMatchObject({ finish: "stop", text: ALL, calls: [], asks: 3 })
+    expect(got.usage.completion_tokens).toBe(5500)
+    // round 2 is sent what the log says; round 3 goes on from the same
+    // text, the rounds' 4000 tokens spent
+    expect(asks[1].max_tokens).toBe(6192)
+    expect(said(asks[1].messages.at(-2))).toBe(ALL.slice(0, 1834))
+    expect(asks[2].max_tokens).toBe(4192)
+    expect(said(asks[2].messages.at(-2))).toBe(ALL.slice(0, 1834))
+    expect(said(asks[2].messages.at(-1))).toBe(_internal.GO_ON)
+  }
+})
+
+test("rounds cut in the reasoning stop after THOUGHT_ROUNDS in a row, and the reply ends for length", async () => {
+  const { ask } = await carried((n) => n === 1 ? reasoned(thinking(1363), ALL.slice(0, 1834), 2000) : reasoned(thinking(7683), "", 2000))
+  for (const stream of [false, true]) {
+    expect(await ask({ stream })).toMatchObject({ finish: "length", text: ALL.slice(0, 1834), asks: 1 + _internal.THOUGHT_ROUNDS })
+  }
+  // a round that writes text again starts the count over
+  const { ask: again } = await carried((n) => n % 3 === 1 ? round(part(1, 2), 2000) : reasoned(thinking(500), "", 2000))
+  expect(await again({ max_tokens: 32768 })).toMatchObject({ finish: "length", asks: _internal.CUT_ROUNDS })
+})
+
+test("a round that is only a call Trae cut is asked on once text was written; its call is written whole next", async () => {
+  const cutOnly = () => sse([
+    ["output", { tool_calls: [{ id: "call_w1", index: 0, function: { name: "write", arguments: HALF } }] }],
+    ["done", { usage: { prompt_tokens: 90, completion_tokens: 2000 } }],
+  ])
+  const whole = () => sse([
+    ["output", { tool_calls: [{ id: "call_w2", index: 0, function: { name: "write", arguments: WHOLE } }] }],
+    ["done", { usage: { prompt_tokens: 90, completion_tokens: 300 } }],
+  ])
+  const { ask } = await carried((n) => n === 1 ? round("Writing the file.", 2000, "") : n === 2 ? cutOnly() : whole())
+  for (const stream of [false, true]) {
+    expect(await ask({ tools: WRITE, stream })).toMatchObject({ finish: "tool_calls", text: "Writing the file.", calls: [WHOLE], asks: 3 })
+  }
+})
+
+test("an enterprise model's stream is sent a keepalive while the next ask of a cut reply waits", async () => {
+  const was = _internal.tune.keepEvery
+  _internal.tune.keepEvery = 20
+  try {
+    let release
+    const held = new Promise((r) => (release = r))
+    const hooks = await plugin([preset, ...listed.map((m) => ({ ...m, model_detail_list: m.model_detail_list.map((d) => ({ ...d, max_tokens: 32768 })) }))])
+    await hooks.provider.models({ models: {} }, { auth: signedIn() })
+    let asks = 0
+    f.route("POST /api/agent/v3/llm_utils_chat", async () => {
+      if (++asks === 1) return round(part(1, 40), 2000)
+      await held // round 2 answers only once the agent was kept alive
+      return round(part(41, 42), 300, "stop")
+    })
+    const opts = await hooks.auth.loader(async () => signedIn())
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, max_tokens: 32768, stream: true }) })
+    const rd = res.body.getReader()
+    const dec = new TextDecoder()
+    let got = ""
+    for (;;) {
+      const { value, done } = await rd.read()
+      if (done) break
+      got += dec.decode(value, { stream: true })
+      if (got.includes(": keepalive\n\n")) release()
+    }
+    expect(asks).toBe(2)
+    // the comment came between the rounds, and the reply is whole after it
+    expect(got.indexOf(": keepalive")).toBeGreaterThan(got.indexOf("LINE-040"))
+    expect(got.indexOf(": keepalive")).toBeLessThan(got.indexOf("LINE-041"))
+    const ds = got.split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6))).filter((x) => x.choices?.length)
+    expect(ds.map((x) => x.choices[0].delta.content ?? "").join("")).toBe(part(1, 42))
+    expect(ds.map((x) => x.choices[0].finish_reason).filter(Boolean)).toEqual(["stop"])
+  } finally {
+    _internal.tune.keepEvery = was
+  }
+})
+
 test("addUsage counts both asks", () => {
   const a = { prompt_tokens: 80, completion_tokens: 2000, total_tokens: 2080, prompt_tokens_details: { cached_tokens: 10 } }
   const b = { prompt_tokens: 90, completion_tokens: 5, total_tokens: 95, magpie_cache_unknown: true }

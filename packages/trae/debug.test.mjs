@@ -68,6 +68,8 @@ for (const stream of [false, true]) {
     expect(f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1).headers.get("x-request-id")).toContain(rid2)
     expect(JSON.parse(req2.slice(req2.indexOf("{"))).max_tokens).toBe(32768 - 2000)
     expect(status2).toStartWith(`trae debug: request ${rid2} answered 200 text/event-stream`)
+    // the ask that goes on says which round it is and how long Trae took to answer it
+    expect(status2).toMatch(/ round=2 wait_ms=\d+$/)
     expect(end2).toStartWith(`trae debug: reply ${rid2} `)
     expect(end2).toContain("finish_sent=stop")
     for (const l of lines) {
