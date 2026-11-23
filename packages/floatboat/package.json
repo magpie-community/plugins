@@ -1,0 +1,42 @@
+{
+  "name": "@magpie-community/opencode-floatboat-auth",
+  "version": "0.1.5",
+  "description": "Floatboat in magpie and OpenCode: the New API gateway behind the Floatboat desktop app, with its own browser sign-in, 13 models, the credit balance and the two signup bonuses",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "magpie",
+    "floatboat",
+    "newapi",
+    "aoe",
+    "provider"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/floatboat"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxNDEyMTAiLz4KPHBhdGggZD0iTTMzIDEwIEwzMyA0MiBMMTUgNDIgWiIgZmlsbD0iI0Y1QTUyNCIvPgo8cGF0aCBkPSJNMzcgMTggTDM3IDQyIEw1MiA0MiBaIiBmaWxsPSIjQzk3QjEyIi8+CjxwYXRoIGQ9Ik0xMSA0NyBoNDIgbC02IDggSDE3IFoiIGZpbGw9IiNGNUE1MjQiLz4KPC9zdmc+",
+    "name": "Floatboat",
+    "maxConcurrency": 4
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}
