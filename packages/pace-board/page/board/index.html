@@ -14,9 +14,29 @@
         <div class="top-main">
           <h1>AI_额度节奏盘</h1>
           <p class="sub" id="sub">正在读取…</p>
+          <p class="refresh-note" id="refreshNote"></p>
         </div>
         <div class="top-side">
-          <span class="top-note">每 60 秒自动重读。排名只在 magpie 真发过请求后才更新</span>
+          <button id="refreshBtn" class="icon-btn" type="button" title="立即刷新额度" aria-label="立即刷新额度">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+              <path d="M20 4v7h-7" />
+            </svg>
+          </button>
+          <label class="auto-wrap">
+            <span>自动刷新</span>
+            <select id="autoRefresh" class="auto-select">
+              <option value="0">关闭</option>
+              <option value="5000">5 秒</option>
+              <option value="10000">10 秒</option>
+              <option value="30000">30 秒</option>
+              <option value="60000">1 分钟</option>
+              <option value="300000" selected>5 分钟</option>
+              <option value="900000">15 分钟</option>
+              <option value="1800000">30 分钟</option>
+            </select>
+          </label>
         </div>
       </header>
 

@@ -11,7 +11,20 @@
 //      重排只按 pace 降序（策略的定义），并把「下一次会先用谁」单独标出来。
 //   2) 任何数字都带时间。额度是缓存，快照是旧的，绝不把旧数画得像刚测出来。
 
-const state = { data: null, tab: "rank", loading: false, error: "" };
+const state = {
+  data: null,
+  tab: "rank",
+  loading: false,
+  error: "",
+  refreshing: false,
+  refreshNote: "",
+  prefs: { version: 1, autoRefreshMs: 300000 },
+  refreshTimer: null,
+};
+
+// 这个页面 origin 是 opaque，任何 Storage API 都会抛 SecurityError。
+// 自动重载只用内存标志，每个文档生命周期最多一次。
+let reloadTried = false;
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -81,15 +94,12 @@ async function load() {
       headers: TOKEN ? { "x-pace-token": TOKEN } : {},
     });
     if (res.status === 401) {
-      // 手里这份文档比服务端旧（插件刚更新过，旧文档里没有口令）。
-      // 重载一次就能拿到带口令的新文档；加个时间闸，别在真出问题时转圈。
-      const last = Number(sessionStorage.getItem("pace-reload") || 0);
-      if (Date.now() - last > 10_000) {
-        sessionStorage.setItem("pace-reload", String(Date.now()));
+      if (!reloadTried) {
+        reloadTried = true;
         location.reload();
         return;
       }
-      throw new Error("口令对不上。服务可能刚换过实例，关掉这个页签重新打开");
+      throw new Error("口令对不上：请关掉页签，从插件侧栏重新打开 Pace Board");
     }
     if (res.status === 403) throw new Error("被服务端挡在门外（Host/Origin 不是本机回环）");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -99,8 +109,9 @@ async function load() {
     // WebKit 把「连接失败 / 跨源被拒」统一说成 Load failed，光这一句没法排查，
     // 所以把可能的成因一起摆出来（真正的原因看 magpie 日志里的 [pace-board] 行）。
     const raw = err?.message || String(err);
-    state.error =
-      raw === "Load failed" || raw === "Failed to fetch"
+    state.error = /insecure|securityerror|storage/i.test(raw)
+      ? "浏览器限制了本地存储，已改用内存状态；请重开页签"
+      : raw === "Load failed" || raw === "Failed to fetch"
         ? "取数失败（浏览器只说 Load failed）。检查 magpie 日志里 [pace-board] 那几行，或点「重试」。"
         : raw;
   } finally {
@@ -109,8 +120,83 @@ async function load() {
   }
 }
 
+/* ── 自动刷新 ───────────────────────────────── */
+async function api(path, { method = "GET", body, headers = {} } = {}) {
+  const res = await fetch(path, {
+    method,
+    cache: "no-store",
+    credentials: "omit",
+    headers: { ...(TOKEN ? { "x-pace-token": TOKEN } : {}), ...headers },
+    body,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function rebuildTimer() {
+  if (state.refreshTimer) {
+    clearInterval(state.refreshTimer);
+    state.refreshTimer = null;
+  }
+  const ms = Number($("#autoRefresh")?.value || 0);
+  if (ms > 0) state.refreshTimer = setInterval(() => doRefresh(false), ms);
+}
+
+async function loadPrefs() {
+  try {
+    state.prefs = await api("/api/prefs");
+  } catch {
+    state.prefs = { version: 1, autoRefreshMs: 300000 };
+  }
+  const sel = $("#autoRefresh");
+  if (sel) sel.value = String(state.prefs.autoRefreshMs);
+  rebuildTimer();
+}
+
+async function doRefresh() {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  let unavailable = false;
+  const btn = $("#refreshBtn");
+  if (btn) {
+    btn.classList.add("is-busy");
+    btn.disabled = true;
+  }
+  try {
+    const group = state.data?.group?.id || "";
+    const result = await api(`/api/refresh?group=${encodeURIComponent(group)}`, { method: "POST" });
+    if (result.board) {
+      state.data = result.board;
+      state.error = "";
+    }
+    state.refreshNote = result.note || "";
+    if (result.status === "unavailable") {
+      unavailable = true;
+      if (state.refreshTimer) {
+        clearInterval(state.refreshTimer);
+        state.refreshTimer = null;
+      }
+      if (btn) btn.disabled = true;
+      const sel = $("#autoRefresh");
+      if (sel) sel.disabled = true;
+    }
+    render();
+  } catch (err) {
+    state.refreshNote = `刷新失败：${err?.message || String(err)}`;
+    render();
+  } finally {
+    state.refreshing = false;
+    if (btn) {
+      btn.classList.remove("is-busy");
+      btn.disabled = unavailable;
+    }
+  }
+}
+
 /* ── 渲染入口 ───────────────────────────────── */
 function render() {
+  const note = $("#refreshNote");
+  if (note) note.textContent = state.refreshNote || "";
   if (state.error) {
     $("#sub").innerHTML =
       `<span style="color:var(--red)">连不上本地服务：${esc(state.error)}</span> ` +
@@ -142,10 +228,17 @@ function renderHead(d) {
   const bits = [];
   if (g) bits.push(`<b>${esc(g.name)}</b> · <span class="mono">routing=${esc(g.routing || "?")}</span>`);
   if (g && g.members) bits.push(`${g.members} 个成员模型`);
-  if (sn.at) bits.push(`排序快照 ${ago((sn.ageMin ?? 0) / 60)}`);
-  else if (sn.error) bits.push(`无排序快照`);
+  if (sn.at) bits.push(`决策快照 ${md(sn.at)}（${ago((sn.ageMin ?? 0) / 60)}）`);
+  else if (sn.error) bits.push(`无决策快照`);
   const f = d.fresh || {};
-  if (f.accountCount) bits.push(`额度读数 ${f.quotaNewestHours != null ? ago(f.quotaNewestHours) : "未知"}`);
+  if (f.accountCount) {
+    const age = [];
+    if (f.quotaNewestHours != null) age.push(`最新 ${ago(f.quotaNewestHours)}`);
+    if (f.quotaOldestHours != null && f.quotaOldestHours > (f.quotaNewestHours ?? 0) + 0.25) {
+      age.push(`最旧 ${ago(f.quotaOldestHours)}`);
+    }
+    bits.push(`额度读数 ${age.join(" / ") || "未知"}`);
+  }
   $("#sub").innerHTML = bits.join(" · ");
 
   $("#formula").hidden = false;
@@ -156,7 +249,7 @@ function renderHead(d) {
        <span><b>${esc(nu.name)}</b>${nu.who ? ` / ${esc(nu.who)}` : ""}${
          nu.model ? ` · <span class="mono">${esc(nu.model)}</span>` : ""
        }${nu.pace != null ? ` · pace <span class="mono">${nu.pace.toFixed(3)}</span>` : ""}</span>
-       <span class="hint">（取日志里第一个不在冷却的候选）</span>`
+       <span class="hint">（决策快照里第一个不在冷却的候选）</span>`
     : `<span class="hint">暂无可用候选——这个组最近没有请求，或者所有成员都在冷却。</span>`;
 }
 
@@ -190,9 +283,10 @@ function renderRank(d) {
   const maxPace = Math.max(...rows.map((r) => r.pace || 0), 1e-9);
 
   const note = `<div class="rank-note">
-    按 pace 降序。magpie 的队列还会被 affinity（上一轮命中的账号）提前，所以实际先后可能与此略差；
-    上面那行「下一次会先试」才是它此刻的真实选择。
-    右边额度是<b>账号额度包</b>，而 pace 的分子用的是<b>这个模型适用的限流窗口</b>——两者口径不同，数字不必对得上。
+    按 <b>pace 降序</b>回放 magpie 最近一次真实决策。pace 的分子是<b>模型限流窗口</b>的已用百分比，
+    右边那列是<b>账号额度包</b>余额——两套口径，数字不必对得上。
+    没有到期窗口的候选按 <span class="mono">100 ÷ 168h</span> 兜底，分数不随时间变，所以标「无窗口 · 兜底」；
+    有窗口的候选会拿最新读数重算一遍，变了就标出重算值。
   </div>`;
 
   box.innerHTML =
@@ -205,7 +299,7 @@ function renderRank(d) {
       const impliedHours = r.pace > 0 ? (100 - r.used) / r.pace : null;
       const expr =
         r.assumedDue || impliedHours == null
-          ? `(100 − ${r.used.toFixed(1)}%) ÷ 168h · 无到期日，按兜底算`
+          ? `(100 − ${r.used.toFixed(1)}%) ÷ 168h · 无窗口，固定兜底`
           : `(100 − ${r.used.toFixed(1)}%) ÷ ${Math.round(impliedHours)}h`;
       const q = r.quota;
       let amountMain = "额度未上报";
@@ -244,6 +338,32 @@ function renderRank(d) {
         ? `<span class="rest-badge">${r.rest.status ? `冷却 ${r.rest.status}` : "冷却中"}</span>`
         : "";
 
+      // pace 标签三态：magpie 原值 / 按最新读数重算 / 无窗口兜底。
+      // 旧版只区分 magpie 与 computed，但 computed 用的仍是快照里的 used，
+      // 标「按额度重算」会让人以为已经吃到了最新额度 —— 这里改成说实话。
+      const lv = r.live || null;
+      let paceTag = r.paceSource === "magpie" ? "magpie 实算" : "按快照重算";
+      let paceTagCls = "";
+      let paceTagTitle = "magpie 路由时写入的快照值";
+      if (lv?.status === "repriced") {
+        if (lv.changed) {
+          paceTag = `现 ${(lv.pace || 0).toFixed(3)}`;
+          paceTagCls = " is-changed";
+          paceTagTitle = `按 ${lv.window || "对应窗口"} 的最新读数重算；左侧主数字仍是决策快照值`;
+        } else {
+          paceTag = "重算持平";
+          paceTagTitle = "已用最新读数重算，与快照一致";
+        }
+      } else if (lv?.status === "no-window") {
+        paceTag = "无窗口 · 兜底";
+        paceTagCls = " is-fallback";
+        paceTagTitle = "该候选没有到期窗口，pace 是固定兜底常数，重算不会变";
+      } else if (lv?.status === "unmatched") {
+        paceTag = "窗口未匹配";
+        paceTagCls = " is-fallback";
+        paceTagTitle = "有到期时间，但最新额度里找不到同一窗口；未重算";
+      }
+
       return `<div class="rank-row ${i === 0 ? "is-first" : ""} ${r.rest ? "is-rest" : ""}">
         <div class="rank-no">${r.shownRank}</div>
         <div>
@@ -255,7 +375,7 @@ function renderRank(d) {
         <div class="pace-cell">
           <div class="pace-top">
             <span class="pace-val">${(r.pace || 0).toFixed(3)}</span>
-            <span class="pace-tag">${r.paceSource === "magpie" ? "magpie 实算" : "按额度重算"}</span>
+            <span class="pace-tag${paceTagCls}" title="${esc(paceTagTitle)}">${esc(paceTag)}</span>
           </div>
           <div class="bar"><i style="width:${width.toFixed(1)}%"></i></div>
           <div class="pace-expr">${expr}</div>
@@ -399,19 +519,36 @@ function renderFoot(d) {
   const gw = d.gateway || {};
   $("#foot").innerHTML = `
     数据口径：排名与 pace 直接取自 magpie 写进 <code>routing/*.jsonl</code> 的 <code>order[]</code>（${
-      sn.at ? `快照 ${md(sn.at)}` : "暂无快照"
-    }）${sn.entries ? `，共 ${sn.entries} 条候选记录` : ""}；额度取自网关 <code>${esc(
-      gw.base || "/v1/magpie/quotas",
-    )}</code>，每个账号各自标了读数时间。<br />
+      sn.at ? `决策快照 ${md(sn.at)}` : "暂无快照"
+    }）${sn.entries ? `，共 ${sn.entries} 条候选记录` : ""}。面板不改写这个值，只对「能对上同一限流窗口」的候选做重算校验，差异标在行内。<br />
+    额度取自网关 <code>${esc(gw.base || "/v1/magpie/quotas")}</code>，每个账号各自标了读数时间。<br />    
     到期账优先用窗口自带的 <code>runsOut</code>（magpie 自己算的失效量）；没有才用最近 7 个完整自然日的日均消耗推，
     样本不足 3 天就明说推不出来。<br />
-    本面板只读：不写 providers.json、不碰凭证文件、不触发额度刷新。生成于 ${md(d.generatedAt)}。
+    本面板不写 providers.json、不碰凭证文件；右上角可手动或定时触发额度重读（经 magpie CLI 向厂商查询，不消耗模型 token，受 magpie 每张卡 30 秒防重限制）。生成于 ${md(d.generatedAt)}。
   `;
 }
 
 /* ── 启动 ───────────────────────────────────── */
 applyTheme();
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+$("#refreshBtn")?.addEventListener("click", () => doRefresh());
+$("#autoRefresh")?.addEventListener("change", async () => {
+  const sel = $("#autoRefresh");
+  const ms = Number(sel.value);
+  try {
+    state.prefs = await api("/api/prefs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ autoRefreshMs: ms }),
+    });
+    state.refreshNote = ms ? `自动刷新已设为 ${sel.selectedOptions[0]?.textContent || `${ms} 毫秒`}` : "自动刷新已关闭";
+  } catch (err) {
+    sel.value = String(state.prefs.autoRefreshMs);
+    state.refreshNote = `保存刷新周期失败：${err?.message || String(err)}`;
+  }
+  rebuildTimer();
+  render();
+});
 
 // ?tab=waste|all 直接落在某一页，方便截图和转发
 try {
@@ -421,5 +558,7 @@ try {
   /* 没有 search 就留在排名页 */
 }
 
+loadPrefs();
 load();
+// 只重读、更新「读数多久以前」；主动刷新由上面的周期定时器负责。
 setInterval(load, 60_000);

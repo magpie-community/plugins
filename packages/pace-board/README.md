@@ -17,7 +17,7 @@ magpie plugin add @magpie-community/page-pace-board
 - **到期账** —— 红点＝积分包过期会真失效；橙点＝本期没用完但下期重置（不是永久损失）；灰点＝已用尽或算不出来。同一笔额度被汇总窗口和子窗口各报一次时会合并。
 - **全部账号** —— magpie 上报了额度的所有账号与窗口，平铺看。
 
-## 数据从哪来（全部只读）
+## 数据从哪来（配置只读，额度可主动重读）
 
 | 来源 | 用途 |
 | --- | --- |
@@ -25,8 +25,9 @@ magpie plugin add @magpie-community/page-pace-board
 | `GET /v1/magpie/quotas`（回环，免 key） | 额度现值、剩余、到期失效量 `runsOut` |
 | `providers.json` | 哪个路由组在用 `pace` |
 | `credits-daily.json` / `quota-history.json` | 日均消耗，仅用于「没有官方 `runsOut` 时」估算到期浪费 |
+| `magpie quota refresh`（CLI） | 手动或定时触发，让 magpie 向厂商重读额度；不消耗模型 token，受每张卡 30 秒防重保护 |
 
-**不读** `plugin-auth.json`、`caller-keys.json`、`settings.json` —— 那里是凭证。面板不外发任何数据。
+**不读** `plugin-auth.json`、`caller-keys.json`、`settings.json` —— 那里是凭证。面板不直接外发数据；额度重读由 magpie CLI 代为执行。
 
 ## 分数为什么是 `(100 − used%) ÷ max(距到期小时, 1)`
 
@@ -38,7 +39,16 @@ magpie plugin add @magpie-community/page-pace-board
 
 `page/index.html` 是带路页。插件页面跑在 `default-src 'none'` 的沙盒里，唯一能做的联网动作是把自己导航到别处，所以它只做 `location.replace`。
 
-真界面由本插件自己的本机服务在 `127.0.0.1:3488` 提供（端口被占时由 magpie 通过 `options.port` 重映射）。注意跳转后文档的 origin 仍是 opaque，浏览器发出的是 `Origin: null`，因此服务放行 `null` 但要求一次性口令；口令只在 HTML 里注入，不写进任何静态文件。
+真界面由本插件自己的本机服务在 `127.0.0.1:3488` 提供（端口被占时由 magpie 通过 `options.port` 重映射）。注意跳转后文档的 origin 仍是 opaque，浏览器发出的是 `Origin: null`，因此服务放行 `null` 但要求口令；口令只在 HTML 里注入，不写进任何静态文件。
+
+## 本地状态
+
+宿主通过 `server(input, options)` 给出的可写目录里，插件再开一个 `pace-board/` 子目录（本机是 `~/.config/magpie/pace-board/`，便携安装跟着宿主数据目录走）：
+
+- `service-token.json`：本机服务口令，权限 600，跨宿主重启复用，已打开的页面不会因插件更新而失效。删掉或坏了会重建，此时需要重开插件页。
+- `prefs.json`：自动刷新周期，默认 5 分钟；支持关闭 / 5 秒 / 10 秒 / 30 秒 / 1 分钟 / 5 分钟 / 15 分钟 / 30 分钟。
+
+两个文件都只落在这个数据目录，不会写进插件包（发布后的包目录是只读副本）。
 
 ## 与已有页面的区别
 
@@ -49,7 +59,7 @@ magpie plugin add @magpie-community/page-pace-board
 ## 局限
 
 - 排名快照的时间是**最近一次真实请求经过该组**的时刻，不是现在。magpie 没有「只算不发」的重排接口，所以发一条消息才会更新。
-- 额度读数是缓存（约 1 分钟 TTL，后台 1–2 分钟自读一次），面板会标出读数有多旧。
+- 额度读数是缓存（约 1 分钟 TTL，后台 1–2 分钟自读一次），面板会标出读数有多旧。右上角圆形按钮或自动刷新周期可主动触发厂商重读；magpie 每张卡 30 秒内不会重复查询，所以 5 秒/10 秒档实际约每 30 秒才真刷一次。
 
 ## 许可
 

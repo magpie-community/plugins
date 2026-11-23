@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-pace-board",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "./index.mjs",
   "description": "在 magpie 窗口里解释「到期前用完」(pace) 路由策略：谁排第一、分数怎么算、额度读数还新不新、哪些额度到期会白扔。A page in magpie's window that explains the pace routing strategy: who goes first, how the score is derived, how fresh the numbers are, and which credits lapse at expiry.",

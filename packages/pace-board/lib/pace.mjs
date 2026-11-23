@@ -161,6 +161,53 @@ function paidMissing(list, d, o) {
   return !same && list.length < 8;
 }
 
+/**
+ * 用「此刻的额度读数」重算一个候选的 pace，纯粹为了校验快照有没有过时。
+ *
+ * 只认「同一个限流窗口」：quota 窗口的 resetsAt / runsOutAt 必须和 order 里的 due
+ * 对得上（容差 15 分钟）。对不上就不算 —— 账号额度包（Credits / Extra credits）
+ * 不是 pace 的输入，拿它重算会把 0.595 算成 0.4x，比不重算更错。
+ *
+ * 返回 status：
+ *   repriced   找到了同一窗口，pace 已按最新 used 重算
+ *   no-window  order 里本来就没有到期时间（168h 兜底），重算结果必然相同
+ *   unmatched  有 due，但最新额度里找不到对应窗口（窗口已消失或改名）
+ *   no-account 这个候选在网关额度里没有对应账号
+ */
+export function reprice(entry, acc, now = Date.now()) {
+  if (!acc) return { status: "no-account" };
+  const dueMs = toMs(entry?.due);
+  if (dueMs == null) return { status: "no-window" };
+
+  const windows = Array.isArray(acc.windows) ? acc.windows : [];
+  let best = null;
+  for (const w of windows) {
+    if (!w || typeof w !== "object") continue;
+    for (const at of [w.runsOutAt, w.resetsAt]) {
+      const t = toMs(at);
+      if (t == null) continue;
+      const diff = Math.abs(t - dueMs);
+      if (diff <= 15 * 60_000 && (!best || diff < best.diff)) {
+        best = { w, at: new Date(t).toISOString(), diff };
+      }
+    }
+  }
+  if (!best) return { status: "unmatched", windows: windows.length };
+
+  const d = decompose(best.w.used, best.at, now);
+  return {
+    status: "repriced",
+    pace: d.pace,
+    used: d.used,
+    remainingPct: d.remainingPct,
+    divisorHours: d.divisorHours,
+    hours: d.hours,
+    due: best.at,
+    window: best.w.name || "",
+    readAt: acc.readAt || "",
+  };
+}
+
 /** 把小时数说成人话 */
 export function humanHours(h) {
   if (h == null) return "未知";

@@ -16,8 +16,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { aggregate } from "./lib/pace.mjs";
+import { aggregate, reprice } from "./lib/pace.mjs";
+import { resolveMagpieBin, runRefresh } from "./lib/refresh.mjs";
+import { configDir } from "./lib/paths.mjs";
 import { fetchQuotas, readCreditsDaily, readGroups, readQuotaHistory, readSnapshot } from "./lib/source.mjs";
+import { readJSON, writeJSON } from "./lib/storage.mjs";
 import { projectWindow } from "./lib/waste.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
@@ -30,7 +33,14 @@ const QUOTA_STALE_HOURS = 24;
 // 口令不是为了挡跨源（跨源已经由 CORS 放行了），而是为了挡「本机任何一个
 // 沙箱页面都能读这份额度」：只有我们自己发出去的 HTML 里带着它。
 const TOKEN_HEADER = "x-pace-token";
-const TOKEN = randomBytes(24).toString("base64url");
+let TOKEN = "";
+let DATA_DIR = null;
+
+// 自动刷新周期白名单：关闭 / 5s / 10s / 30s / 1m / 5m / 15m / 30m
+const AUTO_MS = new Set([0, 5000, 10000, 30000, 60000, 300000, 900000, 1800000]);
+const DEFAULT_AUTO_MS = 300000;
+let refreshing = null;
+let lastRefreshOkAt = 0;
 
 const STATIC = {
   "/": { file: "page/board/index.html", type: "text/html; charset=utf-8" },
@@ -121,15 +131,7 @@ async function buildBoard(wantGroup) {
   let snapshotAgeMin = null;
   if (snapshot.ok && snapshot.at) {
     const t = Date.parse(snapshot.at);
-    if (Number.isFinite(t)) {
-      snapshotAgeMin = (now - t) / 60_000;
-      if (snapshotAgeMin > SNAPSHOT_STALE_MIN) {
-        warnings.push({
-          level: "warn",
-          text: `排序快照是 ${Math.round(snapshotAgeMin)} 分钟前的。额度可能已经变了，这份排名按当时的额度算，只作参考。`,
-        });
-      }
-    }
+    if (Number.isFinite(t)) snapshotAgeMin = (now - t) / 60_000;
   } else if (snapshot.ok) {
     warnings.push({ level: "warn", text: "路由快照没有时间戳，无法判断新鲜度。" });
   }
@@ -176,6 +178,39 @@ async function buildBoard(wantGroup) {
           })),
         }
       : null;
+
+    // 校验快照有没有过时：只对「同一限流窗口」重算，账号额度包不参与。
+    const live = reprice(r, acc, now);
+    if (live.status === "repriced") {
+      live.delta = live.pace - r.pace;
+      live.changed = Math.abs(live.delta) > 1e-6;
+    }
+    r.live = live;
+  }
+
+  // 快照新鲜度：把「决策时间」和「重算结果」分开说。
+  // 旧文案「这份排名按当时的额度算」会被读成「排名用了过时额度」；
+  // 但 pace 的输入是模型限流窗口，不是账号额度包——没有窗口的候选，
+  // 重算一万次也还是 100/168，这种行必须明说是兜底值，不是陈旧值。
+  if (snapshotAgeMin != null && snapshotAgeMin > SNAPSHOT_STALE_MIN) {
+    const repriced = rows.filter((r) => r.live?.status === "repriced");
+    const changed = repriced.filter((r) => r.live.changed);
+    const noWindow = rows.filter((r) => r.live?.status === "no-window");
+    const notes = [];
+    if (changed.length) {
+      notes.push(`${changed.length} 个候选的限流窗口读数已变，行内标了重算值`);
+    } else if (repriced.length) {
+      notes.push(`${repriced.length} 个候选已按最新读数重算，分数没变`);
+    }
+    if (noWindow.length) {
+      notes.push(`${noWindow.length} 个候选没有到期窗口，走 168h 兜底，重算也不会变`);
+    }
+    warnings.push({
+      level: "warn",
+      text: `magpie 最近一次真实决策在 ${Math.round(snapshotAgeMin)} 分钟前；此后没有请求经过，队列顺序不会自己更新。${
+        notes.length ? `${notes.join("；")}。` : ""
+      }`,
+    });
   }
 
   // 到期账：每个账号 × 每个窗口
@@ -332,7 +367,7 @@ function corsHeaders(req, port) {
   return {
     "access-control-allow-origin": allow,
     "access-control-allow-headers": `content-type, ${TOKEN_HEADER}`,
-    "access-control-allow-methods": "GET, OPTIONS",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-max-age": "600",
     vary: "Origin",
   };
@@ -357,6 +392,78 @@ function send(req, res, port, status, body, type = "application/json; charset=ut
 // 页面里的口令只在服务端注入：静态 js/css 原样发，别把口令写进文件。
 function injectToken(html) {
   return html.replace(/<meta name="pace-token" content="[^"]*"\s*\/?>/i, `<meta name="pace-token" content="${TOKEN}">`);
+}
+
+// 口令跨宿主重启复用。否则每次插件宿主重启都会让已打开的页面拿到 401。
+async function serviceToken(dir) {
+  const path = join(dir, "service-token.json");
+  const kept = await readJSON(path, null);
+  if (kept && /^[a-f0-9]{64}$/.test(kept.token)) return kept.token;
+  const token = randomBytes(32).toString("hex");
+  await writeJSON(path, { token });
+  return token;
+}
+
+function normalizeAuto(value) {
+  const n = Number(value);
+  return AUTO_MS.has(n) ? n : DEFAULT_AUTO_MS;
+}
+
+async function readPrefs() {
+  const p = await readJSON(join(DATA_DIR, "prefs.json"), null);
+  return { version: 1, autoRefreshMs: normalizeAuto(p?.autoRefreshMs ?? DEFAULT_AUTO_MS) };
+}
+
+async function writePrefs(autoRefreshMs) {
+  const value = { version: 1, autoRefreshMs: normalizeAuto(autoRefreshMs) };
+  await writeJSON(join(DATA_DIR, "prefs.json"), value);
+  return value;
+}
+
+async function readBody(req, limit = 4096) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error("请求体过大");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// 真正刷新一次。刷新只是「让 magpie 重新问厂商」，展示数据仍走原来的只读聚合。
+async function doRefresh(group) {
+  const quotas = await fetchQuotas();
+  const accounts = quotas.ok && Array.isArray(quotas.accounts) ? quotas.accounts : [];
+  const bin = await resolveMagpieBin();
+  if (!bin) {
+    return {
+      status: "unavailable",
+      note: "找不到 magpie 命令，自动刷新不可用；面板数据仍可正常查看",
+      board: await buildBoard(group),
+    };
+  }
+  if (!accounts.length) {
+    return { status: "unavailable", note: "网关没有上报可刷新的账号", board: await buildBoard(group) };
+  }
+  if (Date.now() - lastRefreshOkAt < 30_000) {
+    return {
+      status: "skipped",
+      note: "magpie 30 秒内不会重复查询同一张卡，已跳过",
+      board: await buildBoard(group),
+    };
+  }
+  const results = await runRefresh(accounts, bin);
+  const ok = results.filter((r) => r.ok).length;
+  if (ok) lastRefreshOkAt = Date.now();
+  const board = await buildBoard(group);
+  const failed = results.length - ok;
+  return {
+    status: "ok",
+    note: `已向厂商重读 ${ok} 个账号${failed ? `，${failed} 个失败` : ""}`,
+    results,
+    board,
+  };
 }
 
 async function startServer(port) {
@@ -401,6 +508,72 @@ async function startServer(port) {
       return;
     }
 
+    if (url.pathname === "/api/prefs") {
+      if (!tokenOK(req)) {
+        send(req, res, port, 401, JSON.stringify({ error: "缺口令" }));
+        done(401);
+        return;
+      }
+      try {
+        if (req.method === "POST") {
+          if (!/application\/json/i.test(String(req.headers["content-type"] || ""))) {
+            send(req, res, port, 415, JSON.stringify({ error: "需要 application/json" }));
+            done(415);
+            return;
+          }
+          const body = await readBody(req);
+          let value;
+          try {
+            value = JSON.parse(body || "{}");
+          } catch {
+            value = {};
+          }
+          const prefs = await writePrefs(value?.autoRefreshMs);
+          send(req, res, port, 200, JSON.stringify(prefs));
+          done(200);
+          return;
+        }
+        const prefs = await readPrefs();
+        send(req, res, port, 200, JSON.stringify(prefs));
+        done(200);
+      } catch (err) {
+        send(req, res, port, 500, JSON.stringify({ error: String(err?.message || err) }));
+        done(500);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/refresh") {
+      if (!tokenOK(req)) {
+        send(req, res, port, 401, JSON.stringify({ error: "缺口令" }));
+        done(401);
+        return;
+      }
+      if (req.method !== "POST") {
+        send(req, res, port, 405, JSON.stringify({ error: "需要 POST" }));
+        done(405);
+        return;
+      }
+      try {
+        if (refreshing) {
+          send(req, res, port, 200, JSON.stringify({ status: "in_progress", note: "正在重读额度" }));
+          done(200);
+          return;
+        }
+        const group = url.searchParams.get("group") || "";
+        refreshing = doRefresh(group);
+        const result = await refreshing;
+        send(req, res, port, 200, JSON.stringify(result));
+        done(200);
+      } catch (err) {
+        send(req, res, port, 500, JSON.stringify({ error: String(err?.message || err) }));
+        done(500);
+      } finally {
+        refreshing = null;
+      }
+      return;
+    }
+
     const hit = STATIC[url.pathname];
     if (!hit) {
       send(req, res, port, 404, "not found", "text/plain; charset=utf-8");
@@ -436,9 +609,11 @@ async function startServer(port) {
 // 端口被上一个宿主占着时不要静默换端口：包里的 page.service 声明的是这个端口，
 // 换了页面就跳不过来。改成等着它松手。
 let booted = null;
-function boot(port) {
+function boot(port, dataDir) {
+  DATA_DIR = dataDir;
   if (!booted) {
     booted = (async () => {
+      TOKEN = await serviceToken(DATA_DIR);
       for (let i = 0; i < 20; i++) {
         try {
           const { port: p } = await startServer(port);
@@ -463,7 +638,9 @@ export default {
   server: async (input, options) => {
     const p = Number(options?.port);
     const port = Number.isFinite(p) && p > 0 && p < 65536 ? p : DEFAULT_PORT;
-    boot(port);
+    const override = process.env.MAGPIE_PACE_BOARD_DATA_DIR;
+    const dataDir = override || join(input?.directory || configDir(), "pace-board");
+    boot(port, dataDir);
     return {};
   },
 };

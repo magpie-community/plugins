@@ -106,13 +106,75 @@ h1 {
 }
 /* 一句常量说明，替代原来那个「刷新」按钮：数据是自动重读的，
    但排名受 magpie 记账时机限制，按钮做不到它能承诺的事。 */
-.top-note {
-  display: block;
-  max-width: 210px;
-  color: var(--muted);
+.refresh-note {
+  margin: 2px 0 0;
+  color: var(--amber);
   font-size: 11px;
-  line-height: 1.45;
-  text-align: right;
+  line-height: 1.4;
+  min-height: 0;
+}
+.refresh-note:empty {
+  display: none;
+}
+.top-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 1px;
+}
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--fg2);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.icon-btn:hover:not(:disabled) {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.icon-btn.is-busy svg {
+  animation: pace-spin 0.9s linear infinite;
+}
+@keyframes pace-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.auto-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.auto-select {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 22px 5px 9px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 12px, calc(100% - 8px) 12px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
 }
 .btn {
   appearance: none;
@@ -333,6 +395,19 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0 4px;
+}
+.pace-tag.is-changed {
+  color: var(--red);
+  border-color: var(--red);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.pace-tag.is-fallback {
+  color: var(--faint);
+  border-style: dashed;
+}
+.pace-tag[title] {
+  cursor: help;
 }
 .bar {
   height: 6px;
