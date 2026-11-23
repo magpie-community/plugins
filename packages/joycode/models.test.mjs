@@ -50,6 +50,35 @@ test('model adapter chooses the SDK that speaks its upstream protocol', async t 
   assert.equal(models['Claude-Opus-5-hq'].api.npm, '@ai-sdk/anthropic')
   for (const model of Object.values(models)) assert.equal(model.api.url, 'https://api-ai.jd.com/v1')
 })
+
+test('publishes only the reasoning choices declared for each model', async t => {
+  const efforts = (...values) => values.map(value => ({ value, label: '档位' }))
+  const { models } = await load(t, { list: [
+    {
+      chatApiModel: 'GPT-6.2 Sol',
+      extJson: { adapterType: 'openai-response', reasoning: {
+        efforts: [...efforts('low', 'medium', 'high', 'xhigh', 'max', 'max', 'unsupported'), null],
+      } },
+    },
+    {
+      chatApiModel: 'DeepSeek-V4.1-Flash',
+      extJson: JSON.stringify({ reasoning: { sendThinking: true, toggle: true, efforts: efforts('high', 'max') } }),
+    },
+    { chatApiModel: 'Fixed-Thinking', extJson: { reasoning: { sendThinking: true, efforts: efforts('high') } } },
+    { chatApiModel: 'No-Declared-Effort', extJson: { reasoning: { defaultEffort: 'high', efforts: 'high' } } },
+    catalogue[3],
+  ] })
+  assert.equal(models['GPT-6.2 Sol'].capabilities.reasoning, true)
+  assert.deepEqual(Object.keys(models['GPT-6.2 Sol'].variants), ['low', 'medium', 'high', 'xhigh', 'max'])
+  assert.deepEqual(models['GPT-6.2 Sol'].variants.max, { reasoningEffort: 'max' })
+  assert.equal(models['DeepSeek-V4.1-Flash'].capabilities.reasoning, true)
+  assert.deepEqual(Object.keys(models['DeepSeek-V4.1-Flash'].variants), ['none', 'high', 'max'])
+  assert.deepEqual(Object.keys(models['Fixed-Thinking'].variants), ['high'])
+  for (const id of ['No-Declared-Effort', 'Claude-Opus-5-hq']) {
+    assert.equal(models[id].capabilities.reasoning, false)
+    assert.deepEqual(models[id].variants, {})
+  }
+})
 test('raises context only for exact input-verified models and preserves output limits', async t => {
   const { models } = await load(t, { list: [
     {

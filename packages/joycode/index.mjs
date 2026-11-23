@@ -39,6 +39,7 @@ const SDK = {
   anthropic: '@ai-sdk/anthropic',
 }
 const LOGIN_TYPE = 'PIN_JD_CLOUD'
+const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 // Verified against JoyCode's live gateway, not the Codex model catalogue.
 // GPT-6 Sol and GPT-5.6 Sol accept none; only minimal needs changing there.
@@ -165,6 +166,32 @@ function adapterProtocol(model) {
   return 'chat'
 }
 
+function reasoningEfforts(reasoning) {
+  if (!Array.isArray(reasoning?.efforts)) return []
+  return [...new Set(reasoning.efforts.map(effort => effort?.value).filter(value => EFFORTS.has(value)))]
+}
+
+function reasoningVariants(reasoning, protocol) {
+  const efforts = reasoningEfforts(reasoning)
+  if (efforts.length && protocol === 'chat' && reasoning.sendThinking === true &&
+    reasoning.toggle === true && !efforts.includes('none')) efforts.unshift('none')
+  return Object.fromEntries(efforts.map(effort => [
+    effort,
+    protocol === 'anthropic' ? { effort } : { reasoningEffort: effort },
+  ]))
+}
+
+function applyChatThinking(payload, reasoning) {
+  if (!reasoning || payload.thinking !== undefined) return
+  const effort = payload.reasoning_effort
+  if (effort === 'none' && reasoning.toggle === true) {
+    payload.thinking = { type: 'disabled' }
+    delete payload.reasoning_effort
+  } else if (effort !== 'none' && reasoningEfforts(reasoning).includes(effort)) {
+    payload.thinking = { type: 'enabled' }
+  }
+}
+
 function accountContext(model, baseContext) {
   const verifiedLimit = VERIFIED_CONTEXT_LIMITS.get(model?.chatApiModel)
   const directoryContext = modelExtJson(model)?.contextWindowByPlatform?.['JoyCode Desktop']
@@ -279,6 +306,8 @@ function flattenBody(payload) {
     ],
     stream: payload.stream === true,
     ...(payload.stream ? {} : { max_tokens: 64000 }),
+    ...(payload.reasoning_effort !== undefined ? { reasoning_effort: payload.reasoning_effort } : {}),
+    ...(payload.thinking !== undefined ? { thinking: payload.thinking } : {}),
   }
 }
 
@@ -873,10 +902,16 @@ function billingScene(value, depth = 0) {
   }
 }
 
-async function accountModels(provider, { auth } = {}) {
+function isCatalogueModel(model) {
+  return typeof model?.chatApiModel === 'string' && !!model.chatApiModel &&
+    !model.hidden && !model.isHidden &&
+    (!model.modelFunctionType || ['ALL', 'chat', 'agent'].includes(model.modelFunctionType))
+}
+
+async function accountModels(provider, { auth } = {}, loadCatalogue) {
   if (auth?.type !== 'api' || !auth.key) return provider.models
   const [catalogue, pricing] = await Promise.allSettled([
-    fetchAccountData(auth, 'joycode_modelList'),
+    loadCatalogue(auth),
     fetchAccountData(auth, 'plugin_config', { sceneType: 'billingRate' }),
   ])
   for (const result of [catalogue, pricing]) {
@@ -891,14 +926,14 @@ async function accountModels(provider, { auth } = {}) {
     ? scene.billingRates.map(row => [row.chatApiModel, multiplier(row.billingRate)]) : [])
   const models = {}
   for (const model of catalogue.value) {
-    const id = model?.chatApiModel
-    if (typeof id !== 'string' || !id || model.hidden || model.isHidden ||
-      (model.modelFunctionType && !['ALL', 'chat', 'agent'].includes(model.modelFunctionType))) continue
+    if (!isCatalogueModel(model)) continue
+    const id = model.chatApiModel
     const base = provider.models?.[id] ?? {}
     const features = Array.isArray(model.features) ? model.features : []
     const image = features.includes('vision')
     const rate = multiplier(model.billingRate) ?? rates.get(id)
     const protocol = adapterProtocol(model)
+    const variants = reasoningVariants(modelExtJson(model)?.reasoning, protocol)
     const baseContext = Number.isFinite(model.maxTotalTokens) ? model.maxTotalTokens : base.limit?.context ?? 200000
     // Remove old rate fields so unavailable pricing never becomes fake free usage.
     const { rate: oldRate, rateWas, free, ...rest } = base
@@ -914,9 +949,11 @@ async function accountModels(provider, { auth } = {}) {
       },
       capabilities: {
         ...base.capabilities,
+        reasoning: Object.keys(variants).length > 0,
         toolcall: features.includes('function_call'),
         input: { ...base.capabilities?.input, text: true, image },
       },
+      variants,
       modalities: { input: image ? ['text', 'image'] : ['text'] },
       ...(rate !== undefined ? { rate, free: rate === 0 } : {}),
     }
@@ -928,6 +965,23 @@ async function accountModels(provider, { auth } = {}) {
 
 export const JoyCodeAuthPlugin = async (_input, options) => {
   const flatten = options?.flatten === true
+  const chatThinkingByAccount = new Map()
+  const accountKey = auth => JSON.stringify([
+    auth.key, auth.metadata?.tenant?.trim() ?? '', auth.metadata?.loginType || LOGIN_TYPE,
+  ])
+  const loadCatalogue = async auth => {
+    const catalogue = await fetchAccountData(auth, 'joycode_modelList')
+    if (Array.isArray(catalogue) && catalogue.length) {
+      const chatThinking = new Map()
+      for (const model of catalogue) {
+        if (!isCatalogueModel(model) || adapterProtocol(model) !== 'chat') continue
+        const reasoning = modelExtJson(model)?.reasoning
+        if (reasoning?.sendThinking === true) chatThinking.set(model.chatApiModel, reasoning)
+      }
+      chatThinkingByAccount.set(accountKey(auth), chatThinking)
+    }
+    return catalogue
+  }
 
   return {
     // Provider + models available before anyone signs in.
@@ -941,7 +995,7 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
       }
     },
 
-    provider: { id: PROVIDER, models: accountModels },
+    provider: { id: PROVIDER, models: (provider, context) => accountModels(provider, context, loadCatalogue) },
 
     auth: {
       provider: PROVIDER,
@@ -974,6 +1028,8 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
         const tenant = (auth.metadata?.tenant ?? '').trim()
         const loginType = auth.metadata?.loginType || LOGIN_TYPE
         if (!ptKey) return {}
+        const key = accountKey(auth)
+        let cataloguePromise
         // Resolve native chat identity once per account loader, never globally.
         let identityPromise
         const identity = () => {
@@ -1014,6 +1070,14 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
                 : new TextDecoder().decode(source)
             const payload = JSON.parse(source)
             const protocol = requestProtocol(request ?? input, payload)
+            if (protocol === 'chat' && typeof payload.reasoning_effort === 'string' && payload.thinking === undefined) {
+              // A restarted host may already have a persisted model list.
+              if (!chatThinkingByAccount.has(key)) {
+                cataloguePromise ??= loadCatalogue(auth).catch(() => { cataloguePromise = undefined })
+                await cataloguePromise
+              }
+              applyChatThinking(payload, chatThinkingByAccount.get(key)?.get(payload.model))
+            }
             if (protocol === 'responses' && LOW_EFFORT_FALLBACKS.get(payload.model)?.includes(payload.reasoning?.effort)) {
               payload.reasoning = { ...payload.reasoning, effort: 'low' }
             }
