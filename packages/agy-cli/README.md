@@ -132,6 +132,10 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    Google 账号」。新账号有自己的 agy 主目录（`~/.local/state/magpie-agy-bridge/accounts/`
    下），它的登录保存在那个目录里的文件中，不动系统钥匙串里原来那个账号。每个账号单独一行，
    用量分开显示，可以像其他 provider 的账号一样切换和轮换。
+   agy 自己只保存一个 Google 账号。为了让 agy 当前的账号在 agy 换登别的账号（比如在终端里）
+   之后还能用，插件会把它的登录按 agy 存的原样复制一份，放到上面那个目录下它自己的主目录
+   （`own…`，文件只有你自己能读）。agy 换到别的账号后，这个账号的用量、模型和请求就用这份
+   复制运行 agy。系统钥匙串只读不写。0.1.113 之前就已不在 agy 里的账号没有这份复制，需要再登录一次。
    用过已退役的 Antigravity 插件（`antigravity`）的话，Magpie 的 Providers 页顶上会提示把那里的
    账号移过来，点 Move 即可；也可以在 agy-cli 的 Import accounts from a file… 里选那份登录记录
    或 agy 的令牌文件。它们本就是 Antigravity 自己的 Google 登录，每个账号放进自己的 agy 主目录，
@@ -193,6 +197,7 @@ your location"），尽管它自己查的额度已经拿到了。这时插件按
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |
+| `AGY_BRIDGE_STATELESS_REUSE` | 开启 | 不流式、不带工具、只有一条消息的请求（识图、起标题），在已答完一个这类请求的空闲 agy 里新开会话，省掉 agy 首次建会话的几秒；那条旧对话再有下一轮时重放历史。设为 `0` 关闭 |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | 工具运行超过该时间仍未结束时，先返回 "still running" |
@@ -271,6 +276,9 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
   按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
   magpie 据此让这个账号歇到重置，并改问下一个账号。
+  结尾是 "⚠ Third-party quota reached. Please switch to Gemini models … Resets in 3h22m19s."
+  （这个账号 Claude 和 GPT-OSS 的额度用完，Gemini 的还在）时也一样结束本轮，magpie 让这个模型
+  歇到重置，改问下一个账号或模型，这个账号的 Gemini 模型照常可用。
   结尾是 "⚠ Our servers are experiencing high traffic right now …"（Google 这个模型暂时没有
   余量，agy 的重试也都碰上了 503）时，按 `overloaded_error`（非流式为 HTTP 503）结束本轮，
   不让账号歇着，magpie 会再试或改问别处。（由 ifccod 发现并移植自他的补丁。）

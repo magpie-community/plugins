@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, isKeptId, keepOwn, keptFor, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -140,8 +140,15 @@ const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 // its own that nothing follows. Answered as text, it was the whole reply
 // and the next account was never asked (@Airan_FS on X, 11-17).
 const QUOTA_CORE = "⚠ Individual quota reached"
-const QUOTA_MARKER = "\n" + QUOTA_CORE
-const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
+// The same ending for the account's quota of the models agy calls third
+// party, Claude and GPT-OSS, used up while Gemini's is left: "⚠ Third-party
+// quota reached. Please switch to Gemini models or upgrade your subscription
+// to increase your limits. Resets in 3h22m19s." It was the whole reply to
+// every Claude request once that quota was out (@Airan_FS on X, 11-23).
+const THIRD_PARTY_CORE = "⚠ Third-party quota reached"
+const QUOTA_CORES = [QUOTA_CORE, THIRD_PARTY_CORE]
+const QUOTA_MARKERS = QUOTA_CORES.map((core) => "\n" + core)
+const quotaReached = (detail) => /\b(?:individual|third-party) quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
 const DISABLED_CORE = AGENT_ERROR_CORES[6]
@@ -202,9 +209,9 @@ const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 // agy's lines as they start a reply or a line, with no newline before them:
 // a chunk that ends on the start of one is held (plugins#1454).
-const LINE_CORES = [...AGENT_ERROR_CORES, QUOTA_CORE, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
+const LINE_CORES = [...AGENT_ERROR_CORES, ...QUOTA_CORES, BUSY_CORE, ATTEMPT_CORE, RETRY_CORE, NOTICE_CORE]
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length, BUSY_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, ...QUOTA_MARKERS.map((marker) => marker.length), BUSY_MARKER.length,
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1853,7 +1860,7 @@ class Turn {
     if (quota >= 0) return quota
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKERS.some((marker) => marker.startsWith(tail)) ||
         BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           NOTICE_MARKER.startsWith(tail) || CAP_MARKER.startsWith(tail))) ||
         (this.startsLine(text, text.length - keep) && LINE_CORES.some((core) => core.startsWith(tail)))) {
@@ -1885,11 +1892,12 @@ class Turn {
     return at > 0 && text[at - 1] === "\n" && !this.cuts.includes(at) ? at - 1 : at
   }
 
-  // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
-  // start (BUSY_CORE), starts in text, with the newline before it: a line of
-  // its own that only whitespace follows, so far. -1 when there is none; one
-  // more text follows was the model quoting it.
-  quotaEnding(text, core = QUOTA_CORE) {
+  // Where agy's quota ending (either of QUOTA_CORES), or another ending
+  // matched by its start (BUSY_CORE), starts in text, with the newline
+  // before it: a line of its own that only whitespace follows, so far. -1
+  // when there is none; one more text follows was the model quoting it.
+  quotaEnding(text, core) {
+    if (!core) return Math.max(...QUOTA_CORES.map((quota) => this.quotaEnding(text, quota)))
     const at = text.lastIndexOf(core)
     if (at < 0) return -1
     if (!this.startsLine(text, at) || text.slice(at).trimEnd().includes("\n")) return -1
@@ -2193,6 +2201,10 @@ class Proc {
     this.listWaiters = []
     this.watchers = new Set()
     this.deniedPermissions = 0
+    // How long each step of starting agy took, in ms, for the session row
+    // of the bridge's events (initialize, session/new, the model's options)
+    this.phases = {}
+    this.sessionPrompts = 0
     allProcs.add(this)
   }
 
@@ -2209,9 +2221,11 @@ class Proc {
     this.openingText = openingTextOf(opts.messages?.[0])
     this.openingImages = openingImagesOf(opts.messages?.[0])
     this.resumeFrom = opts.resume || null
+    this.stateless = statelessRequest(opts)
   }
 
   async start() {
+    this.phases = {}
     await this.#spawn()
     await this.#withStartTimeout(async () => {
       await this.#initialize()
@@ -2232,10 +2246,47 @@ class Proc {
     this.#assign(convKey, opts)
     this.spareKey = null
     this.lastUsed = Date.now()
+    this.phases = {}
+    await this.#withStartTimeout(() => this.#openSession())
+  }
+
+  // A stateless request (statelessRequest) takes an idle agy that served
+  // one before and opens its own session there. agy boots its backend on a
+  // process's first session/new (it signs in and asks Google for the
+  // account, models and settings: ~3s here, far longer over a slow
+  // proxy); a later session/new in the same process takes milliseconds.
+  // The session the agy had is closed: its request was answered, and a
+  // follow-up to it replays its history in a session of its own, as after
+  // any lost session.
+  async reuse(convKey, opts) {
+    const previous = this.sessionId
+    this.#assign(convKey, opts)
+    this.sessionId = null
+    this.currentModel = null
+    this.configOptions = []
+    this.currentSelectionKey = null
+    this.instructionsInSession = false
+    this.resumed = false
+    this.hasSentFirstTurn = false
+    this.historyInvalid = false
+    this.unsentPrompt = null
+    this.expectedMessages = null
+    this.omittedHistoryTokens = 0
+    this.lastCacheRatio = undefined
+    this.pendingFlattenedTurn = undefined
+    this.deniedPermissions = 0
+    this.inputTokenScale = 1
+    this.lastUsed = Date.now()
+    this.phases = {}
+    if (previous && this.closable) {
+      // agy holds a closed session no longer; one it can't close stays
+      this.conn.request("session/close", { sessionId: previous }, 10_000).catch(() => {})
+    }
     await this.#withStartTimeout(() => this.#openSession())
   }
 
   async #spawn() {
+    this.launchKey = await launchKey(this.agyPath, this.workDir)
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
@@ -2333,6 +2384,7 @@ class Proc {
   }
 
   async #initialize() {
+    const started = Date.now()
     const init = await this.conn.request("initialize", {
       protocolVersion: 1,
       // The plugin's own name. agy decides which models it offers this client,
@@ -2348,6 +2400,8 @@ class Proc {
       capabilities.prompt_capabilities?.image === true
     this.appendable = capabilities._meta?.antigravity?.systemPrompt?.append === true
     this.resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
+    this.closable = !!(capabilities.sessionCapabilities?.close ?? capabilities.session_capabilities?.close)
+    this.phases.initialize_ms = Date.now() - started
   }
 
   async #openSession() {
@@ -2358,6 +2412,8 @@ class Proc {
       : {}
 
     let session = null
+    this.sessionPrompts = 0
+    const opened = Date.now()
     if (this.resumeFrom && resumable) {
       try {
         session = await this.conn.request("session/resume", {
@@ -2380,11 +2436,14 @@ class Proc {
       if (!session?.sessionId) throw new Error("agy session/new returned no sessionId")
       this.sessionId = session.sessionId
     }
+    this.phases.session_ms = Date.now() - opened
     // A resumed session reports the account default; always apply the selection.
     this.currentModel = session?.models?.currentModelId ?? null
     this.configOptions = Array.isArray(session?.configOptions) ? session.configOptions : []
     inAccount(this.home, () => noteOfferedModels(this.configOptions, session?.models))
+    const configured = Date.now()
     if (this.model) await this.#setModel(this.model, this.selection, this.resumed)
+    this.phases.set_model_ms = Date.now() - configured
     if (this.tools.length) await this.#waitForToolList(this.toolsVersion)
     if (!this.toolsListed()) throw toolsUnlistedError(this.tools.length)
   }
@@ -2562,6 +2621,10 @@ class Proc {
     const turn = this.turn
     if (!turn || turn.done || turn.finalized) return
     const update = params.update ?? {}
+    if (turn.firstOutputAt == null && turn.promptSentAt != null &&
+      (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk")) {
+      turn.firstOutputAt = Date.now()
+    }
     turn.arm()
     turn.noteAcpToolUpdate(update)
     if (turn.cancelRequested) return
@@ -2752,6 +2815,8 @@ class Proc {
         promptParts = userTurnParts(promptParts, this.slashCommands)
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         turn.promptInFlight = true
+        this.sessionPrompts++
+        if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
         try {
           result = await this.conn.request("session/prompt", {
@@ -2760,6 +2825,14 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
+        }
+        if (promptNumber === 1) {
+          // how long agy took to answer, beside the session row's start-up steps
+          const now = Date.now()
+          logSessionEvent(this, this.sessionReason ?? null, {
+            ttft_ms: turn.firstOutputAt != null ? turn.firstOutputAt - turn.promptSentAt : null,
+            prompt_ms: now - turn.promptSentAt,
+          }, "prompt")
         }
         usage = turn.recordPromptUsage(promptNumber, result?.usage)
         if (turn.cancelRequested) {
@@ -3719,16 +3792,19 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // the new key (sorted, to avoid deadlock), then pick again inside those
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
+  const launch = !forceNew && isFreshConversation && statelessRequest(opts)
+    ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
       if (!forceNew && !pool.get(convKey)) {
-        const candidate = isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)
+        const candidate = (isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)) ??
+          findStatelessDonor(opts, launch)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
-      const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked)
+      const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked, launch)
       return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
     })
     if (outcome.retry) {
@@ -3740,7 +3816,7 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
 }
 
 // Caller holds the conversation lock; recovery must not acquire it recursively.
-async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey])) {
+async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey]), launch = null) {
   await evictIdle()
   let existing = pool.get(convKey)
   if (existing?.turn?.cancelRequested) {
@@ -3838,9 +3914,18 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       // as drop_live logs it (yetone/magpie#7223)
       if (why === "history") historyDiff = firstHistoryDiff(existing.expectedMessages, matchedHistory)
     }
+    if (!forceNew && launch && statelessRequest(opts) &&
+      statelessDonor(existing, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)) {
+      // the same stateless request again: its agy answers it in a new session
+      return await reuseStateless(existing, key, opts, why)
+    }
     existing.retiring = true
     dropFromPool(existing)
     await existing.stop().catch(() => {})
+  }
+  if (!forceNew && isFreshConversation && launch) {
+    const donor = findStatelessDonor(opts, launch)
+    if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
   const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
@@ -3873,8 +3958,36 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
     ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
+    ...proc.phases,
   })
   return { proc, history: opts.history }
+}
+
+// Open a stateless request's session in an idle agy that answered one
+// (findStatelessDonor), instead of starting another: agy's first session/new
+// boots its backend and takes seconds, a later one milliseconds. The
+// donor's conversation keeps no live session: a follow-up to it replays its
+// history, as after any lost session.
+async function reuseStateless(donor, key, opts, why) {
+  const previousKey = donor.convKey
+  dropFromPool(donor)
+  // its session is closed, and resuming it elsewhere would share this agy's folder
+  unpark(previousKey)
+  try {
+    await donor.reuse(key, opts)
+  } catch (error) {
+    donor.retiring = true
+    await donor.stop().catch(() => {})
+    throw error
+  }
+  pool.set(key, donor)
+  donor.sessionReason = why
+  logSessionEvent(donor, why, {
+    fresh: true, resumed: false, spare: false, parked: false, reused: true,
+    history: Array.isArray(opts.history) ? opts.history.length : null,
+    ...donor.phases,
+  })
+  return { proc: donor, history: opts.history }
 }
 
 // Bounded, content-free events: never log prompts, arguments, results or tool IDs.
@@ -4661,6 +4774,37 @@ function findRemaskedProc(convKey, opts) {
     found = proc
   }
   return found
+}
+
+// A request that needs nothing of agy's but one answer: no stream to hold,
+// no tools, no tool results and no earlier turns (an image described, a
+// title written). Any agy of the same launch can open a session for it.
+function statelessRequest(opts) {
+  return !!opts && opts.nonstream === true && !opts.tools?.length && !opts.hasToolResults &&
+    Array.isArray(opts.history) && !opts.history.length
+}
+
+// An idle agy whose only turn answered a stateless request, for another
+// stateless request to open its session in (Proc.reuse); the longest idle
+// first. Only one whose session holds that single turn: an agy a
+// conversation went on in is never taken.
+function findStatelessDonor(opts, launch) {
+  if (!statelessRequest(opts) || !launch || process.env.AGY_BRIDGE_STATELESS_REUSE === "0") return null
+  const userId = opts.userId || ""
+  const sessionScope = opts.sessionScope || ""
+  let best = null
+  for (const proc of pool.values()) {
+    if (!statelessDonor(proc, launch, userId, sessionScope, opts.workDir)) continue
+    if (!best || proc.lastUsed < best.lastUsed) best = proc
+  }
+  return best
+}
+
+function statelessDonor(proc, launch, userId, sessionScope, workDir) {
+  return !!proc && proc.stateless && !proc.dead && !proc.stopping && !proc.retiring && !proc.turn &&
+    !proc.resumed && proc.hasSentFirstTurn && proc.sessionPrompts === 1 && !!proc.sessionId &&
+    proc.launchKey === launch && (proc.userId || "") === userId &&
+    (proc.sessionScope || "") === sessionScope && proc.workDir === workDir
 }
 
 function findLiveContinuedProc(opts) {
@@ -7420,6 +7564,12 @@ function noAgy() {
 // two accounts whose email can't be read aren't taken for one.
 async function signedInAs(homeId = "") {
   const email = await signedInEmail()
+  // agy's own sign-in: kept, so the account keeps working once agy holds
+  // another
+  if (!homeId && email) {
+    forgetStoredSignIn()
+    await keepOwn(email, await storedSignIn())
+  }
   const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
   return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }
@@ -7463,6 +7613,8 @@ async function homeOfEmail(email) {
   let ids = []
   try { ids = fs.readdirSync(accountsDir()) } catch {}
   for (const id of ids) {
+    // a kept account of agy's own (keptHome) is that account, not another
+    if (isKeptId(id)) continue
     const home = homeOf(id)
     if (home && (await storedEmail({ home })).toLowerCase() === want) return id
   }
@@ -7516,7 +7668,20 @@ async function importSignIns(texts) {
 // homeOfAuth is the home of the account a saved sign-in is, null for
 // agy's own.
 async function homeOfAuth(getAuth) {
-  return (await accountOfAuth(getAuth)).home
+  const { home, email } = await accountOfAuth(getAuth)
+  return home ?? ownHome(email, inAccount(null, () => storedSignInNow()))
+}
+
+// ownHome is where an account of agy's own (saved as email) runs, given
+// stored, agy's keyring read: agy's own (null) while agy holds it, or
+// can't tell, and its kept home (keptFor) while agy holds another. With
+// none kept, it is agy's own still, and is told agy holds another.
+// While agy holds it, it is kept again when agy's sign-in has changed.
+function ownHome(email, stored) {
+  if (!email) return null
+  if (heldByAnother(stored, email)) return keptFor(email)
+  inAccount(null, () => keepOwn(email, stored)).catch(() => {})
+  return null
 }
 
 // accountOfAuth is homeOfAuth, with the email an account of agy's own was
@@ -7543,9 +7708,16 @@ function readUsageOf(home, email = "") {
       let stored = null
       try { stored = await storedSignIn() } catch {}
       if (heldByAnother(stored, email)) {
+        // kept while agy held it: read with its own sign-in
+        const kept = keptFor(email)
+        const result = kept ? await readUsageOf(kept) : null
+        if (result && result.signIn !== "expired") {
+          return toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept" ? { ...result, signIn: "renewed" } : result
+        }
         toldNotHeld.add(email.toLowerCase())
         return { windows: [], error: notHeldError(email), signIn: "expired" }
       }
+      await keepOwn(email, stored)
     }
     const result = await read()
     if (email && !result.error && toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept") {
@@ -7627,11 +7799,17 @@ export const AntigravityBridgePlugin = async () => {
       loader: async (getAuth) => {
         // the account's own home, null for agy's own sign-in: every agy
         // its requests run is started there
-        const { home, email } = await accountOfAuth(getAuth)
+        const { home: savedHome, email } = await accountOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
-          fetch: (fetchInput, init = {}) => inAccount(home, async () => {
+          // an account of agy's own runs in its kept home while agy holds
+          // another (ownHome), from the last keyring read
+          // (none yet after a start: it is waited for, so the first
+          // request isn't sent as the account agy holds)
+          fetch: async (fetchInput, init = {}) => inAccount(savedHome ?? ownHome(email,
+            inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null)), async () => {
+            const home = currentHome()
             const requestUrl = typeof fetchInput === "string"
               ? fetchInput
               : fetchInput instanceof URL

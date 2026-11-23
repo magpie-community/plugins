@@ -283,7 +283,32 @@ CN 3.4.22's own agent task puts it — read from the binary, **not verified
 with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
 after using every token it was let have — the `max_tokens` sent, or 2000
 for an enterprise model — ends with `finish_reason: "length"`, so an agent
-knows it was cut. A model with a `__max` model and
+knows it was cut. Since 0.2.48 a tool call such a reply was cut in (its
+arguments not whole JSON) is not sent as a call: the reply ends with
+`length` and the text before the call (plugins#1366, a call cut at 2000
+went out as `tool_calls` and the agent stopped on it). A whole call in a
+cut reply goes out as a call; a stream holds back only a call whose
+arguments aren't whole until it ends. Trae CN 3.4.22's own llm_utils_chat
+requests carry no field that lifts the 2000, so since 0.2.49 an
+enterprise model's reply that Trae cut at exactly 2000 with text written
+and no whole call is asked on: the same request, session and function
+again, the text so far as the assistant's turn and a short ask to go on
+where it stopped after it, with what is left of the agent's limit as
+`max_tokens`. The answers go out as one reply, in a body or a stream, its
+usage summed, its end the last answer's. A cut call is left out and the
+next answer writes it. Asking stops at a whole call, at the agent's limit,
+after 16 answers, or when a next ask fails (the reply then ends cut, with
+`length`). A cut reply with only reasoning, or a call with nothing written
+before it, is not asked on. Since 0.2.50 a later answer that Trae cut in
+the model's reasoning or in a call, with no text of its own, is asked on
+too, from the text the earlier answers wrote (a reasoning model asked to go
+on reasons again first, and its round 2 was 7683 characters of reasoning
+cut at 2000), up to 3 such answers in a row. While a next ask waits, the
+stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
+sent, so the agent doesn't take the pause for a dead stream; with
+`MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
+`wait_ms=`. **Not verified with a real enterprise seat**,
+nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -402,6 +427,25 @@ IDE may therefore ask you to sign in again after magpie renews.
 | 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
+
+### Seeing what is sent
+
+Start magpie with `MAGPIE_TRAE_DEBUG=1` in its environment and each chat
+request writes two or three lines to magpie's log (`app.log`, and the
+terminal or `docker logs` when magpie runs as `magpie serve`):
+
+- `trae debug: request <id> POST <url> <body>`: the body the plugin sends
+  Trae's `llm_utils_chat`, `max_tokens` and `enterprise_custom_hyper_params`
+  included. Each message is only its role and length, each tool only its
+  name; the headers, which carry the sign-in, are never written.
+- `trae debug: request <id> answered <status> <content-type>`.
+- `trae debug: reply <id> trae_finish=… usage=… calls=… finish_sent=…`: the
+  finish Trae gave (`""` is Trae's "stop" or none), its usage, the calls
+  Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
+  finish the agent was sent.
+
+The request goes to Trae, not to an enterprise model's own gateway: Trae's
+cloud makes that request, so its body is not in magpie's log.
 
 ## Usage
 

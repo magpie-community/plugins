@@ -192,6 +192,13 @@ After installing, sign in from Magpie; no terminal needed.
    and agy keeps its sign-in in a file there, leaving the account in the
    system keyring as it is. Each account has its own row and its own usage,
    and is switched and rotated like any provider's accounts.
+   agy itself holds one Google account. So that the account agy holds now
+   keeps working after agy is signed in to another (in a terminal, say), the
+   plugin keeps a copy of its sign-in, as agy stored it, in a home of its own
+   there (`own…`, the file readable by you only). While agy holds another
+   account, that account's usage, models and requests run agy with this
+   copy. The keyring is only read, never written. An account agy stopped
+   holding before 0.1.113 has no copy: sign it in again once.
    Accounts signed in on the retired Antigravity plugin (`antigravity`) move
    over from the line Magpie shows over its Providers list (Move), or from
    agy-cli's Import accounts from a file…, which takes that plugin's sign-in or
@@ -269,6 +276,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_SPARE` | on | Keeps one spare agy per account, started but with no session and no request sent, so a new conversation skips agy's start; set to `0` to turn it off |
+| `AGY_BRIDGE_STATELESS_REUSE` | on | A request that is not streamed, has no tools and only one message (describing an image, writing a title) opens its session in an idle agy that answered one such request, skipping the seconds agy's first session takes; that earlier conversation replays its history if it goes on. Set to `0` to turn it off |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | How long a reclaimed session stays resumable (6 hours) |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | Where resumable session records are kept |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | After this long, a still-running client tool gets a "still running" reply |
@@ -383,6 +391,11 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Third-party quota reached. Please switch to Gemini models … Resets
+  in 3h22m19s." ending (the account's Claude and GPT-OSS quota is used up,
+  Gemini's is not) ends the turn the same way, so magpie rests that model
+  until then, asks the next account or model, and keeps asking this
+  account's Gemini models.
   The "⚠ Our servers are experiencing high traffic right now …" ending
   (Google has no capacity for the model now, and agy's own retries met the
   same 503) ends the turn as `overloaded_error` (HTTP 503 without

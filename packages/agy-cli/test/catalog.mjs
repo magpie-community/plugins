@@ -157,13 +157,127 @@ test("an account of agy's own that agy no longer holds shows no other account's 
       assert.equal(again.signIn, "renewed")
       assert.equal(again.windows.find(w => !w.model)?.used, 10)
       assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"))
+      // b was kept while agy held it: its card reads b's own quota now
+      asked.length = 0
       const bNow = await kit.plugin.auth.usage(async () => b, {})
-      assert.equal(bNow.signIn, "expired")
+      assert.equal(bNow.error, undefined, JSON.stringify(bNow))
+      assert.equal(bNow.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"))
       await settle(kit)
     })
   } finally {
     globalThis.fetch = realFetch
   }
+})
+
+// ownsh1p on X again (为什么不能两个都显示额度呢): an account of agy's own
+// that agy held once keeps its own sign-in, so when agy holds another its
+// card reads its own quota, and its requests run agy with its own sign-in,
+// never the held one's. A kept sign-in Google no longer takes says to sign
+// in again. agy's keyring is never written.
+test("an account of agy's own that agy held once reads its own usage, and sends as itself, once agy holds another", async () => {
+  const signIn = (email, expiry = "0001-01-01T00:00:00Z") => ({
+    token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry },
+    auth_method: "consumer", id_token_email: email,
+  })
+  const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn(email))).toString("base64") + "\n"
+  const options = {
+    platform: "darwin", storedSignIn: keyring("a@example.com"), modelsBehavior: DYNAMIC_OK,
+    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
+  }
+  const asked = []
+  let refused = false
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    if (/oauth2\.googleapis\.com\/token/.test(url)) {
+      asked.push("renew " + new URLSearchParams(init.body).get("refresh_token"))
+      return refused
+        ? new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })
+        : new Response(JSON.stringify({ access_token: "ya29.renewed" }), { status: 200 })
+    }
+    asked.push(init.headers.Authorization)
+    const left = init.headers.Authorization === "Bearer ya29.a@example.com" ? 0.9 : 0.25
+    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
+      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: left }],
+    }] }
+    return new Response(JSON.stringify(reply), { status: 200 })
+  }
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "A@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "b@example.com" } }
+      // agy holds a: a's card reads the keyring, and a is kept
+      const first = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(first.error, undefined, JSON.stringify(first))
+      const ids = fs.readdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts"))
+      assert.equal(ids.length, 1)
+      assert.match(ids[0], /^own[0-9a-f]{24}$/)
+      const keptFile = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", ids[0], ".gemini", "antigravity-cli", "antigravity-oauth-token")
+      assert.deepEqual(JSON.parse(fs.readFileSync(keptFile, "utf8")), signIn("a@example.com"))
+      assert.equal(fs.statSync(keptFile).mode & 0o777, 0o600)
+
+      // a sign-in in a terminal: agy holds b now
+      options.storedSignIn = keyring("b@example.com")
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(ua.error, undefined, JSON.stringify(ua))
+      assert.notEqual(ua.signIn, "expired")
+      assert.equal(ua.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"), asked.join())
+      asked.length = 0
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"), asked.join())
+
+      // a's request runs agy in a's kept home, b's in agy's own
+      const la = await kit.plugin.auth.loader(async () => a)
+      const served = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.length > 0)
+      assert.ok(kit.acpSpawns.every(s => s.env.HOME === path.dirname(path.dirname(path.dirname(keptFile)))), "a's request ran outside its kept home")
+      const before = kit.acpSpawns.length
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const servedB = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      await servedB.text()
+      assert.ok(kit.acpSpawns.slice(before).every(s => s.env.HOME !== kit.acpSpawns[0].env.HOME), "b's request ran in a's kept home")
+
+      // Google no longer takes a's kept sign-in: a's card says to sign in again
+      fs.writeFileSync(keptFile, JSON.stringify(signIn("a@example.com", "2020-01-01T00:00:00Z")))
+      refused = true
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const gone = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(gone.windows, [])
+      assert.equal(gone.signIn, "expired")
+      assert.match(gone.error, /not to A@example\.com/)
+      assert.ok(asked.every(h => h === "renew 1//a@example.com"), asked.join())
+      // agy's keyring was only read
+      assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || c.args[0] === "find-generic-password"))
+      await settle(kit)
+    })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// The first request after a start, before anything read agy's keyring,
+// isn't sent as the account agy holds either.
+test("an account of agy's own: the first request after a start waits for the keyring read", async () => {
+  const keyring = "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29.b", refresh_token: "1//b", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "b@example.com",
+  })).toString("base64") + "\n"
+  await withKit({ platform: "darwin", storedSignIn: keyring, modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    const la = await kit.plugin.auth.loader(async () => ({ type: "oauth", key: "agy", metadata: { email: "a@example.com" } }))
+    const refused = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+    assert.equal(refused.status, 401)
+    assert.match(await refused.text(), /not to a@example\.com/)
+    assert.equal(kit.acpSpawns.length, 0, "a's first request ran agy as b")
+    await settle(kit)
+  })
 })
 
 test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () => {

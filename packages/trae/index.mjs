@@ -1718,6 +1718,53 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   return body
 }
 
+// MAGPIE_TRAE_DEBUG=1 in magpie's environment writes each chat request the
+// plugin sends and how Trae's answer ended to stderr, which magpie keeps in
+// app.log (plugins#1366: a seat's replies stopped at 2000 output tokens,
+// and the reporter could see only TLS to Trae). Read on every request, so
+// it is on for the next one after a restart and off by default. What goes
+// out is the URL and the body with nothing of the user's in it: each
+// message is its role and its length, each tool its name. The headers,
+// which carry the sign-in, are never written.
+const traeDebug = () => !!process.env.MAGPIE_TRAE_DEBUG && process.env.MAGPIE_TRAE_DEBUG !== "0"
+
+function debugBody(sent) {
+  const out = { ...sent }
+  if (Array.isArray(sent.messages)) {
+    out.messages = sent.messages.map((m) => ({ role: m?.role, chars: JSON.stringify(m?.content ?? "").length, ...(m?.tool_calls ? { tool_calls: m.tool_calls.length } : {}) }))
+  }
+  if (Array.isArray(sent.tools)) out.tools = sent.tools.map((t) => t?.function?.name ?? t?.name ?? "?")
+  return out
+}
+
+function debugSent(url, rid, sent) {
+  if (traeDebug()) console.error(`trae debug: request ${rid} POST ${url} ${JSON.stringify(debugBody(sent))}`)
+}
+
+// debugEnd passes the answer's parts on and, when the stream ends, writes
+// what Trae said of it: its finish (Trae's "stop", or none, reads as ""),
+// its usage, and the reply's length
+async function* debugEnd(rid, parts, limit, cut) {
+  let usage = null
+  let finish = ""
+  let text = 0
+  let reasoning = 0
+  const calls = []
+  try {
+    for await (const p of parts) {
+      if (p.usage) usage = p.usage
+      if (p.finish) finish = p.finish
+      if (p.text) text += p.text.length
+      if (p.reasoning) reasoning += p.reasoning.length
+      if (p.call) calls.push(p.call)
+      yield p
+    }
+  } finally {
+    const end = ending(calls, finish, usage, limit, cut)
+    console.error(`trae debug: reply ${rid} trae_finish=${JSON.stringify(finish)} usage=${JSON.stringify(usage)} text_chars=${text} reasoning_chars=${reasoning} calls=${calls.length}${end.dropped ? ` cut_calls=${end.dropped}` : ""} finish_sent=${end.finish}`)
+  }
+}
+
 // sse reads Trae's events: {event, data} for each, data parsed when JSON
 async function* sse(stream) {
   const reader = stream.getReader()
@@ -2911,6 +2958,153 @@ function cutFinish(finish, usage, limit, cut = 0) {
   return finish
 }
 
+// wholeArgs says a call's arguments are whole JSON, as the agent reads them
+function wholeArgs(a) {
+  try {
+    JSON.parse(a)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ending is how a reply with these calls ends: a reply Trae cut (it came
+// to its limit, or Trae said length) whose call it cut too goes out
+// without that call and ends for length, the text before it kept. Sent as
+// a call, the agent ran a call with half its arguments, or stopped on it
+// and sent nothing more: an enterprise seat's reply of exactly 2000 tokens,
+// one call, tool_calls, and no next request (plugins#1366, 0.2.47). A whole
+// call in a cut reply is the model's and goes out as one.
+function ending(calls, finish, usage, limit, cut) {
+  const ended = cutFinish(finish, usage, limit, cut) || "stop"
+  if (ended === "length") {
+    const kept = calls.filter((c) => wholeArgs(c.arguments))
+    if (kept.length < calls.length) return { calls: kept, finish: "length", dropped: calls.length - kept.length }
+  }
+  return { calls, finish: calls.length ? "tool_calls" : ended, dropped: 0 }
+}
+
+// GO_ON is the turn a reply Trae cut is asked to go on with, after the
+// text it had written so far as the assistant's own
+const GO_ON = "Continue exactly where your previous message stopped. Do not repeat anything already written and do not add any preface."
+
+// CUT_ROUNDS bounds the asks one reply takes: 16 of TRAE_CUT is 32000
+// tokens, an enterprise model's usual max_tokens
+const CUT_ROUNDS = 16
+
+// tune holds the waits tests shorten. keepEvery: how long an enterprise
+// model's stream may go with nothing sent before it is sent an SSE
+// comment. A reply Trae cut is asked on (continued), and nothing comes
+// while the next ask waits for its first word; the agent, or a proxy
+// before it, took the quiet for a dead stream and reconnected
+// (plugins#1366, 0.2.49, Codex). magpie hears the comment as the plugin
+// still answering, and keeps its own agent alive (a Responses agent gets
+// response.in_progress, which Codex's idle timeout counts).
+const tune = { keepEvery: 2000 }
+
+// THOUGHT_ROUNDS bounds the asks in a row Trae cut in the model's
+// reasoning, nothing written: a reasoning model asked to go on reasons
+// again first, and a round can go to the cut in it (plugins#1366, 0.2.49:
+// round 1 text_chars=1834, round 2 text_chars=0 reasoning_chars=7683,
+// both completion_tokens=2000). Its reasoning isn't sent back, so a model
+// that never gets past it would spend every round on it.
+const THOUGHT_ROUNDS = 3
+
+// addUsage is two asks' usage as one: each ask is billed on its own, so
+// both its prompt and its reply count
+function addUsage(a, b) {
+  if (!a) return b
+  if (!b) return a
+  const out = {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
+  }
+  const cached = (u) => Number(u.prompt_tokens_details?.cached_tokens) || 0
+  if (a.prompt_tokens_details || b.prompt_tokens_details) out.prompt_tokens_details = { cached_tokens: cached(a) + cached(b) }
+  if (a.magpie_cache_unknown || b.magpie_cache_unknown) out.magpie_cache_unknown = true
+  return out
+}
+
+// continued is an enterprise model's reply carried past Trae's cut. Trae's
+// llm_utils_chat ends an enterprise model's reply at exactly TRAE_CUT
+// output tokens whatever max_tokens it is sent (top-level, or under
+// enterprise_custom_hyper_params, plugins#1366: 32768 sent, 2000 back).
+// Trae's own client never asks it for a long reply: its chat with an
+// enterprise model is the agent task (create_agent_task), whose cloud
+// swaps in Trae's own system prompt and tools, and its own llm_utils_chat
+// asks (titles, commit messages, branch names) carry no output limit at
+// all (libharness 3.4.22), so there is no field of Trae's own to send.
+// So a round that came to the cut with text written and no whole call is
+// asked again (more: the request with that text as the assistant's and
+// GO_ON after it), and what it answers is sent on as the same reply,
+// until a round ends short of the cut, makes a whole call, the asked
+// limit is spent, or CUT_ROUNDS is reached. A round cut in its reasoning or
+// in a call, nothing written in it, is asked on too once an earlier round
+// wrote text to go on from (up to THOUGHT_ROUNDS in a row); a first round
+// with no text isn't, as there is nothing to go on from. A call cut
+// mid-arguments is dropped from the round it was cut in: the next round
+// writes it whole.
+// The usage sent is every round's together; a reply still cut at the end
+// ends for length.
+async function* continued(answer, limit, cut, more) {
+  let text = ""
+  let total = null
+  let parts = answer
+  let thought = 0 // the rounds in a row that wrote no text
+  for (let round = 1; ; round++) {
+    let usage = null
+    let finish = ""
+    let whole = 0
+    let wrote = false
+    let failed = false
+    const held = []
+    for await (const p of parts) {
+      if (p.error) {
+        // a later ask that failed leaves the reply as Trae cut it
+        if (round === 1) {
+          yield p
+          return
+        }
+        failed = true
+        break
+      }
+      if (p.usage) {
+        usage = p.usage
+        continue
+      }
+      if (p.finish) {
+        finish = p.finish
+        continue
+      }
+      if (p.call && !wholeArgs(p.call.arguments)) {
+        held.push(p)
+        continue
+      }
+      if (p.call) whole++
+      if (p.text) {
+        text += p.text
+        wrote = true
+      }
+      yield p
+    }
+    total = addUsage(total, usage)
+    const wasCut = failed || (cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length"))
+    const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
+    thought = wrote ? 0 : thought + 1
+    const next = !failed && wasCut && text && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left, round + 1).catch(() => null) : null
+    if (next) {
+      parts = next
+      continue
+    }
+    if (!wasCut || round === 1) yield* held
+    if (total) yield { usage: total }
+    if (wasCut && round > 1) yield { finish: "length" }
+    else if (finish) yield { finish }
+    return
+  }
+}
+
 // finishOf is OpenAI's finish_reason for the one Trae's last event gives,
 // "" for none it says or one it has no word for
 function finishOf(d) {
@@ -3072,10 +3266,11 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
       if (p.usage) usage = p.usage
       if (p.finish) finish = p.finish
     }
-    const message = { role: "assistant", content: text || (calls.length ? null : "") }
+    const end = ending(calls, finish, usage, limit, cut)
+    const message = { role: "assistant", content: text || (end.calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
-    if (calls.length) message.tool_calls = calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
-    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop" }] }
+    if (end.calls.length) message.tool_calls = end.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
+    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: end.finish }] }
     if (usage) body.usage = usage
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
   }
@@ -3088,14 +3283,30 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
   // account's failure reads as Trae Global's
   const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
+  let keep = null
   const stream = new ReadableStream({
     async start(ctl) {
       let calls = 0
+      const sent = []
+      // a call whose arguments aren't whole JSON is held to the end: only
+      // then is it known whether Trae cut the reply in it (ending)
+      const held = []
       let usage = null
       let finish = ""
       let failed = false
+      let quietFrom = Date.now()
       const put = (b) => {
+        quietFrom = Date.now()
         if (!gone) ctl.enqueue(b)
+      }
+      // an enterprise model's reply may be asked on (continued): the
+      // stream is kept alive while the next ask waits (tune.keepEvery)
+      keep = cut > 0 ? setInterval(() => {
+        if (!gone && Date.now() - quietFrom >= tune.keepEvery) put(enc.encode(": keepalive\n\n"))
+      }, tune.keepEvery) : null
+      const putCall = (c) => {
+        sent.push(c)
+        put(chunk({ tool_calls: [{ index: calls++, id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }] }))
       }
       try {
         put(chunk({ role: "assistant", content: "" }))
@@ -3108,12 +3319,17 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
           }
           if (p.text) put(chunk({ content: p.text }))
           if (p.reasoning) put(chunk({ reasoning_content: p.reasoning }))
-          if (p.call) put(chunk({ tool_calls: [{ index: calls++, id: p.call.id, type: "function", function: { name: p.call.name, arguments: p.call.arguments } }] }))
+          if (p.call) {
+            if (wholeArgs(p.call.arguments)) putCall(p.call)
+            else held.push(p.call)
+          }
           if (p.usage) usage = p.usage
           if (p.finish) finish = p.finish
         }
         if (!failed) {
-          put(chunk({}, calls ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop"))
+          const end = ending([...sent, ...held], finish, usage, limit, cut)
+          if (!end.dropped) for (const c of held) putCall(c)
+          put(chunk({}, end.finish))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
       } catch (e) {
@@ -3121,6 +3337,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
           put(error(e?.message ?? e))
         } catch {}
       }
+      clearInterval(keep)
       try {
         put(enc.encode("data: [DONE]\n\n"))
         if (!gone) ctl.close()
@@ -3128,6 +3345,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
     },
     cancel() {
       gone = true
+      clearInterval(keep)
       abort?.()
       it.return?.()
     },
@@ -4334,12 +4552,15 @@ const makePlugin = (site) => async ({ client }) => {
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
                 const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                const rid = randomUUID()
+                debugSent(host + "/api/agent/v3/llm_utils_chat", rid, sent)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
-                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": rid }),
                   body: JSON.stringify(sent),
                   signal: ac.signal,
                 })
+                if (traeDebug()) console.error(`trae debug: request ${rid} answered ${res.status} ${res.headers.get("content-type") ?? ""}`)
                 if (!res.ok) {
                   const text = await res.text()
                   const e = errorOf(text)
@@ -4381,7 +4602,40 @@ const makePlugin = (site) => async ({ client }) => {
                   break
                 }
                 fnOf.set(who, fn)
-                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0)
+                const cut = enterpriseModel(entry) ? TRAE_CUT : 0
+                const answer = done ? held : chain(held, it)
+                const got = traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer
+                // the next ask of a reply Trae cut (continued): the same
+                // request, function, host and session, with the text so far
+                // as the assistant's, asked for what is left of the limit.
+                // null when Trae doesn't answer it with a stream: the reply
+                // then ends cut, as one ask's did.
+                const more = async (text, left, round) => {
+                  const asked = Date.now()
+                  const again = {
+                    ...req,
+                    max_completion_tokens: undefined,
+                    max_tokens: left > 0 ? left : undefined,
+                    messages: [...(Array.isArray(req.messages) ? req.messages : []), { role: "assistant", content: text }, { role: "user", content: GO_ON }],
+                  }
+                  const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                  const id = randomUUID()
+                  debugSent(host + "/api/agent/v3/llm_utils_chat", id, body)
+                  const r = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                    method: "POST",
+                    headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": id }),
+                    body: JSON.stringify(body),
+                    signal: ac.signal,
+                  })
+                  if (traeDebug()) console.error(`trae debug: request ${id} answered ${r.status} ${r.headers.get("content-type") ?? ""} round=${round} wait_ms=${Date.now() - asked}`)
+                  if (!r.ok || !(r.headers.get("content-type") ?? "").includes("event-stream")) {
+                    r.body?.cancel?.().catch(() => {})
+                    return null
+                  }
+                  const p = parts(sse(r.body), Array.isArray(req.tools) ? req.tools : [])
+                  return traeDebug() ? debugEnd(id, p, body.max_tokens || 0, cut) : p
+                }
+                const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more) : got, () => ac.abort(), site, sent.max_tokens || 0, cut)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
@@ -4409,4 +4663,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, TRAE_CUT, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

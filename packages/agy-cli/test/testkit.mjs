@@ -269,7 +269,11 @@ class FakeAgy {
           protocolVersion: 1,
           agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
           agentCapabilities: {
-            ...(this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {}),
+            ...(this.kit.promptImages ? { promptCapabilities: { image: true } } : {}),
+            ...(this.kit.sessionResume || this.kit.sessionClose ? { sessionCapabilities: {
+              ...(this.kit.sessionResume ? { resume: {} } : {}),
+              ...(this.kit.sessionClose ? { close: {} } : {}),
+            } } : {}),
             // agy 1.5's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1)
             ...(this.kit.appendable ? { _meta: { antigravity: { systemPrompt: { append: true } } } } : {}),
           },
@@ -308,8 +312,12 @@ class FakeAgy {
           })
         }
       }
-      if (this.kit.sessionNewDelayMs) setTimeout(sendNew, this.kit.sessionNewDelayMs)
+      const delay = (this.kit.sessionNewDelayMs || 0) + (this.booted ? 0 : this.kit.bootDelayMs || 0)
+      this.booted = true
+      if (delay) setTimeout(sendNew, delay)
       else sendNew()
+    } else if (method === "session/close" && this.kit.sessionClose) {
+      this.respond(id, {})
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
       // agy whose account Google turned away offers no model: every one is unknown
@@ -504,6 +512,11 @@ export async function createBridgeKit(options = {}) {
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    // agy 1.5.14 lists session/close, and boots its backend on a
+    // process's first session/new only (~3s signed in; later ones ~10ms)
+    sessionClose: options.sessionClose ?? false,
+    promptImages: options.promptImages ?? false,
+    bootDelayMs: options.bootDelayMs ?? 0,
     appendable: options.appendable ?? false,
     listTools: options.listTools ?? true,
     watchTools: options.watchTools ?? true,
