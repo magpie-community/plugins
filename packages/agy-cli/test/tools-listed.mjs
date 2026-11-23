@@ -13,7 +13,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
-import { READ_TOOL, baseBody, createBridgeKit, readSse } from "./testkit.mjs"
+import { READ_TOOL, baseBody, continueWithToolResults, createBridgeKit, readSse } from "./testkit.mjs"
 
 const FAST_WAIT = { AGY_BRIDGE_TOOL_LIST_WAIT_MS: "200" }
 // The platform-neutral cases run as Linux on every OS; Windows has its own below.
@@ -90,6 +90,56 @@ test("a live agy that lists the swapped catalog keeps the conversation", async (
     assert.equal((await readSse(await kit.request(follow))).stopReason, "end_turn")
     assert.equal(kit.acpSpawns.length, 1)
     assert.ok(kit.listings.some((listing) => listing.tools.includes("Read")))
+  })
+})
+
+test("agy can call tools whose prefixed names would exceed 64 characters", async () => {
+  const name = "mcp__synthetic_workspace_connector__read_registered_catalog_marker"
+  const boundary = "b".repeat(64 - "mcp_ide-tools_".length)
+  const tools = [READ_TOOL, { ...READ_TOOL, name: boundary }, { ...READ_TOOL, name }]
+  await withKit(LINUX, async (kit) => {
+    let alias
+    kit.prompts.push(async (agent) => {
+      const { result } = await agent.listTools()
+      const listed = result.tools.map((tool) => tool.name)
+      assert.deepEqual(listed.slice(0, 2), [READ_TOOL.name, boundary])
+      alias = listed[2]
+      assert.match("mcp_ide-tools_" + alias, /^[a-zA-Z0-9_-]{1,64}$/)
+      assert.notEqual(alias, name)
+      assert.deepEqual(result.tools[2].inputSchema, READ_TOOL.input_schema)
+      const reply = await agent.tool(alias, { path: "/synthetic" })
+      assert.equal(reply.result.content[0].text, "catalog marker")
+      await agent.text("ok")
+      return { stopReason: "end_turn" }
+    })
+    const body = baseBody({ tools })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.error, null)
+    const call = first.content.find((block) => block.type === "tool_use")
+    assert.equal(call.name, name)
+    assert.deepEqual(call.input, { path: "/synthetic" })
+    const next = continueWithToolResults(body, first, () => "catalog marker")
+    assert.equal((await readSse(await kit.request(next))).stopReason, "end_turn")
+
+    kit.prompts.push(async (agent) => {
+      const { result } = await agent.listTools()
+      assert.equal(result.tools[0].name, alias)
+      assert.equal(new Set(result.tools.map((tool) => tool.name)).size, 2)
+      await agent.text("ok")
+      return { stopReason: "end_turn" }
+    })
+    const follow = baseBody({
+      tools: [tools[2], { ...READ_TOOL, name: alias }],
+      messages: [
+        ...next.messages,
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "check refreshed catalog" },
+      ],
+    })
+    const refreshed = await readSse(await kit.request(follow))
+    assert.equal(refreshed.error, null)
+    assert.equal(refreshed.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
   })
 })
 

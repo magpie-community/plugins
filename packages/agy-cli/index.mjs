@@ -58,6 +58,8 @@ const AGENT_NAME = "magpie-bridge"
 const MCP_SERVER_PATH = fileURLToPath(new URL("./mcp-server.mjs", import.meta.url))
 // agy exposes tools from the --ide-mcp-port server as direct functions with this prefix.
 const IDE_TOOL_PREFIX = "mcp_ide-tools_"
+const IDE_TOOL_NAME_LIMIT = 64 - IDE_TOOL_PREFIX.length
+const IDE_TOOL_ALIAS_PREFIX = "_agy_"
 // agy 1.3.5+: a tools/list entry with this _meta key is never deferred.
 const ALWAYS_LOAD = "antigravity/alwaysLoad"
 const IDLE_MS = positiveTimeout(process.env.AGY_BRIDGE_IDLE_MS, 10 * 60 * 1000)
@@ -1483,6 +1485,27 @@ export function ideToolOf(toolCall) {
   return ""
 }
 
+// agy validates the function name after adding its prefix. Keep the client's
+// name on the response side, and use a stable alias in the ACP catalog.
+function toolsByMcpName(tools) {
+  const byName = new Map()
+  for (const tool of tools) {
+    const { name } = tool
+    let listedName = name
+    if (name.length > IDE_TOOL_NAME_LIMIT || /[^a-zA-Z0-9_-]/.test(name) || name.startsWith(IDE_TOOL_ALIAS_PREFIX)) {
+      const readable = name.replace(/[^a-zA-Z0-9_-]/g, "_")
+      let attempt = 0
+      do {
+        const suffix = "_" + createHash("sha256").update(`${attempt++}:\0${name}`).digest("hex").slice(0, 16)
+        const room = IDE_TOOL_NAME_LIMIT - IDE_TOOL_ALIAS_PREFIX.length - suffix.length
+        listedName = IDE_TOOL_ALIAS_PREFIX + readable.slice(-room) + suffix
+      } while (byName.has(listedName))
+    }
+    byName.set(listedName, tool)
+  }
+  return byName
+}
+
 function agentDefinition() {
   const lines = [
     "---",
@@ -2203,10 +2226,12 @@ class Proc {
   // What a conversation sets; a spare gets it when one takes it (adopt).
   #assign(convKey, opts) {
     this.convKey = convKey
+    this.ephemeral = !!opts.ephemeral
     this.model = opts.model
     this.selection = opts.selection
     this.tools = opts.tools ?? []
     this.toolsSignature = JSON.stringify(this.tools)
+    this.toolsByMcpName = toolsByMcpName(this.tools)
     this.instructions = opts.instructions || ""
     this.userId = opts.userId || ""
     this.sessionScope = opts.sessionScope || ""
@@ -2521,7 +2546,11 @@ class Proc {
     // instead, so every tool stays (plugins#1140). The trimmed list is kept
     // per catalog: agy asks again on every tools/list_changed.
     if (this.fittedFor !== this.toolsSignature) {
-      this.fitted = fitTools(this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
+      this.fitted = fitTools(Array.from(this.toolsByMcpName, ([name, tool]) => ({
+        ...tool,
+        name,
+        _meta: { ...tool._meta, [ALWAYS_LOAD]: true },
+      })))
       this.fittedFor = this.toolsSignature
     }
     return this.fitted
@@ -2554,6 +2583,7 @@ class Proc {
     if (signature === this.toolsSignature) return
     this.tools = tools
     this.toolsSignature = signature
+    this.toolsByMcpName = toolsByMcpName(tools)
     await this.#announceTools()
   }
 
@@ -2578,7 +2608,7 @@ class Proc {
       // Anything that would run inside agy itself (shell, file edits,
       // questions, browser) is denied.
       const tool = ideToolOf(params?.toolCall)
-      if (tool && this.tools.some((t) => t.name === tool)) {
+      if (this.toolsByMcpName.has(tool)) {
         const allow = (params?.options || []).find((option) => option?.kind === "allow_once")
         if (allow) return { outcome: { outcome: "selected", optionId: allow.optionId } }
       }
@@ -2986,11 +3016,11 @@ class Proc {
     if (!turn.promptInFlight) {
       throw new Error("agy bridge: no prompt in flight for MCP call")
     }
-    const name = message.name
+    const tool = this.toolsByMcpName.get(message.name)
+    if (!tool) throw new Error(`agy bridge: undeclared tool ${message.name}`)
+    const name = tool.name
     let args = message.arguments ?? {}
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("agy bridge: invalid tool arguments")
-    const tool = this.tools.find((item) => item.name === name)
-    if (!tool) throw new Error(`agy bridge: undeclared tool ${name}`)
     // agy consumes its internal toolSummary instead of forwarding it to MCP.
     if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
       args = { ...args, toolSummary: "Run command" }
@@ -3173,7 +3203,13 @@ class Proc {
     }
     if (this.turn === turn) {
       this.turn = null
-      if (!this.stopping && !this.retiring) park(this)
+      if (this.ephemeral) {
+        this.retiring = true
+        dropFromPool(this)
+        this.stop().catch(() => {})
+      } else if (!this.stopping && !this.retiring) {
+        park(this)
+      }
     }
   }
 
@@ -3200,7 +3236,7 @@ class Proc {
   }
 
   canPark() {
-    return !!this.sessionId && this.hasSentFirstTurn && !this.historyInvalid && !this.turn &&
+    return !this.ephemeral && !!this.sessionId && this.hasSentFirstTurn && !this.historyInvalid && !this.turn &&
       !this.dead && Array.isArray(this.expectedMessages)
   }
 
@@ -3779,14 +3815,23 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
-      if (!forceNew && !pool.get(convKey)) {
+      if (!forceNew && !opts.ephemeral && !pool.get(convKey)) {
         const candidate = (isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)) ??
           findStatelessDonor(opts, launch)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
       const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked, launch)
-      return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
+      try {
+        return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
+      } catch (error) {
+        if (value.proc.ephemeral && !value.proc.turn) {
+          value.proc.retiring = true
+          dropFromPool(value.proc)
+          value.proc.stop().catch(() => {})
+        }
+        throw error
+      }
     })
     if (outcome.retry) {
       extra = outcome.retry
@@ -3832,15 +3877,15 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // A flattened, growing first message changes conversationKey, so the live
   // session is under the previous key. Reuse it when the new opening continues
   // the whole previous opening (not just a shared prefix).
-  if (!existing && !forceNew && isFreshConversation) {
+  if (!existing && !forceNew && !opts.ephemeral && isFreshConversation) {
     const candidate = findLiveContinuedProc(opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
-  if (!existing && !forceNew && !isFreshConversation) {
+  if (!existing && !forceNew && !opts.ephemeral && !isFreshConversation) {
     const candidate = findRemaskedProc(convKey, opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
-  let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
+  let why = opts.ephemeral ? "ephemeral_side_sample" : (forceNew && opts.dropReason ? opts.dropReason : "no_live")
   let historyDiff
   let key = convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
@@ -3908,7 +3953,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const donor = findStatelessDonor(opts, launch)
     if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
-  const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
+  const resume = forceNew || isFreshConversation || opts.ephemeral ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
   const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
@@ -4174,7 +4219,7 @@ function replayHistoryProblem(body, resultBlocks) {
 // the client's history, ready for its next message. False when the session
 // can't take it as it is; the caller then replays, as for a fork.
 async function keepDroppedTurn(proc, turn, opts) {
-  if (proc.toolsGrew(opts.tools) || proc.workDir !== opts.workDir ||
+  if (proc.workDir !== opts.workDir ||
     !sameInstructions(proc.instructions, opts.instructions)) return false
   const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => ({
     block: { tool_use_id: call.id },
@@ -4740,7 +4785,7 @@ function findRemaskedProc(convKey, opts) {
   if (!first || !Array.isArray(history) || !history.length || account == null) return null
   let found = null
   for (const proc of pool.values()) {
-    if (proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
+    if (proc.ephemeral || proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
     if (proc.convKey === convKey || /^(.*?)[0-9a-f]{64}$/.exec(proc.convKey)?.[1] !== account) continue
     if ((proc.userId || "") !== (opts.userId || "")) continue
     if ((proc.sessionScope || "") !== (opts.sessionScope || "")) continue
@@ -4797,7 +4842,7 @@ function findLiveContinuedProc(opts) {
   let bestLen = -1
   let tied = false
   for (const proc of pool.values()) {
-    if (proc.dead || proc.retiring || proc.turn) continue
+    if (proc.ephemeral || proc.dead || proc.retiring || proc.turn) continue
     if ((proc.userId || "") !== userId) continue
     if ((proc.sessionScope || "") !== sessionScope) continue
     if (proc.workDir !== opts.workDir) continue
@@ -7501,6 +7546,9 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
+    if (answered?.size && !baseParts.length) {
+      baseParts = [{ type: "text", text: "The tool result above has been delivered and the newly loaded tools are now available. Continue." }]
+    }
   } else {
     const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
@@ -7851,37 +7899,41 @@ export const AntigravityBridgePlugin = async () => {
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
             const sessionScope = requestSessionScope(fetchInput, init)
-            // an account's conversations are its own: its agy has them
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
+            const ephemeral = isEphemeralSideSample(trailing, resultBlocks)
+            const reqId = "req_" + randomBytes(4).toString("hex")
+            // an account's conversations are its own: its agy has them
+            const baseConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
+            const convKey = ephemeral ? `${baseConvKey}#side-${reqId}` : baseConvKey
             const callerWorkDir = namedWorkDirectory(body, init)
             const workDir = workDirectory(callerWorkDir)
             const instructions = sessionInstructions(body, callerWorkDir)
 
             try {
               const tools = normalizeTools(body)
-              for (const message of body.messages) {
-                if (message.role !== "assistant" || !Array.isArray(message.content)) continue
-                for (const block of message.content) {
-                  if (block?.type !== "tool_use") continue
-                  const entry = toolCalls.get(block.id)
-                  if (!entry || entry.call.clientSeen || !sameSessionScope(entry.proc, sessionScope)) continue
-                  entry.call.clientSeen = true
-                  entry.turn.touchClient()
+              if (!ephemeral) {
+                for (const message of body.messages) {
+                  if (message.role !== "assistant" || !Array.isArray(message.content)) continue
+                  for (const block of message.content) {
+                    if (block?.type !== "tool_use") continue
+                    const entry = toolCalls.get(block.id)
+                    if (!entry || entry.call.clientSeen || !sameSessionScope(entry.proc, sessionScope)) continue
+                    entry.call.clientSeen = true
+                    entry.turn.touchClient()
+                  }
                 }
               }
-              const reqId = "req_" + randomBytes(4).toString("hex")
               rememberRequestMeta(reqId, { layout, nonstream: body.stream === false })
               // Same conversation, other layout: one key, no replacement session.
               // Routine for some clients, so reported only in verbose mode.
-              if (noteLayout(convKey, layout) && process.env.AGY_BRIDGE_EVENTS === "verbose") {
+              if (!ephemeral && noteLayout(convKey, layout) && process.env.AGY_BRIDGE_EVENTS === "verbose") {
                 logBridgeEvent(null, null, "layout_flip", "layout_canonicalized",
                   { reqId, convKey, layout, nonstream: body.stream === false })
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
-                messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
+                messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey, ephemeral,
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
@@ -7931,10 +7983,11 @@ export const AntigravityBridgePlugin = async () => {
                   const historyMatches = directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
                     : proc.matchesHistory(trailingMessages(body).history)
+                  const toolsGrew = proc.toolsGrew(tools)
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
-                  // cancelled, and the steer goes in as the next prompt.
-                  if ((interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                  // cancelled, and the next prompt runs with the refreshed tool list.
+                  if ((interrupted || imageResult || toolsGrew) && historyMatches && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
@@ -7943,7 +7996,7 @@ export const AntigravityBridgePlugin = async () => {
                         .filter((item) => !item.call.deferred || item.call.lateDelivered)
                         .map((item) => item.block.tool_use_id),
                     )
-                  } else if (interrupted || imageResult || !historyMatches || proc.toolsGrew(tools) ||
+                  } else if (interrupted || imageResult || !historyMatches || toolsGrew ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
@@ -7951,7 +8004,7 @@ export const AntigravityBridgePlugin = async () => {
                     const dropReason = interrupted ? "interrupted"
                       : imageResult ? "image_result"
                       : !historyMatches ? "history_mismatch"
-                      : proc.toolsGrew(tools) ? "tools_grew"
+                      : toolsGrew ? "tools_grew"
                       : proc.workDir !== workDir ? "work_dir"
                       : "instructions"
                     logBridgeEvent(proc, turn, "drop_live", dropReason, acquireOpts, {
@@ -7959,7 +8012,7 @@ export const AntigravityBridgePlugin = async () => {
                       expected_history: Array.isArray(proc.expectedMessages) ? proc.expectedMessages.length : null,
                       // an interrupted turn is dropped when its history differs too
                       history_matches: historyMatches,
-                      tools_grew: !!proc.toolsGrew(tools),
+                      tools_grew: !!toolsGrew,
                       work_dir_changed: proc.workDir !== workDir,
                       instructions_changed: !sameInstructions(proc.instructions, instructions),
                       // where the history the client sent first differs from
@@ -8145,4 +8198,120 @@ process.once("exit", reapOnExit)
 
 export { sanitizeInputSchema }
 export default { id: PROVIDER_ID, server: AntigravityBridgePlugin }
+
+// Background prompt-suggestion requests (e.g. Codex / T3 Code thread/sample
+// composer predictions and Claude Code suggestion mode) replay the main
+// conversation's history under the same session scope, but clients never
+// append the predicted text to the next real turn (#1369).
+const EPHEMERAL_SIDE_SAMPLE_RES = [
+  /^Predict the next message the user will send in this conversation\.\s+Reply with only that message,/i,
+  /^\[SUGGESTION MODE:/,
+]
+
+function stripClosedTag(text, tagName) {
+  const s = String(text ?? "")
+  if (!s) return ""
+  const open = `<${tagName}`
+  const close = `</${tagName}>`
+  const lower = asciiLower(s)
+  const trimmed = s.trim()
+  const trimmedLower = asciiLower(trimmed)
+  // Fast whole-block envelope check: if the entire block opens with <tag...>
+  // and ends with </tag> and contains no second <tag opener, treat the whole
+  // block as one envelope even if its body mentions </tag> literally.
+  if (trimmedLower.startsWith(open) && trimmedLower.endsWith(close)) {
+    const afterOpen = open.length
+    if (afterOpen < trimmed.length && !/[A-Za-z0-9_]/.test(trimmed[afterOpen])) {
+      const gt = trimmed.indexOf(">", afterOpen)
+      if (gt !== -1 && gt < trimmed.length - close.length && trimmedLower.indexOf(open, gt + 1) === -1) {
+        return ""
+      }
+    }
+  }
+  let out = ""
+  let i = 0
+  while (i < s.length) {
+    const start = lower.indexOf(open, i)
+    if (start === -1) {
+      out += s.slice(i)
+      break
+    }
+    const afterName = start + open.length
+    if (afterName < s.length && /[A-Za-z0-9_]/.test(s[afterName])) {
+      out += s.slice(i, afterName)
+      i = afterName
+      continue
+    }
+    const gt = s.indexOf(">", afterName)
+    if (gt === -1) {
+      out += s.slice(i)
+      break
+    }
+    // Depth-aware search so nested <tag>...</tag> pairs do not close early.
+    // If an inner opener lacked a closer, fall back to the last seen closer.
+    let depth = 1
+    let cursor = gt + 1
+    let closeEnd = -1
+    let lastCloseEnd = -1
+    while (depth > 0) {
+      const nextClose = lower.indexOf(close, cursor)
+      if (nextClose === -1) break
+      let nextOpen = lower.indexOf(open, cursor)
+      while (nextOpen !== -1 && nextOpen < nextClose) {
+        const afterNext = nextOpen + open.length
+        if (afterNext < s.length && !/[A-Za-z0-9_]/.test(s[afterNext])) {
+          const nextGt = s.indexOf(">", afterNext)
+          if (nextGt !== -1 && nextGt < nextClose) {
+            depth++
+            cursor = nextGt + 1
+            nextOpen = lower.indexOf(open, cursor)
+            continue
+          }
+        }
+        nextOpen = lower.indexOf(open, afterNext)
+      }
+      depth--
+      cursor = nextClose + close.length
+      lastCloseEnd = cursor
+      if (depth === 0) closeEnd = cursor
+    }
+    const end = closeEnd !== -1 ? closeEnd : lastCloseEnd
+    if (end === -1) {
+      out += s.slice(i)
+      break
+    }
+    out += s.slice(i, start)
+    i = end
+  }
+  return out
+}
+
+function stripSideSampleEnvelopes(text) {
+  let out = stripClosedTag(text, "system-reminder")
+  out = stripClosedTag(out, "environment_context")
+  return out.trim()
+}
+
+function isEphemeralSideSample(trailing, resultBlocks) {
+  if (!trailing?.history?.length || resultBlocks?.length) return false
+  const messages = trailing.messages || []
+  if (messages.some((message) => message?.role === "assistant")) return false
+  const userMessages = messages.filter((message) => message?.role === "user")
+  if (!userMessages.length) return false
+  const stripped = []
+  for (const message of userMessages) {
+    const blocks = Array.isArray(message.content) ? message.content : [message.content]
+    const parts = []
+    for (const block of blocks) {
+      if (block == null) continue
+      if (typeof block !== "string" && block.type !== "text") return false
+      const piece = stripSideSampleEnvelopes(typeof block === "string" ? block : block.text || "")
+      if (piece) parts.push(piece)
+    }
+    const text = parts.join("\n").trim()
+    if (text) stripped.push(text)
+  }
+  if (stripped.length !== 1) return false
+  return EPHEMERAL_SIDE_SAMPLE_RES.some((re) => re.test(stripped[0]))
+}
 
