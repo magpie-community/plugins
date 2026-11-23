@@ -303,6 +303,7 @@ it off puts the config back.
 | [zycode](packages/zycode) | [zycode](https://github.com/zy1233/pi-python) (`zypi`, the VS Code extension, the ACP agent): Magpie's model in the `[model]` table of `~/.pi-python/agent.toml`, set by a host part that follows `local.env` and puts the file back byte for byte; restart zycode after choosing a model |
 | [meowcode](packages/meowcode) | [MeowCode](https://github.com/MuLiuSaMa/MeowCode): magpie's models in MeowCode's own model list, written to an overlay file beside its settings that MeowCode reads at start-up; restart MeowCode after choosing a model |
 | [lorca](packages/lorca) | [Lorca](https://lorca.app): `~/.lorca/credentials.json` as a custom provider, mirroring Magpie's models with thinking levels and MCP support via `~/.lorca/mcp.json` |
+| [openbitfun](packages/openbitfun) | [OpenBitFun](https://openbitfun.com): magpie's gateway, models, MCP servers and skills written into its `app.json` (`%APPDATA%\openbitfun\config\app.json`); restart OpenBitFun if a change does not take effect. Image and tool-call support follows magpie's `/v1/models` |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>

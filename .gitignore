@@ -6,3 +6,4 @@ node_modules/
 
 # atomcode 插件运行时状态（本地生成，不入库）
 atomcode-state.json
+.openbitfun/
