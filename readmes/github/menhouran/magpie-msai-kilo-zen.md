@@ -1,7 +1,15 @@
-# magpie-plugin-ms-ai
+# magpie-msai-kilo-zen
 
-魔搭国际站（modelscope.ai）API-Inference 的 magpie / OpenCode provider 插件：注册
-`modelscope-ai` 供应商，提供模型列表与推理，并处理每日魔粒签到与余额窗口。
+一个 magpie provider 插件，三块内容：
+
+| 供应商 | 来源 | 关键机制 |
+|---|---|---|
+| `modelscope-ai` | 魔搭国际站 API-Inference | 每日魔粒签到、余额窗口、按档位计费 |
+| `kilo-free-all` | Kilo Gateway 零价模型 | 出口池换 IP（per-IP 每小时 200） |
+| `zen-free-all` | OpenCode Zen 免费模型 | 转发给本机 `opencode serve`（TLS 指纹门禁） |
+
+`modelscope-ai` 部分：魔搭国际站（modelscope.ai）API-Inference 的 magpie / OpenCode provider 插件，
+注册 `modelscope-ai` 供应商，提供模型列表与推理，并处理每日魔粒签到与余额窗口。
 
 ## 功能
 
@@ -180,6 +188,75 @@ model 决定这次调用价**、**账本 50 行分页**、**耗尽冷却一天**
 ## 范围
 
 只做插件内动作：签到触发、账单与余额查询、推理转发。不包含注册自动化、账号密码登录流或社区互动自动化。
+
+---
+
+## Kilo Gateway + OpenCode Zen 免费模型
+
+这两个供应商在 2026-11-23 从独立项目 `menhouran/magpie-kilo-free` 合并进来，代码在 `src/`。
+入口 `index.ts` 除 `ModelScopeAuthPlugin` 外还导出 `KiloFreeAllPlugin` 与 `ZenFreeAllPlugin`——
+magpie 把每个导出的*函数*当插件，三者各自独立注册。
+
+两个网关限流机制完全不同，插件用两套策略：
+
+- **Zen** 的免费层是 **TLS 指纹门禁**（不是 IP 额度）——裸 `fetch` 永远 429，官方 opencode
+  二进制 200。所以 Zen 请求转发给本机 `opencode serve` 进程，由官方二进制去调上游。
+- **Kilo** 的匿名层是 **per-IP 每小时 200 次**，无 TLS 门禁。所以 Kilo 走出口池换 IP。
+
+### Zen 为什么需要 opencode serve
+
+同一出口 IP、同一分钟，裸 Bun `fetch` / `curl` 打 `opencode.ai` → 429 `FreeUsageLimitError`
+（或假 403 `RegionError`），而**官方 opencode 二进制 1.19.6 → 200**（三个模型全通）。上游
+`ipRateLimiter.ts` 的头校验早已注释掉（`headersExist = true`，commit "zen: remove header
+check"），伪造 UA / 头矩阵无效——差别只在 **TLS ClientHello / JA3 指纹**。
+
+因此 Zen 请求必须走官方二进制的 TLS 栈。`src/zen-bridge.mjs` 把 OpenAI Chat Completions 请求
+转成 opencode session API 调用（`POST /session` → `POST /session/{id}/message`），再把回复转回
+OpenAI 格式。
+
+**前置条件**：本机跑着 `opencode serve`（`opencode serve --port 4599 --hostname 127.0.0.1`）。
+插件默认连 `http://127.0.0.1:4599`，可用 `options.zenServeURL` 改。
+
+Windows 上别用临时目录里的 npm 副本（会被清理），装正式版并做成服务：
+
+```bash
+scoop install opencode1          # 1.19.6，已验证的版本；opencode 是 2.x
+# 用 WinSW 注册成服务，开机自启
+gsudo D:/opencode/opencode-serve.exe install
+gsudo sc start opencode-serve
+```
+
+服务配置在 `D:/opencode/opencode-serve.xml`（可执行文件指向 `D:/scoop/apps/opencode1/current/opencode.exe`，
+日志在 `D:/opencode/logs/`，失败自动重启）。
+
+### 出口池（Kilo）
+
+出口 = 一个出口方式。`src/pool.mjs` 按 `MAGPIE_FREE_EGRESS` 环境变量、`~/.config/magpie/
+free-gateways-egress.json`、本机探测三者顺序取出口清单；多个出口轮着问、哪个被拒就冷却放下、
+换一个继续问，直到有人答得上来。失败分类：429 → 冷却 1 分钟 / 403 → 5 分钟 / 5xx 与连接
+失败 → 30 秒 / 4xx 致命直接返回。连续两个出口都回 `Free usage limit reached` 就短路。
+`Retry-After` 钳到 8 秒（magpie 的 `rateRest` 会被上游 `Retry-After` 覆盖成小时级熔断）。
+
+### 登录
+
+```bash
+magpie plugin login zen-free-all    # 填 public
+magpie plugin login kilo-free-all   # 选匿名
+```
+
+### 目录（免费模型部分）
+
+```
+src/pool.mjs            出口池：失败分类、冷却、Retry-After 钳制
+src/zen-bridge.mjs      OpenAI Chat Completions → opencode session API 桥接
+src/discovery.mjs       实时目录的读取与刷新
+src/catalog.mjs         模型目录与零价校验
+src/providers/zen.mjs   Zen 适配器（转发给 opencode serve）
+src/providers/kilo.mjs  Kilo 适配器
+src/vendor/             MIT 复用的第三方代码，见 NOTICE.md
+```
+
+本机实测记录见 [VERIFICATION.md](VERIFICATION.md)。
 
 ## License
 
