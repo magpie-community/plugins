@@ -1292,7 +1292,7 @@ test("the free model's TPM limit inside a 200 is a 429 magpie fails over on, not
   }
 })
 
-// star21321321124 (Discord, 10-28): an agent sent DeepSeek V4.1 Flash an
+// star21321321124 (Discord, 10-28): an agent sent a text-only model an
 // image, and the "502: you can retry" had it ask again and again.
 const notMultimodal = { error_code: "InferHub.001001020.406", error_msg: "The request model is not multimodal" }
 
@@ -1301,7 +1301,7 @@ test("an image a text-only model turns away is a 400, not a 502 to retry, on eve
   let answer = () => sseResponse(sse(notMultimodal))
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => answer() })
   const loaded = await plugin.auth.loader(async () => makeAuth(cred))
-  const ask = (stream) => loaded.fetch(CHAT_URL, chatInit({ model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "看图" }], stream }))
+  const ask = (stream) => loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: "看图" }], stream }))
   const cases = [
     ["inside a 200", () => sseResponse(sse(notMultimodal))],
     ["as a 502", () => new Response(JSON.stringify(notMultimodal), { status: 502, headers: { "content-type": "application/json" } })],
@@ -1319,33 +1319,50 @@ test("an image a text-only model turns away is a 400, not a 502 to retry, on eve
   }
 })
 
-test("every model says it takes text alone, so an agent sends it no image", async () => {
+test("the five models CodeArts' kernel calls multimodal take images; the rest say text alone", async () => {
   const plugin = await CodeArtsAuthPlugin({ client: {} }, {})
   const config = {}
   await plugin.config(config)
   for (const [id, m] of Object.entries(config.provider.codearts.models)) {
-    assert.deepEqual(m.modalities, { input: ["text"], output: ["text"] }, id)
-    assert.equal(m.attachment, false, id)
+    // The config catalog carries two of the five: glm-5.3-flash and
+    // deepseek-v4.1-flash.
+    const sees = id === "glm-5.3-flash" || id === "deepseek-v4.1-flash"
+    assert.deepEqual(m.modalities, { input: sees ? ["text", "image"] : ["text"], output: ["text"] }, id)
+    assert.equal(m.attachment, sees, id)
   }
 
   const cred = await makeCred()
-  const listed = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
-  // the host's entry for a config model, and one the user said sees
-  const provider = {
-    models: {
-      "GLM-5.2": { capabilities: { input: { text: true, image: false } } },
-      "glm-5.3-flash": { capabilities: { input: { text: true, image: true } } },
+  // The kernel's own list (CodeArts 0.2.9, 2026-11-23). The gateway and
+  // builtin fixtures add GLM-5.2 and deepseek-v4-flash-0731, which stay text-only.
+  const multimodalDetail = {
+    gpts: {
+      models: [
+        { model_name: "DeepSeek-V4.1-Flash", model_parameters: { model_id: "deepseek-v4.1-flash" } },
+        { model_name: "DeepSeek-V4.1-Flash-1017", model_parameters: { model_id: "deepseek-v4.1-flash-1017" } },
+        { model_name: "Kimi-K3", model_parameters: { model_id: "kimi-k3" } },
+        { model_name: "Kimi-K3.1-Pro", model_parameters: { model_id: "kimi-k3.1-pro" } },
+        { model_name: "GLM-5.3", model_parameters: { model_id: "glm-5.3" } },
+      ],
     },
   }
+  const listed = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { detail: multimodalDetail }) })
+  const provider = { models: {} }
   const models = await listed.provider.models(provider, { auth: makeAuth(cred) })
-  // glm-5.3 only the agent lists, deepseek-v4-flash-0731 has no entry of its own
+  for (const id of ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "glm-5.3-flash", "kimi-k3", "kimi-k3.1-pro"]) {
+    assert.equal(models[id].capabilities.input.image, true, id)
+    assert.equal(models[id].capabilities.input.text, true, id)
+    assert.equal(models[id].capabilities.attachment, true, id)
+  }
   for (const id of ["GLM-5.2", "glm-5.3", "deepseek-v4-flash-0731"]) {
     assert.equal(models[id].capabilities.input.image, false, id)
     assert.equal(models[id].capabilities.input.text, true, id)
     assert.equal(models[id].capabilities.attachment, false, id)
   }
   // what the user's own config says stands
-  assert.equal(models["glm-5.3-flash"].capabilities.input.image, true)
+  const userProvider = { models: { "GLM-5.2": { capabilities: { attachment: true, input: { text: true, image: true } } } } }
+  const userModels = await listed.provider.models(userProvider, { auth: makeAuth(cred) })
+  assert.equal(userModels["GLM-5.2"].capabilities.input.image, true)
+  assert.equal(userModels["GLM-5.2"].capabilities.attachment, true)
 })
 
 test("embeddedErrorStatus sorts the gateway's codes into what magpie acts on", () => {
