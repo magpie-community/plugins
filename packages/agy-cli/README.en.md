@@ -72,7 +72,9 @@ MCP server. The control port listens on loopback only, with a token per process.
   left out. To list models, the plugin opens one session with `agy acp` (no
   prompt is sent) and reads what it offers; until it has, only Gemini is listed.
   The last list agy gave and offered is kept in `models.json` beside the session
-  state file, so after a restart that list is served while agy is asked again.
+  state file, so after a restart that list is served while agy is asked again:
+  both what it lists and what a session offers, and again whenever the list
+  changes (another account or plan).
   Models and thinking levels can be switched mid-conversation without losing
   history.
   `agy models` runs with `--settings '{"modelProvider":""}'`, so a
@@ -90,8 +92,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   arrives, the same turn continues, and the client executes each call exactly once.
 - **Session resume**: each finished turn is recorded. After a Magpie or plugin
   restart, the session continues through `session/resume` as long as the history
-  and instruction hashes still match. The state file stores session IDs and
-  hashes, never message text.
+  and instruction hashes still match. agy's prompt cache follows the folder it
+  runs in, so a resumed session runs in its own temporary folder again and its
+  cache still hits. The state file stores session IDs, hashes and that folder,
+  never message text.
 - **Isolation**: your global MCP configuration is never read. Every agy process
   runs with a temporary agent, and every permission request agy raises for its
   own tools (shell, file edits, browser) is refused. A request for one of the
@@ -188,6 +192,13 @@ After installing, sign in from Magpie; no terminal needed.
    and agy keeps its sign-in in a file there, leaving the account in the
    system keyring as it is. Each account has its own row and its own usage,
    and is switched and rotated like any provider's accounts.
+   agy itself holds one Google account. So that the account agy holds now
+   keeps working after agy is signed in to another (in a terminal, say), the
+   plugin keeps a copy of its sign-in, as agy stored it, in a home of its own
+   there (`own…`, the file readable by you only). While agy holds another
+   account, that account's usage, models and requests run agy with this
+   copy. The keyring is only read, never written. An account agy stopped
+   holding before 0.1.113 has no copy: sign it in again once.
    Accounts signed in on the retired Antigravity plugin (`antigravity`) move
    over from the line Magpie shows over its Providers list (Move), or from
    agy-cli's Import accounts from a file…, which takes that plugin's sign-in or
@@ -226,7 +237,10 @@ magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed
-in to the CLI, broken down by model group. The plugin never writes Google tokens
+in to the CLI, broken down by model group. Each group's models share its
+5-hour and weekly limits, so magpie shows the groups, and under "Every model"
+each model the group names, reading the group's most used limit (the one that
+stops it; Google's own per-model figure was the group's). The plugin never writes Google tokens
 or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
@@ -235,8 +249,11 @@ Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
 made had its answer. The plugin then makes that read itself, the way agy makes
 it: with agy's stored sign-in it asks Google's Code Assist server
 (`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
-An access token about to end is renewed in memory and never stored. If that
-read fails too, the account shows agy's refusal and no numbers.
+An access token about to end is renewed in memory and never stored. When
+`loadCodeAssist` names no project for a personal Google account, the quota is
+asked under `aicode-consumers`, the project Google serves every personal account
+under (agy itself asks with none, and Google refuses that). If that read fails
+too, the account shows agy's refusal and why the read failed, and no numbers.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored
@@ -259,6 +276,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_SPARE` | on | Keeps one spare agy per account, started but with no session and no request sent, so a new conversation skips agy's start; set to `0` to turn it off |
+| `AGY_BRIDGE_STATELESS_REUSE` | on | A request that is not streamed, has no tools and only one message (describing an image, writing a title) opens its session in an idle agy that answered one such request, skipping the seconds agy's first session takes; that earlier conversation replays its history if it goes on. Set to `0` to turn it off |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | How long a reclaimed session stays resumable (6 hours) |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | Where resumable session records are kept |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | After this long, a still-running client tool gets a "still running" reply |
@@ -298,13 +316,20 @@ Antigravity provider does (`cloak.mjs`). Codex's two GPT-5 lines
 ("You are Codex, a coding agent based on GPT-5", "You are Codex, an agent based on GPT-5")
 are turned away in a user's turn too (AGENTS.md, a `<system-reminder>`),
 so they go as "built on GPT-5" there as well. Zero-width spaces no longer help:
-since 11-14 Google's check reads past them. Should such a 429 still come
-back, it is reported as a 400 about the prompt, not as a quota.
+since 11-14 Google's check reads past them. Reworded in the first user turn
+(the default), Claude Code's prompt is answered; in agy's session
+instructions (`AGY_BRIDGE_SYSTEM_APPEND=1`) it is still turned away. So a
+bare 429 there is reported as a 400 about the prompt, and in the user turn
+as a rate limit the client can retry or another account can take.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider
 sends it: word for word, it got most `gemini-4-argon` answers fast, without
-thinking and shallow (#1028).
+thinking and shallow (#1028). DeepSeek Harness's first line, "You are an AI
+agent powered by DeepSeek Harness." (#1171), and "The browser provides no
+implicit DOM, route, or screenshot context." in its Web GUI paragraph
+(#1105) get the 429 as written too, so they go as "You're …" and "The
+browser gives …".
 
 Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
 request that goes upstream then has none of agy's own system prompt, only
@@ -351,8 +376,14 @@ off unless you turn it on.
   cap triggers a retry ("Your previous response was cut off because it exceeded
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.
+  agy 1.5.12's retry after a malformed function call ("Your previous response
+  contained an improperly formatted function call: …", "Please retry with a
+  properly formatted function call", "Retries remaining: N") is dropped the
+  same way, as is a banner, or a quota or high-traffic ending, right after
+  another banner, or split across chunks at the start of the reply.
   An ending that says "This service has been disabled in this account
-  for violation of Terms of Service" is returned as a no-retry
+  for violation of Terms of Service" (agy 1.5.9 puts "PERMISSION_DENIED
+  (code 403):" before it, 1.5.10 doesn't) is returned as a no-retry
   `permission_error` with 403 semantics, not as normal reply text. So is the
   "Verification Required" ending (Google wants the account verified), with
   the link to verify it at when agy logged one, else where to verify it.
@@ -360,6 +391,20 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Our servers are experiencing high traffic right now …" ending
+  (Google has no capacity for the model now, and agy's own retries met the
+  same 503) ends the turn as `overloaded_error` (HTTP 503 without
+  streaming), so the account is not rested and magpie tries again or
+  elsewhere. Found by ifccod, and ported from their patch.
+- **A reply with only thinking, no text and no tool call** (billion-context's
+  "the turn degenerated again after the continuation nudge"): when one of the
+  model's replies comes back empty, agy writes "⚠ Model produced invalid
+  output." and tries again; when that try is empty too, agy ends the turn as
+  finished. The plugin doesn't hand such an ending over as the reply: it asks
+  once more in the same session, where the model still has the whole context.
+  Still empty, the turn ends with an error, so magpie asks the next account,
+  and the client sending the request again continues in that session. An
+  empty ending with no thinking either is returned as it is.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather

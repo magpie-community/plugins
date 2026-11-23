@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-provider-quota",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "description": "统一查看 Magpie 中的订阅额度、密钥套餐与 API 余额，支持各服务的周期、积分和请求数。",
   "type": "module",
   "main": "./index.mjs",
@@ -15,7 +15,7 @@
   "keywords": ["magpie", "magpie-page", "magpie-plugin", "subscription", "quota", "kiro", "claude", "chatgpt"],
   "magpie": {
     "name": "Provider Quota",
-    "icon": "https://raw.githubusercontent.com/kimbleex/magpie-provider-quota/main/artifacts/logo.png",
+    "icon": "https://raw.githubusercontent.com/kimbleex/magpie-provider-quota/main/artifacts/logo_v0.5.0.png",
     "page": {
       "title": "Provider Quota",
       "titles": { "zh": "账号额度" },
@@ -23,7 +23,7 @@
       "icon": "page/icon.svg",
       "service": { "port": 3497, "option": "port" }
     },
-    "options": { "port": 3497 },
+    "options": { "port": 3497, "gatewayKey": "" },
     "permissions": []
   },
   "license": "MIT",

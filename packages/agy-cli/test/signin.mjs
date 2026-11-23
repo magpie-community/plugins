@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -19,6 +19,17 @@ test("reads what agy's keyring value says, on macOS (base64) and Windows (raw JS
     assert.equal(cannotSignIn(s), "")
   }
   assert.notEqual(parseStored(renewable, NOW).fp, parseStored(stored({ refresh_token: "r2" }), NOW).fp)
+})
+
+test("an account of agy's own is held by another only when both emails are known and differ", () => {
+  const b = parseStored(b64(stored({ access_token: "a", refresh_token: "r" }, { id_token_email: "B@example.com" })), NOW)
+  assert.doesNotMatch(JSON.stringify(b), /example/)
+  assert.equal(heldByAnother(b, "a@example.com"), true)
+  assert.equal(heldByAnother(b, " b@EXAMPLE.com "), false)
+  assert.equal(heldByAnother(b, ""), false)
+  assert.equal(heldByAnother(parseStored(b64(stored({ access_token: "a" }, { id_token_email: "" })), NOW), "a@example.com"), false)
+  assert.equal(heldByAnother({ state: "unknown" }, "a@example.com"), false)
+  assert.equal(heldByAnother({ state: "missing" }, "a@example.com"), false)
 })
 
 test("an ended sign-in with nothing to renew it, or no token at all, can't sign agy in", () => {
@@ -106,6 +117,27 @@ test("storedSignInNow answers from the last read without waiting, and reads agai
 // Archivemylife on X: the account showed as "API key", and signing in to
 // another Google account looked like nothing happened. A sign-in names the
 // account by the email agy stored; the cached read still doesn't carry it.
+// tmr11235 on X (v0.1.4520): agy's own sign-in, taken again after the
+// account was removed, was listed as "API key". A stored sign-in that
+// doesn't name its account is named by who Google says its token is for.
+test("signedInEmail asks Google who a sign-in is for when agy's doesn't say", async () => {
+  const mac = (raw) => async () => ({ code: 0, stdout: b64(raw) })
+  const asked = []
+  const google = (reply, status = 200) => async (url, init) => {
+    asked.push([url, init.headers.Authorization])
+    return new Response(JSON.stringify(reply), { status })
+  }
+  const named = stored({ access_token: "a" })
+  assert.equal(await signedInEmail({ platform: "darwin", exec: mac(named), env: {} }, { fetch: google({ email: "other@example.com" }) }), "someone@example.com")
+  assert.equal(asked.length, 0, "a sign-in that names its account isn't asked about")
+  const unnamed = stored({ access_token: "tok" }, { id_token_email: undefined })
+  assert.equal(await signedInEmail({ platform: "darwin", exec: mac(unnamed), env: {} }, { fetch: google({ email: "who@example.com" }) }), "who@example.com")
+  assert.deepEqual(asked, [["https://www.googleapis.com/oauth2/v2/userinfo", "Bearer tok"]])
+  assert.equal(await signedInEmail({ platform: "darwin", exec: mac(unnamed), env: {} }, { fetch: google({ error: "x" }, 401) }), "")
+  assert.equal(await signedInEmail({ platform: "darwin", exec: mac(unnamed), env: {} }, { fetch: async () => { throw new Error("offline") } }), "")
+  assert.equal(await signedInEmail({ platform: "darwin", exec: async () => ({ code: 44, stdout: "" }), env: {} }, { fetch: google({ email: "who@example.com" }) }), "")
+})
+
 test("storedEmail is the Google account agy's keyring is signed in to, on macOS and Windows", async () => {
   const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-12T00:00:00Z" })
   assert.equal(emailOf(b64(value)), "someone@example.com")

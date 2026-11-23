@@ -105,6 +105,45 @@ function balancesFor(record, windows) {
   return balances;
 }
 
+// Magpie 的重置卡：Codex 的 rate-limit reset credits，或 GLM 等按窗口区分的套餐重置次数
+function normalizeResets(value) {
+  if (!value || typeof value !== "object") return null;
+  const each = Array.isArray(value.each) ? value.each.filter((card) => card && typeof card === "object").map((card) => ({
+    id: typeof card.id === "string" ? card.id : "",
+    until: timestamp(card.until),
+    window: typeof card.window === "string" ? card.window : "",
+  })) : [];
+  const fiveHour = Math.max(0, Math.floor(number(value.fiveHour) ?? 0));
+  const weekly = Math.max(0, Math.floor(number(value.weekly) ?? 0));
+  const count = Math.max(0, Math.floor(number(value.count) ?? 0)) || each.length || fiveHour + weekly;
+  if (!count) return null;
+  return {
+    count,
+    until: timestamp(value.until) ?? each.find((card) => card.until !== null)?.until ?? null,
+    byWindow: value.byWindow === true,
+    team: value.team === true,
+    fiveHour,
+    weekly,
+    each,
+  };
+}
+
+function normalizeResetsUsed(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((use) => use && typeof use === "object")
+    .map((use) => ({ at: timestamp(use.at), why: typeof use.why === "string" ? use.why : "" }))
+    .filter((use) => use.at !== null)
+    .slice(0, 10);
+}
+
+// 只有 Codex 的重置卡能经 Magpie 网关使用：本机账号，或远端 Magpie 的 <电脑>/codex 账号
+function resetTarget(rawProvider, provider, user, from, resets) {
+  if (!resets || resets.byWindow) return null;
+  if (provider === "codex") return { user, provider: "" };
+  if (from && user && /^[^/]+\/codex$/.test(provider)) return { user, provider: rawProvider };
+  return null;
+}
+
 const subscriptionProviders = new Set([
   "codex", "chatgpt", "openai-codex", "claude", "copilot", "github-copilot",
   "kiro", "gemini-cli", "antigravity",
@@ -113,7 +152,8 @@ const subscriptionProviders = new Set([
 function recordKind(record, provider, windows) {
   const kind = String(record.kind ?? "").toLowerCase();
   if (["subscription", "plan", "balance"].includes(kind)) return kind;
-  if (subscriptionProviders.has(provider)) return "subscription";
+  // 远端 Magpie 的账号以 <电脑>/<供应商> 命名
+  if (subscriptionProviders.has(provider) || subscriptionProviders.has(provider.replace(/^[^/]+\//, ""))) return "subscription";
   if (["openai", "gemini"].includes(provider)
     && windows.some((window) => windowKind(window) || window.unlimited || number(window.used) !== null || number(window.remaining) !== null)) {
     return "subscription";
@@ -138,6 +178,7 @@ export function buildReport(records, { source, warning = "", now = Date.now() } 
     const id = JSON.stringify([from, provider, kind, user || record.name || record.alias || ""]);
     const readAt = timestamp(record.readAt ?? record.asOf ?? record.at);
     const name = String(record.alias || user || record.name || provider || "未命名账号");
+    const resets = kind === "balance" ? null : normalizeResets(record.resets);
     const next = {
       id,
       name,
@@ -152,6 +193,9 @@ export function buildReport(records, { source, warning = "", now = Date.now() } 
       windows: windows.map((window) => normalizeWindow(window, readAt)),
       balances: kind === "balance" ? balancesFor(record, windows) : [],
       balance: typeof record.balance === "string" || typeof record.balance === "number" ? String(record.balance) : "",
+      resets,
+      resetsUsed: resets ? normalizeResetsUsed(record.resetsUsed) : [],
+      resetTarget: resetTarget(String(record.provider ?? ""), provider, user, from, resets),
       fiveHour: [],
       weekly: [],
     };
@@ -172,21 +216,86 @@ export function buildReport(records, { source, warning = "", now = Date.now() } 
   };
 }
 
+async function gatewayBase(directory) {
+  const gateway = await readJson(join(directory, "gateway.json"), {});
+  const address = process.env.MAGPIE_ADDR || gateway.addr || "127.0.0.1:3425";
+  const base = new URL(/^https?:\/\//i.test(address) ? address : `http://${address}`);
+  if (base.hostname === "0.0.0.0") base.hostname = "127.0.0.1";
+  if (base.hostname === "[::]") base.hostname = "[::1]";
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)) {
+    throw new Error("只读取本机 Magpie 网关");
+  }
+  return base;
+}
+
+function failure(message, code, status) {
+  return Object.assign(new Error(message), { code, status });
+}
+
+// 使用一张 Codex 重置卡：由 Magpie 网关完成，网关要求完全访问权限的网关密钥
+export function createResetter({ configDir, fetchImpl = fetch, gatewayKey = "" } = {}) {
+  const directory = resolveConfigDir(configDir);
+  let pending = false;
+  return async function useReset({ user = "", provider = "", credit = "", key = "" } = {}) {
+    const token = String(key || gatewayKey || process.env.MAGPIE_GATEWAY_KEY || "").trim();
+    if (!token) throw failure("使用重置卡需要 Magpie 网关密钥（完全访问）", "needs_key", 400);
+    if (!/^[\x21-\x7e]{1,512}$/.test(token)) throw failure("网关密钥格式无效", "bad_key", 400);
+    if (pending) throw failure("上一张重置卡仍在使用中，请稍候", "busy", 409);
+    pending = true;
+    try {
+      const url = new URL("/v1/magpie/quotas/codex-reset", await gatewayBase(directory));
+      const ask = Object.fromEntries(Object.entries({ user, provider, credit }).filter(([, value]) => value));
+      for (const [name, value] of Object.entries(ask)) url.searchParams.set(name, value);
+      let response;
+      try {
+        response = await fetchImpl(url, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(ask),
+          signal: AbortSignal.timeout(30000),
+          redirect: "error",
+        });
+      } catch (error) {
+        throw failure(`无法连接 Magpie 网关：${error.message}`, "gateway", 502);
+      }
+      const text = await response.text();
+      let body = {};
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        body = { error: text.slice(0, 300) };
+      }
+      if (!response.ok) {
+        const message = typeof body.error === "string" ? body.error : body.error?.message || `网关返回 HTTP ${response.status}`;
+        if (response.status === 401 || response.status === 403) throw failure(message, "bad_key", 401);
+        throw failure(message, "gateway", 502);
+      }
+      const outcome = body.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : body;
+      return { code: String(outcome.code ?? ""), windows: number(outcome.windows) };
+    } finally {
+      pending = false;
+    }
+  };
+}
+
 export function createReader({ configDir, fetchImpl = fetch } = {}) {
   const directory = resolveConfigDir(configDir);
   let cached;
   let pending;
+  let pendingForce = false;
 
-  async function load() {
+  async function load(force) {
     let warning = "";
     try {
-      const gateway = await readJson(join(directory, "gateway.json"), {});
-      const address = process.env.MAGPIE_ADDR || gateway.addr || "127.0.0.1:3425";
-      const base = new URL(/^https?:\/\//i.test(address) ? address : `http://${address}`);
-      if (base.hostname === "0.0.0.0") base.hostname = "127.0.0.1";
-      if (base.hostname === "[::]") base.hostname = "[::1]";
-      if (!["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)) {
-        throw new Error("只读取本机 Magpie 网关");
+      const base = await gatewayBase(directory);
+      if (force) {
+        const refreshed = await fetchImpl(new URL("/v1/magpie/quotas/refresh", base), {
+          method: "POST",
+          signal: AbortSignal.timeout(35000),
+          redirect: "error",
+        });
+        if (!refreshed.ok) throw new Error(`网关刷新返回 HTTP ${refreshed.status}`);
+        if (!Array.isArray((await refreshed.json())?.data)) throw new Error("网关刷新结果格式不受支持");
       }
       const response = await fetchImpl(new URL("/v1/magpie/quotas?kept=1", base), {
         signal: AbortSignal.timeout(5000),
@@ -197,6 +306,7 @@ export function createReader({ configDir, fetchImpl = fetch } = {}) {
       if (!Array.isArray(body.data)) throw new Error("网关额度格式不受支持");
       return buildReport(body.data, { source: "gateway" });
     } catch (error) {
+      if (force) throw failure(`额度刷新失败：${error.message}`, "gateway", 502);
       warning = `网关当前不可用，显示 Magpie 保存的额度快照。${error.message}`;
     }
     const snapshot = await readJson(join(directory, "quotas.json"), {});
@@ -213,16 +323,20 @@ export function createReader({ configDir, fetchImpl = fetch } = {}) {
     return buildReport(records, { source: "snapshot", warning });
   }
 
-  return async ({ force = false } = {}) => {
-    if (!force && cached && Date.now() - cached.generatedAt < 30000) return cached;
-    if (!pending) {
-      pending = load().then((report) => {
-        cached = report;
-        return report;
-      }).finally(() => {
-        pending = undefined;
-      });
+  return async function read({ force = false } = {}) {
+    if (pending) {
+      if (!force || pendingForce) return pending;
+      await pending.catch(() => {});
+      return read({ force });
     }
+    if (!force && cached && Date.now() - cached.generatedAt < 30000) return cached;
+    pendingForce = force;
+    pending = load(force).then((report) => {
+      cached = report;
+      return report;
+    }).finally(() => {
+      pending = undefined;
+    });
     return pending;
   };
 }

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="page-key" content="__PAGE_KEY__">
+  <meta name="color-scheme" content="light dark">
   <title>账号额度</title>
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
@@ -13,7 +14,7 @@
     <header class="page-header">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M6 16V11m6 5V7m6 9v-4"/><path d="M4 20h16"/>
           </svg>
         </div>
@@ -25,6 +26,8 @@
               <span id="quota-help" class="help-tooltip" role="tooltip">
                 <strong>接入后自动同步</strong>
                 <span>在 Magpie 中接入订阅并取得额度读数后，这里每 60 秒自动读取。按账号类型分类，按各服务实际返回的周期、积分或请求数展示。</span>
+                <strong>重置卡</strong>
+                <span>Codex 账号持有的重置卡可在此直接使用，由 Magpie 网关执行，需要一个完全访问权限的网关密钥。</span>
               </span>
             </span>
           </div>
@@ -33,8 +36,8 @@
       </div>
       <div class="actions">
         <span id="status" class="status" role="status" aria-live="polite">读取中</span>
-        <button id="refresh" type="button" aria-label="刷新额度" title="重新读取 Magpie 额度记录">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <button id="refresh" class="button" type="button" aria-label="刷新额度" title="向供应商重新查询额度">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M20 7v5h-5M4 17v-5h5"/>
             <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/>
           </svg>
@@ -42,13 +45,20 @@
         </button>
       </div>
     </header>
+
+    <section id="overview" class="overview" aria-label="额度概览"></section>
+
     <nav id="provider-filters" class="provider-filters" aria-label="按渠道筛选"></nav>
+
     <section class="section" aria-labelledby="accounts-title">
       <h2 id="accounts-title" class="section-title">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
         订阅与套餐<span id="accounts-count" class="count"></span>
       </h2>
-      <div id="accounts" class="cards" aria-label="订阅与套餐额度"></div>
+      <div id="accounts" class="cards" aria-label="订阅与套餐额度" aria-busy="true">
+        <div class="card skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="card skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+      </div>
       <div id="empty" class="empty" hidden>
         <strong>暂无订阅或套餐读数</strong>
         <span>在 Magpie「订阅」中接入账号并更新额度，再刷新此页</span>
@@ -56,16 +66,48 @@
     </section>
     <section id="api-section" class="section" aria-labelledby="api-title" hidden>
       <h2 id="api-title" class="section-title">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M16 15h2"/></svg>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M16 15h2"/></svg>
         API 余额<span id="api-count" class="count"></span>
       </h2>
       <div id="api-accounts" class="cards" aria-label="API 账户余额"></div>
     </section>
     <section id="other-section" class="section" aria-labelledby="other-title" hidden>
-      <h2 id="other-title" class="section-title">其他额度<span id="other-count" class="count"></span></h2>
+      <h2 id="other-title" class="section-title">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6M12 17h.01"/></svg>
+        其他额度<span id="other-count" class="count"></span>
+      </h2>
       <div id="other-accounts" class="cards" aria-label="类型待确认的额度"></div>
     </section>
-    <footer class="page-note">刷新只重读 Magpie 记录，不会主动更新供应商额度。读数超过 5 分钟会淡显；缺失数据以「—」表示。</footer>
+    <footer class="page-note">每 60 秒自动读取 Magpie 记录；点击刷新会向供应商重新查询。读数超过 5 分钟会淡显，缺失数据以「—」表示。</footer>
   </main>
+
+  <dialog id="reset-dialog" class="sheet" aria-labelledby="reset-title" aria-describedby="reset-text">
+    <div class="sheet-head">
+      <span class="sheet-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+      </span>
+      <div class="sheet-heading">
+        <h2 id="reset-title">使用重置卡</h2>
+        <p id="reset-who" class="sheet-who"></p>
+      </div>
+    </div>
+    <p id="reset-text" class="sheet-text"></p>
+    <p id="reset-remote" class="sheet-note" hidden></p>
+    <div id="reset-cards" class="reset-cards" role="radiogroup" aria-label="选择要使用的重置卡" hidden></div>
+    <p id="reset-which" class="sheet-note" hidden></p>
+    <p id="reset-idle" class="sheet-note warn" hidden>该账号的额度窗口尚未使用，现在重置不会多出额度；Magpie 会保留这张重置卡。</p>
+    <div id="reset-key" class="key-field" hidden>
+      <label for="reset-key-input">Magpie 网关密钥</label>
+      <input id="reset-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完全访问权限的网关密钥">
+      <span class="field-hint">在 Magpie「网关 › 网关密钥」中创建。密钥只保存在本插件服务的内存里，重启插件后需重新输入；也可在插件选项中设置 gatewayKey。</span>
+    </div>
+    <p id="reset-error" class="sheet-error" role="alert" hidden></p>
+    <div class="sheet-actions">
+      <button id="reset-cancel" class="button" type="button">取消</button>
+      <button id="reset-confirm" class="button primary" type="button">确认使用</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

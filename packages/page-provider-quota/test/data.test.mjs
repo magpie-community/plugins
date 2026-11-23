@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildReport, createReader, timestamp, windowKind } from "../lib/data.mjs";
+import { buildReport, createReader, createResetter, timestamp, windowKind } from "../lib/data.mjs";
 
 const now = Date.parse("2026-11-16T08:00:00Z");
 
@@ -230,20 +230,36 @@ test("从网关读取，连续请求复用缓存，手动刷新绕过缓存", as
   context.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, "plugins.json"), "{}");
   await writeFile(join(directory, "gateway.json"), JSON.stringify({ addr: "127.0.0.1:4321" }));
-  let requests = 0;
+  const requests = [];
+  let refreshed = false;
   const read = createReader({
     configDir: directory,
-    fetchImpl: async (url) => {
-      requests++;
-      assert.equal(url.href, "http://127.0.0.1:4321/v1/magpie/quotas?kept=1");
-      return { ok: true, json: async () => ({ data: [{ provider: "codex", windows: [] }] }) };
+    fetchImpl: async (url, options) => {
+      requests.push(`${options.method || "GET"} ${url.href}`);
+      if (url.pathname.endsWith("/refresh") && options.method === "POST") {
+        refreshed = true;
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      return { ok: true, json: async () => ({ data: [
+        { provider: "codex", windows: [{ name: "5h", remaining: refreshed ? 65 : 80 }] },
+        { provider: "vendor", kind: "plan", windows: [{ name: "Daily", remaining: refreshed ? 40 : 55 }] },
+        { provider: "vendor", kind: "balance", balance: refreshed ? "$8" : "$10" },
+      ] }) };
     },
   });
   assert.equal((await read()).source, "gateway");
   await read();
-  assert.equal(requests, 1);
-  await read({ force: true });
-  assert.equal(requests, 2);
+  const [report, concurrent] = await Promise.all([read({ force: true }), read({ force: true })]);
+  assert.equal(concurrent, report);
+  assert.equal(report.accounts.find((account) => account.kind === "subscription").fiveHour[0].remaining, 65);
+  assert.equal(report.accounts.find((account) => account.kind === "plan").windows[0].remaining, 40);
+  assert.equal(report.apiAccounts[0].balance, "$8");
+  assert.equal(await read(), report);
+  assert.deepEqual(requests, [
+    "GET http://127.0.0.1:4321/v1/magpie/quotas?kept=1",
+    "POST http://127.0.0.1:4321/v1/magpie/quotas/refresh",
+    "GET http://127.0.0.1:4321/v1/magpie/quotas?kept=1",
+  ]);
 });
 
 test("网关故障时标注快照，保留供应商原始读取时间", async (context) => {
@@ -264,6 +280,8 @@ test("网关故障时标注快照，保留供应商原始读取时间", async (c
   assert.match(report.warning, /快照/);
   assert.equal(report.accounts[0].readAt, now);
   assert.equal(report.accounts[0].fiveHour[0].remaining, null);
+  await assert.rejects(read({ force: true }), /额度刷新失败/);
+  assert.equal(await read(), report);
 });
 
 test("旧版快照根据记录键还原插件订阅、密钥套餐与钱包，恢复窗口周期和读数时间", async (context) => {
@@ -302,4 +320,59 @@ test("服务器监听所有网卡时仍通过回环地址读取网关", async (c
     },
   });
   assert.equal((await read()).source, "gateway");
+});
+
+test("保留 Codex 重置卡，仅本机与远端 Codex 账号可从页面使用", () => {
+  const soon = now + 86400000;
+  const later = now + 7 * 86400000;
+  const report = buildReport([
+    { provider: "codex", user: "local@example.test", resets: {
+      count: 2, until: new Date(soon).toISOString(),
+      each: [{ id: "credit-a", until: new Date(soon).toISOString() }, { id: "credit-b", until: new Date(later).toISOString() }, null],
+    }, resetsUsed: [{ at: new Date(now).toISOString(), why: "week" }, { why: "hand" }] },
+    { provider: "office/codex", from: "office", user: "remote@example.test", resets: { count: 1 } },
+    { provider: "glm", kind: "subscription", user: "team", resets: { byWindow: true, fiveHour: 2, weekly: 1, team: true } },
+    { provider: "claude", user: "none", resets: { count: 0 } },
+    { provider: "vendor", kind: "balance", balance: "$1", resets: { count: 3 } },
+  ]);
+  const accounts = new Map(report.accounts.map((account) => [account.user, account]));
+  const local = accounts.get("local@example.test");
+  assert.equal(local.resets.count, 2);
+  assert.equal(local.resets.until, soon);
+  assert.deepEqual(local.resets.each.map((card) => card.id), ["credit-a", "credit-b"]);
+  assert.deepEqual(local.resetTarget, { user: "local@example.test", provider: "" });
+  assert.deepEqual(local.resetsUsed, [{ at: now, why: "week" }]);
+  assert.deepEqual(accounts.get("remote@example.test").resetTarget, { user: "remote@example.test", provider: "office/codex" });
+  const glm = accounts.get("team");
+  assert.equal(glm.resets.count, 3);
+  assert.equal(glm.resets.byWindow, true);
+  assert.equal(glm.resetTarget, null);
+  assert.equal(accounts.get("none").resets, null);
+  assert.equal(report.apiAccounts[0].resets, null);
+});
+
+test("使用重置卡经本机网关并携带网关密钥，失败时给出原因", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "magpie-provider-quota-reset-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, "plugins.json"), "{}");
+  await writeFile(join(directory, "gateway.json"), JSON.stringify({ addr: "127.0.0.1:4321" }));
+  const calls = [];
+  let status = 200;
+  const useReset = createResetter({
+    configDir: directory,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: url.href, init });
+      const body = status === 200 ? { code: "reset", windows: 2 } : { error: { message: "needs full access" } };
+      return { ok: status === 200, status, text: async () => JSON.stringify(body) };
+    },
+  });
+  await assert.rejects(useReset({ user: "one@example.test" }), { code: "needs_key" });
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await useReset({ user: "one@example.test", credit: "credit-b", key: "gk-test" }), { code: "reset", windows: 2 });
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers.Authorization, "Bearer gk-test");
+  assert.equal(calls[0].url, "http://127.0.0.1:4321/v1/magpie/quotas/codex-reset?user=one%40example.test&credit=credit-b");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { user: "one@example.test", credit: "credit-b" });
+  status = 401;
+  await assert.rejects(useReset({ user: "one@example.test", key: "gk-test" }), { code: "bad_key", message: "needs full access" });
 });

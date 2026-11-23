@@ -30,8 +30,9 @@ A fix to that machinery reaches both.
 
 ## Sign-in
 
-One way per provider, **Trae CN account (browser)** or **Trae Global account
-(browser)**. The plugin opens that realm's authorization page
+A personal account signs in with **Trae CN account (browser)** or **Trae
+Global account (browser)**; an enterprise seat has its own way (see
+Enterprise below). The plugin opens that realm's authorization page
 (`www.trae.cn/authorization` or `www.trae.ai/authorization`, the IDE's client
 `ono9krqynydwx5`). Sign in there and allow the sign-in; the page then sends the
 browser back to a callback on `http://127.0.0.1:<port>/authorize` — it accepts
@@ -50,6 +51,21 @@ Trae Global's stays 19. The daily check-in goes on a 15-digit id made from it
 (see Daily check-in).
 
 ### Enterprise (SaaS) accounts
+
+Each provider has a second way, **Trae CN enterprise account (browser)** or
+**Trae Global enterprise account (browser)**, since 0.2.46. It opens the
+realm's enterprise console's own authorization page
+(`console.enterprise.trae.cn/authorization` or
+`console.enterprise.trae.ai/authorization`) with the same parameters and
+callback. There the seat signs in with its TRAE enterprise email and
+password, the Doubao/Feishu tab, or the company's SSO. Since November 2026
+trae.cn's own page sends a signed-out browser to a Doubao/Feishu account
+sign-in (accounts.doubao.com) that has no way to an enterprise seat, so an
+enterprise account signing in again there was not recognised (@yalifesign
+on X). The console's page calls back with `userJwt`, `userInfo`,
+`refreshToken` and `host` (its Api host), read as below; a callback naming
+no host is taken as the console's seat. Read from the consoles' page code;
+**not tried with a real enterprise seat**.
 
 Since 0.2.10 the authorization page also offers Trae's enterprise (SaaS / SSO)
 sign-in; before, the plugin asked the page to hide it (`hide_saas_login`), so
@@ -241,8 +257,58 @@ function does (`glm-5v-turbo`, `kimi-k2.5`, `minimax-m2.7`,
 `qwen-3.6-plus`, each answering through `solo_coder`). Left out are the
 IDE's helpers (`usage` other than
 `chat_completion`: summary, fast_apply…), configs switched off and the
-custom-model slots. Context is the list's `context_window_tokens.dev`,
-output the `__dev` model's `max_tokens`. A model with a `__max` model and
+custom-model slots. An enterprise's own built-in models
+(`config_source` 2, "Enterprise-builtin" in Trae CN's picker) are listed
+since 0.2.41 (#1258), unless the admin switched one off (`status` false); a
+personal custom model (`config_source` 3) is not, its key being in the
+user's IDE only. A chat with an enterprise model carries `config_source`
+2, `is_custom_model` true, and the `model_name` and `provider` of its
+`model_detail_list` entry (its `__dev` one, else the first) at the top of the
+body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
+put them under `user_message_context.model_info`, and an enterprise seat got
+4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
+config, where Trae's list doesn't carry it, sent no `model_name`, and got
+4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
+the model, the functions tried and the host, and says when the account's
+list doesn't have the model. Context is the list's `context_window_tokens.dev`,
+output the `__dev` model's `max_tokens` (an enterprise model's own detail's,
+since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
+held to it and it sent when the agent names none, as Trae's own client
+sends the model's `max_tokens` with each model: asked with none, an
+enterprise seat's replies stopped at exactly 2000 output tokens (0.2.43).
+They still did on 0.2.44 with `max_tokens` 4096 asked, so since 0.2.45 an
+enterprise model's limit also goes in `enterprise_custom_hyper_params`
+(`max_tokens`, the detail's `prompt_max_tokens`, `multimodal`), where Trae
+CN 3.4.22's own agent task puts it — read from the binary, **not verified
+with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
+after using every token it was let have — the `max_tokens` sent, or 2000
+for an enterprise model — ends with `finish_reason: "length"`, so an agent
+knows it was cut. Since 0.2.48 a tool call such a reply was cut in (its
+arguments not whole JSON) is not sent as a call: the reply ends with
+`length` and the text before the call (plugins#1366, a call cut at 2000
+went out as `tool_calls` and the agent stopped on it). A whole call in a
+cut reply goes out as a call; a stream holds back only a call whose
+arguments aren't whole until it ends. Trae CN 3.4.22's own llm_utils_chat
+requests carry no field that lifts the 2000, so since 0.2.49 an
+enterprise model's reply that Trae cut at exactly 2000 with text written
+and no whole call is asked on: the same request, session and function
+again, the text so far as the assistant's turn and a short ask to go on
+where it stopped after it, with what is left of the agent's limit as
+`max_tokens`. The answers go out as one reply, in a body or a stream, its
+usage summed, its end the last answer's. A cut call is left out and the
+next answer writes it. Asking stops at a whole call, at the agent's limit,
+after 16 answers, or when a next ask fails (the reply then ends cut, with
+`length`). A cut reply with only reasoning, or a call with nothing written
+before it, is not asked on. Since 0.2.50 a later answer that Trae cut in
+the model's reasoning or in a call, with no text of its own, is asked on
+too, from the text the earlier answers wrote (a reasoning model asked to go
+on reasons again first, and its round 2 was 7683 characters of reasoning
+cut at 2000), up to 3 such answers in a row. While a next ask waits, the
+stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
+sent, so the agent doesn't take the pause for a dead stream; with
+`MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
+`wait_ms=`. **Not verified with a real enterprise seat**,
+nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -361,6 +427,25 @@ IDE may therefore ask you to sign in again after magpie renews.
 | 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
+
+### Seeing what is sent
+
+Start magpie with `MAGPIE_TRAE_DEBUG=1` in its environment and each chat
+request writes two or three lines to magpie's log (`app.log`, and the
+terminal or `docker logs` when magpie runs as `magpie serve`):
+
+- `trae debug: request <id> POST <url> <body>`: the body the plugin sends
+  Trae's `llm_utils_chat`, `max_tokens` and `enterprise_custom_hyper_params`
+  included. Each message is only its role and length, each tool only its
+  name; the headers, which carry the sign-in, are never written.
+- `trae debug: request <id> answered <status> <content-type>`.
+- `trae debug: reply <id> trae_finish=… usage=… calls=… finish_sent=…`: the
+  finish Trae gave (`""` is Trae's "stop" or none), its usage, the calls
+  Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
+  finish the agent was sent.
+
+The request goes to Trae, not to an enterprise model's own gateway: Trae's
+cloud makes that request, so its body is not in magpie's log.
 
 ## Usage
 

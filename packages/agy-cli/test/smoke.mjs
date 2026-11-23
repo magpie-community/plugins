@@ -724,9 +724,11 @@ const legacyModel = "agy-cli/gemini-test-low"
 
 {
   const usage = await plugin.auth.usage(async () => ({ key: "agy" }), {})
-  check("auth.usage exposes measured CLI quota", usage.windows?.[0]?.used === 40 && usage.windows[0].name === "Gemini · 7 days")
-  check("auth.usage preserves explicit cadence and reset", usage.windows?.[0]?.span === 604800 && usage.windows[0].resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.[0]?.aside === true && usage.signIn === "kept")
+  // the pool's own window, beside any model's in it
+  const pw = usage.windows?.find(w => !w.model)
+  check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
+  check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
+  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
@@ -1095,6 +1097,9 @@ for (const [name, system, headers, expectedDir, named] of [
   ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
   ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(os.tmpdir()) }, path.resolve(os.tmpdir()), os.tmpdir()],
   ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
+  // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
+  // sentence after the closing quote
+  ["quoted prompt ending a sentence", `Current working directory: "${os.tmpdir()}".`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events
@@ -1311,12 +1316,6 @@ let nativeConv
   const mixed = continuation(bodyA, eventsA.events, "must-not-deliver")
   mixed.messages.at(-1).content.push(continuation(bodyB, eventsB.events, "must-not-deliver").messages.at(-1).content[0])
   check("mixed-conversation batch is rejected", (await callFetch(mixed)).status === 409)
-  const wrongArgs = continuation(bodyA, eventsA.events, "must-not-deliver")
-  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
-  renamed.id = "TU-wrong-arguments"
-  renamed.input.text = "different-arguments"
-  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
-  check("ID remapping cannot ignore changed arguments", (await callFetch(wrongArgs)).status === 409)
   const [resultA, resultB] = await Promise.all([
     readSSE(await callFetch(continuation(bodyA, eventsA.events, "result-A"))),
     readSSE(await callFetch(continuation(bodyB, eventsB.events, "result-B"))),
@@ -1325,6 +1324,25 @@ let nativeConv
   check("concurrent conversations keep tool results isolated", delivered.includes("result-A") && delivered.includes("result-B"))
   check("concurrent conversations use independent sessions", inits().length === before + 2)
   check("both concurrent conversations complete", stopOf(resultA.events) === "end_turn" && stopOf(resultB.events) === "end_turn")
+}
+
+{
+  // A renamed call whose arguments changed is never fed to the live call: the
+  // client's own round, as it says it ran, is replayed in a new session.
+  const body = { model, metadata: { user_id: "renamed-changed-args" }, messages: [{ role: "user", content: "TOOL renamed changed" }], tools: [echoTool] }
+  const pending = (await readSSE(await callFetch(body))).events
+  const before = inits().length
+  const wrongArgs = continuation(body, pending, "must-not-deliver")
+  const renamed = wrongArgs.messages.at(-2).content.find(block => block.type === "tool_use")
+  renamed.id = "TU-wrong-arguments"
+  renamed.input.text = "different-arguments"
+  wrongArgs.messages.at(-1).content[0].tool_use_id = renamed.id
+  const response = await callFetch(wrongArgs)
+  const replayed = response.status === 200 ? (await readSSE(response)).events : []
+  // (the fake agy answers a replay whose history says TOOL with another call)
+  check("ID remapping cannot ignore changed arguments", response.status === 200 && stopOf(replayed) &&
+    inits().length === before + 1, `got ${response.status} ${stopOf(replayed)} ${inits().length - before}`)
+  check("changed arguments never reach the live call", !logs().some(event => event.type === "mcpResult" && event.result?.content?.[0]?.text === "must-not-deliver"))
 }
 
 {
@@ -1577,6 +1595,8 @@ for (const [title, tools, want, name] of [
     !prompted.includes(rfc) && !prompted.includes(sdk) && !prompted.includes(zw) && prompted.includes(want), JSON.stringify(prompted))
   delete process.env.FAKE_AGY_APPEND
 
+  // in agy's session instructions the reworded prompt is still turned away
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
   const turnedError = turned.find(event => event.event === "error")?.data?.error
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
@@ -1590,6 +1610,14 @@ for (const [title, tools, want, name] of [
   const turnedWholeBody = await turnedWhole.json()
   check("#1151 a turned-away prompt asked for a whole reply is a 400",
     turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  // HadStash on X (11-17): reworded in the first user turn, where it goes by
+  // default, Antigravity answers it, so a 429 there is a rate limit
+  const inTurn = (await readSSE(await callFetch({ model, system: system + " T429U", messages: [{ role: "user", content: "TURNED429 in turn" }] }))).events
+  const inTurnError = inTurn.find(event => event.event === "error")?.data?.error
+  check("HadStash a 429 to the reworded prompt in the user turn is a rate limit, not a prompt rejection",
+    inTurnError?.type === "rate_limit_error" && !inTurnError.message.includes("answered 429 to this system prompt") &&
+    inTurnError.status === undefined, JSON.stringify(inTurnError))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
   check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
@@ -2970,20 +2998,31 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const retryable = await callFetch(partial)
   check("partial matches retain upstream 409 without a no-retry header", retryable.status === 409 && retryable.headers.get("x-should-retry") === null)
   await retryable.text()
-  const unmatched = { ...body, messages: [...body.messages,
-    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
-      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
-  ] }
-  const live = await callFetch(unmatched)
-  check("unmatched results alone cannot supersede an unexpired tool owner", live.status === 409 && live.headers.get("x-should-retry") === null && inits().length === before)
-  await live.text()
   const conflict = nextTurn(body, pending, "no result for this pending call")
   const response = await callFetch(conflict)
   const error = await response.json()
   check("a request carrying the pending call without its result is terminal", response.status === 400 && response.headers.get("x-should-retry") === "false" && error.error?.code === "tool_state_conflict")
   const done = await drive(body, pending, "real result after conflict")
   check("terminal lineage conflicts leave the original tool turn usable", inits().length === before && stopOf(done.events) === "end_turn")
+}
+
+{
+  // A whole tool round of the client's own that no live call waits for, while
+  // the conversation's turn waits on a call: the client has moved past that
+  // call (X: tmr11235's 409), so its round is replayed, not refused.
+  const body = { model, metadata: { user_id: "unmatched-round" },
+    messages: [{ role: "user", content: "TOOL pending ownership" }], tools: [echoTool] }
+  await readSSE(await callFetch(body))
+  const before = inits().length
+  const unmatched = { ...body, messages: [...body.messages,
+    { role: "assistant", content: [{ type: "text", text: "a different recorded response" },
+      { type: "tool_use", id: "toolu_unmatched_lineage", name: "echo", input: { text: "different" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unmatched_lineage", content: "unmatched" }] },
+  ] }
+  const live = await callFetch(unmatched)
+  const events = live.status === 200 ? (await readSSE(live)).events : []
+  check("unmatched results replay the request's own round instead of 409", live.status === 200 && stopOf(events) &&
+    inits().length === before + 1, `got ${live.status} ${stopOf(events)} ${inits().length - before}`)
 }
 
 {

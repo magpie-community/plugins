@@ -10,6 +10,7 @@ export default {
       service = startServer({
         port,
         configDir: input?.directory,
+        gatewayKey: typeof options?.gatewayKey === "string" ? options.gatewayKey : "",
       }).catch((error) => {
         service = undefined;
         throw error;

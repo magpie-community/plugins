@@ -117,6 +117,22 @@ No percentage is generated when the total quota is unknown.
 不提供余额接口的供应商需要先在 Magpie 中配置相应的余额探测。  
 For providers without a balance endpoint, configure a suitable balance probe in Magpie first.
 
+## 重置卡 / Reset cards
+
+持有重置卡的账号会显示剩余张数和最早过期时间，概览汇总全部重置卡。  
+Accounts with reset cards show the remaining count and earliest expiry. The overview totals the cards across accounts.
+
+本机和远端 Magpie 的 Codex 账号都可以点击「使用」，选择重置卡并确认。默认选择最早过期的一张。确认后，网关通过 `POST /v1/magpie/quotas/codex-reset` 使用该卡，操作无法撤销。GLM 等按窗口区分的重置次数可在页面查看，使用时请前往供应商网站。  
+For local and remote Magpie Codex accounts, click “Use”, choose a card and confirm. The earliest-expiring card is selected by default. The gateway redeems it through `POST /v1/magpie/quotas/codex-reset`. Redemption is irreversible. For providers such as GLM, the page displays per-window reset counts. Redeem those resets on the provider's website.
+
+使用重置卡需要 Magpie 的完全访问网关密钥。在 Magpie 的「网关 › 网关密钥」中获取密钥，然后配置插件选项 `gatewayKey` 或在确认框中输入。确认框中输入的密钥可暂存在插件服务的内存中，重启服务后会清除。  
+Reset cards require a full-access gateway key from Magpie’s “Gateway › Gateway keys”. Set the `gatewayKey` plugin option or enter the key in the confirmation dialog. The dialog can remember the key in service memory until the service restarts.
+
+## 主题 / Theme
+
+页面随 Magpie 窗口实时切换浅色、深色、自定义强调色和字体。独立运行时跟随系统明暗。  
+The page follows the Magpie window’s light or dark theme, custom accent color and fonts. In standalone mode it follows the system appearance.
+
 ## 单独运行 / Standalone usage
 
 需要 Node.js 20 或更新版本，无第三方依赖。  
@@ -179,11 +195,9 @@ Readings older than five minutes, or with an unknown update time, appear in a li
 鼠标停在更新时间或额度上可查看详情。  
 Hover over an update time or quota to view details.
 
-点击刷新只重读 Magpie 的额度记录，不触发账号登录、切换或向 OpenAI 发送模型请求。  
-Refreshing only rereads Magpie's quota records; it does not sign in, switch accounts or send model requests to OpenAI.
+点击刷新会调用 `POST /v1/magpie/quotas/refresh`，让网关重新查询所有订阅额度、密钥套餐和 API 余额，再读取更新后的额度报告。Magpie 对连续的全量刷新有 30 秒限频。手动刷新失败时，页面保留当前读数并提示更新失败。
 
-若供应商读数已旧，请先在 Magpie 中更新对应账号的额度。  
-If a provider reading is stale, update the corresponding account's quota in Magpie first.
+Click Refresh to ask the gateway to refresh all subscriptions, key plans and API balances through `POST /v1/magpie/quotas/refresh`, then read the updated quota report. Magpie limits full refreshes to once every 30 seconds. If a manual refresh fails, the page keeps the current readings and displays an error.
 
 自动读取间隔为 60 秒；页面不可见时暂停。  
 Automatic reads run every 60 seconds and pause while the page is hidden.

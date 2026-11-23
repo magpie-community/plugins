@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
-import { modelsInGroup } from "./model-ids.mjs"
+import { familiesInGroup } from "./model-ids.mjs"
 import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./signin.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -161,8 +161,28 @@ function cadence(bucket, id, name) {
   return { name: name || id }
 }
 
+// vendorOf is a model's family as magpie's cards group them (Gemini,
+// Claude, GPT-OSS), as the retired antigravity plugin named them.
+function vendorOf(id, name) {
+  const l = id.toLowerCase()
+  if (l.startsWith("gemini")) return "Gemini"
+  if (l.startsWith("claude")) return "Claude"
+  if (l.startsWith("gpt-oss")) return "GPT-OSS"
+  return String(name ?? "").trim().split(" ")[0] || id.split("-")[0]
+}
+
 // agy's command report is not its token-usage object or a model-availability list.
 // Unknown quota is not evidence of exhaustion or a full allowance.
+//
+// Each group is a pool its models share: its windows go as the pool's
+// ({ pool: "Gemini", name: "5 hours" }), and each model family the group
+// names gets a window of its own in that pool, reading the pool's most
+// used bucket, the one that stops it. That is what Google's own per-model
+// reading said: the retired antigravity plugin's fetchAvailableModels
+// read of 2026-11-11 gave every model of a pool the pool's figure, to the
+// digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
+// card shows the pools, and "Every model" lists the models, as it did for
+// the antigravity plugin.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
@@ -173,9 +193,13 @@ export function parseUsageReport(value) {
   }
   const groups = report.command.data?.groups
   const windows = []
+  const models = new Map() // family id -> its window
   for (const group of Array.isArray(groups) ? groups : []) {
     const pool = (text(field(group, "displayName", "display_name")) || text(group?.name) || "Quota")
       .replace(/\s+models$/i, "").replace(/\s+and\s+/gi, " & ")
+    const families = familiesInGroup(group)
+    const ids = [...new Set(families.flatMap(f => f.ids))].sort()
+    let tightest
     for (const bucket of Array.isArray(group?.buckets) ? group.buckets : []) {
       const id = text(field(bucket, "bucketId", "bucket_id")) || text(bucket?.id)
       if (!id || bucket?.disabled === true) continue
@@ -187,15 +211,34 @@ export function parseUsageReport(value) {
         ?? (remaining?.case === "remainingFraction" ? remaining.value : undefined)
       const known = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
       const resetsAt = resetTime(field(bucket, "resetTime", "reset_time"))
-      const ids = modelsInGroup(group)
-      windows.push({
-        name: `${pool} · ${period.name}`,
+      const w = {
+        name: period.name,
+        pool,
         // This feature displays quota only; it must not change model routing.
         aside: true,
         ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
         ...(period.span ? { span: period.span } : {}),
         ...(resetsAt ? { resetsAt } : {}),
+      }
+      windows.push(w)
+      if (known && (!tightest || w.used > tightest.used)) tightest = w
+    }
+    if (!tightest) continue
+    for (const f of families) {
+      const had = models.get(f.id)
+      // a model two groups name reads the one that stops it first
+      if (had && had.used >= tightest.used) continue
+      models.set(f.id, {
+        name: f.name,
+        model: f.id,
+        family: vendorOf(f.id, f.name),
+        pool,
+        aside: true,
+        models: f.ids,
+        used: tightest.used,
+        ...(tightest.span ? { span: tightest.span } : {}),
+        ...(tightest.resetsAt ? { resetsAt: tightest.resetsAt } : {}),
       })
     }
   }
@@ -203,7 +246,7 @@ export function parseUsageReport(value) {
     throw new UsageError("Limits not available: agy returned no enabled, measured quota buckets.")
   }
   // /usage has no verified account or plan identity. Do not borrow one elsewhere.
-  return { windows }
+  return { windows: [...[...models.values()].sort((a, b) => a.name.localeCompare(b.name)), ...windows] }
 }
 
 function timeout(value) {
@@ -366,6 +409,16 @@ export function quotaUserAgent(version, authMethod, platform = process.platform,
 
 const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p.id : ""
 
+// The project Code Assist serves every consumer (personal Google) account
+// under: loadCodeAssist names it for Free, Pro and Ultra alike. Where
+// Google refuses the account at agy's eligibility check, loadCodeAssist
+// can name no project at all, and agy then asks retrieveUserQuotaSummary
+// with none, which Google answers 403 #3501 (agy 1.5.10, recorded
+// 2026-11-18), while its ACP sessions, which run no eligibility check,
+// go on serving the account's requests (IcyLiqu1d on X). Asked with this
+// project, the same account's quota answers 200.
+export const CONSUMER_PROJECT = "aicode-consumers"
+
 // readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
 // sign-in, as agy asks it. An access token with under two minutes left is
 // renewed in memory only; agy's stored sign-in is never written.
@@ -415,8 +468,15 @@ export async function readQuotaDirect({
     if (res.status !== 200) throw new UsageError(`Antigravity's ${method} answered ${res.status}.`)
     try { return JSON.parse(reply) } catch { throw new UsageError(`Antigravity's ${method} answered with no JSON.`) }
   }
-  const project = companion((await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }))?.cloudaicompanionProject)
-  if (!project) throw new UsageError("Antigravity names no project for this account.")
+  const load = await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } })
+  let project = companion(load?.cloudaicompanionProject)
+  // a consumer account Google names no project for: the one every consumer
+  // account is served under (a Workspace or Cloud one has its own)
+  if (!project && load?.gcpManaged !== true && (text(sign.auth_method) || "consumer") === "consumer") project = CONSUMER_PROJECT
+  if (!project) {
+    const why = text((load?.ineligibleTiers ?? []).find(x => text(x?.reasonMessage))?.reasonMessage)
+    throw new UsageError(why ? `Antigravity names no project for this account (${why.slice(0, 300)})` : "Antigravity names no project for this account.")
+  }
   return call("retrieveUserQuotaSummary", { project })
 }
 
@@ -428,8 +488,9 @@ export async function fetchUsage(agy, {
   tempRoot = os.tmpdir(),
   quota = readQuotaDirect,
   direct = false,
+  first = false,
 } = {}) {
-  if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
+  if (!agy) throw new UsageError(NO_AGY)
   const deadline = Date.now() + timeout(timeoutMs)
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
   let pendingTreeKill = null
@@ -482,6 +543,28 @@ export async function fetchUsage(agy, {
       }
       return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
     }
+    // With a stored sign-in to read it with, the quota is read first the
+    // way agy's /usage reads it: loadCodeAssist, then
+    // retrieveUserQuotaSummary. agy -p /usage makes those two only after
+    // its whole start, about twelve Code Assist calls in six rounds one
+    // after another (loadCodeAssist four times, fetchUserInfo,
+    // fetchAvailableModels, fetchAdminControls, listExperiments…, recorded
+    // from agy 1.5.12 on 2026-11-20): 5 to 10 seconds on a quick network,
+    // past the deadline on a slower one or behind a proxy, where the card
+    // said "agy usage query timed out.". The two calls take about 1.5
+    // seconds. When they can't answer (a sign-in that can't be read, a
+    // refusal, a reply with no quota), agy -p is asked as before, in the
+    // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    let firstFailed = ""
+    if (first) {
+      try {
+        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        firstFailed = error instanceof UsageError ? error.message : "a network request failed"
+      }
+    }
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
     let report
     try { report = JSON.parse(result.stdout) } catch {}
@@ -496,17 +579,21 @@ export async function fetchUsage(agy, {
     // failure of that read leaves agy's own answer standing: unknown,
     // never zero or full.
     if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
+      // when that read fails too, the error says why, after agy's refusal
+      const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
+      // asked already, before agy -p: not asked twice
+      if (firstFailed) throw alsoFailed(firstFailed)
       let data
       try {
         data = await quota({ env, version: version.stdout.trim(), deadline, signal })
       } catch (error) {
         if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
-        throw failure
+        throw alsoFailed(error instanceof UsageError ? error.message : "a network request failed")
       }
       try {
         return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
       } catch {
-        throw failure
+        throw alsoFailed("Google's reply had no quota in it")
       }
     }
     throw failure
@@ -538,6 +625,10 @@ function backoff(n) {
   return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
 }
 
+// what usage says while no agy is found: never held (createUsageReader),
+// and in noAgy's words, so it says how magpie gets one
+export const NO_AGY = "agy CLI not found. Sign in to this account again in magpie to have it installed, or install Antigravity CLI yourself."
+
 const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or run `agy` in a terminal; magpie doesn't run agy for usage until then."
 
 // No completed-result cache: sequential refreshes must see account/allowance changes.
@@ -552,7 +643,10 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 // - an explicit authentication rejection, or an ended token hanging silently
 //   or with sign-in talk, blocks further background runs for that credential.
 //   Diagnostic-only output isn't evidence of a browser sign-in.
-// - any other failure isn't run again for backoff(n).
+// - any other failure isn't run again for backoff(n). No agy found is not
+//   held: finding it costs a few stat calls, and an agy installed since (a
+//   sign-in installs it; tmr11235 on X saw it) is used on the next read,
+//   not after hours of "not found" while its chats already run.
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
   const pending = new Map()
@@ -569,16 +663,21 @@ export function createUsageReader(resolveAgy, options = {}) {
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"
-    if (held && held.key === key && now() < held.until) {
+    const agy = resolveAgy()
+    if (!agy) return { windows: [], error: NO_AGY, signIn: "kept" }
+    // a failure held for another agy (gone, or another found since) isn't
+    // this one's
+    if (held && held.key === key && held.agy === agy && now() < held.until) {
       return { windows: [], error: held.error, signIn: held.auth ? "expired" : "kept" }
     }
     try {
-      const agy = resolveAgy()
       // an access token that has ended or ends within two minutes, with a
       // refresh token: read without running agy (fetchUsage's direct)
       const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
       if (!pending.has(agy)) {
-        const query = fetchUsage(agy, { ...fetchOptions, direct }).finally(() => {
+        // any other stored sign-in: read directly first, agy -p after
+        const first = !direct && stored?.state === "present"
+        const query = fetchUsage(agy, { ...fetchOptions, direct, first }).finally(() => {
           if (pending.get(agy) === query) pending.delete(agy)
         })
         pending.set(agy, query)
@@ -597,8 +696,8 @@ export function createUsageReader(resolveAgy, options = {}) {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
       }
-      const n = held?.key === key ? held.n + 1 : 1
-      held = { key, n, until: now() + backoff(n), error: message, auth }
+      const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
+      held = { key, agy, n, until: now() + backoff(n), error: message, auth }
       if (auth) saidExpired = true
       return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
     }

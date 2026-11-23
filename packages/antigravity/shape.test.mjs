@@ -179,12 +179,13 @@ test("Claude Code's billing line is left out, and the Agent SDK's line is reword
   // twice is the same as once, and other text is left alone
   expect(cloak(out)).toBe(out)
   expect(cloak("be brief")).toBe("be brief")
-  expect(cloak(DESKTOP)).toBe(DESKTOP)
+  // Claude Desktop's own line has been turned away since 11-15 (#1151)
+  expect(cloak(DESKTOP)).toBe(DESKTOP.replace("You are", "You're"))
   // the case and white space the agent wrote stay
   expect(cloak("built on\nANTHROPIC'S  claude agent sdk")).toBe("built on\nthe  claude agent sdk by Anthropic")
   // as the gateway hands it: each block a part; the billing line's part goes
   const r = shape({ systemInstruction: { parts: [{ text: BILLING }, { text: DESKTOP }, { text: SUBAGENT }] }, contents: [] }, "gemini-3-flash", "", "")
-  expect(r.systemInstruction.parts.map((p) => p.text)).toEqual([DESKTOP, "You are a Claude agent, built on the Claude Agent SDK by Anthropic."])
+  expect(r.systemInstruction.parts.map((p) => p.text)).toEqual([DESKTOP.replace("You are", "You're"), "You are a Claude agent, built on the Claude Agent SDK by Anthropic."])
   // a billing line alone in a string stays one (empty) part
   expect(shape({ systemInstruction: BILLING, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts).toEqual([{ text: "" }])
 })
@@ -317,6 +318,39 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   expect(both).not.toContain("x-anthropic-billing-header")
   expect(both).not.toMatch(/[\u200b-\u200f\u2060]/)
   expect(both).toContain("When the user writes @ followed by a path")
+})
+
+// DeepSeek Harness's Web GUI paragraph as @deepseek-ai/dsh-harness-dev-context
+// writes it, word for word
+const WEB_GUI = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI. The browser provides no implicit DOM, route, or screenshot context. The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while `pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. Starting another server does not update this GUI. The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL."
+
+test("DeepSeek Harness's first line and browser sentence go reworded, the rest as written (#1171, #1105)", () => {
+  const { turnsAway, hint } = _internal
+  const sys = "You are an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI
+  expect(turnsAway(sys)).toBe(true)
+  const text = shape({ systemInstruction: { parts: [{ text: sys }] }, contents: [] }, "gemini-3.8-flash", "", "").systemInstruction.parts[0].text
+  expect(text).toBe("You're an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI.replace("The browser provides no implicit", "The browser gives no implicit"))
+  expect(turnsAway(text)).toBe(false)
+  // lower-cased or wrapped it was turned away too (11-17)
+  expect(cloak("the browser provides no implicit\nDOM, route, or screenshot context.")).toBe("the browser gives no implicit\nDOM, route, or screenshot context.")
+  expect(hint(sys)).toContain("DeepSeek Harness")
+  expect(hint(WEB_GUI)).toContain("The browser gives")
+  // each went through as written on a real account (11-17)
+  for (const s of [
+    "The browser provides no implicit DOM, route, or screenshot context",
+    "The browser provides no implicit DOM, route or screenshot context.",
+    "The browser provides no DOM, route, or screenshot context.",
+    "You are DeepSeek Harness.",
+  ]) expect(cloak(s)).toBe(s)
+})
+
+test("Claude Code's identity line goes as \"You're …\", its CLI's and its SDK's (#1151)", () => {
+  const { hint } = _internal
+  expect(cloak("You are Claude Code, Anthropic's official CLI for Claude.\n\nBe brief.")).toBe("You're Claude Code, Anthropic's official CLI for Claude.\n\nBe brief.")
+  expect(cloak("You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.")).toBe("You're Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.")
+  expect(hint("You are Claude Code, Anthropic's official CLI for Claude.")).toContain("Claude Code")
+  const s = "You're Claude Code, Anthropic's official CLI for Claude."
+  expect(cloak(s)).toBe(s)
 })
 
 // since 11-14 Codex's GPT-5 line in a user's turn is turned away too (3 of
