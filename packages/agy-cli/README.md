@@ -132,6 +132,10 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    Google 账号」。新账号有自己的 agy 主目录（`~/.local/state/magpie-agy-bridge/accounts/`
    下），它的登录保存在那个目录里的文件中，不动系统钥匙串里原来那个账号。每个账号单独一行，
    用量分开显示，可以像其他 provider 的账号一样切换和轮换。
+   agy 自己只保存一个 Google 账号。为了让 agy 当前的账号在 agy 换登别的账号（比如在终端里）
+   之后还能用，插件会把它的登录按 agy 存的原样复制一份，放到上面那个目录下它自己的主目录
+   （`own…`，文件只有你自己能读）。agy 换到别的账号后，这个账号的用量、模型和请求就用这份
+   复制运行 agy。系统钥匙串只读不写。0.1.113 之前就已不在 agy 里的账号没有这份复制，需要再登录一次。
    用过已退役的 Antigravity 插件（`antigravity`）的话，Magpie 的 Providers 页顶上会提示把那里的
    账号移过来，点 Move 即可；也可以在 agy-cli 的 Import accounts from a file… 里选那份登录记录
    或 agy 的令牌文件。它们本就是 Antigravity 自己的 Google 登录，每个账号放进自己的 agy 主目录，
@@ -193,6 +197,7 @@ your location"），尽管它自己查的额度已经拿到了。这时插件按
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |
+| `AGY_BRIDGE_STATELESS_REUSE` | 开启 | 不流式、不带工具、只有一条消息的请求（识图、起标题），在已答完一个这类请求的空闲 agy 里新开会话，省掉 agy 首次建会话的几秒；那条旧对话再有下一轮时重放历史。设为 `0` 关闭 |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | 工具运行超过该时间仍未结束时，先返回 "still running" |
@@ -260,7 +265,11 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   重试中的提示行会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
   （"Your previous response was cut off because it exceeded the output token limit"、
   它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
-  输出。若结尾是 "This service has been disabled in this account for
+  输出。agy 1.5.12 遇到格式错误的函数调用时重试的三行提示（"Your previous response
+  contained an improperly formatted function call: …"、"Please retry with a properly
+  formatted function call" 和 "Retries remaining: N"）也一样去掉；紧跟在另一条提示后的
+  提示、额度或高负载结尾，以及回复开头被拆在两个分片里的提示，同样能认出。
+  若结尾是 "This service has been disabled in this account for
   violation of Terms of Service"（agy 1.5.9 前面带 "PERMISSION_DENIED (code 403):"，1.5.10 不带），会按禁止重试的 403 语义 `permission_error` 返回，而不是
   当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
   并带上 agy 记下的验证链接；没有链接时说明去哪里验证。

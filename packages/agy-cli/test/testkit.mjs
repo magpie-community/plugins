@@ -137,6 +137,7 @@ function createTimers() {
 
 class FakeStream extends EventEmitter {
   setEncoding() { return this }
+  destroy() { return this }
 }
 
 class FakeChild extends EventEmitter {
@@ -268,7 +269,11 @@ class FakeAgy {
           protocolVersion: 1,
           agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
           agentCapabilities: {
-            ...(this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {}),
+            ...(this.kit.promptImages ? { promptCapabilities: { image: true } } : {}),
+            ...(this.kit.sessionResume || this.kit.sessionClose ? { sessionCapabilities: {
+              ...(this.kit.sessionResume ? { resume: {} } : {}),
+              ...(this.kit.sessionClose ? { close: {} } : {}),
+            } } : {}),
             // agy 1.5's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1)
             ...(this.kit.appendable ? { _meta: { antigravity: { systemPrompt: { append: true } } } } : {}),
           },
@@ -295,8 +300,12 @@ class FakeAgy {
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
-      if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
+      const delay = (this.kit.sessionNewDelayMs || 0) + (this.booted ? 0 : this.kit.bootDelayMs || 0)
+      this.booted = true
+      if (delay) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), delay)
       else this.respond(id, { sessionId: this.sessionId, models })
+    } else if (method === "session/close" && this.kit.sessionClose) {
+      this.respond(id, {})
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
       // agy whose account Google turned away offers no model: every one is unknown
@@ -490,6 +499,11 @@ export async function createBridgeKit(options = {}) {
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    // agy 1.5.14 lists session/close, and boots its backend on a
+    // process's first session/new only (~3s signed in; later ones ~10ms)
+    sessionClose: options.sessionClose ?? false,
+    promptImages: options.promptImages ?? false,
+    bootDelayMs: options.bootDelayMs ?? 0,
     appendable: options.appendable ?? false,
     listTools: options.listTools ?? true,
     watchTools: options.watchTools ?? true,
@@ -563,8 +577,12 @@ export async function createBridgeKit(options = {}) {
     }
     kit.otherSpawns.push({ file, args, opts })
     const child = new FakeChild(kit, file, args)
-    const code = options.onSpawn ? options.onSpawn(file, args, opts) : 0
-    child.finish(code ?? 0)
+    // onSpawn answers an exit code, or { code, stdout }
+    const said = options.onSpawn ? options.onSpawn(file, args, opts) : 0
+    const { code, stdout } = said && typeof said === "object" ? said : { code: said }
+    if (stdout) setImmediate(() => child.stdout.emit("data", Buffer.from(stdout)))
+    if (stdout) setImmediate(() => child.finish(code ?? 0))
+    else child.finish(code ?? 0)
     return child
   }
   const spawnSync = (file, args = [], opts = {}) => {

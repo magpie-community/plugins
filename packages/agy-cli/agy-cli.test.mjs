@@ -32,8 +32,10 @@ for (const [name, mocks] of [
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
   ["spare.mjs", false],
+  ["stateless-reuse.mjs", false],
   ["tools-listed.mjs", false],
   ["concurrent-convs.mjs", false],
+  ["masking-drift.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests

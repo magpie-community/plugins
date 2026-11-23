@@ -379,20 +379,22 @@ polling with the feed alone, and the feed is gated on the client's
 version, so the plugin asks as the current client (3.17.2) sends — and
 posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. An answer of nothing to claim
-carries an `until` half an hour out, so magpie's loop asks again then,
-and again, all day while the feed names no plan — one GET, nothing
-posted: ZCode drops plans into the feed on its own schedule (a weekend
-banner starting at 19:00 Beijing, say), and one that arrives
-after the day's ask used to sit unclaimed past its short life. The
-other answers stand for the day — but an *ineligible* (code 1004, below)
-is read again in half an hour, as an inactive is: a claimed plan leaves
-the feed, so
-asking again half an hour later would find nothing and flip the card
-from "Checked in today" to "No check-in event now"; a captcha plan
-re-asked makes ZCode demand its captcha again; a done plan re-asked
-posts a claim ZCode already answered. So a second plan the same day,
-after one was claimed, is seen the next day. The answer is judged by
+account's ZCode session, as the app does. ZCode drops plans into the
+feed on its own schedule through the day (a weekend banner starting at
+19:00 Beijing, and another at 19:30, say), and one that arrives after the
+day's ask used to sit unclaimed past its short life. So an answer of
+nothing to claim, a claim, a done and an ineligible each carry an
+`until` half an hour out, and magpie's loop asks again then, all day —
+one GET of the feed each time. A recheck posts only plans the account
+has no answer for yet that day: a plan claimed, answered 1003 or held
+for the captcha is never posted again, so its captcha is not asked for
+again and no claim ZCode already answered is repeated. With nothing new
+after the day's claim, the answer is *done*: the card keeps "Checked in
+today" rather than "No check-in event now" (a claimed plan leaves the
+feed). An ineligible (code 1004, below) is posted again on the next
+recheck, as it may be offered later. The day's answers live in memory
+and end with the Beijing day: after a magpie restart, a plan still in
+the feed is posted once more and answers 1003, *done*. The answer is judged by
 the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to

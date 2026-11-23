@@ -1763,6 +1763,53 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   return body
 }
 
+// MAGPIE_TRAE_DEBUG=1 in magpie's environment writes each chat request the
+// plugin sends and how Trae's answer ended to stderr, which magpie keeps in
+// app.log (plugins#1366: a seat's replies stopped at 2000 output tokens,
+// and the reporter could see only TLS to Trae). Read on every request, so
+// it is on for the next one after a restart and off by default. What goes
+// out is the URL and the body with nothing of the user's in it: each
+// message is its role and its length, each tool its name. The headers,
+// which carry the sign-in, are never written.
+const traeDebug = () => !!process.env.MAGPIE_TRAE_DEBUG && process.env.MAGPIE_TRAE_DEBUG !== "0"
+
+function debugBody(sent) {
+  const out = { ...sent }
+  if (Array.isArray(sent.messages)) {
+    out.messages = sent.messages.map((m) => ({ role: m?.role, chars: JSON.stringify(m?.content ?? "").length, ...(m?.tool_calls ? { tool_calls: m.tool_calls.length } : {}) }))
+  }
+  if (Array.isArray(sent.tools)) out.tools = sent.tools.map((t) => t?.function?.name ?? t?.name ?? "?")
+  return out
+}
+
+function debugSent(url, rid, sent) {
+  if (traeDebug()) console.error(`trae debug: request ${rid} POST ${url} ${JSON.stringify(debugBody(sent))}`)
+}
+
+// debugEnd passes the answer's parts on and, when the stream ends, writes
+// what Trae said of it: its finish (Trae's "stop", or none, reads as ""),
+// its usage, and the reply's length
+async function* debugEnd(rid, parts, limit, cut) {
+  let usage = null
+  let finish = ""
+  let text = 0
+  let reasoning = 0
+  const calls = []
+  try {
+    for await (const p of parts) {
+      if (p.usage) usage = p.usage
+      if (p.finish) finish = p.finish
+      if (p.text) text += p.text.length
+      if (p.reasoning) reasoning += p.reasoning.length
+      if (p.call) calls.push(p.call)
+      yield p
+    }
+  } finally {
+    const end = ending(calls, finish, usage, limit, cut)
+    console.error(`trae debug: reply ${rid} trae_finish=${JSON.stringify(finish)} usage=${JSON.stringify(usage)} text_chars=${text} reasoning_chars=${reasoning} calls=${calls.length}${end.dropped ? ` cut_calls=${end.dropped}` : ""} finish_sent=${end.finish}`)
+  }
+}
+
 // sse reads Trae's events: {event, data} for each, data parsed when JSON
 async function* sse(stream) {
   const reader = stream.getReader()
@@ -3012,6 +3059,32 @@ function cutFinish(finish, usage, limit, cut = 0) {
   return finish
 }
 
+// wholeArgs says a call's arguments are whole JSON, as the agent reads them
+function wholeArgs(a) {
+  try {
+    JSON.parse(a)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ending is how a reply with these calls ends: a reply Trae cut (it came
+// to its limit, or Trae said length) whose call it cut too goes out
+// without that call and ends for length, the text before it kept. Sent as
+// a call, the agent ran a call with half its arguments, or stopped on it
+// and sent nothing more: an enterprise seat's reply of exactly 2000 tokens,
+// one call, tool_calls, and no next request (plugins#1366, 0.2.47). A whole
+// call in a cut reply is the model's and goes out as one.
+function ending(calls, finish, usage, limit, cut) {
+  const ended = cutFinish(finish, usage, limit, cut) || "stop"
+  if (ended === "length") {
+    const kept = calls.filter((c) => wholeArgs(c.arguments))
+    if (kept.length < calls.length) return { calls: kept, finish: "length", dropped: calls.length - kept.length }
+  }
+  return { calls, finish: calls.length ? "tool_calls" : ended, dropped: 0 }
+}
+
 // finishOf is OpenAI's finish_reason for the one Trae's last event gives,
 // "" for none it says or one it has no word for
 function finishOf(d) {
@@ -3192,11 +3265,12 @@ async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) 
       if (p.usage) usage = p.usage
       if (p.finish) finish = p.finish
     }
+    const end = ending(calls, finish, usage, limit, cut)
     if (usage && billing) withBilling(usage, await billing())
-    const message = { role: "assistant", content: text || (calls.length ? null : "") }
+    const message = { role: "assistant", content: text || (end.calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
-    if (calls.length) message.tool_calls = calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
-    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop" }] }
+    if (end.calls.length) message.tool_calls = end.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
+    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: end.finish }] }
     if (usage) body.usage = usage
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
   }
@@ -3212,11 +3286,19 @@ async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) 
   const stream = new ReadableStream({
     async start(ctl) {
       let calls = 0
+      const sent = []
+      // a call whose arguments aren't whole JSON is held to the end: only
+      // then is it known whether Trae cut the reply in it (ending)
+      const held = []
       let usage = null
       let finish = ""
       let failed = false
       const put = (b) => {
         if (!gone) ctl.enqueue(b)
+      }
+      const putCall = (c) => {
+        sent.push(c)
+        put(chunk({ tool_calls: [{ index: calls++, id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }] }))
       }
       try {
         put(chunk({ role: "assistant", content: "" }))
@@ -3229,13 +3311,20 @@ async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) 
           }
           if (p.text) put(chunk({ content: p.text }))
           if (p.reasoning) put(chunk({ reasoning_content: p.reasoning }))
-          if (p.call) put(chunk({ tool_calls: [{ index: calls++, id: p.call.id, type: "function", function: { name: p.call.name, arguments: p.call.arguments } }] }))
+          if (p.call) {
+            if (wholeArgs(p.call.arguments)) putCall(p.call)
+            else held.push(p.call)
+          }
           if (p.usage) usage = p.usage
           if (p.finish) finish = p.finish
         }
         if (!failed) {
+          const end = ending([...sent, ...held], finish, usage, limit, cut)
+          if (!end.dropped) for (const c of held) putCall(c)
+          put(chunk({}, end.finish))
+          // the settled charge is read after the finish, so a bill Trae
+          // settles a moment later doesn't hold the answer's end back
           if (usage && billing) withBilling(usage, await billing())
-          put(chunk({}, calls ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop"))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
       } catch (e) {
@@ -4458,14 +4547,19 @@ const makePlugin = (site) => async ({ client }) => {
               let refused = false
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
-                const requestId = randomUUID()
-                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry, requestId)
+                // one id names this turn everywhere it is read: the header
+                // the request carries, its own request_id, the per-turn
+                // session Trae books the charge under, and the debug line
+                const rid = randomUUID()
+                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry, rid)
+                debugSent(host + "/api/agent/v3/llm_utils_chat", rid, sent)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
-                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": rid }),
                   body: JSON.stringify(sent),
                   signal: ac.signal,
                 })
+                if (traeDebug()) console.error(`trae debug: request ${rid} answered ${res.status} ${res.headers.get("content-type") ?? ""}`)
                 if (!res.ok) {
                   const text = await res.text()
                   const e = errorOf(text)
@@ -4507,8 +4601,11 @@ const makePlugin = (site) => async ({ client }) => {
                   break
                 }
                 fnOf.set(who, fn)
+                const cut = enterpriseModel(entry) ? TRAE_CUT : 0
+                const answer = done ? held : chain(held, it)
+                // the settled charge of this turn, read when the answer ends
                 const bill = () => turnBilling(a, site, [sent.request_id, sent.session_id], BILLING_DELAYS, ac.signal)
-                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0, bill)
+                const out = await openai(req, traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer, () => ac.abort(), site, sent.max_tokens || 0, cut, bill)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
@@ -4536,4 +4633,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, TRAE_CUT, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

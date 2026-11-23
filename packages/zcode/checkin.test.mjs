@@ -11,10 +11,10 @@ import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs
+let ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs, resetDayAnswers
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs, resetDayAnswers } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
@@ -24,6 +24,7 @@ beforeEach(() => {
   _internal.routes.clear()
   resetRateWait() // each test starts with no hold of its own (they share an account key)
   resetClientConfigs() // and reads client/configs from its own fake
+  resetDayAnswers() // and has answered no plan today
 })
 
 // serve is the fake zcode.z.ai: route answers each request, and a request
@@ -109,14 +110,12 @@ function claimWith(claim, touch = TOUCH_NONE) {
 }
 const claims = (calls) => calls.filter((c) => c.url.pathname === CLAIM)
 
-// only the answer of nothing to claim is asked again: until wakes
-// magpie's loop half an hour out, so a plan dropped into the feed later
-// in the day is still claimed. claimed, done and captcha settle for the
-// day (a claimed plan leaves the feed; a captcha plan re-asked makes
-// ZCode demand its captcha again; a done plan re-asked posts a claim
-// answered 1003), and a failed needs none — magpie asks a failed again
-// of its own.
-test("an inactive says until half an hour out; claimed, done, captcha and failed say none", async () => {
+// until wakes magpie's loop half an hour out, so a plan dropped into the
+// feed later in the day is still claimed: after nothing to claim, and
+// after a claim too (@aaron0x10 on X, 11-22: plans at 19:00 and 19:30
+// Beijing). A captcha waits on the user, and a failed needs none —
+// magpie asks a failed again of its own.
+test("inactive, claimed, done and ineligible say until half an hour out; captcha and failed say none", async () => {
   const soon = (r) => {
     const t = Date.parse(r.until)
     expect(t).toBeGreaterThan(Date.now() + 25 * 60_000)
@@ -126,11 +125,14 @@ test("an inactive says until half an hour out; claimed, done, captcha and failed
   claimWith(() => json(CLAIMED_NOW))
   soon(await checkin())
   claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND))
-  none(await checkin())
+  soon(await checkin())
+  resetDayAnswers()
   claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
-  none(await checkin())
+  soon(await checkin())
+  resetDayAnswers()
   claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND))
   none(await checkin())
+  resetDayAnswers()
   // a plan not offered now can be offered later in the day: read again
   claimWith(() => json(NOT_ELIGIBLE), touchOf(WEEKEND))
   soon(await checkin())
@@ -178,7 +180,7 @@ test("one plan to claim, claimed with code 0", async () => {
   _internal.routes.set("\0" + TOKEN, { stale: true })
   const calls = claimWith(() => json(CLAIMED_NOW), touchOf([TRUST, "ZCode Trust Build"]))
   const r = await checkin()
-  expect(r).toEqual({ outcome: "claimed", message: "claimed ZCode Trust Build" })
+  expect(r).toEqual({ outcome: "claimed", message: "claimed ZCode Trust Build", until: expect.any(String) })
   const [c] = claims(calls)
   expect(claims(calls).length).toBe(1)
   expect(c.url.origin).toBe("https://zcode.z.ai")
@@ -194,7 +196,7 @@ test("one plan to claim, claimed with code 0", async () => {
 
 test("a plan claimed before (HTTP 200, code 1003) is done, not a failure", async () => {
   claimWith(() => json(CLAIMED_BEFORE), touchOf([TRUST, "ZCode Trust Build"]))
-  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCode Trust Build" })
+  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCode Trust Build", until: expect.any(String) })
 })
 
 test("a claim ZCode wants the app's captcha for is captcha: claimed in the ZCode app", async () => {
@@ -330,9 +332,10 @@ test("one claimed and one failed is failed, naming the claimed one, so it is ask
   const r = await checkin()
   expect(r.outcome).toBe("failed")
   expect(r.message).toBe("claimed ZCode Trust Build; ZCODE GLOBAL BUILD: HTTP 503, unreadable reply (empty)")
-  // asked again: the one claimed answers 1003 now
-  claimWith((id) => (id === GLOBAL ? json(CLAIMED_NOW) : json(CLAIMED_BEFORE)), touchOf([TRUST, "ZCode Trust Build"], [GLOBAL, "ZCODE GLOBAL BUILD"]))
-  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE GLOBAL BUILD" })
+  // asked again: the failed one is posted again, the claimed one is not
+  const calls = claimWith((id) => (id === GLOBAL ? json(CLAIMED_NOW) : json(CLAIMED_BEFORE)), touchOf([TRUST, "ZCode Trust Build"], [GLOBAL, "ZCODE GLOBAL BUILD"]))
+  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE GLOBAL BUILD", until: expect.any(String) })
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([GLOBAL])
 })
 
 test("an account with no ZCode session asks nothing", async () => {
@@ -378,7 +381,7 @@ const CLAIMED_WEEKEND = '{"code":0,"msg":"","data":{"server_time":1793369500,"pl
 
 test("a banner plan is claimed from the app's marketing feed", async () => {
   const calls = claimWith((id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), touchOf(WEEKEND))
-  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD" })
+  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD", until: expect.any(String) })
   expect(claims(calls).map((c) => JSON.parse(c.body))).toEqual([{ plan_id: WEEKEND }])
   // the feed went out as the app asks it
   const t = calls.find((c) => c.url.pathname === TOUCH)
@@ -388,9 +391,16 @@ test("a banner plan is claimed from the app's marketing feed", async () => {
   expect(t.headers["X-Device-Mid"]).toBe(DEVICE)
   expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
   expect(t.headers["X-Client-Language"]).toBeTruthy()
-  // asked again, the plan answers 1003: done
-  claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
-  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD" })
+  // asked again the same day while it is still listed, it is not posted
+  // again: done, the day's claim
+  const again = claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD", until: expect.any(String) })
+  expect(claims(again)).toEqual([])
+  // a new day (another process, here) posts it again: 1003, done
+  resetDayAnswers()
+  const next = claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD", until: expect.any(String) })
+  expect(claims(next)).toHaveLength(1)
 })
 
 test("a feed with no claim button, or nothing in it, is nothing to claim", async () => {
@@ -430,7 +440,7 @@ const TOUCH_REAL = readFileSync(new URL("./testdata/touch-1030-wk.json", import.
 
 test("the real banner feed: its one claim button is claimed, by the plan's name", async () => {
   const calls = claimWith((id) => (id === WEEKEND ? json(CLAIMED_WEEKEND) : json("", 404)), TOUCH_REAL)
-  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD" })
+  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD", until: expect.any(String) })
   // one claim, of the claim button's plan_id, with the body the app sends;
   // the close button and the success popup's buttons claim nothing
   expect(claims(calls).map((c) => c.body)).toEqual(['{"plan_id":"zcode-v3-start-plan-1030-wk"}'])
@@ -459,8 +469,9 @@ test("after the claim the feed has no delivery: nothing to claim, not a failure"
   // kongbai01203's second finding (10-30): once claimed, the campaign leaves
   // the account's deliveries while its window is still open (to 11-02
   // 09:00). The count (0) is theirs; these bytes are the real reply's
-  // top level with its deliveries emptied. magpie keeps the day's claim
-  // (checkin.go, claimedOn) over this later inactive.
+  // top level with its deliveries emptied. Asked by a process that saw
+  // no claim today (a restart), that is nothing to claim; after its own
+  // claim, the recheck test below answers done.
   const after = JSON.parse(TOUCH_REAL)
   after.data.deliveries = []
   const calls = claimWith(() => json(CLAIMED_WEEKEND), after)
@@ -542,4 +553,102 @@ test("nothing in the feed: client/configs is not asked", async () => {
   })
   expect((await checkin()).outcome).toBe("inactive")
   expect(calls.filter((c) => c.url.pathname === CONFIGS)).toEqual([])
+})
+
+// @aaron0x10 on X, 11-22: ZCode hands out a gift plan at 19:00 Beijing and
+// another at 19:30. The plugin used to settle the day on the first claim,
+// so the second was seen the next day. Now magpie's half-hourly recheck
+// reads the feed after a claim too: a plan new to the account is claimed,
+// one answered today is never posted again, and with nothing new the card
+// stays "Checked in today" (done), not "No check-in event now" (inactive).
+const AT_1930 = "zcode-v3-start-plan-1122-1930"
+test("after the 19:00 claim, the 19:30 plan is claimed on the recheck, and the 19:00 one is not posted again", async () => {
+  const posted = []
+  const answer = (id) => (posted.push(id), json(CLAIMED_NOW))
+  // 19:00: the weekend plan, claimed
+  let calls = claimWith(answer, TOUCH_REAL)
+  const at1900 = await checkin()
+  expect(at1900).toEqual({ outcome: "claimed", message: "claimed ZCODE WEEKEND BUILD", until: expect.any(String) })
+  expect(Date.parse(at1900.until)).toBeGreaterThan(Date.now() + 25 * 60_000)
+  expect(Date.parse(at1900.until)).toBeLessThan(Date.now() + 35 * 60_000)
+  // 19:30: the claimed plan is still listed (or not — either way it is not
+  // posted again), and a new one is in the feed beside it
+  calls = claimWith(answer, touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE NIGHT BUILD", until: expect.any(String) })
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([AT_1930])
+  expect(posted).toEqual([WEEKEND, AT_1930])
+})
+
+test("a recheck after the day's claim that finds nothing new stays checked in, posting nothing", async () => {
+  claimWith(() => json(CLAIMED_NOW), TOUCH_REAL)
+  expect((await checkin()).outcome).toBe("claimed")
+  // the claimed plan has left the feed (kongbai01203, 10-30), or is still
+  // listed: done either way, never inactive, and no claim posted
+  const gone = JSON.parse(TOUCH_REAL)
+  gone.data.deliveries = []
+  for (const feed of [gone, TOUCH_REAL]) {
+    const calls = claimWith(() => json(CLAIMED_BEFORE), feed)
+    const r = await checkin()
+    expect(r).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD", until: expect.any(String) })
+    expect(claims(calls)).toEqual([])
+    expect(calls.filter((c) => c.url.pathname === TOUCH)).toHaveLength(1)
+  }
+})
+
+test("a plan answered 1003 today is not posted again either, and a new one beside it is claimed", async () => {
+  claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+  expect((await checkin()).outcome).toBe("done")
+  const calls = claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect(await checkin()).toEqual({ outcome: "claimed", message: "claimed ZCODE NIGHT BUILD", until: expect.any(String) })
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([AT_1930])
+})
+
+test("a plan ZCode answered 3007 today is not posted again: its captcha is not asked for again", async () => {
+  claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND))
+  expect((await checkin()).outcome).toBe("captcha")
+  // a press asks again: the plan is named for the app, not posted
+  let calls = claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND))
+  const r = await checkin()
+  expect(r.outcome).toBe("captcha")
+  expect(r.message).toContain("ZCODE WEEKEND BUILD: claim it in the ZCode app (captcha verify failed)")
+  expect(claims(calls)).toEqual([])
+  // a new plan beside it is posted, the captcha one still not
+  calls = claimWith((id) => (id === AT_1930 ? json(CLAIMED_NOW) : json(CAPTCHA, 400)), touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect((await checkin()).outcome).toBe("claimed")
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([AT_1930])
+  // and after that claim, with nothing new, the card is checked in
+  calls = claimWith(() => json(CAPTCHA, 400), touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE NIGHT BUILD", until: expect.any(String) })
+  expect(claims(calls)).toEqual([])
+})
+
+test("after the day's claim, a new plan ZCode isn't offering yet keeps the card checked in and is asked again", async () => {
+  claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND))
+  expect((await checkin()).outcome).toBe("claimed")
+  let calls = claimWith(() => json(NOT_ELIGIBLE), touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect(await checkin()).toEqual({ outcome: "done", message: "already claimed: ZCODE WEEKEND BUILD; ZCODE NIGHT BUILD: your account is not eligible for this plan yet", until: expect.any(String) })
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([AT_1930])
+  // an ineligible is not kept: asked again on the next recheck, and claimed
+  calls = claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND, [AT_1930, "ZCODE NIGHT BUILD"]))
+  expect((await checkin()).outcome).toBe("claimed")
+  expect(claims(calls).map((c) => JSON.parse(c.body).plan_id)).toEqual([AT_1930])
+})
+
+test("the day's answers end with the Beijing day: a plan still listed tomorrow is posted again", async () => {
+  const { setSystemTime } = await import("bun:test")
+  try {
+    setSystemTime(new Date("2026-11-22T11:00:00Z")) // 19:00 Beijing
+    claimWith(() => json(CLAIMED_NOW), touchOf(WEEKEND))
+    expect((await checkin()).outcome).toBe("claimed")
+    setSystemTime(new Date("2026-11-22T15:59:00Z")) // 23:59 Beijing
+    let calls = claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+    expect((await checkin()).outcome).toBe("done")
+    expect(claims(calls)).toEqual([])
+    setSystemTime(new Date("2026-11-22T16:01:00Z")) // 00:01 Beijing, the next day
+    calls = claimWith(() => json(CLAIMED_BEFORE), touchOf(WEEKEND))
+    expect((await checkin()).outcome).toBe("done")
+    expect(claims(calls)).toHaveLength(1)
+  } finally {
+    setSystemTime()
+  }
 })
