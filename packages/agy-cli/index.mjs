@@ -2693,6 +2693,9 @@ class Proc {
       if (historyKey(expectedStripped) === historyKey(actualStripped) ||
         sameHistoryUpToMasking(expectedStripped, actualStripped)) return true
     }
+    // magpie's image-slim swaps an earlier image for its placeholder text; agy
+    // has that image already, so the history it has is otherwise as it was.
+    if (sameHistoryUpToImages(this.expectedMessages, messages)) return true
     // A client that compacts its own context (billion-context in DeepSeek
     // Harness) folds earlier messages into a summary the live session never
     // saw. agy still holds those messages whole, so the session holds as long
@@ -5084,6 +5087,33 @@ function messageDiff(a, b) {
 // them.
 function sameHistoryUpToMasking(expected, actual) {
   return sameUpToMasking(historyRows(expected), historyRows(actual))
+}
+
+// What magpie's image-slim middleware writes where it took out an image the
+// model has already seen: a text block, or on Codex a whole view_image output
+// set to it as a plain string.
+const IMAGE_SLIM_RE = /^\[\d+(?:\.\d+)? MB image left out here: [\s\S]*\]$/
+
+function withoutImages(messages) {
+  const kept = (block) => !(block?.type === "image" ||
+    (block?.type === "text" && typeof block.text === "string" && IMAGE_SLIM_RE.test(block.text.trim())))
+  const resultContent = (content) => typeof content === "string"
+    ? (IMAGE_SLIM_RE.test(content.trim()) ? [] : content)
+    : content.filter(kept)
+  return messages.map((message) => !Array.isArray(message?.content) ? message : {
+    ...message,
+    content: message.content.filter(kept).map((block) => block?.type === "tool_result" &&
+      (Array.isArray(block.content) || typeof block.content === "string")
+      ? { ...block, content: resultContent(block.content) }
+      : block),
+  })
+}
+
+function sameHistoryUpToImages(expected, actual) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) return false
+  const a = withoutImages(expected)
+  const b = withoutImages(actual)
+  return historyKey(a) === historyKey(b) || sameHistoryUpToMasking(a, b)
 }
 
 // One block as the history key reads it, or null for a block the key
