@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow, storedToken } from "../signin.mjs"
+import { tokenFile } from "../account.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -96,6 +100,90 @@ test("one read serves a burst; a dead sign-in blocks background runs until anoth
   assert.match(await backgroundBlocked({ read, fresh: true }), /isn't signed in/)
   forgetStoredSignIn({ dead: true })
   assert.equal(isDead({ state: "present", fp: "one" }), false)
+})
+
+test("default Linux file-backed sign-in supplies the token for direct quota reads", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-signin-"))
+  try {
+    const file = tokenFile(home)
+    const value = stored({ access_token: "linux-access", refresh_token: "linux-refresh", expiry: "2026-11-14T00:00:00Z" })
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, value)
+    const opts = { platform: "linux", home: null, env: { HOME: home }, now: NOW, exec: async () => { assert.fail("no keyring command is needed") } }
+    const signIn = await readStoredSignIn(opts)
+    assert.equal(signIn.state, "present")
+    assert.equal(signIn.canRenew, true)
+    assert.equal(signIn.expired, false)
+    assert.doesNotMatch(JSON.stringify(signIn), /linux-access|linux-refresh|someone@example/)
+    assert.deepEqual(await storedToken(opts), JSON.parse(value))
+    assert.equal(await storedEmail(opts), "someone@example.com")
+    assert.equal(fs.readFileSync(file, "utf8"), value)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("default Linux file reading respects opt-out and environment authentication", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-signin-"))
+  try {
+    const file = tokenFile(home)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, stored({ access_token: "linux-access", refresh_token: "linux-refresh" }))
+    for (const env of [
+      { AGY_BRIDGE_STORED_SIGNIN: "skip" },
+      { GEMINI_API_KEY: "test-key" },
+      { GOOGLE_API_KEY: "test-key" },
+      { AGY_ADC_AUTH: "1" },
+      { GOOGLE_GENAI_USE_VERTEXAI: "1" },
+    ]) {
+      const opts = { platform: "linux", home: null, env: { HOME: home, ...env } }
+      assert.deepEqual(await readStoredSignIn(opts), { state: "unknown" })
+      assert.equal(await storedToken(opts), null)
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("unavailable or malformed default Linux files leave the sign-in unknown", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-signin-"))
+  try {
+    const file = tokenFile(home)
+    const opts = { platform: "linux", home: null, env: { HOME: home } }
+    assert.deepEqual(await readStoredSignIn(opts), { state: "unknown" })
+    assert.equal(await storedToken(opts), null)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, "not json")
+    assert.deepEqual(await readStoredSignIn(opts), { state: "unknown" })
+    assert.equal(await storedToken(opts), null)
+    fs.unlinkSync(file)
+    fs.mkdirSync(file)
+    assert.deepEqual(await readStoredSignIn(opts), { state: "unknown" })
+    assert.equal(await storedToken(opts), null)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("an isolated Linux account home takes precedence over the default sign-in", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-signin-"))
+  try {
+    const isolated = path.join(home, "isolated")
+    const own = stored({ access_token: "default-access" })
+    const other = stored({ access_token: "isolated-access" }, { id_token_email: "other@example.com" })
+    for (const [folder, value] of [[home, own], [isolated, other]]) {
+      fs.mkdirSync(path.dirname(tokenFile(folder)), { recursive: true })
+      fs.writeFileSync(tokenFile(folder), value)
+    }
+    const opts = { platform: "linux", home: isolated, env: { HOME: home } }
+    assert.deepEqual(await storedToken(opts), JSON.parse(other))
+    assert.equal(await storedEmail(opts), "other@example.com")
+    fs.unlinkSync(tokenFile(isolated))
+    assert.deepEqual(await readStoredSignIn(opts), { state: "missing" })
+    assert.equal(await storedToken(opts), null)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test("storedSignInNow answers from the last read without waiting, and reads again when it is old", async () => {

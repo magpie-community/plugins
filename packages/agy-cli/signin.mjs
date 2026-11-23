@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { currentHome, homeOf, tokenFile } from "./account.mjs"
 
@@ -236,6 +237,13 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
   if (env.AGY_BRIDGE_STORED_SIGNIN === "skip") return { state: "unknown" }
   // agy signs in with these instead of a stored Google sign-in
   if (ENV_SIGN_INS.some((name) => env[name])) return { state: "unknown" }
+  if (platform === "linux") {
+    try {
+      return { raw: await fs.promises.readFile(tokenFile(env.HOME || os.homedir()), "utf8") }
+    } catch {
+      return { state: "unknown" }
+    }
+  }
   if (platform === "darwin") {
     const r = await exec("/usr/bin/security", ["find-generic-password", "-s", SERVICE, "-a", USER, "-w"])
     // 44: errSecItemNotFound
