@@ -705,8 +705,14 @@ import { pairingLeft, remainingText } from './timing.mjs';
       // The names go in the same line as the other changes, for the same
       // reason: the service reads its file and writes it back, and two
       // requests that overlap would each carry a list of their own.
-      saveQueue = saveQueue.then(send, send).catch(() => {});
-      return saveQueue;
+      // The line itself must not break: a name that is refused does not stop
+      // the names that come after it. The person at the keyboard has to hear
+      // about the refusal, though, so the promise that goes back is the one
+      // that carries it: the page says that the name was not saved and
+      // keeps it in its field.
+      const queued = saveQueue.then(send, send);
+      saveQueue = queued.catch(() => {});
+      return queued;
     };
     const save = async (input) => {
       const run = async () => {
@@ -1182,10 +1188,14 @@ import { pairingLeft, remainingText } from './timing.mjs';
     const items = (state.subscriptions || []).filter(subscription => {
       const id = subscription.id || subscription.provider;
       if (!id) return false;
+      // The cards the phone is shown come first: the card the phone falls
+      // back to is one of them, even when it is a card that was turned off.
+      // The service says which cards those are, and what it says is the
+      // truth about the phone.
+      if (shown) return wanted.has(id);
       // A card that was turned off is not offered: it would leave the small
       // widget saying "not found".
       if (hidden.has(id) || hidden.has(subscription.provider || id)) return false;
-      if (shown) return wanted.has(id);
       return !wanted.size || wanted.has('*') || wanted.has(id) || wanted.has(subscription.provider);
     });
     // The card the small widget shows has to be one of the cards that are

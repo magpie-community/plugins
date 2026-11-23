@@ -225,6 +225,35 @@ test('the plain answer is only a fallback for a cold start', async () => {
   }
 });
 
+test('the list is not emptied while the vendors were asked a moment ago', async () => {
+  const gateway = await startGateway({
+    // The kept answer of Magpie holds nothing at all, but the vendors hold
+    // two subscriptions.
+    '/v1/magpie/quotas?kept=1': quotaAnswer([]),
+    '/v1/magpie/quotas': quotaAnswer([quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')]),
+    '/v1/magpie/usage?period=today': todayAnswer,
+    '/v1/magpie/usage/requests?period=7d&limit=1': weekAnswer,
+  });
+  const local = await tempDir();
+  try {
+    let now = Date.now();
+    const collector = collectorFor(gateway, local, { clock: () => now });
+    await collector.refresh();
+    assert.equal(collector.overview().subscriptions.length, 2);
+    assert.equal(gateway.calls.filter(call => call === '/v1/magpie/quotas').length, 1);
+    // Ten seconds later the vendors are not asked again, and the kept answer
+    // still holds nothing: the list of the last reading is not emptied for
+    // that, and the phone keeps the cards it had.
+    now += 10_000;
+    await collector.refresh();
+    assert.equal(gateway.calls.filter(call => call === '/v1/magpie/quotas').length, 1);
+    assert.equal(collector.overview().subscriptions.length, 2);
+  } finally {
+    await gateway.close();
+    await cleanup(local);
+  }
+});
+
 test('the usage of an account belongs to that account', async () => {
   const gateway = await startGateway({
     '/v1/magpie/quotas?kept=1': quotaAnswer([

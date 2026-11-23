@@ -170,6 +170,30 @@ test('the refresh button asks the service for the list of the subscriptions', as
   assert.deepEqual(calls, ['api/v1/console/subscriptions/refresh']);
 });
 
+test('a name that the service refuses is told to the page, and the line keeps going', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/    const sendName = \(id, value\) => \{[\s\S]*?\n    \};/);
+  assert.ok(source, 'the page has no way of saving a name any more');
+  const calls = [];
+  const state = { display: { names: {} } };
+  const api = async (route, options) => {
+    calls.push([route, JSON.parse(options.body)]);
+    if (calls.length === 1) throw new Error('the service said no');
+    return { display: { names: { codex: 'the second one' } } };
+  };
+  const sendName = new Function('state', 'api', 'saveQueue', `${source[0]}\nreturn sendName;`)(
+    state, api, Promise.resolve(),
+  );
+  // The name that was refused comes back as a refusal: the page can say that
+  // the name was not saved, and it does not say that it was.
+  await assert.rejects(() => sendName('codex', 'the first one'), /the service said no/);
+  // The line itself is not broken by it: the name that comes after it is
+  // saved all the same.
+  await sendName('codex', 'the second one');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(state.display.names, { codex: 'the second one' });
+});
+
 test('turning one account of a vendor on leaves the other accounts off', async () => {
   const script = await read('ui/app.js');
   const source = script.match(/  const turnOn = [\s\S]*?\n  \};/);
@@ -208,6 +232,28 @@ test('a subscription that is turned off is not offered by the small widget', asy
   });
   const offered = list.children.map(row => row.children[0]).filter(input => input.name === 'widget-card' && input.value).map(input => input.value);
   assert.deepEqual(offered, ['codex@example.com']);
+});
+
+test('the card the phone falls back to is offered by the small widget', async () => {
+  const script = await read('ui/app.js');
+  const renderer = script.match(/  const renderWidgetCard = [\s\S]*?\n  \};/)[0];
+  const list = { children: [], replaceChildren() { this.children = []; }, append(row) { this.children.push(row); } };
+  const document = { createElement: () => ({ children: [], append(...children) { this.children.push(...children); } }) };
+  // The card was turned off, and the phone shows it all the same: the phone
+  // keeps at least one card. The service says which cards the phone is
+  // shown, and that is the truth about the picker.
+  const render = new Function('document', 'element', 'node', 'saveState', 'text', 'hidden', `${renderer}\nreturn renderWidgetCard;`)(
+    document, () => list, document.createElement, () => {}, () => {}, new Set(['minimax']),
+  );
+  render({
+    subscriptions: [{ id: 'minimax', provider: 'minimax' }, { id: 'codex@alpha', provider: 'codex' }],
+    display: { subscriptions: ['*'] },
+    shown: ['minimax'],
+  });
+  const offered = list.children.map(row => row.children[0]).filter(input => input.name === 'widget-card' && input.value).map(input => input.value);
+  // The card the phone really shows is offered, and the card the phone does
+  // not show is not.
+  assert.deepEqual(offered, ['minimax']);
 });
 
 test('a device can be taken off the list', async () => {
@@ -372,7 +418,11 @@ test('the name of a subscription is saved while it is written', async () => {
   // and the second one would take the name of the first one with it: the
   // service keeps the map it is given. A name waits in the same line as the
   // other changes, so a save that overlaps it cannot carry a list of its own.
-  assert.match(script, /saveQueue = saveQueue\.then\(send, send\)/);
+  assert.match(script, /const queued = saveQueue\.then\(send, send\)/);
+  // The line is not broken by a name that is refused, and the refusal is
+  // carried to the page all the same: a name that was not saved must not be
+  // told as one that was.
+  assert.match(script, /saveQueue = queued\.catch\(\(\) => \{\}\)/);
   // The rows are not drawn again when a change is saved: the order on the
   // page is the order that was sent, and drawing them again would take the
   // name that is being written out of its field.

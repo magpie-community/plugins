@@ -364,6 +364,22 @@ export function normalizeQuotas(raw, cache = {}) {
     return a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0;
   });
 }
+// How many subscriptions the gateway names in an answer: the rows that carry
+// a vendor are the subscriptions that exist. A row without a vendor is not a
+// subscription this plugin can show, so it does not count: an answer that
+// holds nothing but such rows does not name a subscription, and the reading
+// that was stored is the one that is shown.
+export function namedQuotaSubscriptions(raw) {
+  const names = new Set();
+  for (const row of Array.isArray(raw?.data) ? raw.data : []) {
+    const provider = providerFamily(row?.provider);
+    if (!provider) continue;
+    const account = accountName(row?.user ?? row?.account) || '';
+    names.add(provider + '|' + account);
+  }
+  return names.size;
+}
+
 // Select complete provider groups instead of guessing which anonymous API row
 // belongs to a private cache key. All selected rows still cross the same allowlist.
 // Accounts of one vendor are kept apart: a reading is only ever taken from the

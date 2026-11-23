@@ -305,7 +305,9 @@ test('a refresh the gateway does not answer is told as a failure', async () => {
 test('a gateway that answers with no subscription at all is not a failure', async () => {
   await withService({
     '/v1/magpie/quotas?kept=1': { data: [] },
-    '/v1/magpie/quotas': { httpStatus: 500, body: { error: 'not now' } },
+    // The vendors are asked as well, and they say that they hold nothing:
+    // that is the answer the empty list rests on.
+    '/v1/magpie/quotas': { data: [] },
     '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
     '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
   }, async ({ base, token }) => {
@@ -407,6 +409,9 @@ test('an empty answer after a good reading does not bring the old list back', as
     '/v1/magpie/quotas?kept=1': () => ({
       data: empty ? [] : [quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')],
     }),
+    // The vendors are asked when the kept answer holds nothing, and they say
+    // that they hold nothing as well: the list is empty.
+    '/v1/magpie/quotas': { data: [] },
     '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
     '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
   }, async ({ base, token, cards }) => {
@@ -428,6 +433,34 @@ test('an empty answer after a good reading does not bring the old list back', as
   });
 });
 
+test('the vendors that do not answer do not empty the list', async () => {
+  let empty = false;
+  await withService({
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: empty ? [] : [quotaRow('codex', 'alpha@example.com')],
+    }),
+    // The vendors do not answer: a list is never emptied on the word of a
+    // reading that did not happen.
+    '/v1/magpie/quotas': { httpStatus: 500, body: { error: 'not now' } },
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token, cards }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    assert.equal((await first.json()).ok, true);
+    empty = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await second.json();
+    // The gateway says that it has read nothing, and the vendors do not
+    // answer: nothing is known about the list, so the list that was there
+    // stays, and it is told as an old one.
+    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.named, false);
+    assert.equal(body.subscriptions.length, 1);
+    assert.deepEqual((await cards()).sort(), ['codex']);
+  });
+});
+
 test('an answer that holds no list is an old list', async () => {
   await withService({
     '/v1/magpie/quotas?kept=1': { note: 'nothing here' },
@@ -442,6 +475,82 @@ test('an answer that holds no list is an old list', async () => {
     assert.ok(body.error);
     assert.equal(body.answered, true);
     assert.equal(body.named, false);
+    assert.deepEqual(body.added, []);
+    assert.deepEqual(body.removed, []);
+  });
+});
+
+test('an answer that names no vendor is an old list', async () => {
+  let nameless = false;
+  await withService({
+    // The gateway answers with a row that carries no vendor: it is not a
+    // subscription this plugin can show, so the answer does not name one.
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: nameless
+        ? [{ readAt: '2026-11-22T12:00:00.000Z' }]
+        : [quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')],
+    }),
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const firstBody = await first.json();
+    assert.equal(firstBody.ok, true);
+    assert.equal(firstBody.subscriptions.length, 2);
+    nameless = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await second.json();
+    // The gateway answered, but it did not name a subscription: the list is
+    // the one that was stored, and it is told as an old one.
+    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.answered, true);
+    assert.equal(body.named, false);
+    assert.equal(body.subscriptions.length, 2);
+    assert.deepEqual(body.added, []);
+    assert.deepEqual(body.removed, []);
+  });
+});
+
+test('an empty kept answer does not empty the list while the vendors still hold it', async () => {
+  let keptEmpty = false;
+  await withService({
+    // Magpie has read nothing yet: its own kept answer holds nothing at all.
+    // The vendors are asked, and they hold three subscriptions.
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: keptEmpty
+        ? []
+        : [quotaRow('codex', 'alpha@example.com'), quotaRow('codex', 'beta@example.com')],
+    }),
+    '/v1/magpie/quotas': () => ({
+      data: [
+        quotaRow('codex', 'alpha@example.com'),
+        quotaRow('codex', 'beta@example.com'),
+        quotaRow('qoder-cn', 'gamma@example.com'),
+      ],
+    }),
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const firstBody = await first.json();
+    // The vendors are asked, and they hold three subscriptions: the one that
+    // was added in Magpie is in the list, even though the kept answer of
+    // Magpie does not carry it yet.
+    assert.equal(firstBody.ok, true);
+    assert.equal(firstBody.subscriptions.length, 3);
+    assert.deepEqual(firstBody.added, ['qoder-cn']);
+    keptEmpty = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await second.json();
+    // The kept answer of Magpie held nothing, but the vendors still hold
+    // three subscriptions: the list is not emptied.
+    assert.equal(body.ok, true);
+    assert.equal(body.error, '');
+    assert.deepEqual(
+      body.subscriptions.map(entry => entry.id).sort(),
+      ['codex@alpha', 'codex@beta', 'qoder-cn'],
+    );
     assert.deepEqual(body.added, []);
     assert.deepEqual(body.removed, []);
   });
@@ -686,6 +795,35 @@ test('more subscriptions that are turned off than there can be are refused', asy
     }, { [TOKEN_HEADER]: token });
     assert.equal(again.status, 200);
     assert.deepEqual((await again.json()).display.subscriptionHidden, ['minimax']);
+  });
+});
+
+test('a name that is not a name is refused', async () => {
+  await withService({
+    '/v1/magpie/quotas?kept=1': { data: [quotaRow('codex', 'alpha@example.com')] },
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token, dir }) => {
+    // A name that carries the separator of the label is not a name: it is
+    // refused, so that the page can say that the name was not saved.
+    const answer = await post(base, '/api/v1/console/options', {
+      names: { 'codex@alpha': '我的 · 名字' },
+    }, { [TOKEN_HEADER]: token });
+    assert.equal(answer.status, 400);
+    assert.ok((await answer.json()).error);
+    const state = JSON.parse(await readFile(path.join(dir, 'state.json'), 'utf8'));
+    assert.deepEqual(state.settings.names, undefined);
+    // A name that is a name is kept, and an empty name takes it away.
+    const kept = await post(base, '/api/v1/console/options', {
+      names: { 'codex@alpha': '我的名字' },
+    }, { [TOKEN_HEADER]: token });
+    assert.equal(kept.status, 200);
+    assert.deepEqual((await kept.json()).display.names, { 'codex@alpha': '我的名字' });
+    const away = await post(base, '/api/v1/console/options', {
+      names: { 'codex@alpha': '' },
+    }, { [TOKEN_HEADER]: token });
+    assert.equal(away.status, 200);
+    assert.deepEqual((await away.json()).display.names, {});
   });
 });
 

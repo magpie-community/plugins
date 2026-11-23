@@ -816,6 +816,21 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
           }
         }
         const next = displayOptions({ ...state.settings, ...body });
+        // A name that is not a name is refused, and the whole request with
+        // it: a name that the service drops without saying so is a name the
+        // page would tell as saved. An empty name is not refused: it is the
+        // way a name is taken away.
+        if (body.names !== undefined && body.names && typeof body.names === 'object'
+          && !Array.isArray(body.names)) {
+          for (const name of Object.values(body.names)) {
+            if (typeof name !== 'string') continue;
+            const text = name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (!text) continue;
+            if (text.length > 32 || text.includes('·')) {
+              return json(response, 400, { error: '名字最多 32 个字，也不能带「·」——那会把标签切成两半。' }, allowOrigin);
+            }
+          }
+        }
         // The list of the turned off ones is written down in the state file.
         // A list that is longer than that is refused, so that a name is
         // never dropped without the person at the keyboard being told. The

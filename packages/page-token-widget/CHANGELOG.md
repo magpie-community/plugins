@@ -1,11 +1,63 @@
-# Changelog
+## 0.4.22 · 2026-11-23
 
-## 0.4.21
+The review of 0.4.21 is taken up: a name that the service refuses is no
+longer told as one that was saved, a gateway that names no vendor is no
+longer taken for one that named a subscription, and the list of the
+subscriptions is not emptied on the word of an empty cache — the vendors
+are asked, and they are the ones who say what there is now.
 
-- **名单是新的、数字是旧的，不再被说成「没读到」。** 网关答了话、也把订阅的名字说了出来，只是那些卡片的数字这一次回退到了上一次存着的读数时，插件页说的是「读到了 N 家订阅」，不是「网关没有给出新的订阅名单」——按钮要的是名单，名单是新的。数字是不是旧的，卡片自己写着。
-- **空名单真的是空名单。** 网关答 `{data:[]}` 时，上一次存下的卡片不会再冒充这一刻的订阅；插件页照实写「网关现在没有可读订阅」。网关答了话但没给名单（比如 JSON 里没有 `data`）时，则照旧报「没有给出新的订阅名单」，保留上一次的名单并说明它是旧的。
-- **保存后的小号组件候选和手机一致。** 保存显示选择时，服务端会把自己投影出的卡片名单一并交回，插件页按这一份重画候选；手机至少要留一张卡兜底时，页面不会再把那张手机真在显示的卡片从候选里藏掉。
-- **这一版补了六条真的行为测试。** 「刷新订阅」按下去读的一定是此刻的网关（正好有一轮读数在跑时，那一轮的结果不会被当成新的）；空名单不会再被旧卡片冒充；名单是新的、数字是旧的，不算失败；整份行序在两种方式之间来回换时不跑；勾回厂商的一个账号时其余账号仍然关着；没勾的订阅不会出现在小号组件的候选里。这些以前只有源码的形状守着，现在是真的跑一遍。
+> 0.4.21 的审核意见都办了：存不下的名字不再被说成存下了；网关没点名的，不再被当成点了名；
+> 「刷新订阅」现在直接问厂商本人——刚在 Magpie 里加的那一家，一按就出来；名单也不会被一份空
+> 的缓存清空，厂商问不上来时留着上一次读到的那份。名字不是名字（带「·」或者超过 32 个字）
+> 时，服务端会明说，不再悄悄丢掉。
+
+### Changed
+
+- **A name that was refused is told as one that was not saved.** The error used to be
+  swallowed in the queue of the saves: the page said that the name was taken and the name
+  was gone with the next reload. Now the refusal reaches the page, the name stays in its
+  field, and the names that come after it are saved all the same.
+- **A name that is not a name is refused.** A name that carries the separator of the label,
+  or one that is longer than 32 characters, used to be dropped by the service without a
+  word, and the page said that the name was taken. It is refused now, so the page says
+  that the name was not saved.
+- **Only a row that carries a vendor names a subscription.** An answer that holds nothing
+  but such rows is not a new list, and it is told as the old one it is.
+- **The refresh button asks the vendors themselves.** It used to read the readings Magpie
+  had already written down, so a subscription that was added in Magpie a moment ago did
+  not show up however often the button was pressed. Now the vendors are asked and the list
+  is the one of this moment; when they do not answer, the list that was there is kept and
+  told as an old one.
+- **The list is not emptied on the word of an empty cache.** When Magpie has read nothing
+  yet, the vendors are asked before the list is emptied: the list is only empty when the
+  vendors say so.
+- **A gateway that did not answer is not a gateway that has none.** The readings that were
+  stored stay in place, marked as old, and the console says that the gateway did not give
+  a new list.
+- **The candidates of the small widget follow the phone.** The picker follows what the
+  phone is shown, so the card that is kept on the phone can be picked as well.
+- **The version of the README follows the package.** It still said 0.4.19.
+
+## 0.4.21 · 2026-11-22
+
+A list that is new is not told as one that is old, and an empty list is an
+empty list: the cards that were stored do not pass for the subscriptions of
+this moment.
+
+> 名单是新的、数字是旧的，不再被说成「没读到」；空名单真的是空名单：上一次存下的卡片不
+> 再冒充这一刻的订阅，插件页照实写「网关现在没有可读订阅」。
+
+### Changed
+
+- **A list that is new but whose numbers are old is not a failure.** The gateway answered
+  and named the subscriptions; the numbers of the cards fell back to the readings that
+  were stored, and the button was asked for the list.
+- **An empty answer is an empty list.** The cards that were stored are not brought back
+  over `{data:[]}`, and an answer that holds no list is told as the old one.
+- **The candidates of the small widget follow the phone.** The service says which cards
+  the phone is shown, and the page draws its candidates from that list.
+- **Four real behaviour tests.** They were strings before; they run now.
+
 
 ## 0.4.20 · 2026-11-22
 
