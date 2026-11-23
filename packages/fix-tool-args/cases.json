@@ -1,0 +1,577 @@
+[
+ {
+  "name": "repair: the spark-x2.6 shape - quotes dropped around a glob value, split across chunks",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "call_1",
+          "type": "function",
+          "function": {
+           "name": "ops_glob",
+           "arguments": "{\"pat"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "function": {
+           "arguments": "tern\":**/*fd86512e*}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   },
+   {
+    "data": "[DONE]"
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "call_1",
+         "type": "function",
+         "function": {
+          "name": "ops_glob",
+          "arguments": "{\"pattern\":\"**/*fd86512e*\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   },
+   "[DONE]"
+  ]
+ },
+ {
+  "name": "repair: a bare key and a trailing comma",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c2",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{pattern:**/*x*,}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c2",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"pattern\":\"**/*x*\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: valid arguments are joined unchanged",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c3",
+          "type": "function",
+          "function": {
+           "name": "read",
+           "arguments": "{\"file_path\":\"a.txt\"}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c3",
+         "type": "function",
+         "function": {
+          "name": "read",
+          "arguments": "{\"file_path\":\"a.txt\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: two parallel calls in one finish chunk",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "a",
+          "type": "function",
+          "function": {
+           "name": "f0",
+           "arguments": "{\"x\":1}"
+          }
+         },
+         {
+          "index": 1,
+          "id": "b",
+          "type": "function",
+          "function": {
+           "name": "f1",
+           "arguments": "{\"y\":"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 1,
+          "function": {
+           "arguments": "plain}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "a",
+         "type": "function",
+         "function": {
+          "name": "f0",
+          "arguments": "{\"x\":1}"
+         }
+        },
+        {
+         "index": 1,
+         "id": "b",
+         "type": "function",
+         "function": {
+          "name": "f1",
+          "arguments": "{\"y\":\"plain\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "pass: text and reasoning chunks are untouched",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "role": "assistant",
+        "content": "hello"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "reasoning_content": "thinking"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "stop"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "pass: mode off leaves a broken call alone",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "options": {
+   "mode": "off"
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c4",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"p\":x}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "pass: unreparable arguments are handed over as they came",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c5",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"a\": [1,,2]}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c5",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"a\": [1,,2]}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "pass: garbage events never throw",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": "nope"
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      null
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "delta": {
+        "tool_calls": [
+         null
+        ]
+       },
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "pass: empty arguments become {}",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c6",
+          "type": "function",
+          "function": {
+           "name": "todo",
+           "arguments": ""
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c6",
+         "type": "function",
+         "function": {
+          "name": "todo",
+          "arguments": "{}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ }
+]

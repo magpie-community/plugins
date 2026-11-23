@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/middleware-fix-tool-args",
+  "version": "0.1.0",
+  "description": "Repair tool-call arguments a vendor streams as invalid JSON (missing quotes around values, trailing commas), so strict clients keep the turn; as magpie gateway middleware",
+  "type": "module",
+  "files": ["fix-tool-args.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "tool-calls", "json-repair", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/fix-tool-args" },
+  "magpie": {
+    "middleware": "./fix-tool-args.middleware.js",
+    "options": { "mode": "repair" }
+  }
+}
