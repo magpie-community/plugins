@@ -7,10 +7,13 @@ const SERVER_INFO = { name: "opencode-agy-cli-auth", version: "0.1.0" }
 const CAPABILITIES = { tools: { listChanged: true } }
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 const CONTROL_PORT = Number(process.env.AGY_BRIDGE_CONTROL_PORT)
+const CONTROL_SOCKET = process.env.AGY_BRIDGE_CONTROL_SOCKET
 const CONTROL_TOKEN = process.env.AGY_BRIDGE_TOKEN
-const CONTROL_CONFIGURED = Number.isInteger(CONTROL_PORT)
-  && CONTROL_PORT >= 1
-  && CONTROL_PORT <= 65535
+const VALID_CONTROL_PORT = Number.isInteger(CONTROL_PORT) && CONTROL_PORT >= 1 && CONTROL_PORT <= 65535
+const CONTROL_ENDPOINT = CONTROL_SOCKET
+  ? { path: CONTROL_SOCKET }
+  : { host: "127.0.0.1", port: CONTROL_PORT }
+const CONTROL_CONFIGURED = (CONTROL_SOCKET || VALID_CONTROL_PORT)
   && typeof CONTROL_TOKEN === "string"
   && CONTROL_TOKEN.length > 0
 
@@ -116,7 +119,7 @@ function controlRequest(payload) {
 
     let socket
     try {
-      socket = net.createConnection({ host: "127.0.0.1", port: CONTROL_PORT })
+      socket = net.createConnection(CONTROL_ENDPOINT)
     } catch {
       finish(failure())
       return
@@ -187,7 +190,7 @@ function startWatch() {
   if (!CONTROL_CONFIGURED || watchSocket || inputClosed) return
   let socket
   try {
-    socket = net.createConnection({ host: "127.0.0.1", port: CONTROL_PORT })
+    socket = net.createConnection(CONTROL_ENDPOINT)
   } catch {
     return
   }

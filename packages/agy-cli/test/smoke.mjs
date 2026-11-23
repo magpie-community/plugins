@@ -159,8 +159,10 @@ function connectIde() {
   if (!idePort) return Promise.resolve()
   if (mcpReady) return mcpReady
   mcpReady = (async () => {
+    // Require the private socket for the macOS tool round trip by disabling TCP in the shim.
+    const env = process.platform === "darwin" ? { ...process.env, AGY_BRIDGE_CONTROL_PORT: "0" } : process.env
     // Windows: nc is the nc.cmd shim from ensureShimDir; spawn() without a shell cannot run a .cmd file, so cmd.exe resolves it through PATHEXT
-    mcp = spawn("nc", ["127.0.0.1", idePort], { stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" })
+    mcp = spawn("nc", ["127.0.0.1", idePort], { env, stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" })
     let error = ""
     mcp.stderr.on("data", data => { error += data })
     mcp.on("exit", code => { if (code) log({ type: "ncExit", code, error }) })

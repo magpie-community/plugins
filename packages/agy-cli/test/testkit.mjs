@@ -601,7 +601,7 @@ export async function createBridgeKit(options = {}) {
   const fakeServer = {
     once() { return fakeServer },
     on() { return fakeServer },
-    listen(_port, _host, callback) { setImmediate(callback); return fakeServer },
+    listen(...args) { setImmediate(args.at(-1)); return fakeServer },
     unref() { return fakeServer },
     close() {},
     address() { return { address: "127.0.0.1", family: "IPv4", port: 45999 } },
