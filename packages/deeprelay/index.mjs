@@ -37,13 +37,26 @@ const httpFetch = (...args) => globalThis.fetch(...args)
 
 // ---- small helpers ---------------------------------------------------------------
 
-const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined)
+const num = (v) => {
+	if (typeof v === "number" && Number.isFinite(v)) return v
+	if (typeof v !== "string" || v.trim() === "") return undefined
+	const n = Number(v)
+	return Number.isFinite(n) ? n : undefined
+}
 
 // usd is a dollar amount as it is usually written: cents above a cent, four
-// decimals under one (a fraction of a cent is not "$0.00" to its owner).
-const usd = (n) => (n === 0 || Math.abs(n) >= 0.01 ? `$${n.toFixed(2)}` : `$${Number(n.toFixed(4))}`)
+// decimals under one (a fraction of a cent is not "$0.00" to its owner), and
+// the minus before the sign for a balance that can run negative (invoice).
+const usd = (n) => {
+	const sign = n < 0 ? "-" : ""
+	const v = Math.abs(n)
+	return v === 0 || v >= 0.01 ? `${sign}$${v.toFixed(2)}` : `${sign}$${Number(v.toFixed(4))}`
+}
 
-const pct = (amount, limit) => (Number.isFinite(amount) && Number.isFinite(limit) && limit > 0 ? Math.round((100 * amount) / limit * 100) / 100 : undefined)
+const pct = (amount, limit) => {
+	if (!Number.isFinite(amount) || !Number.isFinite(limit) || limit <= 0) return undefined
+	return Math.round((100 * amount) / limit * 100) / 100
+}
 
 const seconds = (a, b) => {
 	const x = Date.parse(a)
@@ -76,10 +89,14 @@ function errorResponse(status, message) {
 // what went wrong, not lose the meters it could read.
 async function getJSON(url, key, fetchImpl = httpFetch, signal) {
 	const headers = { accept: "application/json" }
-	if (key) headers.authorization = `Bearer ${key}`
+	const token = key == null ? "" : String(key).trim()
+	if (token) headers.authorization = `Bearer ${token}`
 	let res
 	try {
-		res = await fetchImpl(url, { headers, signal: signal ?? AbortSignal.timeout(TIMEOUT) })
+		// the caller's abort stops the read; the deadline keeps a vendor that
+		// never answers from holding the card forever.
+		const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT)]) : AbortSignal.timeout(TIMEOUT)
+		res = await fetchImpl(url, { headers, signal: deadline })
 	} catch (e) {
 		return { ok: false, status: 0, error: e?.message ?? String(e) }
 	}
@@ -90,7 +107,7 @@ async function getJSON(url, key, fetchImpl = httpFetch, signal) {
 	} catch {
 		data = null
 	}
-	return { ok: res.ok, status: res.status, data, text }
+	return { ok: res.ok, status: res.status, data }
 }
 
 // ---- the catalog -----------------------------------------------------------------
@@ -150,7 +167,7 @@ function runtimeModel(m, key, base = API) {
 			interleaved: false,
 		},
 		release_date: "",
-		variants: Object.fromEntries(efforts.map((e) => [e, {}])),
+		variants: Object.fromEntries(efforts.map((e) => [e, { reasoningEffort: e }])),
 	}
 	// DeepRelay's usage_factor_milli is per token; magpie's `rate` is a
 	// per-request multiplier, so this is only the picker's display value.
@@ -207,13 +224,15 @@ function cacheCatalog(tag, entry) {
 	}
 }
 
-async function catalog(key, base = API, fetchImpl = httpFetch) {
+async function catalog(key, base = API, fetchImpl = httpFetch, signal) {
 	const tag = `${base}\0${key ?? ""}`
 	const hit = catalogCache.get(tag)
 	if (hit && Date.now() - hit.at < CATALOG_TTL) return hit.data
+	// a cached or in-flight list is shared; only the call that starts the
+	// fetch owns its signal.
 	if (hit?.pending) return hit.pending
 	const pending = (async () => {
-		const r = await getJSON(`${base}/models?modality=chat`, key, fetchImpl)
+		const r = await getJSON(`${base}/models?modality=chat`, key, fetchImpl, signal)
 		if (!r.ok) {
 			const err = new Error(r.error ?? `DeepRelay answered ${r.status}`)
 			err.status = r.status
@@ -255,11 +274,12 @@ const millions = (n) => Math.round((n / 1e6) * 100) / 100
 const millionText = (n) => `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n / 1e6)}M`
 
 // windowsOf is the plan's meters as magpie shows them: the monthly and
-// rolling-week weighted-token caps. A cap the deployment does not configure
-// (0) is left out rather than shown as 0. The web-search allowance and the
-// usage backstop (quota.max_usage_micro_cents) are not shown: the backstop
-// is an anti-abuse ceiling on the list-price value of plan traffic, not an
-// allowance. `deeprelay quota --short` shows both.
+// rolling-week weighted-token caps, the monthly web-search allowance (an
+// aside: using it up does not stop the account), and wallet calls. A cap the
+// deployment does not configure (0) is left out rather than shown as 0. The
+// usage backstop (quota.max_usage_micro_cents) is not shown: it is an
+// anti-abuse ceiling on the list-price value of plan traffic, not an
+// allowance. `deeprelay quota --short` shows it.
 function windowsOf(sub) {
 	const out = []
 	const q = sub?.quota ?? {}
@@ -276,6 +296,22 @@ function windowsOf(sub) {
 	// the weekly caps roll: they have no reset moment, only a window length
 	push(tokenWindow("周输入", num(u.weekly_weighted_input_tokens), num(q.weekly_input_tokens), { span: 7 * 86400 }))
 	push(tokenWindow("周输出", num(u.weekly_weighted_output_tokens), num(q.weekly_output_tokens), { span: 7 * 86400 }))
+	// the search allowance is a plan meter too, but using it up does not stop
+	// the account, so it goes as an aside, as the wallet calls do.
+	const searches = num(u.searches)
+	const searchLimit = num(q.searches_monthly)
+	if (Number.isFinite(searches) && Number.isFinite(searchLimit) && searchLimit > 0) {
+		out.push({
+			name: "网络搜索（本月）",
+			used: pct(searches, searchLimit),
+			amount: searches,
+			limit: searchLimit,
+			unit: "次",
+			display: `${searches} / ${searchLimit} 次搜索`,
+			...(span ? { span } : {}),
+			aside: true,
+		})
+	}
 	const payg = num(u.recent_payg_calls_24h)
 	if (Number.isFinite(payg) && payg > 0) {
 		out.push({ name: "钱包调用（24 小时）", display: `${payg} 次调用按量计费`, aside: true })
@@ -286,10 +322,13 @@ function windowsOf(sub) {
 // usageOf reads the subscription and the wallet. A key without `billing:read`
 // still serves models and chat; it just cannot show the meters, and the error
 // says which scope to add rather than looking like a lapsed sign-in.
-async function usageOf(auth, base = API, fetchImpl = httpFetch) {
+async function usageOf(auth, base = API, fetchImpl = httpFetch, signal) {
 	if (auth?.type !== "api" || !auth.key) return { windows: [], error: "登录 DeepRelay 后可以读取用量" }
 	const key = auth.key
-	const [sub, bal] = await Promise.all([getJSON(`${base}/billing/subscription`, key, fetchImpl), getJSON(`${base}/billing/balance`, key, fetchImpl)])
+	const [sub, bal] = await Promise.all([
+		getJSON(`${base}/billing/subscription`, key, fetchImpl, signal),
+		getJSON(`${base}/billing/balance`, key, fetchImpl, signal),
+	])
 	const out = { windows: [] }
 	// read each endpoint independently: a refused subscription does not hide
 	// a balance that could still be read.
@@ -307,7 +346,7 @@ async function usageOf(auth, base = API, fetchImpl = httpFetch) {
 				out.plan = "按量计费"
 			}
 		} else if (sub.status === 403) {
-			out.error = "这个 key 没有 billing:read 权限，读不到用量；给 key 加上 billing:read（或改用 full_access）"
+			out.error = "这个 key 没有 billing:read 权限，读不到用量；给 key 加上 billing:read（或改用 standard/full_access）"
 		} else if (sub.error) {
 			out.error = `DeepRelay 用量：${sub.error}`
 		} else if (sub.status) {
@@ -322,6 +361,8 @@ async function usageOf(auth, base = API, fetchImpl = httpFetch) {
 			out.error ??= "这个 key 没有 billing:read 权限，读不到余额"
 		} else if (bal.error) {
 			out.error ??= `DeepRelay 余额：${bal.error}`
+		} else if (bal.status) {
+			out.error ??= `DeepRelay 余额：HTTP ${bal.status}`
 		}
 	}
 	if (sub.status === 401 || bal.status === 401) {
@@ -334,19 +375,13 @@ async function usageOf(auth, base = API, fetchImpl = httpFetch) {
 // ---- the plugin ------------------------------------------------------------------
 
 // DEFAULT_MODELS is what the provider offers before an account answered: the
-// four models DeepRelay's own setup puts in a coding agent, with the limits
-// its docs quote. provider.models replaces the list once a key is in.
+// plan's four coding models, in the catalog's coding_agent_rank order, with the
+// limits DeepRelay's setup quotes. The README's plan table names the same four;
+// change both together. provider.models replaces the list once a key is in.
 const defaultModels = () => ({
 	"deepseek-v4.1-flash": {
 		id: "deeprelay/deepseek-v4.1-flash",
 		name: "DeepSeek V4.1 Flash",
-		limit: { context: 1048576, output: 32768 },
-		reasoning: true,
-		tool_call: true,
-	},
-	"glm-5.3-flash": {
-		id: "deeprelay/glm-5.3-flash",
-		name: "GLM 5.3 Flash",
 		limit: { context: 1048576, output: 32768 },
 		reasoning: true,
 		tool_call: true,
@@ -358,9 +393,16 @@ const defaultModels = () => ({
 		reasoning: true,
 		tool_call: true,
 	},
-	"kimi-k3": {
-		id: "deeprelay/kimi-k3",
-		name: "Kimi K3",
+	"kimi-k3.1-pro": {
+		id: "deeprelay/kimi-k3.1-pro",
+		name: "Kimi K3.1 Pro",
+		limit: { context: 1048576, output: 32768 },
+		reasoning: true,
+		tool_call: true,
+	},
+	"glm-5.3-flash": {
+		id: "deeprelay/glm-5.3-flash",
+		name: "GLM 5.3 Flash",
 		limit: { context: 1048576, output: 32768 },
 		reasoning: true,
 		tool_call: true,
@@ -393,34 +435,51 @@ export const DeepRelayPlugin = async (_input, options = {}) => {
 			// task's calls can be found together in the request log.
 			async loader(getAuth) {
 				const auth = await getAuth()
-				if (auth?.type !== "api" || !auth.key) return {}
+				if (auth?.type !== "api") return {}
+				const key = String(auth.key ?? "").trim()
+				if (!key) return {}
 				return {
 					baseURL: base,
-					apiKey: auth.key,
+					apiKey: key,
 					async fetch(input, init = {}) {
+						const isRequest = input instanceof Request
 						const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
-						const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+						const method = init?.method ?? (isRequest ? input.method : undefined)
+						const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined))
 						const session = headers.get(SESSION)
 						headers.delete(SESSION)
-						headers.set("authorization", `Bearer ${auth.key}`)
+						headers.set("authorization", `Bearer ${key}`)
 						if (session) headers.set("x-client-request-id", session.slice(0, 128))
 						// the body is unchanged, but the SDK's length and host are
 						// for its own request; let fetch write them
 						headers.delete("content-length")
 						headers.delete("host")
-						const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+						const signal = init?.signal ?? (isRequest ? input.signal : undefined)
+						// a Request's method and body are not in init: take them too,
+						// unless the caller overrode the method to GET or HEAD.
+						const sendsBody = method !== undefined && !/^(GET|HEAD)$/i.test(String(method))
+						const body = init?.body ?? (isRequest && sendsBody ? await input.text() : undefined)
 						try {
-							return await httpFetch(url, { ...init, headers, signal })
+							return await httpFetch(url, {
+								...init,
+								...(method !== undefined ? { method } : {}),
+								...(body !== undefined ? { body } : {}),
+								headers,
+								signal,
+							})
 						} catch (e) {
+							if (signal?.aborted || e?.name === "AbortError") throw e
 							return errorResponse(502, `无法连接 DeepRelay：${e?.message ?? e}`)
 						}
 					},
 				}
 			},
 
-			usage: async (getAuth) => {
+			// magpie hands the hook its own signal: a read the user cancelled
+			// stops the vendor read too.
+			usage: async (getAuth, _provider, { signal } = {}) => {
 				try {
-					return await usageOf(await getAuth(), base)
+					return await usageOf(await getAuth(), base, httpFetch, signal)
 				} catch (e) {
 					return { windows: [], error: e?.message ?? String(e) }
 				}
@@ -429,10 +488,10 @@ export const DeepRelayPlugin = async (_input, options = {}) => {
 
 		provider: {
 			id: PROVIDER,
-			async models(provider, { auth } = {}) {
+			async models(provider, { auth, signal } = {}) {
 				const have = provider?.models ?? {}
 				try {
-					const list = await catalog(auth?.key, base)
+					const list = await catalog(auth?.key, base, httpFetch, signal)
 					const models = modelsOf(list, base)
 					// an empty catalog is not a list: keep what magpie had
 					return Object.keys(models).length ? models : have
@@ -459,19 +518,13 @@ export const DeepRelayPlugin = async (_input, options = {}) => {
 export const _internal = {
 	keyOf,
 	baseOf,
-	costOf,
-	nameOf,
-	runtimeModel,
 	modelsOf,
 	catalog,
 	windowsOf,
 	usageOf,
-	getJSON,
 	usd,
-	pct,
-	errorResponse,
 	clearCatalog: () => catalogCache.clear(),
-	constants: { PROVIDER, API, PREFIX, SESSION, CATALOG_TTL, CATALOG_CACHE_MAX, OUTPUT_FALLBACK, defaultModels },
+	constants: { API, SESSION, OUTPUT_FALLBACK },
 }
 
 // The shape the plugin host looks for: default {id, server}. The host takes

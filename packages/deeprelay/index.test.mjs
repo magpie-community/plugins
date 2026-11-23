@@ -48,7 +48,15 @@ describe("catalog mapping", () => {
 		expect(m.capabilities.toolcall).toBe(true)
 		expect(m.capabilities.attachment).toBe(true)
 		expect(m.capabilities.input.image).toBe(true)
-		expect(Object.keys(m.variants)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+		expect(m.variants).toEqual({
+			none: { reasoningEffort: "none" },
+			minimal: { reasoningEffort: "minimal" },
+			low: { reasoningEffort: "low" },
+			medium: { reasoningEffort: "medium" },
+			high: { reasoningEffort: "high" },
+			xhigh: { reasoningEffort: "xhigh" },
+			max: { reasoningEffort: "max" },
+		})
 		expect(m.cost.input).toBeCloseTo(0.0675, 6)
 		expect(m.cost.output).toBeCloseTo(0.27, 6)
 		expect(m.cost.cache.read).toBeCloseTo(0.0014, 8)
@@ -119,7 +127,7 @@ describe("catalog mapping", () => {
 describe("usage windows", () => {
 	test("builds the plan's meters in order", () => {
 		const windows = _internal.windowsOf(SUBSCRIPTION)
-		expect(windows.map((w) => w.name)).toEqual(["月输入", "月输出", "周输入", "周输出"])
+		expect(windows.map((w) => w.name)).toEqual(["月输入", "月输出", "周输入", "周输出", "网络搜索（本月）"])
 
 		const monthly = windows[0]
 		expect(monthly.amount).toBe(18.2)
@@ -141,12 +149,26 @@ describe("usage windows", () => {
 		expect(weekly.resetsAt).toBeUndefined()
 		expect(weekly.span).toBe(7 * 86400)
 		expect(weekly.display).toBe("18.2M / 625M")
+
+		const search = windows[4]
+		expect(search.used).toBeCloseTo(0.8, 2)
+		expect(search.amount).toBe(4)
+		expect(search.limit).toBe(500)
+		expect(search.unit).toBe("次")
+		expect(search.display).toBe("4 / 500 次搜索")
+		expect(search.span).toBe(30 * 86400)
+		expect(search.aside).toBe(true)
 	})
 
 	test("leaves out a cap the deployment does not configure", () => {
 		const sub = { ...SUBSCRIPTION, quota: { ...SUBSCRIPTION.quota, weekly_input_tokens: 0 } }
 		const names = _internal.windowsOf(sub).map((w) => w.name)
-		expect(names).toEqual(["月输入", "月输出", "周输出"])
+		expect(names).toEqual(["月输入", "月输出", "周输出", "网络搜索（本月）"])
+	})
+
+	test("leaves out the search meter when the plan has none", () => {
+		const sub = { ...SUBSCRIPTION, quota: { ...SUBSCRIPTION.quota, searches_monthly: 0 } }
+		expect(_internal.windowsOf(sub).map((w) => w.name)).toEqual(["月输入", "月输出", "周输入", "周输出"])
 	})
 
 	test("says when calls were billed to the wallet", () => {
@@ -170,7 +192,7 @@ describe("usage hook", () => {
 		expect(u.until).toBe("2026-12-17T10:54:49Z")
 		expect(u.renew).toBe("auto")
 		expect(u.balance).toBe("$12.40")
-		expect(u.windows.length).toBe(4)
+		expect(u.windows.length).toBe(5)
 		expect(u.error).toBeUndefined()
 	})
 
@@ -208,14 +230,38 @@ describe("usage hook", () => {
 	test("a balance read without billing:read keeps the meters", async () => {
 		fake.state.balanceStatus = 403
 		const u = await (await hooks()).auth.usage(auth)
-		expect(u.windows.length).toBe(4)
+		expect(u.windows.length).toBe(5)
 		expect(u.balance).toBeUndefined()
 		expect(u.error).toContain("billing:read")
+	})
+
+	test("a balance HTTP failure says so", async () => {
+		fake.state.balanceStatus = 500
+		const u = await (await hooks()).auth.usage(auth)
+		expect(u.windows.length).toBe(5)
+		expect(u.balance).toBeUndefined()
+		expect(u.error).toContain("余额：HTTP 500")
 	})
 
 	test("a keyless account is told to sign in", async () => {
 		const u = await (await hooks()).auth.usage(async () => ({ type: "oauth" }))
 		expect(u.error).toContain("登录")
+	})
+
+	test("a cancelled usage read stops the vendor reads", async () => {
+		const ctl = new AbortController()
+		let calls = 0
+		const stalled = (_url, init) =>
+			new Promise((_, reject) => {
+				calls++
+				init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+			})
+		const pending = _internal.usageOf({ type: "api", key: "k" }, "https://example.test/v1", stalled, ctl.signal)
+		ctl.abort()
+		const u = await pending
+		expect(calls).toBe(2)
+		expect(u.windows).toEqual([])
+		expect(u.error).toContain("aborted")
 	})
 })
 
@@ -229,7 +275,7 @@ describe("config hook", () => {
 		expect(p.name).toBe("DeepRelay")
 		expect(p.npm).toBe("@ai-sdk/openai-compatible")
 		expect(p.api).toBe(fake.base)
-		expect(Object.keys(p.models)).toEqual(["deepseek-v4.1-flash", "glm-5.3-flash", "glm-5.3", "kimi-k3"])
+		expect(Object.keys(p.models)).toEqual(["deepseek-v4.1-flash", "glm-5.3", "kimi-k3.1-pro", "glm-5.3-flash"])
 		expect(p.models["deepseek-v4.1-flash"].id).toBe("deeprelay/deepseek-v4.1-flash")
 	})
 
@@ -257,11 +303,37 @@ describe("provider.models hook", () => {
 		expect(fake.state.requests.at(-1).headers.authorization).toBeUndefined()
 	})
 
+	test("trims a pasted key in vendor reads", async () => {
+		await (await hooks()).provider.models({ models: {} }, { auth: { type: "api", key: "k-models\n" } })
+		expect(fake.state.requests.at(-1).headers.authorization).toBe("Bearer k-models")
+	})
+
 	test("caches the catalog for a few minutes", async () => {
 		const h = await hooks()
 		await h.provider.models({ models: {} }, { auth: { type: "api", key: "k-cache" } })
 		await h.provider.models({ models: {} }, { auth: { type: "api", key: "k-cache" } })
 		expect(fake.state.requests.filter((r) => r.path === "/v1/models").length).toBe(1)
+	})
+
+	test("a cancelled catalog stops its vendor read", async () => {
+		_internal.clearCatalog()
+		const ctl = new AbortController()
+		let calls = 0
+		const stalled = (_url, init) =>
+			new Promise((_, reject) => {
+				calls++
+				init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+			})
+		const pending = _internal.catalog("k-cancel", "https://example.test/v1", stalled, ctl.signal)
+		ctl.abort()
+		let err
+		try {
+			await pending
+		} catch (e) {
+			err = e
+		}
+		expect(calls).toBe(1)
+		expect(err?.message).toContain("aborted")
 	})
 
 	test("a failed catalog keeps the list magpie had", async () => {
@@ -313,6 +385,39 @@ describe("loader", () => {
 		expect(text.trim().endsWith("data: [DONE]")).toBe(true)
 	})
 
+	test("trims a pasted key before sending it", async () => {
+		const loader = await loaderOf("sk-test\n")
+		expect(loader.apiKey).toBe("sk-test")
+		await loader.fetch(`${fake.base}/chat/completions`, { method: "POST", body: "{}" })
+		expect(fake.state.requests.at(-1).headers.authorization).toBe("Bearer sk-test")
+	})
+
+	test("forwards a Request's method and body", async () => {
+		const loader = await loaderOf()
+		const req = new Request(`${fake.base}/chat/completions`, {
+			method: "POST",
+			body: '{"model":"x"}',
+			headers: { "content-type": "application/json" },
+		})
+		await loader.fetch(req)
+		const sent = fake.state.requests.at(-1)
+		expect(sent.method).toBe("POST")
+		expect(sent.body).toBe('{"model":"x"}')
+	})
+
+	test("a cancelled request is not turned into a 502", async () => {
+		const loader = await loaderOf()
+		const ctl = new AbortController()
+		ctl.abort()
+		let err
+		try {
+			await loader.fetch(`${fake.base}/chat/completions`, { method: "POST", body: "{}", signal: ctl.signal })
+		} catch (e) {
+			err = e
+		}
+		expect(err?.name).toBe("AbortError")
+	})
+
 	test("a keyless account gets no loader", async () => {
 		const loader = await (await hooks()).auth.loader(async () => ({ type: "oauth" }))
 		expect(loader).toEqual({})
@@ -358,5 +463,7 @@ describe("helpers", () => {
 		expect(_internal.usd(12.4)).toBe("$12.40")
 		expect(_internal.usd(0.1548)).toBe("$0.15")
 		expect(_internal.usd(0.0014)).toBe("$0.0014")
+		expect(_internal.usd(-12.4)).toBe("-$12.40")
+		expect(_internal.usd(-0.0014)).toBe("-$0.0014")
 	})
 })
