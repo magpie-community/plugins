@@ -198,9 +198,14 @@ test('the reason of the service reaches the page when a name is refused', async 
   const script = await read('ui/app.js');
   const source = script.match(/      const write = async \(value\) => \{[\s\S]*?\n      \};/);
   assert.ok(source, 'the page has no way of saving a name any more');
+  // The filter of the page itself is used, not one that is written for the
+  // test: the test then pins what the page really shows, and not only the
+  // wiring that carries the reason to it.
+  const filter = script.match(/  const safeError = [\s\S]*?\n  \};/);
+  assert.ok(filter, 'the page has no filter of its own any more');
+  const safeError = new Function(`${filter[0]}\nreturn safeError;`)();
   const notes = [];
   const saveState = (id, kind, text) => { notes.push([kind, text]); };
-  const safeError = (message, fallback) => (message ? String(message) : fallback);
   const write = new Function('sendName', 'subscription', 'field', 'saveState', 'safeError',
     `${source[0]}\nreturn write;`)(
     async () => { throw new Error('名字最多 32 个字，也不能带「·」——那会把标签切成两半。'); },
@@ -215,6 +220,10 @@ test('the reason of the service reaches the page when a name is refused', async 
   // the one who has to hear it.
   assert.equal(notes.at(-1)[0], 'bad');
   assert.match(notes.at(-1)[1], /名字最多 32 个字/);
+  // A reason that speaks of the network is not shown: the filter of the page
+  // is the one that decides.
+  assert.equal(safeError('the answer of http://127.0.0.1:8790 was refused', '没有存下。'), '没有存下。');
+  assert.equal(safeError('名字最多 32 个字', '没有存下。'), '名字最多 32 个字');
 });
 
 test('turning one account of a vendor on leaves the other accounts off', async () => {
