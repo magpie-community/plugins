@@ -551,6 +551,42 @@ test('an empty kept answer does not empty the list while the vendors still hold 
       body.subscriptions.map(entry => entry.id).sort(),
       ['codex@alpha', 'codex@beta', 'qoder-cn'],
     );
+    // The refresh asked the vendors themselves, and they named the
+    // subscriptions: the flags say so.
+    assert.equal(body.named, true);
+    assert.equal(body.read, true);
+    assert.deepEqual(body.added, []);
+    assert.deepEqual(body.removed, []);
+  });
+});
+
+test('an answer of the vendors that cannot be read into a list does not pass the list that was stored for a new one', async () => {
+  let keptEmpty = false;
+  await withService({
+    '/v1/magpie/quotas?kept=1': () => ({
+      data: keptEmpty ? [] : [quotaRow('codex', 'alpha@example.com')],
+    }),
+    // The vendors answer with a row that carries a vendor but no reading of a
+    // quota at all: it cannot be turned into a card.
+    '/v1/magpie/quotas': () => ({
+      data: [{ provider: 'zhipu', user: 'beta@example.com', readAt: '2026-11-22T12:00:00.000Z' }],
+    }),
+    '/v1/magpie/usage?period=today': { calls: 10, input: 100, output: 50, cache_read: 0, cache_write: 0, providerKeys: [], accounts: [], series: [] },
+    '/v1/magpie/usage/requests?period=7d&limit=1': { calls: 10, input: 100, output: 50, cache_read: 0, by: { model: [], provider: [], agent: [] }, series: [] },
+  }, async ({ base, token }) => {
+    const first = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    assert.equal((await first.json()).ok, true);
+    keptEmpty = true;
+    const second = await post(base, '/api/v1/console/subscriptions/refresh', {}, { [TOKEN_HEADER]: token });
+    const body = await second.json();
+    // The list that was stored is still shown, but it is told as the old one
+    // it is: the answer of the vendors could not be read into a list, so it
+    // named no list, and a stored list is never passed for a new one.
+    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.named, false);
+    assert.equal(body.read, false);
+    assert.equal(body.subscriptions.length, 1);
     assert.deepEqual(body.added, []);
     assert.deepEqual(body.removed, []);
   });

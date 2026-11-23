@@ -942,8 +942,12 @@ import { pairingLeft, remainingText } from './timing.mjs';
           await sendName(subscription.id, value);
           field.saved = value;
           saveState('subNote', 'ok', '已经记下，手机上的组件下一次刷新就会跟着变。');
-        } catch {
-          saveState('subNote', 'bad', '没有存下这个名字，请再试一次。', () => { void write(value); });
+        } catch (error) {
+          // The reason of the service is told as well: a name that carries the
+          // separator of the label, or one that is too long, is refused with a
+          // reason, and the person at the keyboard is the one who has to hear
+          // it. A message that speaks of the network is not shown.
+          saveState('subNote', 'bad', safeError(error?.message, '没有存下这个名字，请再试一次。'), () => { void write(value); });
         }
       };
       // The wait is short enough not to be in the way and long enough not to

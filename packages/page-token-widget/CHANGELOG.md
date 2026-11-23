@@ -1,3 +1,29 @@
+## 0.4.23 · 2026-11-23
+
+The review of 0.4.22 is taken up: an answer of the vendors that cannot be read
+into a list of subscriptions is no longer taken for one that named them, and
+the reason of the service reaches the page that asked for it.
+
+> 0.4.22 的审核意见都办了：厂商说的话读不成一份名单时，不再被当成点了名，存着的那份
+> 名单也不会被说成新的；服务端拒绝的理由，现在真的到得了页面上。
+
+### Changed
+
+- **An answer that cannot be read into a list is no answer about the list.** The
+  vendors are asked by the refresh button, and they sometimes answer with rows
+  that cannot be turned into cards. Such an answer names no list of
+  subscriptions at all, so it is not remembered as one: the list that was
+  stored is still shown, and it is told as the old one it is. A stored list is
+  never passed for a new one.
+- **The reason of the service reaches the page.** A name that the service
+  refuses is refused for a reason — a name that carries the separator of the
+  label, or one longer than 32 characters — and that reason is what the
+  console shows now, instead of a sentence that says only that the name was
+  not saved.
+- **What "the vendors are the ones who say what there is" costs.** The list
+  follows the vendors, so a vendor that cannot be read for a moment is not in
+  the list of that round, and it comes back as a new one when it answers again.
+- **Three real behaviour tests.** They run now.
 ## 0.4.22 · 2026-11-23
 
 The review of 0.4.21 is taken up: a name that the service refuses is no

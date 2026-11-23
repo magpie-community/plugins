@@ -254,6 +254,42 @@ test('the list is not emptied while the vendors were asked a moment ago', async 
   }
 });
 
+test('an answer of the vendors that cannot be read into a list does not pass the list that was stored for a new one', async () => {
+  let kept = quotaAnswer([quotaRow('codex', 'alpha@example.com')]);
+  const gateway = await startGateway({
+    '/v1/magpie/quotas?kept=1': () => kept,
+    // The vendors answer with a row that carries a vendor but no reading of a
+    // quota at all: it cannot be turned into a card of its own.
+    '/v1/magpie/quotas': quotaAnswer([
+      { provider: 'zhipu', user: 'beta@example.com', readAt: '2026-11-13T12:00:00.000Z' },
+    ]),
+    '/v1/magpie/usage?period=today': todayAnswer,
+    '/v1/magpie/usage/requests?period=7d&limit=1': weekAnswer,
+  });
+  const local = await tempDir();
+  try {
+    const collector = collectorFor(gateway, local);
+    // The first reading works: the kept answer names a subscription.
+    await collector.refresh();
+    assert.equal(collector.overview().subscriptions.length, 1);
+    assert.equal(collector.readingInfo().named, true);
+    assert.equal(collector.readingInfo().read, true);
+    // Now the kept answer of Magpie holds nothing, and the vendors say
+    // something that cannot be read into a list.
+    kept = quotaAnswer([]);
+    await collector.refresh();
+    // The card that was there is still there — a list that was stored is never
+    // thrown away — but it is told as the old one it is: it did not come from
+    // the answer of the vendors, so it is not a new list.
+    assert.equal(collector.overview().subscriptions.length, 1);
+    assert.equal(collector.readingInfo().named, false);
+    assert.equal(collector.readingInfo().read, false);
+  } finally {
+    await gateway.close();
+    await cleanup(local);
+  }
+});
+
 test('the usage of an account belongs to that account', async () => {
   const gateway = await startGateway({
     '/v1/magpie/quotas?kept=1': quotaAnswer([

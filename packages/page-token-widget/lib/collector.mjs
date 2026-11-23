@@ -205,12 +205,13 @@ export class Collector {
       const answer = await this.request('/v1/magpie/quotas');
       const named = namedQuotaSubscriptions(answer) > 0;
       const empty = Array.isArray(answer?.data) && answer.data.length === 0;
-      // What the vendors said is remembered: an answer that names
-      // subscriptions and an answer that says there is none are both
-      // remembered as such. An answer that is neither is not remembered at
-      // all: nothing is known about the list then.
-      this.lastPlainState = named ? 'named' : empty ? 'empty' : '';
-      return answer;
+      // What the vendors said is remembered: an answer that says that there is
+      // none is remembered as such. An answer that names the subscriptions is
+      // remembered only once it has been read into a list of them: what the
+      // vendors said is not yet a list, and an answer that cannot be read
+      // must never pass for a new one.
+      this.lastPlainState = empty ? 'empty' : '';
+      return { answer, named, empty };
     } catch {
       this.lastPlainState = '';
       return null;
@@ -249,8 +250,8 @@ export class Collector {
       if (!this.plainQuotaAllowed()) return null;
       const plain = await this.plainQuota();
       if (!plain) return null;
-      const named = namedQuotaSubscriptions(plain) > 0;
-      const empty = Array.isArray(plain?.data) && plain.data.length === 0;
+      const named = plain.named;
+      const empty = plain.empty;
       if (empty && this.quotaNamed) {
         // The vendors say that they hold nothing at all, but the kept answer
         // names subscriptions: that is a reading Magpie did, and it is not
@@ -258,24 +259,38 @@ export class Collector {
         // Magpie reads the vendors itself and holds nothing either.
         return null;
       }
-      // The plain answer is the one that is used from now on, so it is the one
-      // that says whether the gateway holds anything at all.
-      this.quotaAnswered = true;
-      this.quotaNamed = named;
-      this.quotaEmpty = empty;
       if (empty) {
         // The vendors say that they hold nothing at all: the list is empty,
         // and the readings that were stored are not brought back over it.
+        this.quotaAnswered = true;
+        this.quotaNamed = false;
+        this.quotaEmpty = true;
         this.quotaRead = true;
         return { cards: [], rows: { data: [] } };
       }
       try {
-        const fresh = resolve(plain);
+        const fresh = resolve(plain.answer);
+        // The answer of the vendors is the one that is used from now on, so it
+        // is the one that says whether the gateway holds anything at all. The
+        // flags are written when the answer is a list: an answer that cannot
+        // be read into one does not name a list, and the answer of the
+        // gateway keeps the flags that belong to it.
+        this.quotaAnswered = true;
+        this.quotaNamed = named;
+        this.quotaEmpty = false;
         this.quotaRead = true;
+        // The vendors named the subscriptions and their answer could be read
+        // into a list of them: that list is the one of this moment, and it is
+        // remembered as such. An answer that names no subscription at all
+        // says nothing about the list, and nothing is remembered.
+        this.lastPlainState = named ? 'named' : '';
         return fresh;
       } catch {
-        // The plain answer holds nothing usable: what is known about the list
-        // is what the vendors said the last time they were asked.
+        // The plain answer holds nothing usable: the vendors said something
+        // that cannot be turned into a list, so they did not name a list after
+        // all. The flags of the kept answer stand: the list that is kept is
+        // the one that was stored, and it is told as the old one it is — a
+        // stored list must never be passed for a new one.
         return null;
       }
     };

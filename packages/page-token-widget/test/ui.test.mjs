@@ -194,6 +194,29 @@ test('a name that the service refuses is told to the page, and the line keeps go
   assert.deepEqual(state.display.names, { codex: 'the second one' });
 });
 
+test('the reason of the service reaches the page when a name is refused', async () => {
+  const script = await read('ui/app.js');
+  const source = script.match(/      const write = async \(value\) => \{[\s\S]*?\n      \};/);
+  assert.ok(source, 'the page has no way of saving a name any more');
+  const notes = [];
+  const saveState = (id, kind, text) => { notes.push([kind, text]); };
+  const safeError = (message, fallback) => (message ? String(message) : fallback);
+  const write = new Function('sendName', 'subscription', 'field', 'saveState', 'safeError',
+    `${source[0]}\nreturn write;`)(
+    async () => { throw new Error('名字最多 32 个字，也不能带「·」——那会把标签切成两半。'); },
+    { id: 'codex' },
+    { saved: '' },
+    saveState,
+    safeError,
+  );
+  await write('我的 · 名字');
+  // The reason of the service is the text that is shown: a name that the
+  // service refused is refused for a reason, and the person at the keyboard is
+  // the one who has to hear it.
+  assert.equal(notes.at(-1)[0], 'bad');
+  assert.match(notes.at(-1)[1], /名字最多 32 个字/);
+});
+
 test('turning one account of a vendor on leaves the other accounts off', async () => {
   const script = await read('ui/app.js');
   const source = script.match(/  const turnOn = [\s\S]*?\n  \};/);
