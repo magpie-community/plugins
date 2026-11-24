@@ -39,6 +39,7 @@ for (const [name, mocks] of [
   ["masking-drift.mjs", false],
   ["spilled-output.mjs", false],
   ["tool-result-prefill.mjs", false],
+  ["tool-step-retry.mjs", false],
   ["image-bytes.mjs", false],
   ["dsh-replay-state.mjs", false],
   ["duplicate-result-notice.mjs", false],

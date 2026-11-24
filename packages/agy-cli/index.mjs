@@ -1696,6 +1696,8 @@ class Turn {
     this.finalized = false
     this.cancelRequested = false
     this.steering = false
+    this.stepSeq = 0
+    this.lastToolStep = null
     this.promptInFlight = false
     this.activeAcpToolCalls = new Set()
     this.acpToolWaiters = []
@@ -2823,6 +2825,7 @@ class Proc {
     // distinct from the bridge's toolu_ IDs, so snapshot all in-flight ACP IDs.
     const pendingAcpIds = deliveringLiveMcp ? new Set(turn.activeAcpToolCalls) : new Set()
     turn.steering = true
+    turn.lastToolStep = null
     try {
       this.continueWith(results)
     } catch {
@@ -3250,12 +3253,14 @@ class Proc {
     const turn = this.turn
     if (!turn || turn.finalized) throw new BusyError("agy bridge: no response is waiting for these tool results")
     turn.touchClient()
+    let delivered = 0
     for (const { call, result, rawKey } of this.validateResults(results).values()) {
       clearTimeout(call.deadline)
       if (call.deferred) {
         if (!call.result) {
           call.result = result
           call.rawResultKey = rawKey
+          delivered++
           this.#deliverLate(turn, call)
         }
         continue
@@ -3263,10 +3268,34 @@ class Proc {
       if (call.mcpResponded || !call.ready || turn.done) continue
       call.result = result
       call.rawResultKey = rawKey
+      delivered++
       this.#respondMcp(call, { result })
+    }
+    if (delivered > 0) {
+      turn.lastToolStep = null
+      turn.stepSeq++
     }
     turn.arm()
     this.lastUsed = Date.now()
+    return delivered
+  }
+
+  canReplayLastToolStep(turn, req) {
+    const last = turn?.lastToolStep
+    if (!last) return null
+    if (this.dead || this.stopping || this.retiring || this.turn !== turn) return null
+    if (turn.done || turn.finalized || turn.attached || turn.steering || turn.cancelRequested) return null
+    if (staleTurnVerdict(this, turn).stale) return null
+    if (!Array.isArray(this.expectedMessages) || this.expectedMessages.length !== last.expectedLength) return null
+    if (!sameSessionScope(this, req.sessionScope)) return null
+    if (!Array.isArray(last.emittedCalls) || !last.emittedCalls.length) return null
+    for (const call of last.emittedCalls) {
+      if (call.result || call.clientSeen) return null
+      if (call.mcpResponded && (!call.deferred || call.lateDelivered)) return null
+      if (this.#selfPollCapped(turn, call)) return null
+    }
+    if (!sameCallIds(req.matches, last.callIds) || !req.requestDigest || req.requestDigest !== last.requestDigest) return null
+    return last
   }
 
   #respondMcp(call, payload) {
@@ -3285,6 +3314,7 @@ class Proc {
     }
     turn.cancelledMcpSockets.clear()
     turn.steering = false
+    turn.lastToolStep = null
     if (turn.stepsFile && turn.promptCount > 0 && !turn.stepUsageReconciled) {
       this.stepUsageTrusted = false
     }
@@ -5577,6 +5607,28 @@ function sameSessionScope(proc, sessionScope = "") {
   return (proc?.sessionScope || "") === sessionScope
 }
 
+function sameCallIds(matches, callIds) {
+  return Array.isArray(callIds) && matches.length === callIds.length &&
+    matches.every((item, i) => item.block.tool_use_id === callIds[i])
+}
+
+function toolStepRequestDigest({ trailing, matches, results, workDir, instructions, tools, model, wireModel, effort, forwardThinking, outputFormat }) {
+  return digest(stableJSON({
+    history: historyKey(trailing.history),
+    tail: historyKey(trailing.messages),
+    callIds: matches.map((m) => m.block.tool_use_id),
+    results: results.map((r) => [r.block.tool_use_id, r.result]),
+    workDir,
+    instructions,
+    tools: stableJSON(tools),
+    model,
+    wireModel,
+    effort,
+    forwardThinking,
+    outputFormat,
+  }))
+}
+
 function matchToolResults(body, blocks, sessionScope = "") {
   const direct = blocks.map(block => {
     const entry = toolCalls.get(block.tool_use_id)
@@ -7605,9 +7657,10 @@ function thinkingSignature(sessionId, thinking) {
     createHmac("sha256", THINKING_KEY).update(String(sessionId) + "\n" + thinking).digest("base64url")
 }
 
-function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body)) {
+function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body), toolResultStep = null) {
   const encoder = new TextEncoder()
   const responseContent = []
+  const emittedCalls = []
   const forwardThinking = FORWARD_THINKING && body.thinking?.type !== "disabled"
   let blockIndex = 0
   let open = null
@@ -7677,6 +7730,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         send("content_block_stop", { type: "content_block_stop", index: blockIndex })
         blockIndex++
         responseContent.push({ type: "tool_use", id: call.id, name: call.name, input: call.arguments })
+        emittedCalls.push(call)
       }
       const detach = () => {
         finished = true
@@ -7775,6 +7829,20 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
             if (finished) return
             stopMessage("tool_use", usage, false, step.usageKind === "agy_model_call")
             proc.recordAssistantResponse(turn, responseContent)
+            if (toolResultStep && emittedCalls.length > 0 && proc.turn === turn &&
+              !proc.dead && !proc.stopping && !proc.retiring &&
+              !turn.done && !turn.finalized && !turn.cancelRequested &&
+              turn.stepSeq === toolResultStep.stepSeq && Array.isArray(proc.expectedMessages)) {
+              turn.lastToolStep = {
+                callIds: toolResultStep.callIds,
+                requestDigest: toolResultStep.requestDigest,
+                expectedLength: proc.expectedMessages.length,
+                msgId,
+                wireModel: toolResultStep.wireModel,
+                emittedCalls,
+                content: structuredClone(responseContent),
+              }
+            }
             detach()
             controller.close()
             return
@@ -7971,20 +8039,108 @@ async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
   })
 }
 
-function streamResponse(proc, turn, body, signal) {
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  "Connection": "keep-alive",
+}
+
+function streamResponse(proc, turn, body, signal, toolResultStep = null) {
   turn.attach()
   const step = turn.registerResponse(body)
   const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24)
-  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step)
+  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step, toolResultStep)
   if (body.stream === false) return jsonResponseFromStream(stream, body.model, msgId)
   return new Response(stream, {
     status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
+    headers: SSE_HEADERS,
+  })
+}
+
+function replayToolStepResponse(last, body) {
+  const encoder = new TextEncoder()
+  const content = structuredClone(last.content)
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = (event, data) => controller.enqueue(encoder.encode(sseEvent(event, data)))
+      send("message_start", {
+        type: "message_start",
+        message: {
+          id: last.msgId,
+          type: "message",
+          role: "assistant",
+          model: last.wireModel,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      })
+      let index = 0
+      for (const block of content) {
+        if (block.type === "text") {
+          send("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "text", text: "" },
+          })
+          if (block.text) {
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index,
+              delta: { type: "text_delta", text: block.text },
+            })
+          }
+          send("content_block_stop", { type: "content_block_stop", index })
+          index++
+        } else if (block.type === "thinking") {
+          send("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "thinking", thinking: "" },
+          })
+          if (block.thinking) {
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index,
+              delta: { type: "thinking_delta", thinking: block.thinking },
+            })
+          }
+          if (block.signature) {
+            send("content_block_delta", {
+              type: "content_block_delta",
+              index,
+              delta: { type: "signature_delta", signature: block.signature },
+            })
+          }
+          send("content_block_stop", { type: "content_block_stop", index })
+          index++
+        } else if (block.type === "tool_use") {
+          send("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
+          })
+          send("content_block_delta", {
+            type: "content_block_delta",
+            index,
+            delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) },
+          })
+          send("content_block_stop", { type: "content_block_stop", index })
+          index++
+        }
+      }
+      send("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      send("message_stop", { type: "message_stop" })
+      controller.close()
     },
   })
+  if (body.stream === false) return jsonResponseFromStream(stream, last.wireModel, last.msgId)
+  return new Response(stream, { status: 200, headers: SSE_HEADERS })
 }
 
 // Tool results a kept session already holds (answered to its live MCP calls
@@ -8441,6 +8597,9 @@ export const AntigravityBridgePlugin = async () => {
                       rawKey: JSON.stringify(result),
                     }
                   })
+                  const directIdsMatch = matches.every((item) => item.match?.call?.id === item.block.tool_use_id)
+                  // An identical retry passes: its results are the ones already
+                  // committed, compared raw (#1475).
                   proc.validateResults(rawResults)
                   let interrupted = isInterruptedToolTurn(body)
                   let results = rawResults
@@ -8462,10 +8621,41 @@ export const AntigravityBridgePlugin = async () => {
                   // read, so a result with one takes the steer's way: the call
                   // gets the text, the next prompt the image.
                   const imageResult = proc.supportsImages && results.some((item) => resultHasImage(item.result))
-                  const directIdsMatch = matches.every((item) => item.match?.call?.id === item.block.tool_use_id)
+                  const forwardThinking = FORWARD_THINKING && body.thinking?.type !== "disabled"
+                  let requestDigest = null
+                  if (!prefillAfterResults && !interrupted && !imageResult && directIdsMatch) {
+                    try {
+                      const outputFormat = stableJSON(outputFormatReminder(body))
+                      requestDigest = toolStepRequestDigest({
+                        trailing,
+                        matches,
+                        results,
+                        workDir,
+                        instructions,
+                        tools,
+                        model,
+                        wireModel: body.model,
+                        effort: selection.effort,
+                        forwardThinking,
+                        outputFormat,
+                      })
+                    } catch {
+                      requestDigest = null
+                    }
+                  }
                   const historyMatches = directIdsMatch
-                    ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
-                    : proc.matchesHistory(trailingMessages(body).history)
+                    ? proc.matchesPendingTurnHistory(turn, trailing.history)
+                    : proc.matchesHistory(trailing.history)
+                  if (!historyMatches && !prefillAfterResults && !interrupted && !imageResult && directIdsMatch) {
+                    const replay = proc.canReplayLastToolStep(turn, { sessionScope, matches, requestDigest })
+                    if (replay) {
+                      turn.touchClient()
+                      turn.arm()
+                      proc.lastUsed = Date.now()
+                      logBridgeEvent(proc, turn, "replay_tool_step", "idempotent_retry", acquireOpts, { calls: replay.emittedCalls.length })
+                      return replayToolStepResponse(replay, body)
+                    }
+                  }
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
                   // cancelled, and the steer goes in as the next prompt.
@@ -8509,14 +8699,25 @@ export const AntigravityBridgePlugin = async () => {
                     proc.abandonTurn(turn)
                     await proc.stop()
                   } else {
+                    let toolResultStep = null
                     if (!proc.dead && !turn.done) {
                       // A tool catalog that lost or changed tools applies to the
                       // rest of this turn; a model change applies from the next prompt.
                       await proc.updateTools(tools)
-                      proc.continueWith(results)
-                      proc.recordToolResults(turn, body.messages)
+                      const delivered = proc.continueWith(results)
+                      if (delivered > 0) {
+                        proc.recordToolResults(turn, body.messages)
+                        if (directIdsMatch && requestDigest) {
+                          toolResultStep = {
+                            stepSeq: turn.stepSeq,
+                            callIds: matches.map((item) => item.block.tool_use_id),
+                            requestDigest,
+                            wireModel: body.model,
+                          }
+                        }
+                      }
                     }
-                    return streamResponse(proc, turn, body, init.signal)
+                    return streamResponse(proc, turn, body, init.signal, toolResultStep)
                   }
                 }
                 const held = pool.get(convKey)
