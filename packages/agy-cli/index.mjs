@@ -1,4 +1,4 @@
-import { agyCandidates, childEnv, spawnAgy, windowsMcpShim, windowsNcBuild, windowsTreeKill } from "./platform.mjs"
+import { agyCandidates, childEnv, holdsHome, spawnAgy, windowsMcpShim, windowsNcBuild, windowsTreeKill } from "./platform.mjs"
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { once } from "node:events"
@@ -2310,7 +2310,11 @@ class Proc {
       "--log-file", this.logPath,
       "--ide-mcp-port", String(controlServer.address().port),
     ]
-    if (this.workDir) args.push("--add-dir", this.workDir)
+    // never the home folder or one above it: agy loads what is in it as the
+    // workspace's customizations, inside the same 20k budget as the
+    // client's tools, and drops the biggest of those (Bash, Read) to fit
+    // (plugins#1405). The model is still told where the tools run.
+    if (this.workDir && !holdsHome(this.workDir)) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
     args.push(...await telemetryArgs(this.agyPath))
     const own = await geminiDirArgs(this.agyPath)
