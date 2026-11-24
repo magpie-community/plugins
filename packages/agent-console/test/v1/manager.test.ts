@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,28 @@ describe("AgentManager", () => {
     const evs = await events();
     const users = evs.filter((e) => e.type === "user_message").map((e) => (e as { text: string }).text);
     expect(users).toEqual(["/slow", "第二条"]);
+  }, 25000);
+
+  it("does not publish idle between a completed turn and its queued successor (#585)", async () => {
+    const idleQueues: number[] = [];
+    const publish = gw.publish.bind(gw);
+    const spy = vi.spyOn(gw, "publish").mockImplementation((channel, data) => {
+      const event = data as { type?: string; status?: string };
+      if (channel === `thread:${threadId}` && event.type === "status" && event.status === "idle") {
+        idleQueues.push(manager.runtimeInfo(threadId)?.queue.length ?? 0);
+      }
+      publish(channel, data);
+    });
+    try {
+      await manager.send(threadId, { text: "第一条", clientId: "c-first" });
+      expect(await manager.send(threadId, { text: "第二条", clientId: "c-next" })).toBe("queued");
+      await waitFor(async () => (await events()).filter((e) => e.type === "turn_ended").length === 2 &&
+        (await threads.get(threadId))?.status === "idle", 20000);
+      expect((await events()).filter((e) => e.type === "user_message").map((e) => (e as { clientId?: string }).clientId))
+        .toEqual(["c-first", "c-next"]);
+      // Idle is observable only once all queued work has completed, never before queue.shift().
+      expect(idleQueues).toEqual([0]);
+    } finally { spy.mockRestore(); }
   }, 25000);
 
   it("steer: steers directly while running", async () => {
