@@ -373,6 +373,29 @@ function traeHost(h) {
   }
 }
 
+// namedHost is a host as a sign-in's callback names it, read as https when
+// it names no scheme: Trae CN's enterprise console names its own as a bare
+// hostname ("console.enterprise.trae.cn"), and that seat's sign-in was
+// kept with no host at all and chatted on the consumer gateway, which
+// serves it no c-* model and answers glm-5.4 with 1005 (plugins#1516). A
+// value with a scheme is kept as named, so http and the rest are still
+// refused by traeHost.
+function namedHost(h) {
+  const t = String(h ?? "").trim()
+  return t && !/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? "https://" + t : t
+}
+
+// saasToken: the access token is an enterprise (SaaS) seat's, as its JWT's
+// scope says ({"scope":"saas","tenant_id":"tob_online",…}, plugins#1516)
+function saasToken(token) {
+  try {
+    const p = JSON.parse(Buffer.from(String(token).split(".")[1], "base64url").toString())
+    return String(p?.scope ?? "").toLowerCase() === "saas"
+  } catch {
+    return false
+  }
+}
+
 // authHostOf is the host a sign-in named for its tokens, when it named one
 // on the site's own domain (an enterprise's may differ from the consumer
 // one); "" when it named none, and the site's own is used
@@ -551,9 +574,11 @@ function fromAuth(auth, site) {
     machineId: auth.machineId || "",
     devicePublicKey: auth.devicePublicKey || "",
     devicePrivateKey: auth.devicePrivateKey || "",
-    api: auth.api || "",
+    // a seat kept with no host (before 0.2.54 a console naming its host bare
+    // left both out, plugins#1516) is its console's, as its token says
+    api: auth.api || (!auth.host && saasToken(auth.access) ? traeHost(namedHost(site.consoleHost)) : ""),
     region: site.regionOf(auth),
-    host: auth.host || "",
+    host: auth.host || (!auth.api && saasToken(auth.access) ? traeHost(namedHost(site.consoleHost)) : ""),
     authHost: authHostOf(auth.authHost, site),
     account: auth.account && typeof auth.account === "object" ? auth.account : {},
     ...(auth.consoleChat === false ? { consoleChat: false } : {}),
@@ -760,7 +785,9 @@ async function signedIn(q, device, site, { enterprise = false } = {}) {
   const info = parseJSON(q.get("userInfo"))
   // the enterprise console's page names its Api host; one that names none
   // still names its console, which is the seat's host
-  const host = q.get("host") || info.Host || (enterprise ? q.get("consoleHost") || "" : "")
+  // (bare or not: namedHost), the first that is a Trae host
+  const named = [q.get("host"), info.Host, ...(enterprise ? [q.get("consoleHost"), site.consoleHost] : [])]
+  const host = named.map((h) => traeHost(namedHost(h))).find(Boolean) ?? ""
   let s = {
     token: jwt.Token ?? jwt.token ?? "",
     refresh: jwt.RefreshToken ?? jwt.refreshToken ?? q.get("refreshToken") ?? "",

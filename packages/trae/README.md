@@ -483,7 +483,12 @@ page the realm bills on:
   WorkBuddy's.
 
 **Trae CN, an enterprise (SaaS) account** — Trae's enterprise console, which
-bills in yuan rather than in the credits the consumer page counts:
+bills in yuan rather than in the credits the consumer page counts. The
+console's callback names its host bare (`console.enterprise.trae.cn`);
+since 0.2.54 that is read as https, and an enterprise sign-in that names no
+usable host keeps its console. A seat kept with no host before then (its
+token's scope is `saas`) is read as its console's with no new sign-in
+(plugins#1516):
 
 - **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
   for the allowance and `…/get_user_model_usage` for the spend, both POST
