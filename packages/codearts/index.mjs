@@ -4089,13 +4089,35 @@ async function readOfficeAceTokenRates(cred, fetcher) {
   return map
 }
 
+/**
+ * The refusal in the gateway's own words: `HTTP 401 (APIG.1009): {…}`, one
+ * line, bounded. A refused Basic pair is the case this exists for (#1247).
+ */
+function officeAceRefusalReason(status, text) {
+  let code = ""
+  try {
+    const j = JSON.parse(text)
+    code = j?.error_code ?? j?.error?.code ?? ""
+  } catch {
+    code = ""
+  }
+  const said = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 160)
+  return `OfficeAce catalog read failed: HTTP ${status}${code ? ` (${code})` : ""}${said ? `: ${said}` : ""}`
+}
+
 /** `GET {maas}/v2/models`, names carrying the account's multiplier (`· x1.5`). */
 async function fetchOfficeAceCatalog(cred, fetcher = fetch) {
   const r = await fetcher(`${officeAceMaasBase(cred)}${OA_MODELS_PATH}`, {
     headers: { Accept: "application/json", Authorization: basicAuthorization(cred) },
     signal: AbortSignal.timeout(OA_TOKEN_TIMEOUT_MS),
   })
-  if (!r.ok) throw new Error(`OfficeAce catalog read failed: HTTP ${r.status}`)
+  if (!r.ok) {
+    // Say what the gateway said. On a refused Basic pair this is `APIG.1009`
+    // ("AppKey or AppSecret is invalid") — the one line that tells a user this
+    // is not their sign-in (#1247).
+    const text = await r.text().catch(() => "")
+    throw Object.assign(new Error(officeAceRefusalReason(r.status, text)), { status: r.status })
+  }
   const body = await r.json().catch(() => null)
   const rows = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : []
   const rates = await fetchOfficeAceTokenRates(cred, fetcher).catch(() => new Map())
