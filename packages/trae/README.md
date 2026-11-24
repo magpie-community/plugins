@@ -120,18 +120,22 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `solo_agent_lite`; `solo_coder`, SOLO's coder roster). If Trae answers
     4001, 4023 or 1005, the plugin tries the others once and remembers which
     one worked.
-  - `session_id` is the request's own turn id (the same as `request_id`),
-    fresh on every request. Trae applies its prompt cache and books a turn's
-    settled charge under the session a request carries: reading them back with
-    a reused conversation id returns the whole conversation's accumulated
-    total (a 220k-token prompt once showed a 27-million-token cache read),
-    not this turn's split. A fresh one per turn gives the per-turn cache read
-    and credits magpie needs. The conversation is not lost: its full history
-    travels in `messages`. The conversation id magpie (or OpenCode) names the
-    request by, else the chat's first user message with the account, is still
-    derived as a salted hash (`MAGPIE_TRAE_SESSION_SALT` names the salt, made
-    once in `~/.config/magpie/trae-session-salt`) and used as the fallback
-    when a caller supplies no turn id.
+  - `session_id` is the reply's own turn id (for one ask, the same as
+    `request_id`), fresh on every reply. Trae applies its prompt cache and
+    books a reply's settled charge under the session a request carries:
+    reading them back with a reused conversation id returns the whole
+    conversation's accumulated total (a 220k-token prompt once showed a
+    27-million-token cache read), not this turn's split. A fresh one per
+    reply gives the per-reply cache read and credits magpie needs. An
+    enterprise reply Trae cut is asked on in rounds (0.2.49): those asks
+    carry their own `request_id` but the reply's one `session_id`, so the
+    record read back is the whole reply's. The conversation is not lost: its
+    full history travels in `messages`. The conversation id magpie (or
+    OpenCode) names the request by, else the chat's first user message with
+    the account, is still derived as a salted hash
+    (`MAGPIE_TRAE_SESSION_SALT` names the salt, made once in
+    `~/.config/magpie/trae-session-salt`) and used as the fallback when a
+    caller supplies no session id.
 - **Headers:** TRAE SOLO CN 0.1.69's (`x-ide-version`/`x-app-version`
   0.1.69, version code 20260917; Trae offers a model only to clients new
   enough for it): `Authorization: Cloud-IDE-JWT …`, `X-Cloudide-Token`,
@@ -157,11 +161,13 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     magpie's ledger reads the singular `credit`, as kiro reports it
     (yetone/magpie#4328), and its
     `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
-    named no cache read (0.2.51). A cache count the stream did name wins;
-    a failed lookup leaves the answer unchanged. The host is
+    named no cache read (0.2.53). A cache count the stream did name wins;
+    a failed lookup leaves the answer unchanged. A reply Trae cut is asked
+    on in rounds, all of them under the one session id, so the record read
+    back is the whole reply's (0.2.53). The host is
     `TRAE_USAGE_API_HOST` when set, else the realm's own.
     Each model also carries the matching models.dev price as `cost`
-    (`{input, output, cache}` in USD per million tokens, 0.2.51). magpie
+    (`{input, output, cache}` in USD per million tokens, 0.2.53). magpie
     writes a request's `cost_usd` from that price and the tokens served:
     a Trae name like `deepseek-v4.1-flash-max` has no models.dev entry of
     its own, so without it the cost column was blank. The `-max` twin uses
@@ -300,7 +306,27 @@ arguments not whole JSON) is not sent as a call: the reply ends with
 `length` and the text before the call (plugins#1366, a call cut at 2000
 went out as `tool_calls` and the agent stopped on it). A whole call in a
 cut reply goes out as a call; a stream holds back only a call whose
-arguments aren't whole until it ends. A model with a `__max` model and
+arguments aren't whole until it ends. Trae CN 3.4.22's own llm_utils_chat
+requests carry no field that lifts the 2000, so since 0.2.49 an
+enterprise model's reply that Trae cut at exactly 2000 with text written
+and no whole call is asked on: the same request, session and function
+again, the text so far as the assistant's turn and a short ask to go on
+where it stopped after it, with what is left of the agent's limit as
+`max_tokens`. The answers go out as one reply, in a body or a stream, its
+usage summed, its end the last answer's. A cut call is left out and the
+next answer writes it. Asking stops at a whole call, at the agent's limit,
+after 16 answers, or when a next ask fails (the reply then ends cut, with
+`length`). A cut reply with only reasoning, or a call with nothing written
+before it, is not asked on. Since 0.2.50 a later answer that Trae cut in
+the model's reasoning or in a call, with no text of its own, is asked on
+too, from the text the earlier answers wrote (a reasoning model asked to go
+on reasons again first, and its round 2 was 7683 characters of reasoning
+cut at 2000), up to 3 such answers in a row. While a next ask waits, the
+stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
+sent, so the agent doesn't take the pause for a dead stream; with
+`MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
+`wait_ms=`. **Not verified with a real enterprise seat**,
+nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3

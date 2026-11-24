@@ -3257,3 +3257,116 @@ test("campaign: the balance window says how much lapses and when, with no second
     campCleanup(realFetch, dir)
   }
 })
+
+// The model list comes from the managed gateway, as the official client
+// (AutoClaw 2.5.3, XAn.load/TLu) reads it. The fixture's shape is the one that
+// client's parser accepts; no live catalog body was captured (no account).
+const givenRows = (providerId) => Object.fromEntries(Object.entries(_internal.autoclawModels(providerId)).map(([id, m]) => [id, {
+  ...m, id, providerID: providerId, api: { id: m.id, url: "https://example.invalid", npm: "@ai-sdk/openai-compatible" },
+  status: "active", headers: {}, options: {},
+  capabilities: { temperature: true, reasoning: true, attachment: !!m.attachment, toolcall: true, input: { text: true, image: !!m.attachment }, output: { text: true } },
+}]))
+
+test("models() reads the gateway's catalog and keeps what the official client would show", async () => {
+  const realFetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (input, init) => {
+    seen.push({ url: String(input), headers: new Headers(init?.headers), method: init?.method })
+    return new Response(JSON.stringify({
+      models: [
+        "zai_auto",
+        { id: "zaicoding_glm-5.3", name: "GLM-5.3", reasoning: true, input: ["text"], contextWindow: 1048576, maxTokens: 307200 },
+        { id: "zai_glm-next", name: "GLM Next", api: "openai-completions", reasoning: true, input: ["text", "image"], contextWindow: 1048576, maxTokens: 131072, reasoningLevels: ["off", "low", "high"] },
+        { id: "zai_old-only", name: "Old", metadata: { gates: [{ effect: "hidden", when: { all: [{ dimension: "clientVersion", lt: "9.0.0" }] } }] } },
+        { id: "zai_members", name: "Members", metadata: { gates: [{ effect: "disabled", dimension: "entitlement", requires: "member" }] } },
+        { id: "zai_claude-wire", name: "Anthropic wire", api: "anthropic-messages" },
+        "zai_auto",
+      ],
+    }), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  try {
+    const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const given = givenRows("autoclaw-cn")
+    const rows = await hooks.provider.models({ models: given }, { auth: { type: "oauth", access: "Bearer tok-cn", refresh: "r" } })
+    expect(seen.length).toBe(1)
+    expect(seen[0].url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw-model-config")
+    expect(seen[0].method).toBe("GET")
+    expect(seen[0].headers.get("authorization")).toBe("Bearer tok-cn")
+    expect(seen[0].headers.get("x-channel")).toBe("AutoClaw26")
+    expect(seen[0].headers.get("x-version")).toBe("2.1.0")
+    expect(seen[0].headers.get("x-auth-sign")).toMatch(/^[0-9a-f]{32}$/)
+    expect(Object.keys(rows)).toEqual(["zai_auto", "zaicoding_glm-5.3", "zai_glm-next", "zai_members"])
+    // a bare id keeps the static row's facts
+    expect(rows.zai_auto.limit).toEqual(given.zai_auto.limit)
+    expect(rows.zai_auto.attachment).toBe(true)
+    // a new model is built on a given row: same api url and npm, its own id
+    expect(rows["zai_glm-next"].api).toEqual({ id: "zai_glm-next", url: "https://example.invalid", npm: "@ai-sdk/openai-compatible" })
+    expect(rows["zai_glm-next"].name).toBe("GLM Next")
+    expect(rows["zai_glm-next"].limit).toEqual({ context: 1048576, output: 131072 })
+    expect(rows["zai_glm-next"].capabilities.input.image).toBe(true)
+    expect(Object.keys(rows["zai_glm-next"].variants)).toEqual(["low", "high"])
+    expect(rows["zaicoding_glm-5.3"].capabilities.attachment).toBe(false)
+  } finally { globalThis.fetch = realFetch }
+})
+
+test("models() asks the overseas gateway for the overseas provider", async () => {
+  const realFetch = globalThis.fetch
+  let url, headers
+  globalThis.fetch = async (input, init) => {
+    url = String(input); headers = new Headers(init?.headers)
+    return new Response(JSON.stringify({ models: ["zai_auto", "zai_glm-5.3-flash"] }), { status: 200 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const rows = await hooks.provider.models({ models: givenRows("autoclaw") }, { auth: { type: "oauth", access: "tok-os" } })
+    expect(url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw-model-config")
+    expect(headers.get("x-channel")).toBe("official")
+    expect(headers.get("x-lang")).toBe("en")
+    expect(headers.get("authorization")).toBe("Bearer tok-os")
+    expect(Object.keys(rows)).toEqual(["zai_auto", "zai_glm-5.3-flash"])
+  } finally { globalThis.fetch = realFetch }
+})
+
+test("models() keeps the static table when the catalog can't be read", async () => {
+  const realFetch = globalThis.fetch
+  const answers = [
+    () => new Response(JSON.stringify({ code: 401001, message: "Invalid token" }), { status: 401 }),
+    () => new Response("<html>", { status: 200 }),
+    () => new Response(JSON.stringify({ code: 0, data: { models: ["zai_auto"] } }), { status: 200 }),
+    () => new Response(JSON.stringify({ models: [] }), { status: 200 }),
+    () => new Response(JSON.stringify({ models: ["zai_auto", { id: "x", api: "gemini" }] }), { status: 200 }),
+    () => new Response(JSON.stringify({ models: Array.from({ length: 129 }, (_, i) => `m${i}`) }), { status: 200 }),
+    () => { throw new TypeError("fetch failed") },
+  ]
+  let calls = 0
+  try {
+    for (const answer of answers) {
+      globalThis.fetch = async () => { calls++; return answer() }
+      const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+      const given = givenRows("autoclaw-cn")
+      expect(await hooks.provider.models({ models: given }, { auth: { type: "oauth", access: "t" } })).toBe(given)
+    }
+    expect(calls).toBe(answers.length)
+    // no sign-in: no request at all
+    globalThis.fetch = async () => { calls++; return new Response("{}") }
+    const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const given = givenRows("autoclaw-cn")
+    expect(await hooks.provider.models({ models: given }, {})).toBe(given)
+    expect(await hooks.provider.models({ models: given })).toBe(given)
+    expect(calls).toBe(answers.length)
+  } finally { globalThis.fetch = realFetch }
+})
+
+test("catalog gates are judged like the official client's", () => {
+  const ctx = { version: "2.1.0", channel: "domestic" }
+  const { gatedOut } = _internal
+  expect(gatedOut(undefined, ctx)).toBe(false)
+  expect(gatedOut([{ effect: "hidden", when: { all: [{ dimension: "clientVersion", lt: "2.2.0" }] } }], ctx)).toBe(true)
+  expect(gatedOut([{ effect: "hidden", when: { all: [{ dimension: "clientVersion", lt: "2.1.0" }] } }], ctx)).toBe(false)
+  expect(gatedOut([{ effect: "hidden", dimension: "clientVersion", gte: "2.0.0" }], ctx)).toBe(true)
+  expect(gatedOut([{ effect: "hidden", dimension: "channel", in: ["overseas"] }], ctx)).toBe(false)
+  expect(gatedOut([{ effect: "disabled", dimension: "channel", notIn: ["overseas"] }], ctx)).toBe(true)
+  expect(gatedOut([{ effect: "hidden", dimension: "entitlement", missing: "codingPlan" }], ctx)).toBe(false)
+  expect(gatedOut([{ effect: "hidden", dimension: "somethingNew" }], ctx)).toBe(true)
+  expect(gatedOut([{ effect: "other", dimension: "somethingNew" }], ctx)).toBe(false)
+})

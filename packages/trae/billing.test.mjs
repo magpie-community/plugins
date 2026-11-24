@@ -113,3 +113,42 @@ test("a commercial record that cannot be read leaves the answer alone", async ()
   expect(usage.credits).toBeUndefined()
   expect(usage.magpie_cache_unknown).toBe(true)
 })
+
+// an enterprise built-in model, as its list gives it: the only reply Trae
+// cuts at 2000 and asks on (continued), which makes one reply several asks
+const ENT = { config_name: "AI/acme-qwen", usage: "chat_completion", config_source: 2, is_preset: false, is_custom_model: true, status: true,
+  display_config: { display_name: "Acme Qwen", is_custom_model: true },
+  model_detail_list: [{ model_name: "acme-qwen", provider: "AI", max_tokens: 32768 }] }
+
+test("a reply asked on in rounds names one session, and its bill is read once", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [{ function: "chat_v3", config_info_list: [ENT] }] }))
+  const asks = []
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    asks.push(r.json)
+    return asks.length === 1
+      ? sse([["output", { response: "first half " }], ["done", { finish_reason: "stop", usage: { prompt_tokens: 100, completion_tokens: 2000 } }]])
+      : sse([["output", { response: "second half" }], ["done", { finish_reason: "stop", usage: { prompt_tokens: 20, completion_tokens: 40 } }]])
+  })
+  const billed = []
+  f.route("POST /api/v1/commercial/get_session_usage", (r) => {
+    billed.push(r.json.session_id)
+    return json(BILL)
+  })
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: ENT.config_name, max_tokens: 32768, messages: [{ role: "user", content: "hi" }] }) })
+  const body = await res.json()
+  expect(body.choices[0].message.content).toBe("first half second half")
+  // one reply, two requests: each names itself, and the reply names both
+  expect(asks.length).toBe(2)
+  expect(asks[1].request_id).not.toBe(asks[0].request_id)
+  expect(asks[1].session_id).toBe(asks[0].session_id)
+  // the record is the reply's, so it is read once, by that session
+  expect(billed).toEqual([asks[0].session_id])
+  expect(body.usage.credit).toBe(0.12)
+  expect(body.usage.prompt_tokens_details.cached_tokens).toBe(4096)
+  // and the reply's tokens are both asks'
+  expect(body.usage.completion_tokens).toBe(2040)
+})

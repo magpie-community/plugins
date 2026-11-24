@@ -19,6 +19,8 @@
 - `zai_glm-5.3-flash`（极速推理，支持 reasoning variants）
 - `zaicoding_glm-5.3`（GLM-5.3 编程专项，支持 reasoning variants）
 
+模型列表跟官方客户端（AutoClaw 2.5.3）一样，从上游托管网关实时读取（`GET /autoclaw-proxy/proxy/autoclaw-model-config`；国际版走 `autoglm-api.autoglm.ai`，国内版走 `autoglm-acceleration-api.zhipuai.cn`）：上游新增的模型（如新版 GLM）登录后会自动出现，不必等插件发版；按客户端版本或渠道隐藏的模型、Anthropic 协议的模型不列出。读不到时（未登录、网络失败、401、返回格式不对）沿用上面这 4 个模型。
+
 > 注：旧版中的 `zai_glm-5-turbo` 以及豆包 DeepSeek 映射 `tdpsk_deepseek-v4-flash-202605`、`tdpsk_deepseek-v4-pro-202606` 已被上游下线（调用均返回 `400 非法模型`），本版本已从模型列表中移除。
 
 ## 怎么登录
