@@ -40,7 +40,9 @@
     let focusSet = null;
     let drag = null;
     let pan = null;
-    let suppressClick = false;
+    let panMoved = false;
+    let swallowClick = 0;
+    let lastClick = { id: "", at: 0 };
 
     const width = () => svg.clientWidth || 900;
     const height = () => svg.clientHeight || 600;
@@ -384,26 +386,11 @@
             moved: false,
           };
           node.fixed = true;
-          suppressClick = false;
           svg.setPointerCapture?.(event.pointerId);
         });
 
-        group.addEventListener("click", (event) => {
-          event.stopPropagation();
-          if (suppressClick) {
-            suppressClick = false;
-            return;
-          }
-          select(selected === node.id ? null : node.id);
-          onSelect?.(selected ? node : null);
-        });
-
-        group.addEventListener("dblclick", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onFocus?.(node);
-          focus(node.id);
-        });
+        // 单击/双击都在 pointerup 里判定：pointer capture 会把原生 click 重定向到 svg，
+        // 靠 click 监听会时灵时不灵。
 
         node.el = group;
         nodeLayer.appendChild(group);
@@ -529,8 +516,9 @@
     svg.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       if (event.target.closest(".node") || event.target.closest(".edge-hit")) return;
-      event.preventDefault();
       dropSelection();
+      swallowClick = 0;
+      panMoved = false;
       pan = {
         x: event.clientX,
         y: event.clientY,
@@ -550,7 +538,6 @@
         drag.node.vy = 0;
         if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 3) {
           drag.moved = true;
-          suppressClick = true;
         }
         reheat(0.35);
         return;
@@ -558,11 +545,17 @@
       if (pan) {
         transform.x = pan.tx + (event.clientX - pan.x);
         transform.y = pan.ty + (event.clientY - pan.y);
+        if (Math.hypot(event.clientX - pan.x, event.clientY - pan.y) > 3) panMoved = true;
         applyTransform();
       }
     });
 
     function endPointer(event) {
+      const node = drag?.node || null;
+      const moved = Boolean(drag?.moved);
+      const wasPan = Boolean(pan);
+      const panDrag = panMoved;
+
       if (drag) {
         drag.node.fixed = false;
         drag = null;
@@ -570,6 +563,7 @@
       }
       if (pan) {
         pan = null;
+        panMoved = false;
         svg.classList.remove("panning");
       }
       try {
@@ -577,17 +571,38 @@
       } catch {
         /* 没有捕获 */
       }
+
+      if (event.type !== "pointerup" || event.button !== 0) return;
+
+      // 背景被拖动过：这次松手不算点击，别把视图复位掉。
+      if (wasPan) {
+        if (panDrag) swallowClick = Date.now() + 400;
+        return;
+      }
+      if (!node || moved) return;
+
+      swallowClick = Date.now() + 400;
+      const now = Date.now();
+      if (lastClick.id === node.id && now - lastClick.at < 360) {
+        lastClick = { id: "", at: 0 };
+        onFocus?.(node);
+        focus(node.id);
+        return;
+      }
+      lastClick = { id: node.id, at: now };
+      select(selected === node.id ? null : node.id);
+      onSelect?.(selected ? node : null);
     }
 
     svg.addEventListener("pointerup", endPointer);
     svg.addEventListener("pointercancel", endPointer);
 
     svg.addEventListener("click", (event) => {
-      if (event.target.closest(".node") || event.target.closest(".edge-hit")) return;
-      if (suppressClick) {
-        suppressClick = false;
+      if (swallowClick && Date.now() < swallowClick) {
+        swallowClick = 0;
         return;
       }
+      if (event.target.closest(".node") || event.target.closest(".edge-hit")) return;
       reset();
       onBackground?.();
     });
