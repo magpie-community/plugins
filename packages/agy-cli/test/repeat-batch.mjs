@@ -2469,3 +2469,28 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+// plugins#1405: with the home directory added to its workspace, agy loads
+// what is there as customizations sharing the tools' budget and drops the
+// client's largest tools (Bash, Read). A home working directory is still
+// where the client's tools run, but agy isn't given it as a workspace.
+test("plugins#1405: a home working directory is not added to agy's workspace; a folder in it is", async () => {
+  for (const [dir, added] of [["home", false], ["project", true]]) {
+    await withKit({}, async (kit) => {
+      const workDir = dir === "home" ? kit.home : path.join(kit.home, "project")
+      fs.mkdirSync(workDir, { recursive: true })
+      kit.defaultPrompt = async (agent) => {
+        await agent.text("ok")
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `workdir-${dir}` },
+        system: `Working directory: ${workDir}`, messages: [{ role: "user", content: "hi" }] })))
+      assert.equal(parsed.error, null)
+      const args = kit.acpSpawns.at(-1).args
+      const at = args.indexOf("--add-dir")
+      assert.equal(at >= 0, added, `${dir}: ${args.join(" ")}`)
+      if (added) assert.equal(args[at + 1], workDir)
+      assert.ok(prompts(kit)[0].includes(JSON.stringify(workDir)), "the model is still told where the tools run")
+    })
+  }
+})
