@@ -156,6 +156,9 @@ const CREDIT_BATCHES_TTL_MS = 10 * 60 * 1000
 const OPS_DELIVERY_URL = `${SNAP_HOST}/v1/ops/delivery?channel=IDE`
 const OPS_CLAIM_URL = `${SNAP_HOST}/v1/ops/claim`
 const OPS_CONFIRM_URL = `${SNAP_HOST}/v1/ops/confirm`
+// The welfare page's daily login event: a USER_LOGIN campaign is not claimable
+// until it has been reported.
+const OPS_TRIGGER_URL = `${SNAP_HOST}/v1/ops/events/trigger`
 const OPS_CHANNEL = "IDE"
 const DAILY_CHECKIN_TYPE = "USER_LOGIN"
 // A campaign of that type is a daily check-in when its title says so; the list
@@ -2125,6 +2128,19 @@ const sameCampaign = (a, b) => String(a?.campaignId) === String(b?.campaignId)
 const INELIGIBLE_CLAIM = /需要先通过触发接口激活|未参与|未报名|无资格/
 const isIneligibleClaim = (failure) => INELIGIBLE_CLAIM.test(String(failure?.message ?? ""))
 
+/**
+ * Report the welfare page's daily `user.login`, the event a USER_LOGIN campaign
+ * waits for before it becomes claimable. Best effort: a failed report leaves the
+ * list as it was.
+ */
+async function triggerDailyLogin(cred, fetcher) {
+  await snapRequest("POST", OPS_TRIGGER_URL, cred, fetcher, {
+    triggerEvent: "user.login",
+    channel: OPS_CHANNEL,
+    idempotentKey: `login-${beijingDay().replace(/-/g, "")}`,
+  })
+}
+
 // ---- credit batches and when they lapse ------------------------------------
 
 const PACKAGE_TYPE_METRICS = {
@@ -2317,8 +2333,16 @@ function grantExpiry(benefit, at) {
  * answer's own `unconfirmed` is one to keep there.
  */
 async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
-  const listed = await dailyCampaigns(cred, fetcher)
+  let listed = await dailyCampaigns(cred, fetcher)
   if (listed.error) return { outcome: "failed", message: listed.error }
+  // A USER_LOGIN campaign whose daily login event has not been reported yet is
+  // listed as not claimable. Report it once, then read the list again — this is
+  // what the IDE's welfare pane does before it claims.
+  if (listed.items.some((it) => !it.claimable && !isClaimedToday(it) && asRecord(it.extra).triggerEvent === "user.login")) {
+    await triggerDailyLogin(cred, fetcher)
+    listed = await dailyCampaigns(cred, fetcher)
+    if (listed.error) return { outcome: "failed", message: listed.error }
+  }
   const items = listed.items
   if (items.length === 0) return { outcome: "inactive", message: "当前没有每日领取活动" }
 
@@ -3665,7 +3689,7 @@ async function persistCredential(client, account, cred) {
 export const _internal = {
   PROVIDER, NPM, CATALOG, CONTEXT_WINDOWS, BENEFIT_MODEL_FALLBACK, MAX_OUTPUT_TOKENS,
   CHAT_API_BASE, SNAP_MODEL_BUILTIN_URL, SNAP_STATISTICS_URL, OPENGW_GATEWAY_CONFIG_URL, BENEFIT_BALANCE_URL,
-  OPS_DELIVERY_URL, OPS_CLAIM_URL, OPS_CONFIRM_URL, SESSION_LIMIT_ERROR, ACCOUNT_MAX_INFLIGHT,
+  OPS_DELIVERY_URL, OPS_CLAIM_URL, OPS_CONFIRM_URL, OPS_TRIGGER_URL, SESSION_LIMIT_ERROR, ACCOUNT_MAX_INFLIGHT,
   STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
   firstOf, asRecord, safeJson, num, clamp, prettify, normalizeModelId, upstreamModelId, formatCredit,
   b64url, utf8, sha256Hex, hmacSha256Hex,
