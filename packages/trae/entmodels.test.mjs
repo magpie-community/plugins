@@ -548,3 +548,42 @@ test("addUsage counts both asks", () => {
   expect(_internal.addUsage(null, b)).toBe(b)
   expect(_internal.addUsage(a, null)).toBe(a)
 })
+
+// the reporter's 0.2.50 report (plugins#1366): after text was written, a
+// later round of a cut reply answered with nothing to go on with, and the
+// reply went to the agent as a 502 with the text lost. Whatever a later
+// round answers, the text written stays and the reply ends for length:
+// a round that is only reasoning but stops short of the cut, one that says
+// nothing at all, one whose stream breaks off, and one that is an error.
+const broken = (reasoning) => new Response(new ReadableStream({
+  start(c) {
+    c.enqueue(new TextEncoder().encode(`event: output\ndata: ${JSON.stringify({ reasoning_content: reasoning })}\n\n`))
+    // after the headers went out: the read breaks, not the fetch
+    setTimeout(() => c.error(new Error("connection reset")), 20)
+  },
+}), { status: 200, headers: { "content-type": "text/event-stream" } })
+for (const [how, later, asks = 2] of [
+  ["only reasoning, short of the cut", () => reasoned(thinking(2000), "", 1500, "stop")],
+  ["only reasoning, with no usage", () => sse([["output", { reasoning_content: thinking(2000) }], ["done", {}]])],
+  ["nothing at all", () => sse([["done", {}]])],
+  ["a stream that breaks off", () => broken(thinking(500))],
+  ["an empty reply's error", () => sse([["error", { code: 500, message: "an empty reply" }]])],
+  // round 2 spends its 2000 on reasoning and is asked on; round 3 says nothing
+  ["nothing, after a round spent reasoning", (n) => n === 2 ? reasoned(thinking(2000), "", 2000) : sse([["done", {}]]), 3],
+]) {
+  test(`a later round that answers ${how} keeps the text written and ends for length, in a body and in a stream`, async () => {
+    const { ask } = await carried((n) => n === 1 ? reasoned(thinking(1363), ALL.slice(0, 1834), 2000) : later(n))
+    for (const stream of [false, true]) {
+      const got = await ask({ max_tokens: 8192, stream })
+      expect(got).toMatchObject({ finish: "length", text: ALL.slice(0, 1834), calls: [], asks })
+      expect(got.usage.completion_tokens).toBeGreaterThanOrEqual(2000)
+    }
+  })
+}
+
+test("a first round whose stream breaks off is still an error", async () => {
+  const { ask } = await carried(() => broken(thinking(500)))
+  const got = await ask({ stream: true })
+  expect(got.finish).toBe("")
+  expect(got.text).toBe("")
+})

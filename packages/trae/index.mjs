@@ -3045,8 +3045,10 @@ function addUsage(a, b) {
 // with no text isn't, as there is nothing to go on from. A call cut
 // mid-arguments is dropped from the round it was cut in: the next round
 // writes it whole.
-// The usage sent is every round's together; a reply still cut at the end
-// ends for length.
+// A later round that fails (an error, a stream broken off, nothing written
+// short of the cut) ends the asking: the text written stays, and the reply
+// ends for length, not as an error. The usage sent is every round's
+// together; a reply still cut at the end ends for length.
 async function* continued(answer, limit, cut, more) {
   let text = ""
   let total = null
@@ -3059,40 +3061,54 @@ async function* continued(answer, limit, cut, more) {
     let wrote = false
     let failed = false
     const held = []
-    for await (const p of parts) {
-      if (p.error) {
-        // a later ask that failed leaves the reply as Trae cut it
-        if (round === 1) {
-          yield p
-          return
+    try {
+      for await (const p of parts) {
+        if (p.error) {
+          // a later ask that failed leaves the reply as Trae cut it
+          if (round === 1) {
+            yield p
+            return
+          }
+          failed = true
+          break
         }
-        failed = true
-        break
+        if (p.usage) {
+          usage = p.usage
+          continue
+        }
+        if (p.finish) {
+          finish = p.finish
+          continue
+        }
+        if (p.call && !wholeArgs(p.call.arguments)) {
+          held.push(p)
+          continue
+        }
+        if (p.call) whole++
+        if (p.text) {
+          text += p.text
+          wrote = true
+        }
+        yield p
       }
-      if (p.usage) {
-        usage = p.usage
-        continue
-      }
-      if (p.finish) {
-        finish = p.finish
-        continue
-      }
-      if (p.call && !wholeArgs(p.call.arguments)) {
-        held.push(p)
-        continue
-      }
-      if (p.call) whole++
-      if (p.text) {
-        text += p.text
-        wrote = true
-      }
-      yield p
+    } catch (e) {
+      // a later ask whose stream broke off leaves the reply as Trae cut
+      // it, as one that answered an error does: thrown on, the text
+      // written went to the agent as a 502 (plugins#1366, 0.2.50); the
+      // first ask's is the reply's own failure
+      if (round === 1) throw e
+      failed = true
     }
     total = addUsage(total, usage)
-    const wasCut = failed || (cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length"))
+    const atCut = cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length")
+    // a later ask that wrote nothing and made no call, short of the cut
+    // (only reasoning ended early, or nothing at all), is no end of the
+    // reply either: the text before it is still cut (plugins#1366, 0.2.50)
+    const answeredNothing = round > 1 && !wrote && !whole && !held.length && !atCut
+    const wasCut = failed || answeredNothing || atCut
     const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
     thought = wrote ? 0 : thought + 1
-    const next = !failed && wasCut && text && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left, round + 1).catch(() => null) : null
+    const next = !failed && !answeredNothing && wasCut && text && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left, round + 1).catch(() => null) : null
     if (next) {
       parts = next
       continue
