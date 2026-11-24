@@ -1309,9 +1309,26 @@ function systemContext(text) {
   if (SYSTEM_TOKEN_OPENING.test(text) || SYSTEM_SKILL_CONTEXT.test(text)) return announcedContext(text)
   if (HOOK_OUTPUT.test(text) || text.startsWith(DEFERRED_TOOLS_OPENING)) {
     const at = text.indexOf(HOOK_CONTEXT)
-    return at < 0 ? text : text.slice(0, at + 1) + generatedContext(text.slice(at + 1))
+    if (at < 0) return text
+    const head = HOOK_OUTPUT.test(text) ? text.slice(0, at + 1) : listedSkills(text.slice(0, at + 1))
+    return head + generatedContext(text.slice(at + 1))
   }
   return generatedContext(text)
+}
+
+// Claude Code 2.1.327 sends one system message that opens with the
+// deferred tools, then the agent types and the skill list, and only then
+// the environment (@dannykkg on X, 2026-11-24). The list sits before the
+// environment, where generatedContext doesn't look. Adapt the entry only
+// when the paragraph before it is the exact skill header, and stop at the
+// first hook paragraph: a hook owns what follows it.
+function listedSkills(head) {
+  const parts = head.split("\n\n")
+  for (let i = 1; i < parts.length; i++) {
+    if (HOOK_NOTIFICATION.test(parts[i])) break
+    if (parts[i - 1] === "The following skills are available for use with the Skill tool:" && parts[i].startsWith("- ")) parts[i] = configSkillText(parts[i])
+  }
+  return parts.join("\n\n")
 }
 
 // Runtime notifications can precede a skill update, so the message opening
@@ -1718,10 +1735,23 @@ function sanitizeBody(body) {
 // Claude Code 403 while Codex worked on the same account).
 
 // claudeIdentity opens text with droid's line in place of Claude Code's
-// fixed first line, when text is that line alone or opens with it.
+// fixed first line, when text is that line alone or opens with it. magpie
+// joins a Messages system's blocks with nothing between them when it
+// translates a request for /api/llm/o, so a subagent's prompt (Claude Code
+// 2.1.327: the identity block, then "You are an agent for Claude Code, …"
+// with no newline of its own) reached Factory as "…Claude Agent SDK.You
+// are an agent …", and the identity went as it was. The line glued to the
+// next block is the same line; the longest identity it opens with is the
+// one, and droid's line goes on its own line before the rest.
 function claudeIdentity(text) {
-  const identity = [...CLAUDE_IDENTITIES].find((line) => text === line || text.startsWith(line + "\n"))
-  return identity ? DROID_LINE + text.slice(identity.length) : text
+  const identity = [...CLAUDE_IDENTITIES].filter((line) => text.startsWith(line)).sort((a, b) => b.length - a.length)[0]
+  if (!identity) return text
+  const rest = text.slice(identity.length)
+  if (rest === "" || rest.startsWith("\n")) return DROID_LINE + rest
+  // glued to the next block with nothing between: the gateway joined them.
+  // A space or other text after the line is the user's own sentence.
+  if (/^[A-Z]/.test(rest)) return DROID_LINE + "\n" + rest
+  return text
 }
 
 // ZCode embeds its generated environment paragraph, with unindented bullets,
@@ -1745,9 +1775,31 @@ function zcodeRuntimeContext(text) {
   })
 }
 
+// Claude Code 2.1.327 sends its environment as a system message after the
+// first user turn ("# Environment\nYou have been invoked in the following
+// environment: \n - Primary working directory: …"). Translated for
+// /api/llm/o, magpie folds a system message sent before any reply into the
+// system prompt, after a blank line, so the paragraph sat in the prompt,
+// where only an environment at its start (ZCode's) changed, and every
+// Claude Code request on a chat or Responses model carried the opening
+// Factory refuses (@dannykkg on X, 11-24: "the environment info not
+// handled"). Only a whole generated paragraph changes: the heading, the
+// fixed sentence and its bulleted lines, at the start of the prompt or
+// after a blank line, followed by a blank line or the end, outside a
+// fence; every value stays.
+const CLAUDE_ENV_PARAGRAPH = /(^|\n\n)(# Environment\nYou have been invoked in the following environment:[ \t]*(?:\n {1,2}- [^\n]*)+)(?=\n\n|\n?$)/g
+function claudeEnvironment(text) {
+  return text.replace(CLAUDE_ENV_PARAGRAPH, (block, lead, paragraph, offset) => {
+    if (insideFence(text, offset + lead.length)) return block
+    return lead + paragraph
+      .replace("# Environment", "# Runtime context")
+      .replace("You have been invoked in the following environment:", "The session environment is:")
+  })
+}
+
 // promptText adapts a system prompt's text.
 function promptText(text) {
-  return harnessText(configSkillText(clientOpening(systemModelLine(claudeIdentity(zcodeRuntimeContext(text))))))
+  return harnessText(configSkillText(clientOpening(systemModelLine(claudeIdentity(claudeEnvironment(zcodeRuntimeContext(text)))))))
 }
 
 // systemMessageText adapts a system message's text after the prompt.
@@ -1775,7 +1827,27 @@ function userBlockText(text) {
   }
   if (SKILL_REMINDER.test(text)) return configSkillText(text)
   if (DSH_SKILL_CATALOG.test(text)) return harnessText(text)
-  return text
+  return foldedSystemText(text)
+}
+
+// A system message Claude Code sends after a reply (2.1.327, after
+// /compact and in a subagent: the deferred tools, the agent types, the
+// skills, the environment, the model line and the date, as one message)
+// is folded by magpie into a user turn as one reminder when it translates
+// the request for /api/llm/o or rebuilds it for /api/llm/a. As a reminder
+// none of the whole-block patterns above match it, and its environment,
+// model line and update-config sentence went to Factory as they were. It
+// is adapted as the system message it was (systemMessageText), and only
+// one that opens as Claude Code's generated system messages open: the
+// deferred-tools announcement, a startup hook's output or the
+// environment paragraph.
+function foldedSystemText(text) {
+  if (!text.startsWith(REMINDER_OPEN) || !text.endsWith(REMINDER_CLOSE)) return text
+  const inner = text.slice(REMINDER_OPEN.length, -REMINDER_CLOSE.length)
+  if (inner.includes(REMINDER_OPEN) || inner.includes(REMINDER_CLOSE)) return text
+  if (!inner.startsWith(DEFERRED_TOOLS_OPENING) && !HOOK_OUTPUT.test(inner) && !SYSTEM_ENV_CONTEXT.test(inner + "\n")) return text
+  const adapted = systemMessageText(inner)
+  return adapted === inner ? text : REMINDER_OPEN + adapted + REMINDER_CLOSE
 }
 
 // dsh (@deepseek-ai/dsh-tool-skill) announces its skills in a user turn, a
