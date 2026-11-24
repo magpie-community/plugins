@@ -226,7 +226,11 @@ test('the page CSP lists the loopback explicitly and no third-party hosts', asyn
   assert.equal(r.status, 200);
   const csp = String(r.headers['content-security-policy']);
   assert.match(csp, /default-src 'self'/);
-  assert.match(csp, new RegExp(`connect-src 'self' http://127\\.0\\.0\\.1:${port}`));
+  // 沙盒 frame 里 'self' 是 opaque：每一类子资源都要列出回环地址，否则脚本被拦、整页空白（#1500）
+  for (const kind of ['script-src', 'style-src', 'img-src', 'font-src', 'connect-src']) {
+    const dir = csp.split(';').map((x) => x.trim()).find((x) => x.startsWith(kind + ' ')) || '';
+    assert.ok(dir.includes(`http://127.0.0.1:${port}`) && dir.includes(`http://localhost:${port}`), `${kind}: ${dir}`);
+  }
   // frame-ancestors 显式声明（* = 被宿主嵌入是设计意图；宿主 origin 桌面/web 不固定）
   assert.match(csp, /frame-ancestors/);
   assert.doesNotMatch(csp, /cloudflareinsights/);
