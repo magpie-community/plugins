@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow, storedToken } from "../signin.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -179,4 +179,26 @@ test("storedEmail is the Google account agy's keyring is signed in to, on macOS 
   assert.equal(await storedEmail({ platform: "darwin", exec: async () => { throw new Error("no security") }, env: {} }), "")
   assert.equal(await storedEmail({ platform: "win32", exec: mac(0, "OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), "someone@example.com")
   assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value)), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), "")
+})
+
+test("Linux: agy's own sign-in is read from its token file, and no file concludes nothing (#1502)", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-"))
+  try {
+    const exec = async () => { throw new Error("no keyring tool is run on Linux") }
+    assert.equal((await readStoredSignIn({ platform: "linux", exec, env: { HOME: home } })).state, "unknown")
+    const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-12T00:00:00Z" })
+    const file = path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, value)
+    const s = await readStoredSignIn({ platform: "linux", exec, now: NOW, env: { HOME: home } })
+    assert.equal(s.state, "present")
+    assert.equal(s.canRenew, true)
+    assert.equal((await storedToken({ platform: "linux", exec, env: { HOME: home } }))?.token?.refresh_token, "r")
+    assert.equal(await storedEmail({ platform: "linux", exec, env: { HOME: home } }), "someone@example.com")
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })

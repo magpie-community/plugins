@@ -255,6 +255,15 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
     // go-keyring on Windows stores the value's bytes as they are (UTF-8)
     return { raw: Buffer.from(out.slice(3), "base64").toString("utf8") }
   }
+  // Linux and the rest: with no keyring to reach (Docker, a NAS, a
+  // headless box) agy keeps its sign-in in the same file an account's own
+  // home has (#1502). No file says nothing: it may be in a keyring.
+  const own = env.HOME || (env === process.env ? os.homedir() : "")
+  if (own) {
+    try {
+      return { raw: await fs.promises.readFile(tokenFile(own), "utf8") }
+    } catch {}
+  }
   return { state: "unknown" }
 }
 
