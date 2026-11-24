@@ -16,8 +16,8 @@ const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agy-compat-test-"))
 const entry = new URL("../index.mjs", import.meta.url)
 let source = fs.readFileSync(entry, "utf8")
 source = source.replace(/from "(\.\/[^"\n]+)"/g, (_, target) => `from ${JSON.stringify(new URL(target, entry).href)}`)
-fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { inspectToolTurn, matchToolResults, historyKey, allProcs, toolCalls, renderInitialPromptParts, withStateLock, execOnce };\n")
-const { inspectToolTurn, matchToolResults, historyKey, allProcs, toolCalls, renderInitialPromptParts, withStateLock, execOnce } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
+fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { inspectToolTurn, matchToolResults, historyKey, allProcs, toolCalls, renderInitialPromptParts, clipMiddle, withStateLock, execOnce };\n")
+const { inspectToolTurn, matchToolResults, historyKey, allProcs, toolCalls, renderInitialPromptParts, clipMiddle, withStateLock, execOnce } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
 const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANaW1hZ2VB" } }
@@ -271,4 +271,111 @@ test("text that names a notice tag it never closes is routed by its writer, not 
   }
   // a notice that opens and is cut short is still turned away
   assert.throws(() => inspectToolTurn([call], bodyFor([call.block, { type: "text", text: "<system-update>cut short" }])), /text beside a live tool_result/)
+})
+
+test("clipMiddle stays close to limit instead of dropping 25% on marker overflow", () => {
+  const utf8Len = text => Buffer.byteLength(text, "utf8")
+  const text = "HEAD_MARK " + "a".repeat(107_000) + " TAIL_MARK"
+  const limit = 106_000
+  const clipped = clipMiddle(text, limit)
+  assert.ok(utf8Len(clipped) <= limit, `clipped size ${utf8Len(clipped)} exceeded limit ${limit}`)
+  assert.ok(utf8Len(clipped) >= limit - 64, `clipped size ${utf8Len(clipped)} lost too much of budget ${limit}`)
+  assert.ok(clipped.startsWith("HEAD_MARK ") && clipped.endsWith(" TAIL_MARK"))
+  assert.match(clipped, /\[\.\.\. \d+ bytes omitted \.\.\.\]/)
+
+  // Multi-byte UTF-8 boundary stays within limit without splitting characters.
+  const multi = "首部" + "中".repeat(4000) + "尾部"
+  const multiLimit = 9000
+  const multiClipped = clipMiddle(multi, multiLimit)
+  assert.ok(utf8Len(multiClipped) <= multiLimit)
+  assert.ok(utf8Len(multiClipped) >= multiLimit - 64)
+  assert.ok(multiClipped.startsWith("首部") && multiClipped.endsWith("尾部"))
+})
+
+test("current_turn clipping trims meta reminders and trailing system blocks before user text", () => {
+  const utf8Len = text => Buffer.byteLength(text, "utf8")
+  const userPrompt = "Please update the sidebar layout and proceed with the refactor."
+  const body = {
+    system: "System instructions. " + "s".repeat(7000),
+    messages: [
+      { role: "user", content: "Previous conversation summary. " + "h".repeat(14_000) },
+      { role: "assistant", content: [{ type: "text", text: "Preview is ready. " + "a".repeat(2400) }] },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\nResult of calling the Read tool:\n" + "f".repeat(22_000) + "\n</system-reminder>" },
+          { type: "text", text: "<system-reminder>\nResult of calling the Read tool:\n" + "g".repeat(22_000) + "\n</system-reminder>" },
+          { type: "text", text: "<system-reminder>\nProject instructions:\n" + "p".repeat(20_000) + "\n</system-reminder>" },
+          { type: "text", text: "<local-command-caveat>local command</local-command-caveat>" },
+          { type: "text", text: "<local-command-stdout>Compacted</local-command-stdout>" },
+          { type: "text", text: userPrompt },
+        ],
+      },
+      { role: "system", content: [{ type: "text", text: "Deferred tools and skills:\n" + "d".repeat(42_000) }] },
+    ],
+  }
+  const prompt = renderInitialPromptParts(body, "/workspace/demo", false).map(part => part.text || "").join("")
+  assert.ok(utf8Len(prompt) <= 112 * 1024, `prompt size ${utf8Len(prompt)} exceeded 112 KiB`)
+  assert.ok(prompt.includes(userPrompt), "sandwiched user prompt must survive <current_turn> clipping")
+  assert.ok(prompt.endsWith("\n</current_turn>"))
+
+  // Extreme meta bloat (>260 KiB) still keeps the short user prompt verbatim.
+  const extreme = {
+    ...body,
+    messages: [
+      body.messages[0],
+      body.messages[1],
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\n" + "r".repeat(100_000) + "\n</system-reminder>" },
+          { type: "text", text: "<system-reminder>\n" + "q".repeat(100_000) + "\n</system-reminder>" },
+          { type: "text", text: userPrompt },
+        ],
+      },
+      { role: "system", content: [{ type: "text", text: "Trailing system catalog:\n" + "z".repeat(60_000) }] },
+    ],
+  }
+  const extremePrompt = renderInitialPromptParts(extreme, "/workspace/demo", false).map(part => part.text || "").join("")
+  assert.ok(utf8Len(extremePrompt) <= 112 * 1024, `extreme prompt size ${utf8Len(extremePrompt)} exceeded 112 KiB`)
+  assert.ok(extremePrompt.includes(userPrompt), "user prompt must survive extreme meta/system bloat")
+
+  // Fresh turn without head or history also protects user text over reminders.
+  const fresh = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\n" + "m".repeat(80_000) + "\n</system-reminder>" },
+          { type: "text", text: userPrompt },
+        ],
+      },
+      { role: "system", content: [{ type: "text", text: "Environment:\n" + "e".repeat(60_000) }] },
+    ],
+  }
+  const freshPrompt = renderInitialPromptParts(fresh, null, true).map(part => part.text || "").join("")
+  assert.ok(utf8Len(freshPrompt) <= 112 * 1024)
+  assert.ok(freshPrompt.includes(userPrompt), "user prompt must survive clipping on a fresh turn")
+})
+
+
+test("current_turn clipping takes reminders first even when the user's own text is the largest part", () => {
+  // A pasted log larger than the reminders beside it: clipping the largest
+  // part first would cut the user's text and keep the reminders whole.
+  const userText = "USER_START " + "u".repeat(80_000) + " USER_END"
+  const body = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\n" + "m".repeat(50_000) + "\n</system-reminder>" },
+          { type: "text", text: userText },
+        ],
+      },
+    ],
+  }
+  const prompt = renderInitialPromptParts(body, null, true).map(part => part.text || "").join("")
+  assert.ok(Buffer.byteLength(prompt, "utf8") <= 112 * 1024)
+  assert.ok(prompt.includes(userText), "the user's text must stay whole while reminders can still give way")
+  assert.match(prompt, /\[\.\.\. \d+ bytes omitted \.\.\.\]/)
 })
