@@ -1,14 +1,48 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="fm-write-token" content="__FM_WRITE_TOKEN__"><title>First Mate 船员配置</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="settings.css"><script src="bridge.js" defer></script><script src="app.js" defer></script></head>
-<body data-view="secondmate"><main>
-<header><div><h1>First Mate</h1><p>工作配置与派工</p></div><span class="readonly">v__FM_VERSION__</span></header>
-<div class="service-notice"><span id="build-status">正在读取配置…</span><button id="go-dispatch" type="button">查看同步</button></div>
-<div class="toolbar"><div class="home-switch"><span class="toolbar-label">工作空间</span><button id="home" type="button" aria-label="工作 Home" value="0"></button><span id="home-context" class="home-context"></span></div><label class="search">查找模型或船员<input id="search" type="search" placeholder="搜索任务、Harness、模型…"></label><button id="refresh" type="button">刷新</button></div>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="fm-write-token" content="__FM_WRITE_TOKEN__"><title>First Mate 工作台</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="settings.css"><link rel="stylesheet" href="overview.css"><script src="bridge.js" defer></script><script src="app.js" defer></script></head>
+<body data-view="overview"><main>
+<header class="dashboard-header"><div class="dashboard-brand"><span class="brand-mark" aria-hidden="true">FM</span><h1>First Mate</h1></div><span id="version" class="dashboard-version">v__FM_VERSION__</span></header>
+<nav class="dashboard-nav" aria-label="工作台视图">
+  <button type="button" data-tab="overview" aria-controls="overview-panel" aria-current="page">任务总览</button>
+  <button type="button" data-tab="launch" aria-controls="launch-panel">派工记录</button>
+  <button type="button" data-tab="secondmate" aria-controls="secondmate-panel">大副与二副</button>
+  <button type="button" data-tab="dispatch" aria-controls="dispatch-panel">派工规则</button>
+  <button type="button" data-tab="settings" aria-controls="settings-panel">Firstmate 设置</button>
+  <button type="button" data-tab="sources" aria-controls="sources-panel">来源与说明</button>
+</nav>
+<div class="toolbar"><div class="home-switch"><span class="toolbar-label">工作 Home</span><button id="home" type="button" aria-label="工作 Home" value="0">选择 Home</button><span id="home-context" class="home-context"></span></div><label class="search">查找模型或船员<input id="search" type="search" placeholder="搜索任务、Harness、模型…"></label><button id="refresh" type="button">刷新</button></div>
 <div id="error" role="alert" hidden></div>
 <div id="saved" role="status" hidden></div>
 <div id="sync-result" role="status" hidden></div>
+<div id="task-return" class="task-return" hidden>
+  <button type="button" id="task-return-button" aria-describedby="task-return-label"><span aria-hidden="true">←</span> 返回任务</button>
+  <span id="task-return-label"></span>
+</div>
 <div class="metrics"><span><strong id="record-count">—</strong> 条启动记录</span><span><strong id="rule-count">—</strong> <span id="rule-count-label">条派工规则</span></span><span><strong id="primary-count">—</strong> 位大副</span><span><strong id="mate-count">—</strong> 位二副</span><span id="supervision-count">后台监督：未读取</span></div>
-<nav class="tabs" aria-label="配置视图"><button type="button" data-tab="secondmate" aria-selected="true">大副与二副</button><button type="button" data-tab="dispatch" aria-selected="false">派工规则</button><button type="button" data-tab="settings" aria-selected="false">Firstmate 设置</button><button type="button" data-tab="launch" aria-selected="false">派工记录</button><button type="button" data-tab="sources" aria-selected="false">来源与说明</button></nav>
+<section id="overview-panel" aria-labelledby="overview-title" aria-busy="true">
+  <div class="overview-heading">
+    <div><h2 id="overview-title" tabindex="-1">任务总览</h2><p>状态取自保留的任务报告，进程在线状态未知。</p></div>
+    <p id="overview-snapshot"></p>
+  </div>
+  <p id="overview-message" class="overview-message">正在读取任务记录…</p>
+  <div id="overview-content" hidden>
+    <div class="task-metrics" id="task-metrics" role="group" aria-label="按任务状态筛选" hidden></div>
+    <div class="overview-grid">
+      <section class="overview-card" aria-labelledby="task-list-title">
+        <div class="overview-card-heading">
+          <div><h3 id="task-list-title">任务列表</h3><p id="task-list-count"></p></div>
+          <label class="task-search"><span class="visually-hidden">搜索当前 Home 的任务</span><input id="task-search" type="search" placeholder="搜索任务、机器或模型"></label>
+        </div>
+        <div id="task-list"></div>
+      </section>
+      <aside class="overview-card overview-machines" aria-labelledby="machine-list-title">
+        <div class="overview-card-heading"><div><h3 id="machine-list-title">工作机器</h3><p>按已配置的 Home 切换任务范围</p></div></div>
+        <ul id="overview-homes"></ul>
+      </aside>
+    </div>
+  </div>
+  <p id="overview-announcement" role="status" class="visually-hidden"></p>
+</section>
 <section class="panel" id="settings-panel" hidden>
 <div class="section-title"><h2>Firstmate 设置</h2><span class="tag" id="settings-role"></span></div>
 <p class="caption" id="settings-origin"></p>
@@ -40,7 +74,7 @@
 <p class="caption" id="sync-caption"></p>
 </section>
 <section class="panel" id="launch-panel" hidden><div class="section-title"><h2>派工执行统计</h2><span class="tag">保留记录 · 非在线状态</span></div><p class="caption">点击图表可联动筛选职责、Harness 与核对结果，并显示对应任务。仅统计所选 Home；未读取二副独立 Home，“0”不代表二副从未派工。</p><div id="dispatch-summary" class="audit-metrics"></div><div id="dispatch-charts"></div><div id="dispatch-audit"></div><aside class="notice">只统计此 Home 保留的 ship / scout 启动记录，二副登记单列。核对保存的派工选择与启动参数，不代表职责判断正确，也不能证明所有工作都已派工。</aside><details class="raw-records"><summary>查看原始启动记录（含二副登记）</summary><div class="table-wrap"><table><thead><tr><th>船员 / 任务</th><th>Harness</th><th>启动时模型</th><th>推理强度</th><th>当前模型</th></tr></thead><tbody id="records"></tbody></table></div><button id="more" class="secondary" type="button" hidden>展开全部记录</button></details><p class="caption table-note" id="records-note">来源：state/*.meta、任务 brief.md 与 dispatch-resolution.json。最多读取 300 条保留记录；清理、重启或重新解析可能改变记录，不是完整历史。</p></section>
-<section class="panel" id="secondmate-panel">
+<section class="panel" id="secondmate-panel" hidden>
 <div class="section-title"><h2>大副、二副与后台监督</h2><span class="tag">配置席位 · 非在线人数</span></div>
 <div id="supervisors" class="supervisors"></div>
 <p class="caption" id="mate-scope">下面管理各二副的独立启动配置。未设置的二副将回退到船员默认工具。</p>
@@ -78,5 +112,4 @@
 <div class="actions"><button id="confirm" type="button" class="primary">确认写入</button><button id="cancel" type="button">取消</button></div>
 </div>
 </section>
-<footer>First Mate 拥有派工与生命周期。派工页只改后续派工；副手页只改下一次启动配置。<span id="version">本地插件 v__FM_VERSION__</span></footer>
 </main></body></html>

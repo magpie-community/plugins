@@ -46,6 +46,8 @@
     "ui/controls.js",
     "ui/index.html",
     "ui/models.js",
+    "ui/overview.css",
+    "ui/overview.js",
     "ui/quota.js",
     "ui/recovery.js",
     "ui/settings-scope.js",

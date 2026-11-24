@@ -1209,6 +1209,7 @@ function matePayload(extra = {}) {
 function render(options = {}) {
   const home = currentHome();
   $('home-context').textContent = home ? `${home.machine} · ${home.role?.kind === 'primary' ? '大副' : home.role?.kind === 'secondmate' ? '二副' : '身份待核实'}` : 'Home 未读取';
+  window.FMOverview.render({ homes: data.homes, selected: homeIndex(), observedAt: data.observedAt, selectHome, showView });
   if (!home) return;
   renderRecords();
   renderDispatch(currentHome(), { keepDraft: options.keepDispatchDraft });
@@ -1248,6 +1249,7 @@ document.addEventListener('keydown', event => {
 
 async function refresh() {
   $('refresh').disabled = true;
+  window.FMOverview.refreshState('loading');
   say('error', '');
   try {
     const response = await fetch('api/snapshot', { cache: 'no-store', headers: { 'X-FM-Write-Token': token } });
@@ -1258,13 +1260,12 @@ async function refresh() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     data = await response.json();
     if (!data.homes.length) say('error', '请在 MagPie 的插件选项中配置 homes，然后重新打开页面。');
-    $('version').textContent = `运行服务 v${data.pluginVersion || '未知'}`;
-    $('build-status').textContent = data.capabilities?.explicitDispatchPush ? `运行服务 v${data.pluginVersion} · 保存后可单独推送派工规则。` : `运行服务 v${data.pluginVersion}`;
+    $('version').textContent = data.pluginVersion ? `v${data.pluginVersion}` : '版本未知';
     const recovery = recoveredEdits; recoveredEdits = null;
     const found = recovery ? data.homes.findIndex(home => home.path === recovery.home) : -1;
     const selected = found >= 0 ? String(found) : $('home').value;
     const index = selected && data.homes[Number(selected)] ? selected : '0';
-    $('home').setOptions(data.homes.map((home, i) => ({ value: String(i), label: home.name, note: home.role?.kind === 'secondmate' ? '二副' : home.role?.kind === 'primary' ? '大副' : '待核实' })), index);
+    paintHomeMenu(index);
     const home = currentHome();
     const sameHome = recovery && home?.path === recovery.home;
     const dispatchOK = sameHome && home.role?.kind === 'primary' && recovery.dispatchRevision === home.dispatch?.revision && Boolean(recovery.draft);
@@ -1272,10 +1273,11 @@ async function refresh() {
     if (dispatchOK) draft = recovery.draft;
     if (mateOK) mateDraft = recovery.mateDraft;
     render({ keepDispatchDraft: dispatchOK, keepMateDraft: mateOK });
+    window.FMOverview.refreshState(data.homes.length ? 'ready' : 'empty');
     if (recovery) {
       const settingsOK = !recovery.settings || (sameHome && window.FMSettings.restore(recovery.settings));
       const complete = sameHome && (!recovery.draft || dispatchOK) && (!recovery.mateDraft || mateOK) && settingsOK;
-      if (['secondmate','dispatch','settings','launch','sources'].includes(recovery.tab)) document.querySelector(`[data-tab="${recovery.tab}"]`).click();
+      [...document.querySelectorAll('[data-tab]')].find(button => button.dataset.tab === recovery.tab)?.click();
       say(complete ? 'saved' : 'error', complete ? '服务已重新连接，编辑已保留。请重新预览或同步；没有自动重试写入。' : '服务已重连，但配置来源或版本已变化。旧草稿未覆盖新配置，可展开对照。');
       if (!complete) {
         const details = node('details'); details.append(node('summary', '查看保留的编辑'), node('pre', JSON.stringify({ draft: recovery.draft, mateDraft: recovery.mateDraft, settings: recovery.settings }, null, 2))); $('error').after(details);
@@ -1283,6 +1285,7 @@ async function refresh() {
     }
   } catch (error) {
     say('error', `读取失败：${error.message}`);
+    window.FMOverview.refreshState('error');
   } finally {
     $('refresh').disabled = false;
     parkInitialFocus();
@@ -1305,8 +1308,8 @@ addEventListener('focusin', event => {
 }, true);
 addEventListener('load', parkInitialFocus);
 
-function openReview(result, request, title, note, route = 'dispatch') {
-  pending = { route, body: request, returnTo: document.activeElement };
+function openReview(result, request, title, note, route, returnTo) {
+  pending = { route, body: request, returnTo };
   $('review-error').hidden = true;
   $('review-title').textContent = title;
   $('review-note').textContent = note;
@@ -1339,7 +1342,7 @@ $('preview').addEventListener('click', async () => {
       $('review').hidden = true;
       return;
     }
-    openReview(result, { ...request, nextRevision: result.nextRevision }, '确认保存派工规则', '校验已通过。确认后写入所选大副 Home 的派工文件。推送需另行点击。');
+    openReview(result, { ...request, nextRevision: result.nextRevision }, '确认保存派工规则', '校验已通过。确认后写入所选大副 Home 的派工文件。推送需另行点击。', 'dispatch', $('preview'));
   } catch (error) {
     $('review').hidden = true;
     say('error', error.message);
@@ -1357,7 +1360,7 @@ $('restore').addEventListener('click', async () => {
   try {
     const request = { home: homeIndex(), baseRevision: currentHome().dispatch.revision, restore: id };
     const result = await post('api/dispatch/preview', request);
-    openReview(result, { ...request, nextRevision: result.nextRevision }, '确认恢复备份', `将用备份 ${id} 覆盖当前配置。恢复后可另行推送。`);
+    openReview(result, { ...request, nextRevision: result.nextRevision }, '确认恢复备份', `将用备份 ${id} 覆盖当前配置。恢复后可另行推送。`, 'dispatch', $('restore'));
   } catch (error) {
     say('error', error.message);
   } finally {
@@ -1378,7 +1381,7 @@ $('mate-preview').addEventListener('click', async () => {
       $('review').hidden = true;
       return;
     }
-    openReview(result, request, '确认写入副手启动配置', '展示改动及前后 8 行上下文，可展开整个文件。左右行号分别对应修改前后；敏感配置已隐藏。注释会保留，确认后才写入，仅影响副手下一次启动。', 'secondmate');
+    openReview(result, request, '确认写入副手启动配置', '展示改动及前后 8 行上下文，可展开整个文件。左右行号分别对应修改前后；敏感配置已隐藏。注释会保留，确认后才写入，仅影响副手下一次启动。', 'secondmate', $('mate-preview'));
   } catch (error) {
     $('review').hidden = true;
     say('error', error.message);
@@ -1396,7 +1399,7 @@ $('mate-restore').addEventListener('click', async () => {
   try {
     const request = { home: homeIndex(), baseRevision: currentHome().secondmate.revision, restore: id };
     const result = await post('api/secondmate/preview', request);
-    openReview(result, request, '确认恢复副手启动配置', `将用备份 ${id} 覆盖 config/secondmate-harness。备份中的旧默认行也会恢复。校验通过后才会写入。正在运行的席不会因此改变。`, 'secondmate');
+    openReview(result, request, '确认恢复副手启动配置', `将用备份 ${id} 覆盖 config/secondmate-harness。备份中的旧默认行也会恢复。校验通过后才会写入。正在运行的席不会因此改变。`, 'secondmate', $('mate-restore'));
   } catch (error) {
     say('error', error.message);
   } finally {
@@ -1474,23 +1477,47 @@ function reconnect() {
 window.FMActions.onReconnect = reconnect;
 window.FMActions.onReconcile = () => { closeReview(); refresh(); };
 $('refresh').addEventListener('click', refresh);
-$('go-dispatch').addEventListener('click', () => document.querySelector('[data-tab="dispatch"]').click());
-for (const button of document.querySelectorAll('[data-settings-tab]')) button.addEventListener('click', () => document.querySelector(`[data-tab="${button.dataset.settingsTab}"]`).click());
+for (const button of document.querySelectorAll('[data-settings-tab]')) {
+  button.addEventListener('click', () => {
+    const destination = document.querySelector(`[data-tab="${button.dataset.settingsTab}"]`);
+    destination.click();
+    destination.focus();
+  });
+}
+
+function paintHomeMenu(index) {
+  $('home').disabled = !data.homes.length;
+  $('home').setOptions(data.homes.map((home, i) => ({
+    value: String(i), label: home.name,
+    note: home.role?.kind === 'secondmate' ? '二副' : home.role?.kind === 'primary' ? '大副' : '待核实',
+  })), data.homes.length ? index : '');
+}
+
+function selectHome(index) {
+  paintHomeMenu(index);
+  $('home').dispatchEvent(new Event('change'));
+}
+
 $('home').addEventListener('change', () => { showAll = false; say('saved', ''); say('sync-result', ''); render(); });
 $('search').addEventListener('input', renderRecords);
 $('more').addEventListener('click', () => { showAll = !showAll; renderRecords(); });
 
-for (const button of document.querySelectorAll('[data-tab]')) {
-  button.addEventListener('click', () => {
-    for (const item of document.querySelectorAll('[data-tab]')) {
-      const selected = item === button;
-      item.setAttribute('aria-selected', String(selected));
-      if (selected) document.body.dataset.view = item.dataset.tab;
-      $(`${item.dataset.tab}-panel`).hidden = !selected;
-    }
-    if (button.dataset.tab === 'dispatch') window.FMQuota.activate();
-  });
+function showView(view) {
+  document.body.dataset.view = view;
+  for (const item of document.querySelectorAll('[data-tab]')) {
+    const selected = item.dataset.tab === view;
+    if (selected) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+    $(`${item.dataset.tab}-panel`).hidden = !selected;
+  }
+  window.FMOverview.viewChanged(view);
+  if (view === 'dispatch') window.FMQuota.activate();
 }
 
-window.FMControls.bindMenu($('home'), [], '0', () => $('home').dispatchEvent(new Event('change')));
+for (const button of document.querySelectorAll('[data-tab]')) {
+  button.addEventListener('click', () => showView(button.dataset.tab));
+}
+
+window.FMControls.bindMenu($('home'), [], '', () => $('home').dispatchEvent(new Event('change')));
+$('home').disabled = true;
 refresh();

@@ -268,6 +268,36 @@ async function taskEvidence(home, record) {
   return { ...dispatchEvidence(brief, resolution, record), sources };
 }
 
+// Status logs are append-only. Pass structured evidence to the page, never the
+// free-form message, which can contain task details meant only for the supervisor.
+async function readTaskStatus(stateDir, id) {
+  let file;
+  try { file = await boundedFile(join(stateDir, `${id}.status`), 128 * 1024); }
+  catch { return null; }
+  const open = new Map();
+  let latest = null;
+  for (const line of file.text.split(/\r?\n/)) {
+    const event = line.match(/^(working|needs-decision|blocked|paused|done|failed|resolved)(?<tags>(?: \[(?:at=\d{1,12}|key=[\w.-]+)\])*)\s*:\s*(?<message>.*)$/);
+    if (!event) continue;
+    const [, state] = event;
+    const { tags, message } = event.groups;
+    const key = tags.match(/\[key=([\w.-]+)\]/)?.[1];
+    if (state === 'resolved') {
+      if (key) open.delete(key);
+      if (latest && latest.key === key && ['blocked', 'needs-decision', 'paused'].includes(latest.value.state)) latest = null;
+      continue;
+    }
+    const epoch = tags.match(/\[at=(\d{1,12})\]/)?.[1];
+    const until = state === 'paused' ? message.match(/\buntil (\d{4}-\d\d-\d\dT\d\d:\d\dZ)\b/)?.[1] : undefined;
+    latest = { key, value: { state, at: epoch ? new Date(Number(epoch) * 1000).toISOString() : null, until: until && !Number.isNaN(Date.parse(until)) ? until : null } };
+    if (key && ['needs-decision', 'blocked'].includes(state)) {
+      open.delete(key);
+      open.set(key, latest);
+    }
+  }
+  return ([...open.values()].at(-1) || latest)?.value ?? null;
+}
+
 async function readSupervision(home) {
   const result = { policy: 'default-by-primary', configured: null, host: null, engine: null, heartbeat: null, sources: [], warnings: [] };
   for (const name of ['supervision-host-off', 'supervision-host']) {
@@ -325,7 +355,9 @@ export async function snapshot(options = {}) {
     home.hiddenSecondmates = Array.isArray(entry.hiddenSecondmates) ? entry.hiddenSecondmates.filter(id => typeof id === 'string' && /^[\w.-]+$/.test(id)).slice(0, 100) : [];
     try {
       const path = await realpath(resolve(entry.path));
-      await lstat(join(path, 'config')); await lstat(join(path, 'state'));
+      const stateDir = join(path, 'state');
+      await lstat(join(path, 'config'));
+      const readStatus = (await lstat(stateDir)).isDirectory();
       home.path = path;
       try {
         const marker = (await boundedFile(join(path, '.fm-secondmate-home'), 1024)).text.trim();
@@ -352,7 +384,11 @@ export async function snapshot(options = {}) {
             location: { machine: meta.remote_host || home.machine, home: meta.home || (meta.remote_host ? '' : path), source: `state/${name}` },
             override: Boolean(meta.dispatch_override),
           };
-          if (['ship', 'scout'].includes(record.kind)) record.dispatchEvidence = await taskEvidence(path, record);
+          if (['ship', 'scout'].includes(record.kind)) {
+            [record.dispatchEvidence, record.taskStatus] = await Promise.all([
+              taskEvidence(path, record), readStatus ? readTaskStatus(stateDir, record.id) : null,
+            ]);
+          }
           home.records.push(record);
         } catch { home.warnings.push(`无法读取启动记录 ${name}`); }
       }
@@ -1707,7 +1743,7 @@ export async function startDashboard(options = {}) {
         res.end(req.method === 'HEAD' ? '' : JSON.stringify(await snapshot({ ...options, localOnly: url.searchParams.get('local') === '1' })));
         return;
       }
-      const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/controls.js': ['controls.js', 'text/javascript'], '/settings.js': ['settings.js', 'text/javascript'], '/bridge.js': ['bridge.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/settings.css': ['settings.css', 'text/css'] };
+      const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/controls.js': ['controls.js', 'text/javascript'], '/settings.js': ['settings.js', 'text/javascript'], '/bridge.js': ['bridge.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/settings.css': ['settings.css', 'text/css'], '/overview.css': ['overview.css', 'text/css'] };
       if (path.startsWith('/provider-icons/')) {
         const name = path.slice('/provider-icons/'.length);
         if (!/^[a-f0-9]{8,64}\.(png|webp|jpe?g|svg)$/i.test(name)) { res.writeHead(404, headers); res.end('Not found'); return; }
@@ -1732,7 +1768,7 @@ export async function startDashboard(options = {}) {
       if (!asset) { res.writeHead(404, headers); res.end('Not found'); return; }
       let body = await readFile(join(assets, asset[0]));
       if (path === '/app.js') {
-        const modules = await Promise.all(['controls.js', 'models.js', 'actions.js', 'settings-scope.js', 'settings.js', 'recovery.js', 'quota.js'].map(name => readFile(join(assets, name), 'utf8')));
+        const modules = await Promise.all(['controls.js', 'models.js', 'actions.js', 'settings-scope.js', 'settings.js', 'recovery.js', 'quota.js', 'overview.js'].map(name => readFile(join(assets, name), 'utf8')));
         body = Buffer.from([...modules, body.toString('utf8')].join('\n;\n'));
       }
       // The document is read by navigation, not by a cross-origin fetch. A write

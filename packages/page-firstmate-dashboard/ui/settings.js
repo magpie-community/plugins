@@ -94,7 +94,7 @@
       try {
         const request = editorRequest(); if (backup) request.restore = backup;
         const result = await state.post('api/settings/preview', request); request.nextRevision = result.nextRevision;
-        state.openReview(result, request, backup ? `恢复${item.label}` : `保存${item.label}`, `${result.action}。${item.effect}`, 'settings');
+        state.openReview(result, request, backup ? `恢复${item.label}` : `保存${item.label}`, `${result.action}。${item.effect}`, 'settings', backup ? restore : preview);
       } catch (e) { error.textContent = e.message; error.hidden = false; }
       finally { preview.disabled = false; restore.disabled = false; }
     };
