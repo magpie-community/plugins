@@ -5198,8 +5198,9 @@ function assistantTextOf(message) {
 // run: runStart = first message of the trailing text-only assistant run,
 // boundary = history split point (after the last assistant message before the
 // run, the session ledger's newest entry). Returns null when the request does
-// not end with a text-only assistant run. Known limits: a request combining a
-// live tool_result with a prefill tail is rejected in validateBody; a run with
+// not end with a text-only assistant run. A tool_result with a prefill tail
+// (magpie going on from a reply cut after a tool round, plugins#1512) is
+// replayed into a fresh session. Known limits: a run with
 // no user message before it (contiguous assistant tail, e.g. a client re-sending
 // a completed reply with a prefill appended) puts the whole run in the tail, so
 // that one turn degrades to a fresh session (safe, self-healing).
@@ -6404,9 +6405,6 @@ function validateBody(body) {
   // A text-only assistant tail is a client-side prefill (see prefillRun).
   const prefillTail = prefillTailEnabled() && lastRole === "assistant" && assistantTextOf(body.messages.at(-1)) !== null
   const validTailRole = lastRole === "user" || lastRole === "system" || lastRole === "developer" || prefillTail
-  if (prefillTail && extractToolResults(body).length) {
-    throw new UnsupportedContent("a request combining a live tool_result with an assistant prefill tail")
-  }
   if (!validTailRole || (!extractToolResults(body).length &&
     !trailing.messages.some((message) => message.role === "user") && !trailing.history.length)) {
     throw new UnsupportedContent(prefillTail
@@ -7919,6 +7917,9 @@ export const AntigravityBridgePlugin = async () => {
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
+            // magpie going on from a reply its stream cut after a tool round:
+            // the round's results, then what the reply had said (plugins#1512)
+            const prefillAfterResults = resultBlocks.length > 0 && prefillTailEnabled() && !!prefillRun(body.messages)
             const callerWorkDir = namedWorkDirectory(body, init)
             const workDir = workDirectory(callerWorkDir)
             const instructions = sessionInstructions(body, callerWorkDir)
@@ -7972,7 +7973,7 @@ export const AntigravityBridgePlugin = async () => {
                   proc.validateResults(rawResults)
                   let interrupted = isInterruptedToolTurn(body)
                   let results = rawResults
-                  if (!interrupted) {
+                  if (!interrupted && !prefillAfterResults) {
                     try {
                       const inspected = inspectToolTurn(rawResults, body)
                       results = inspected.results
@@ -7985,7 +7986,7 @@ export const AntigravityBridgePlugin = async () => {
                       }
                     }
                   }
-                  if (!interrupted) proc.validateResults(results)
+                  if (!interrupted && !prefillAfterResults) proc.validateResults(results)
                   // An image over MCP reaches agy's model as a path it can't
                   // read, so a result with one takes the steer's way: the call
                   // gets the text, the next prompt the image.
@@ -7997,7 +7998,7 @@ export const AntigravityBridgePlugin = async () => {
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
                   // cancelled, and the steer goes in as the next prompt.
-                  if ((interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                  if (!prefillAfterResults && (interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
@@ -8006,12 +8007,15 @@ export const AntigravityBridgePlugin = async () => {
                         .filter((item) => !item.call.deferred || item.call.lateDelivered)
                         .map((item) => item.block.tool_use_id),
                     )
-                  } else if (interrupted || imageResult || !historyMatches || proc.toolsGrew(tools) ||
+                  } else if (prefillAfterResults || interrupted || imageResult || !historyMatches || proc.toolsGrew(tools) ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
                     // real results without resolving the old process's calls.
-                    const dropReason = interrupted ? "interrupted"
+                    // A reply going on from its own text can't be steered into
+                    // the live step: it is replayed into a fresh session.
+                    const dropReason = prefillAfterResults ? "prefill"
+                      : interrupted ? "interrupted"
                       : imageResult ? "image_result"
                       : !historyMatches ? "history_mismatch"
                       : proc.toolsGrew(tools) ? "tools_grew"
