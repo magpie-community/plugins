@@ -373,7 +373,7 @@ off unless you turn it on.
   the turn with an error instead of passing the marker through as text. agy
   1.5.8's "There was a network issue connecting to the server" and "Your AI
   credits balance is too low to continue." end the turn the same way (the
-  latter as a rate limit), and its `⚠ API error (attempt N)` retry lines are
+  latter as a rate limit), as does a closing "⚠ agent executor error: …" line, and its `⚠ API error (attempt N)` retry lines are
   dropped. So are the three lines agy writes into the reply when its own output
   cap triggers a retry ("Your previous response was cut off because it exceeded
   the output token limit", its instruction to continue, and "Retries
