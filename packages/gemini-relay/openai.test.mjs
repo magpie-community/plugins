@@ -263,6 +263,75 @@ test("sse surfaces an ask failure instead of a silent empty stream", async () =>
   ).rejects.toBe(boom)
 })
 
+// ---- sse first-token semantics: the Response is returned before the
+// whole answer is ready, so a slow generation cannot trip magpie's
+// first-token deadline (the bug "no answer in 1m0s" came from) ----
+test("sse returns the Response as soon as the first delta lands, before ask resolves", async () => {
+  let release
+  const gate = new Promise((r) => (release = r))
+  const res = await sse({
+    id: "chatcmpl-s4",
+    model: "gemini-4-hydrogen",
+    promptTokens: () => 3,
+    signal: new AbortController().signal,
+    ask: async (onUpdate) => {
+      onUpdate({ text: "first ", reasoning: "" })
+      await gate // the generation runs on well past the first delta
+      return { text: "first second", reasoning: "" }
+    },
+  })
+  // the Response is already here while ask() is still awaiting the gate
+  expect(res.status).toBe(200)
+  expect(res.headers.get("content-type")).toBe("text/event-stream")
+  // the first delta was already readable without the gate releasing
+  const reader = res.body.getReader()
+  const first = new TextDecoder().decode((await reader.read()).value)
+  expect(first).toContain("first ")
+  release({ text: "first second", reasoning: "" })
+  const rest = new TextDecoder().decode((await reader.read()).value)
+  expect(rest).toContain("second")
+})
+
+test("sse holds back a tail that may be the start of a tool_call fence", async () => {
+  // two backticks arrive: they may grow into a fence, so they are held
+  // until the read proves them prose or completes the fence
+  const res = await sse({
+    id: "chatcmpl-s5",
+    model: "m",
+    promptTokens: () => 0,
+    signal: new AbortController().signal,
+    ask: async (onUpdate) => {
+      onUpdate({ text: "code: ``", reasoning: "" })
+      return { text: "code: ```js\nx()", reasoning: "" }
+    },
+  })
+  const { chunks } = await readSSE(res)
+  const content = chunks.map((c) => c.choices[0].delta.content ?? "").join("")
+  // nothing premature leaked, and the whole text still lands by the end
+  expect(content).toBe("code: ```js\nx()")
+})
+
+test("sse aborts the relay when the client cancels the stream", async () => {
+  const ctl = new AbortController()
+  let observed
+  const res = await sse({
+    id: "chatcmpl-s6",
+    model: "m",
+    promptTokens: () => 0,
+    signal: ctl.signal,
+    ask: async (onUpdate, signal) => {
+      observed = signal
+      onUpdate({ text: "hi", reasoning: "" })
+      await new Promise(() => {}) // keeps generating until cancelled
+    },
+  })
+  const reader = res.body.getReader()
+  await reader.read() // the first delta
+  await reader.cancel()
+  // the relay's ask saw the cancel (its own signal, not the request's)
+  expect(observed.aborted).toBe(true)
+})
+
 // ---- e) session continuation: pool hit sends only the new text ----
 
 // a stub page: answers whatever eval string it is handed, pulling the
