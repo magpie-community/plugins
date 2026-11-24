@@ -1,0 +1,89 @@
+<!-- 本文由AI自动生成 -->
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="memory-graph-token" content="" />
+    <title>AI_记忆图谱</title>
+    <link rel="icon" href="/icon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-icon" src="/icon.svg" alt="" />
+        <div class="brand-text">
+          <strong>记忆图谱</strong>
+          <span id="counts">正在读取…</span>
+        </div>
+      </div>
+
+      <label class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M16 16l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <input id="q" type="search" placeholder="搜标题、正文、标签…" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <div class="filters">
+        <button class="chip-btn" data-menu="kind" type="button">类型 <b id="kind-count"></b></button>
+        <button class="chip-btn" data-menu="scope" type="button">范围 <b id="scope-count"></b></button>
+        <button class="chip-btn" data-menu="tag" type="button">标签 <b id="tag-count"></b></button>
+        <label class="toggle"><input id="only-mutual" type="checkbox" /> 只看互指</label>
+        <label class="toggle"><input id="hide-superseded" type="checkbox" /> 隐藏已取代</label>
+      </div>
+
+      <div class="actions">
+        <button id="fit" class="icon-btn" type="button" title="适配窗口 (0)">适配</button>
+        <button id="rebuild" class="icon-btn" type="button" title="重新计算全部关联">重建全部</button>
+        <button id="theme" class="icon-btn" type="button" title="切换主题">主题</button>
+      </div>
+    </header>
+
+    <div id="progress" class="progress" hidden>
+      <i></i>
+      <span></span>
+    </div>
+
+    <main class="stage">
+      <svg id="canvas" role="img" aria-label="记忆关系图谱">
+        <g id="viewport">
+          <g id="edges"></g>
+          <g id="nodes"></g>
+          <g id="labels"></g>
+        </g>
+      </svg>
+
+      <div id="tip" class="tip" hidden></div>
+
+      <aside id="legend" class="legend"></aside>
+
+      <div id="banner" class="banner" hidden>
+        <span></span>
+        <button id="banner-retry" type="button">重试</button>
+        <button id="banner-close" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <div id="empty" class="empty" hidden>
+        <strong></strong>
+        <p></p>
+        <button id="empty-action" type="button" hidden></button>
+      </div>
+
+      <div id="menu" class="menu" hidden></div>
+      <div id="toast" class="toast" hidden></div>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status">正在启动本地服务…</span>
+      <span class="hint">悬浮看详情 · 单击高亮一跳 · 双击聚焦 · Esc 复位</span>
+      <span id="engine">引擎：memory_search</span>
+    </footer>
+
+    <script src="/graph.js"></script>
+    <script src="/tooltip.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
