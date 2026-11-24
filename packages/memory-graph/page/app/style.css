@@ -344,6 +344,11 @@ button {
   stroke-opacity: 0.04;
 }
 
+/* 端点被筛掉时连线必须一起消失，否则只剩一堆悬空的线穿过画布。 */
+.edge.hidden {
+  display: none;
+}
+
 .edge-hit {
   stroke: transparent;
   stroke-width: 7;
