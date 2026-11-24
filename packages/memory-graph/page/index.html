@@ -83,12 +83,32 @@
         color: #dc2626;
         font-weight: 600;
       }
+      .retry {
+        display: none;
+        margin-top: 2px;
+        padding: 5px 14px;
+        border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      .retry:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .retry.on {
+        display: inline-block;
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="dots"><i></i><i></i><i></i></div>
       <p id="msg">正在打开记忆图谱…</p>
+      <button type="button" id="retry" class="retry">重试</button>
     </div>
     <script src="_magpie/bridge.js"></script>
     <script src="boot.js"></script>

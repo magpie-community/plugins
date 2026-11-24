@@ -2,9 +2,9 @@
 
 # @magpie-community/page-memory-graph
 
-Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Whether two memories are linked is decided **only by magpie's own `memory_search` order** — no embeddings, no external model, no API key. Hover any node to read its full text, kind, scope, tags, why, sources, in/out links and link strength.
+Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Whether two memories are linked is decided **only by magpie's own `memory_search` order** — no embeddings, no external model, no API key. Hover any node to read its full text, kind, scope, tags, why, sources, and the rank that links it to the top three neighbours.
 
-把 magpie 已保存的记忆画成 Obsidian 式关系图谱。两条记忆是否关联，**只由 magpie 内置 `memory_search` 的排序结果决定**：不自建向量、不调用外部模型、不需要 API key。悬浮任意节点，可以看正文、类型、范围、标签、记录原因、来源、出入链与关联强度。
+把 magpie 已保存的记忆画成 Obsidian 式关系图谱。两条记忆是否关联，**只由 magpie 内置 `memory_search` 的排序结果决定**：不自建向量、不调用外部模型、不需要 API key。悬浮任意节点，可以看正文、类型、范围、标签、记录原因、来源，以及它与前三个关联的位次。
 
 ## Install
 
@@ -24,15 +24,15 @@ For every memory with `status: active`, the plugin calls the built-in tool:
 { "name": "memory_search", "arguments": { "query": "<title + first 500 chars>", "limit": 16, "scope": "all" } }
 ```
 
-The returned order is the only signal. The plugin skips the memory itself and the first 8 remaining hits become edges:
+The returned order is the only signal. The plugin skips the memory itself and the first **3** remaining hits become edges:
 
-| Position in `memory_search` | Link strength | Score shown |
-| --- | --- | --- |
-| 1–2 | strong | 1.000–0.875 |
-| 3–5 | medium | 0.750–0.500 |
-| 6–8 | weak | 0.375–0.125 |
+| Position in `memory_search` | What you see |
+| --- | --- |
+| 1st | `第 1 位` — thickest edge |
+| 2nd | `第 2 位` |
+| 3rd | `第 3 位` — thinnest edge |
 
-The number shown is `(8 - rank + 1) / 8`, rounded to three decimals; a mutual edge gets `+0.05` capped at `1.000`. It is a **rank-normalized score, not a cosine similarity** — `memory_search` returns order, not a distance, so this is the only honest numeric signal available. A pair can rank differently under a different query; that is retrieval, not a bug.
+If both memories put each other in their top 3, the edge is marked **双向** and both ranks are shown. There is no score, because `memory_search` does not return one: the only honest thing to display is the position it returned. A pair can rank differently under a different query — that is retrieval, not a bug.
 
 Labels are hidden by default on a large graph. They appear when you zoom past `1.45×`, or when the current filter leaves at most 100 visible nodes; hover and selection always show a label.
 
@@ -66,10 +66,10 @@ Each node's card shows, in order:
 5. tags — click one to filter the graph;
 6. created / updated timestamps;
 7. sources — agent, shortened directory, quoted evidence;
-8. related memories, each with a three-decimal score, rank and mutual marker; click one to focus it;
-9. degree and total score.
+8. the top three related memories, each with the rank that links it (`第 1 位`, `第 2 位 · 双向`, …); click one to focus it;
+9. degree, with a note that ranks come from `memory_search`.
 
-Edges also have a hover card with both endpoints, strength, direction and rank.
+Edges also have a hover card with both endpoints, direction and the rank on each side.
 
 ## Controls
 
@@ -85,9 +85,10 @@ Edges also have a hover card with both endpoints, strength, direction and rank.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `port` | `3491` | local page service; declared in `magpie.page.service` |
-| `topK` | `8` | how many `memory_search` hits become edges per memory |
+| `topK` | `3` | how many `memory_search` hits become edges per memory |
 | `concurrency` | `8` | parallel `memory_search` calls |
 | `maxNodes` | `200` | render cap; the current 182 visible nodes fit |
+| `idleMinutes` | `5` | go to sleep after this many idle minutes; `0` never sleeps |
 
 Set them in magpie's plugin options. `gateway`, `memoryDir`, `dataDir` and `buildTimeoutMs` are also accepted for unusual installs.
 
@@ -103,9 +104,25 @@ The `memory` MCP server magpie can expose to agents (`create_entities`, `create_
 ## Limits
 
 - First build is dominated by `memory_search` latency (~3 seconds per call here); 120 active memories at 8-way concurrency is ~50 seconds.
-- `memory_search` returns order, not scores; link strength is a banded rank, not a probability.
+- `memory_search` returns order, not scores; the rank is a position, not a probability.
 - The page is served on `127.0.0.1`; opening magpie web on another computer points at that computer's loopback, so this page is for the desktop window (same as other page+service plugins).
 - The graph shows at most 200 nodes by default; raise `maxNodes` if your library is larger.
+
+## Service lifecycle
+
+The page and its local service live inside magpie's shared plugin host, so this package never exits a process. It binds the port before doing any other work, so the hand-off page almost never has to wait.
+
+- If the port is already taken, the plugin asks `GET /api/health` who owns it. If the answer is another `memory-graph` instance (a host that is still draining), it **attaches** instead of failing, and takes the port over once that instance disappears.
+- After `idleMinutes` with no successful request, it goes to sleep: the in-memory graph and the MCP session are dropped, the listener stays. The next request wakes it in milliseconds and reloads `graph-cache.json`.
+- The page stops polling when it is in the background or after five minutes without pointer/keyboard activity, so a forgotten window does not keep the service awake.
+
+If the page still says it cannot reach the service:
+
+```sh
+curl -s http://127.0.0.1:3491/api/health
+```
+
+`{"plugin":"memory-graph", ...}` means the service is up and the page just needs reopening. A connection error means the port is held by something else — set another `port` in the plugin options. `initError` in that JSON explains a failure to reach magpie's gateway.
 
 ## Security
 

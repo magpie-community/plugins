@@ -38,9 +38,7 @@
     return parts.length <= 2 ? text : `…/${parts.slice(-2).join("/")}`;
   }
 
-  function strengthLabel(value) {
-    return value >= 3 ? "强" : value === 2 ? "中" : "弱";
-  }
+  const MAX_LINKS = 3;
 
   function create(el, handlers = {}) {
     let hideTimer = 0;
@@ -253,49 +251,49 @@
         const edge = ctx.edgeFor?.(node.id, other);
         if (edge) related.push({ edge, other });
       }
-      related.sort((a, b) => b.edge.s - a.edge.s || (a.edge.ra || 99) - (b.edge.ra || 99));
+      const ownRank = (edge) => (node.id === edge.a ? edge.ra : edge.rb) || (node.id === edge.a ? edge.rb : edge.ra) || 99;
+      related.sort((a, b) => ownRank(a.edge) - ownRank(b.edge) || b.edge.s - a.edge.s);
 
       if (related.length) {
         links.hidden = false;
         const heading = document.createElement("h4");
-        heading.textContent = `关联 ${related.length} 条`;
+        heading.textContent =
+          related.length > MAX_LINKS
+            ? `关联 ${related.length} 条 · 显示前 ${MAX_LINKS}`
+            : `关联 ${related.length} 条`;
         links.appendChild(heading);
-        for (const { edge, other } of related.slice(0, 5)) {
+        for (const { edge, other } of related.slice(0, MAX_LINKS)) {
           const peer = ctx.byId?.get(other);
           if (!peer) continue;
           const row = document.createElement("button");
           row.type = "button";
           row.className = "tip-link";
 
-          const bar = document.createElement("span");
-          bar.className = "bar";
-          const fill = document.createElement("i");
-          fill.style.width = `${(Number(edge.score) || 0) * 100}%`;
-          bar.appendChild(fill);
-
           const who = document.createElement("span");
           who.className = "who";
           who.textContent = peer.title || peer.id;
 
-          const own = node.id === edge.a ? edge.ra : edge.rb;
-          const other = node.id === edge.a ? edge.rb : edge.ra;
-          const rank = own || other;
-          const score = document.createElement("span");
-          score.className = "s";
-          score.textContent = `${(Number(edge.score) || 0).toFixed(3)} · ${
-            rank ? `${own ? "" : "对向"}第${rank}位` : "—"
-          }${edge.m ? " · 双向" : ""}`;
+          const forward = node.id === edge.a;
+          const rank = (forward ? edge.ra : edge.rb) || (forward ? edge.rb : edge.ra);
+          const back = forward ? edge.rb : edge.ra;
+          const meta = document.createElement("span");
+          meta.className = "s";
+          meta.textContent = [
+            rank ? `第 ${rank} 位` : "",
+            back && back !== rank ? `对向第 ${back} 位` : "",
+            edge.m ? "双向" : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
 
-          row.append(bar, who, score);
+          row.append(who, meta);
           row.addEventListener("click", () => handlers.onFocus?.(peer));
           links.appendChild(row);
         }
       }
 
       foot.hidden = false;
-      foot.textContent = `${node.degree || 0} 条关联 · 关联度合计 ${Number(node.scoreSum || 0).toFixed(
-        3,
-      )} · 位次折算自 memory_search`;
+      foot.textContent = `${node.degree || 0} 条关联 · 位次来自 memory_search，第 1 位最相关`;
     }
 
     function renderEdge(edge, ctx) {
@@ -307,8 +305,6 @@
       const a = ctx.byId?.get(edge.a);
       const b = ctx.byId?.get(edge.b);
       title.textContent = `${a?.title || edge.a} ↔ ${b?.title || edge.b}`;
-      addMeta("关联度", (Number(edge.score) || 0).toFixed(3));
-      addMeta("强度档", strengthLabel(edge.s));
       addMeta("方向", edge.m ? "双向" : "单向");
       if (edge.ra) addMeta("A 侧位次", `第 ${edge.ra} 位`);
       if (edge.rb) addMeta("B 侧位次", `第 ${edge.rb} 位`);
@@ -328,8 +324,7 @@
       }
 
       foot.hidden = false;
-      foot.textContent =
-        "关联度是 memory_search 位次折算（第 1 位 1.000），不是余弦相似度";
+      foot.textContent = "关联只由 memory_search 的位次决定，没有相似度分数";
     }
 
     function show(node, ctx) {
@@ -361,7 +356,7 @@
     }
 
     function showEdge(edge, ctx) {
-      const key = `${edge.a}|${edge.b}|${edge.s}|${edge.m}`;
+      const key = `${edge.a}|${edge.b}|${edge.ra}|${edge.rb}|${edge.m}`;
       lastPoint = { x: ctx?.x || 0, y: ctx?.y || 0 };
       if (currentEdgeKey === key && !el.hidden) {
         place(lastPoint.x, lastPoint.y);

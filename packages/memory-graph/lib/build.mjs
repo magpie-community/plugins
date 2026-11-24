@@ -31,6 +31,7 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
   let running = null;
   let lastCheck = 0;
   let currentHits = null;
+  let sleeping = false;
 
   let state = {
     phase: "idle",
@@ -74,6 +75,7 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
   function run(mode = "incremental") {
     if (running) return { started: false, phase: state.phase };
     currentHits = null;
+    sleeping = false;
 
     state = {
       ...state,
@@ -104,7 +106,7 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
       // 先把「有哪些节点」落盘：页面能先看到点，边随后补。
       await persist(hits, false);
 
-      const topK = Math.max(1, Math.min(20, Number(options.topK) || 8));
+      const topK = Math.max(1, Math.min(20, Number(options.topK) || 3));
       const targets = Object.values(nodes)
         .filter(
           (node) =>
@@ -206,6 +208,25 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     return true;
   }
 
+  // 空闲休眠：丢掉内存里的节点与命中表（磁盘缓存还在），下次请求再懒加载。
+  // 不关 listener、不杀进程——宿主是共享的，退出会连带打断别的插件。
+  function sleep() {
+    if (running || sleeping) return false;
+    nodes = {};
+    cache = { v: 1, nodes: {}, hits: {}, stats: {}, builtAt: cache.builtAt };
+    loaded = false;
+    sleeping = true;
+    state.phase = "asleep";
+    return true;
+  }
+
+  function wake() {
+    if (!sleeping) return false;
+    sleeping = false;
+    if (state.phase === "asleep") state.phase = "idle";
+    return true;
+  }
+
   async function getGraph() {
     await load();
     return buildPayload({
@@ -224,6 +245,7 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     return {
       ok: true,
       phase: state.phase,
+      asleep: sleeping,
       done: state.done,
       total: state.total,
       concurrency: Math.max(1, Math.min(12, Number(options.concurrency) || 8)),
@@ -240,5 +262,5 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     };
   }
 
-  return { run, maybeRefresh, getGraph, getStatus };
+  return { run, maybeRefresh, getGraph, getStatus, sleep, wake };
 }

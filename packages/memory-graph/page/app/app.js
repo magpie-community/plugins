@@ -49,13 +49,19 @@
     engine: $("#engine"),
   };
 
+  const IDLE_MS = 5 * 60 * 1000;
+
   const state = {
     data: null,
     byId: new Map(),
     adj: new Map(),
     edgeList: [],
     status: { phase: "scanning" },
-    builtAt: "",    filters: {
+    builtAt: "",
+    lastInteraction: Date.now(),
+    pollTimer: 0,
+    paused: false,
+    filters: {
       q: "",
       kinds: new Set(),
       scopes: new Set(),
@@ -551,7 +557,7 @@
   function renderProgress(status) {
     if (!status) return;
     const phase = status.phase || "idle";
-    const busy = phase !== "idle" && phase !== "error";
+    const busy = phase !== "idle" && phase !== "error" && phase !== "asleep";
     els.progress.hidden = !busy;
 
     if (phase === "scanning") {
@@ -567,6 +573,8 @@
     } else if (phase === "error") {
       els.progress.hidden = true;
       showBanner(`构建失败：${status.lastError || "未知错误"}`, () => retry());
+    } else if (phase === "asleep") {
+      els.progress.hidden = true;
     }
 
     if (busy) {
@@ -586,6 +594,23 @@
   }
 
   async function poll() {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = 0;
+
+    // 页面在后台：不发请求，让服务自己按空闲策略休眠。
+    if (document.hidden) {
+      state.pollTimer = setTimeout(poll, 15000);
+      return;
+    }
+
+    // 前台但 5 分钟没人动：停止轮询（服务端也会跟着休眠），任意交互立即恢复。
+    if (Date.now() - state.lastInteraction >= IDLE_MS) {
+      state.paused = true;
+      els.status.textContent = "已休眠（空闲 5 分钟）· 动一下鼠标唤醒";
+      return;
+    }
+    state.paused = false;
+
     try {
       const status = await api("/api/status");
       state.status = status;
@@ -602,8 +627,19 @@
         showBanner("页面口令失效了。请从 magpie 的插件入口重新打开记忆图谱。");
       }
     }
-    const busy = state.status && !["idle", "error"].includes(state.status.phase);
-    setTimeout(poll, busy ? 1000 : 5000);
+    const busy = state.status && !["idle", "error", "asleep"].includes(state.status.phase);
+    state.pollTimer = setTimeout(poll, busy ? 1000 : 5000);
+  }
+
+  function markActive() {
+    state.lastInteraction = Date.now();
+    if (!state.paused && state.pollTimer) return;
+    if (state.paused) {
+      state.paused = false;
+      setStatus("已唤醒，正在载入…");
+    }
+    if (state.pollTimer) return;
+    poll();
   }
 
   async function rebuild() {
@@ -702,6 +738,19 @@
         event.preventDefault();
         els.q.focus();
       }
+    });
+    // 交互即「有人在场」：休眠后动一下鼠标就能恢复轮询。
+    for (const type of ["pointermove", "pointerdown", "keydown", "wheel"]) {
+      window.addEventListener(type, () => markActive(), { passive: type !== "keydown" });
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      state.lastInteraction = Date.now();
+      state.paused = false;
+      clearTimeout(state.pollTimer);
+      state.pollTimer = 0;
+      poll();
     });
   }
 

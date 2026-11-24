@@ -54,6 +54,12 @@ export class MemoryMcp {
     this.session = null;
   }
 
+  // 空闲休眠时调用：丢掉会话，下次 search 会自己重新 initialize。
+  close() {
+    this.reset();
+    this.lastUsed = 0;
+  }
+
   async ensureSession() {
     if (this.lastUsed && Date.now() - this.lastUsed > this.idleMs) this.reset();
     if (!this.session) {

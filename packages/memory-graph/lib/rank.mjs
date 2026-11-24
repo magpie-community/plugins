@@ -1,9 +1,10 @@
 // 本文由AI自动生成
 // 把 memory_search 的「命中顺序」折成边。
 //
-// 重要：memory_search 不返回相似度分数，只返回排序。这里的 s 是位次折算的
-// 相对强度（1–2 位强、3–5 位中、6–8 位弱），不是余弦相似度；两边互相进入
-// 对方 topK 时加一档，表示「双向都认为相关」，上限仍是 3。
+// 重要：memory_search 只返回排序，不返回任何分数。所以这里不造相似度，
+// 只保留位次本身（ra/rb），展示层直接显示「第 N 位」。
+// s 是位次所在的粗细档（仅用于线宽，不对外展示）；两边互相进入对方 topK
+// 时加一档，表示「双向都认为相关」，上限仍是 3。
 
 export function queryText(node, chars = 500) {
   const body = String(node?.body || "").trim();
@@ -12,13 +13,16 @@ export function queryText(node, chars = 500) {
   return (head + body).slice(0, chars);
 }
 
-export function bandOf(rank) {
-  if (rank <= 2) return 3;
-  if (rank <= 5) return 2;
+// 档位随 topK 自适应：topK=3 时 1→3、2→2、3→1；topK=8 时 1→3、2–3→2、4–8→1。
+export function bandOf(rank, topK = 3) {
+  const k = Math.max(1, Number(topK) || 3);
+  if (rank <= 1) return 3;
+  if (rank <= Math.max(2, Math.ceil(k / 3))) return 2;
   return 1;
 }
 
-export function edgesFromHits(nodes, hits, { topK = 8, visible = null } = {}) {
+export function edgesFromHits(nodes, hits, { topK = 3, visible = null } = {}) {
+  const k = Math.max(1, Math.min(20, Number(topK) || 3));
   const allowed = visible || new Set(Object.keys(nodes || {}));
   const pairs = new Map();
 
@@ -31,7 +35,7 @@ export function edgesFromHits(nodes, hits, { topK = 8, visible = null } = {}) {
     for (const id of hit.ids) {
       if (id === node.id || !allowed.has(id)) continue;
       rank++;
-      if (rank > topK) break;
+      if (rank > k) break;
 
       const [a, b] = node.id < id ? [node.id, id] : [id, node.id];
       const key = `${a}|${b}`;
@@ -41,7 +45,7 @@ export function edgesFromHits(nodes, hits, { topK = 8, visible = null } = {}) {
         pairs.set(key, edge);
       }
 
-      const strength = bandOf(rank);
+      const strength = bandOf(rank, k);
       if (node.id === a) {
         edge.ra = edge.ra || rank;
         edge.sa = Math.max(edge.sa, strength);
@@ -55,20 +59,18 @@ export function edgesFromHits(nodes, hits, { topK = 8, visible = null } = {}) {
   const edges = [];
   for (const edge of pairs.values()) {
     const mutual = edge.ra && edge.rb ? 1 : 0;
-    const ranks = [edge.ra, edge.rb].filter(Boolean);
-    const bestRank = Math.min(...ranks);
-    const base = (topK - bestRank + 1) / topK;
-    const score = Math.min(1, base + (mutual ? 0.05 : 0));
     edges.push({
       a: edge.a,
       b: edge.b,
       s: Math.min(3, Math.max(edge.sa, edge.sb) + (mutual ? 1 : 0)),
-      score: Number(score.toFixed(3)),
       m: mutual,
       ra: edge.ra,
       rb: edge.rb,
     });
   }
-  edges.sort((x, y) => y.s - x.s || Math.min(x.ra || 99, x.rb || 99) - Math.min(y.ra || 99, y.rb || 99));
+  edges.sort(
+    (x, y) =>
+      Math.min(x.ra || 99, x.rb || 99) - Math.min(y.ra || 99, y.rb || 99) || y.s - x.s,
+  );
   return edges;
 }

@@ -25,21 +25,16 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
   const all = Object.values(nodes || {});
   const visibleNodes = all.filter((node) => node.status === "active" || node.status === "superseded");
   const visible = new Set(visibleNodes.map((node) => node.id));
-  const edges = edgesFromHits(nodes, hits, {
-    topK: Number(options.topK) || 8,
-    visible,
-  });
+  const topK = Math.max(1, Math.min(20, Number(options.topK) || 3));
+  const edges = edgesFromHits(nodes, hits, { topK, visible });
 
   const degree = new Map();
   const strength = new Map();
-  const scoreSum = new Map();
   for (const edge of edges) {
     degree.set(edge.a, (degree.get(edge.a) || 0) + 1);
     degree.set(edge.b, (degree.get(edge.b) || 0) + 1);
     strength.set(edge.a, (strength.get(edge.a) || 0) + edge.s);
     strength.set(edge.b, (strength.get(edge.b) || 0) + edge.s);
-    scoreSum.set(edge.a, (scoreSum.get(edge.a) || 0) + (edge.score || 0));
-    scoreSum.set(edge.b, (scoreSum.get(edge.b) || 0) + (edge.score || 0));
   }
 
   const payloadNodes = visibleNodes.map((node) => ({
@@ -60,7 +55,6 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
     bodyTruncated: Boolean(node.bodyTruncated),
     degree: degree.get(node.id) || 0,
     strengthSum: strength.get(node.id) || 0,
-    scoreSum: Number((scoreSum.get(node.id) || 0).toFixed(3)),
   }));
 
   payloadNodes.sort(
@@ -86,7 +80,7 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
   if (!payloadNodes.length) {
     warnings.push({ level: "info", text: "还没有可显示的记忆，正在等第一次扫描结果。" });
   } else if (!keptEdges.length && (stats?.queried || 0) > 0) {
-    warnings.push({ level: "info", text: "这些记忆之间暂时没有进入彼此前 8 位的语义关联。" });
+    warnings.push({ level: "info", text: `这些记忆之间暂时没有进入彼此前 ${topK} 位的语义关联。` });
   }
   if (payloadNodes.length > kept.length) {
     warnings.push({
