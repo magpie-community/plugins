@@ -35,6 +35,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
+| [magnific-api](packages/magnific-api) | Magnific image and video generation, with your API key: 20 native image and video models, and tools for every agent that reach all 140 generation endpoints | `magnific` |
 | [mclaw](packages/mclaw) | China Mobile Cloud's MClaw agent (ai.yun.139.com), with a browser sign-in that harvests the ticket and auto-fetches the llm key: live models with token multipliers, aitokens pool usage, auto renewal (unofficial) | `mclaw` |
 | [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
