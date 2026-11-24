@@ -2469,3 +2469,229 @@ test("plugins#1454: a reply that only starts with ⚠ is still sent whole", asyn
     assert.equal(replyText(parsed), chunks.join(""))
   }
 })
+
+const UNAUTH_LINE = "⚠ UNAUTHENTICATED (code 401): Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential."
+const UNAUTH_INVALID_LINE = "⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential."
+const UNAUTH_ENDING = "\n" + UNAUTH_LINE + "\n"
+const UNAUTH_INVALID_ENDING = "\n" + UNAUTH_INVALID_LINE + "\n"
+const AUTH_EXPIRED_ENDING = "\n⚠ Authentication expired. Please log back in.\n"
+
+test("transient UNAUTHENTICATED (code 401) ending restarts a fresh agy process and answers cleanly", async () => {
+  for (const [stream, chunks] of [
+    [true, [UNAUTH_ENDING.slice(0, 18), UNAUTH_ENDING.slice(18, 45), UNAUTH_ENDING.slice(45)]],
+    [true, ["⚠ UNAUTHENTICATED", " (code 401): Request had invalid authentication credentials."]],
+    [true, ["\n⚠ Model produced invalid output.\n" + UNAUTH_INVALID_LINE + "\n"]],
+    [false, [UNAUTH_LINE]],
+    [false, [UNAUTH_INVALID_ENDING]],
+  ]) {
+    await withKit({}, async (kit) => {
+      let calls = 0
+      kit.defaultPrompt = async (agent) => {
+        calls++
+        if (calls === 1) {
+          for (const chunk of chunks) await agent.text(chunk)
+          return { stopReason: "end_turn" }
+        }
+        await agent.text("recovered on fresh process")
+        return { stopReason: "end_turn" }
+      }
+      const response = await kit.request(baseBody({
+        metadata: { user_id: `unauth-recover-${stream}` },
+        messages: [{ role: "user", content: "hello" }],
+        stream,
+      }))
+      assert.equal(response.status, 200)
+      if (stream) {
+        const parsed = await readSse(response)
+        assert.equal(parsed.error, null)
+        assert.equal(parsed.stopReason, "end_turn")
+        assert.equal(replyText(parsed), "recovered on fresh process")
+      } else {
+        const body = await response.json()
+        assert.equal(body.stop_reason, "end_turn")
+        assert.equal(body.content?.[0]?.text, "recovered on fresh process")
+      }
+      assert.equal(kit.acpSpawns.length, 2, "restarted a fresh agy process")
+    })
+  }
+})
+
+test("UNAUTHENTICATED (code 401) during live tool continuation replays on a fresh agy process", async () => {
+  await withKit({}, async (kit) => {
+    let promptCalls = 0
+    kit.defaultPrompt = async (agent) => {
+      promptCalls++
+      if (promptCalls === 1) {
+        await agent.tool("Read", { path: "/tmp/test.txt" })
+        // Wait for tool result, then hit 401 on the resumed model call in the old process.
+        await agent.text(UNAUTH_ENDING)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("tool turn recovered")
+      return { stopReason: "end_turn" }
+    }
+    const body1 = baseBody({ metadata: { user_id: "unauth-tool-cont" }, messages: [{ role: "user", content: "read file" }] })
+    const turn1 = await readSse(await kit.request(body1))
+    assert.equal(turn1.stopReason, "tool_use")
+    const turn2 = await readSse(await kit.request(continueWithToolResults(body1, turn1, () => "file-content")))
+    assert.equal(turn2.error, null)
+    assert.equal(turn2.stopReason, "end_turn")
+    assert.equal(replyText(turn2), "tool turn recovered")
+    assert.equal(kit.acpSpawns.length, 2)
+  })
+})
+
+test("auth retry bypasses and drops any pre-warmed spare process", async () => {
+  await withKit({ env: { AGY_BRIDGE_SPARE: "1" } }, async (kit) => {
+    let calls = 0
+    kit.defaultPrompt = async (agent) => {
+      calls++
+      if (calls === 1) {
+        await agent.text("first ok")
+        return { stopReason: "end_turn" }
+      }
+      if (calls === 2) {
+        await agent.text(UNAUTH_ENDING)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("from newly spawned process")
+      return { stopReason: "end_turn" }
+    }
+    const turn1 = await readSse(await kit.request(baseBody({
+      metadata: { user_id: "unauth-spare" },
+      messages: [{ role: "user", content: "hello 1" }],
+    })))
+    assert.equal(turn1.stopReason, "end_turn")
+    // Allow warmSpare to finish spawning spare #1 before Turn 2 hits 401.
+    await sleep(80)
+    assert.equal(kit.acpSpawns.length, 2, "spare was warmed before turn 2")
+
+    const turn2 = await readSse(await kit.request(baseBody({
+      metadata: { user_id: "unauth-spare" },
+      messages: [
+        { role: "user", content: "hello 1" },
+        { role: "assistant", content: turn1.content },
+        { role: "user", content: "hello 2" },
+      ],
+    })))
+    assert.equal(turn2.error, null)
+    assert.equal(replyText(turn2), "from newly spawned process")
+    assert.equal(kit.acpSpawns.length, 3, "auth retry bypassed the stale spare and spawned a fresh process")
+  })
+})
+
+test("persistent UNAUTHENTICATED or Authentication expired fails once with 401 authentication_error and drops process", async () => {
+  for (const [chunks, stream] of [
+    [[UNAUTH_ENDING], true],
+    [[AUTH_EXPIRED_ENDING], false],
+    [[AUTH_EXPIRED_ENDING.slice(0, 15), AUTH_EXPIRED_ENDING.slice(15)], true],
+  ]) {
+    await withKit({}, async (kit) => {
+      let calls = 0
+      kit.defaultPrompt = async (agent) => {
+        calls++
+        for (const chunk of chunks) await agent.text(chunk)
+        return { stopReason: "end_turn" }
+      }
+      const reqBody = baseBody({
+        metadata: { user_id: `unauth-perm-${stream}` },
+        messages: [{ role: "user", content: "hello" }],
+        stream,
+      })
+      const response = await kit.request(reqBody)
+      if (stream) {
+        const text = await response.text()
+        const error = sseError(text)
+        assert.equal(error?.type, "authentication_error")
+        assert.equal(error?.status, 401)
+        assert.match(error?.message, /authentication failed/i)
+        assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      } else {
+        assert.equal(response.status, 401)
+        const body = await response.json()
+        assert.equal(body.error?.type, "authentication_error")
+        assert.match(body.error?.message, /Authentication expired\. Please log back in\./)
+        assert.ok(!JSON.stringify(body).includes("⚠"), "no banner reaches the client")
+      }
+      assert.equal(calls, 2, "retries once on a fresh process, then stops")
+      assert.equal(kit.acpSpawns.length, 2)
+      // Next request spawns a new process rather than reusing a dropped one.
+      calls = 0
+      kit.defaultPrompt = async (agent) => {
+        await agent.text("signed back in")
+        return { stopReason: "end_turn" }
+      }
+      const next = await readSse(await kit.request(baseBody({
+        metadata: { user_id: `unauth-perm-${stream}` },
+        messages: [{ role: "user", content: "hello again" }],
+      })))
+      assert.equal(next.error, null)
+      assert.equal(replyText(next), "signed back in")
+      assert.equal(kit.acpSpawns.length, 3)
+    })
+  }
+})
+
+test("generic error ending with UNAUTHENTICATED (code 401) in agy log fails as 401 authentication_error after retry", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      fs.appendFileSync(
+        agyLogOf(kit),
+        "E1118 01:40:06.000000 1234 errorreport.go:224] agent executor error: generating and executing: UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n",
+      )
+      await agent.text("\n⚠ Agent execution terminated due to error.\n")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({
+      metadata: { user_id: "unauth-log" },
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    }))
+    assert.equal(response.status, 401)
+    const body = await response.json()
+    assert.equal(body.error?.type, "authentication_error")
+    assert.match(body.error?.message, /UNAUTHENTICATED \(code 401\)/)
+    assert.equal(kit.acpSpawns.length, 2)
+  })
+})
+
+test("partial text before UNAUTHENTICATED ending is preserved and fails without duplicating via retry", async () => {
+  await withKit({}, async (kit) => {
+    let calls = 0
+    kit.defaultPrompt = async (agent) => {
+      calls++
+      await agent.text("partial output")
+      await agent.text(UNAUTH_ENDING)
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({
+      metadata: { user_id: "unauth-partial" },
+      messages: [{ role: "user", content: "hello" }],
+    }))
+    const text = await response.text()
+    const parsed = await readSse(new Response(text))
+    assert.equal(calls, 1, "does not retry after partial output was emitted")
+    assert.equal(replyText(parsed), "partial output")
+    const error = sseError(text)
+    assert.equal(error?.type, "authentication_error")
+    assert.equal(error?.status, 401)
+  })
+})
+
+test("the model quoting UNAUTHENTICATED or Authentication expired mid-reply keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ UNAUTHENTICATED", " (code 401): Request is missing required authentication credential.\nThat line is agy's, not mine."],
+    ["agy 1.5.10 prints `⚠ Authentication expired. Please log back in.` when revoked."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({
+        metadata: { user_id: "unauth-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }],
+      })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
