@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-mistral-vibe-auth", "name": "Mistral Vibe Code (unofficial)", "icon": "mistral-color", "providers": ["mistral-vibe"], "community": true,
+      "summary": {"en": "Unofficial Mistral Vibe Code for Magpie. Sign in through Mistral Console or use a Vibe CLI key. Calls chat/completions on api.mistral.ai and supports multi-turn tool calls. Shows the plan, monthly Vibe usage, reset and pay-as-you-go status for the selected account.", "zh": "非官方 Mistral Vibe Code 插件。通过 Mistral Console 浏览器登录或使用 Vibe CLI Key，调用 api.mistral.ai 的 chat/completions，支持多轮工具调用。可查看当前账号的套餐、月度 Vibe 用量、重置时间与按量付费状态。"} },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,

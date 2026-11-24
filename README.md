@@ -39,6 +39,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
+| [mistral-vibe](packages/mistral-vibe) | Mistral Vibe Code subscription, with browser sign-in or a Vibe CLI key, monthly usage, reset time and pay-as-you-go status (unofficial) | `mistral-vibe` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
 | [openai-decisions](packages/openai-decisions) | OpenAI's native Decisions API as System One for magpie's classifiers and decision groups, with standard API-key sign-in and per-question refusal handling | `openai-decisions` |
 | [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
