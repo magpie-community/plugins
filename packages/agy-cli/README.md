@@ -199,6 +199,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
 | `AGY_BRIDGE_TELEMETRY` | 关闭（agy 不上报） | 插件启动 agy 时带上 `--disable-telemetry`（agy 的 `acp --help` 没这个开关就带不上）；设成 `1` 保留 agy 自己的上报 |
+| `AGY_BRIDGE_ALLOW_AGY_TOOLS` | 关闭 | 设为 `1` 让每个 `agy acp` 带 `--dangerously-skip-permissions` 启动，agy 自带的工具（shell、改文件、浏览器）自动放行，不再由 bridge 逐个拒绝 `session/request_permission`。客户端 `ide-tools` 仍在客户端自己的权限下运行。保持关闭即维持默认拒绝 |
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |

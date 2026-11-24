@@ -1164,7 +1164,10 @@ function resolveCatalogAlias(catalog, model) {
     return { id: base, inlineEffort }
   }
   const routeKeys = [...catalog.routes.keys()]
-  if (/^(?:gemini-[0-9.]+-flash(?:-lite)?|claude-(?:[0-9.-]+-)?haiku(?:-[0-9.-]+)?)$/i.test(base)) {
+  // "-preview"/"-exp" style suffixes ride the same family: agy asks its aux
+  // title/summary model "gemini-3.1-flash-lite-preview", which no account
+  // serves; route it onto the flash family the account does list.
+  if (/^(?:gemini-[0-9.]+-flash(?:-lite)?(?:-[a-z0-9.]+)?|claude-(?:[0-9.-]+-)?haiku(?:-[0-9.-]+)?)$/i.test(base)) {
     const flashFamily = routeKeys.find((id) => /flash/i.test(id)) ||
       catalog.models.find((item) => /flash/i.test(item.id))?.id
     if (flashFamily) return { id: flashFamily, inlineEffort }
@@ -2310,6 +2313,13 @@ class Proc {
       "--log-file", this.logPath,
       "--ide-mcp-port", String(controlServer.address().port),
     ]
+    // Opt-in: AGY_BRIDGE_ALLOW_AGY_TOOLS=1 hands every session/request_permission
+    // to agy's own --dangerously-skip-permissions, so agy's built-in tools (shell,
+    // edits, browser) auto-approve instead of the bridge refusing them. Default
+    // stays deny-by-bridge for anyone not setting it.
+    if (/^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_ALLOW_AGY_TOOLS || "")) {
+      args.push("--dangerously-skip-permissions")
+    }
     // never the home folder or one above it: agy loads what is in it as the
     // workspace's customizations, inside the same 20k budget as the
     // client's tools, and drops the biggest of those (Bash, Read) to fit
@@ -5698,7 +5708,40 @@ function imageContent(block) {
     source.data.length % 4 !== 0 || /[^A-Za-z0-9+/]/.test(source.data.replace(/={1,2}$/, ""))) {
     throw new UnsupportedContent("invalid base64 image data")
   }
+  // Decode enough of the payload to confirm it is a real image; Gemini answers
+  // "Unable to process input image" for base64 that is valid but not an image
+  // (a truncated capture, a tool's stub, a text file labelled image/png).
+  const decoded = Buffer.from(source.data, "base64")
+  if (!hasImageSignature(decoded, source.media_type)) {
+    const note = decoded.length === 0
+      ? "empty"
+      : `not a ${source.media_type} (first bytes: ${decoded.subarray(0, 8).toString("hex")})`
+    throw new UnsupportedContent(`an image whose data is ${note}`)
+  }
   return { type: "image", data: source.data, mimeType: source.media_type }
+}
+
+// hasImageSignature is the data's magic bytes matching the type it was sent
+// as. WebP is RIFF....WEBP; the others are their file signatures.
+export function hasImageSignature(buf, mimeType) {
+  if (!buf || buf.length < 4) return false
+  switch (mimeType) {
+    case "image/png":
+      return buf.length >= 8 &&
+        buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+        buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+    case "image/jpeg":
+      return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
+    case "image/gif":
+      return buf.length >= 6 &&
+        buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38 &&
+        (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61
+    case "image/webp":
+      return buf.length >= 12 &&
+        buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+        buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+  }
+  return false
 }
 
 // Keep text adjacent to its images, including when an old conversation has to
@@ -6496,10 +6539,19 @@ function toolResult(block) {
       if (part?.type === "document") return { type: "text", text: parseUserDocumentText(part, true) }
       if (part?.type === "search_result") return { type: "text", text: parseSearchResultText(part) }
       if (part?.type === "image" && part.source?.type === "base64" && part.source.data) {
+        const mimeType = (part.source.media_type || "").toLowerCase()
+        // a tool's image goes through agy only as PNG/JPEG/GIF/WebP with real
+        // image bytes — anything else Gemini refuses 400 "Unable to process
+        // input image". A bad capture is dropped with a text note instead.
+        const mt = mimeType === "image/jpg" ? "image/jpeg" : mimeType
+        const decoded = Buffer.from(part.source.data, "base64")
+        if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mt) || !hasImageSignature(decoded, mt)) {
+          return { type: "text", text: `[tool returned an image that could not be read (${mimeType || "no media type"}, ${decoded.length} bytes)]` }
+        }
         return {
           type: "image",
           data: part.source.data,
-          mimeType: part.source.media_type || "application/octet-stream",
+          mimeType: mt,
         }
       }
       throw new UnsupportedContent("this tool_result content")
