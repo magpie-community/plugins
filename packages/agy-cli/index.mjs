@@ -71,7 +71,11 @@ function detachedEvictMs() {
 }
 const MAX_PARKED = 32
 const DEFAULT_PROC_START_TIMEOUT_MS = 60_000
-const TURN_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_TURN_TIMEOUT_MS, 5 * 60 * 1000)
+// agy is silent while the model writes a large tool call, and before a
+// first token it retries upstream on its own: 2 of 33 prompts on one machine
+// went 397 s and 575 s without output, and a 5-minute cut lost a 7,332-token
+// call and its session (plugins#1319). agy ends a failing turn itself.
+const TURN_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_TURN_TIMEOUT_MS, 15 * 60 * 1000)
 const TOOL_RESULT_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_TOOL_TIMEOUT_MS, 30 * 60 * 1000)
 const RESUME_TTL_MS = positiveTimeout(process.env.AGY_BRIDGE_RESUME_TTL_MS, 6 * 60 * 60 * 1000)
 // agy fails an ide-tools MCP call after a fixed three minutes. Answer before
