@@ -71,6 +71,17 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 
 const QODER_SYS = "You are a Qoder agent. Use the instructions below and the tools available to you to assist the user."
 
+// Qoder answers a system prompt that opens with Claude Code's identity
+// line with 400 "Cannot find model", on any model; the same request with
+// only that line swapped for the Claude Agent SDK's goes through (ByFanX
+// on X, 11-24). asAgentSDK makes that swap, in what Qoder is sent only:
+// the line is matched whatever its white space, and the rest of the
+// prompt goes as written. Claude Code's SDK form (", running within the
+// Claude Agent SDK.") is swapped the same way.
+const CLAUDE_CODE_LINE = /You\s+are\s+Claude\s+Code,\s+Anthropic's\s+official\s+CLI\s+for\s+Claude(?:,\s+running\s+within\s+the\s+Claude\s+Agent\s+SDK)?\./g
+const AGENT_SDK_LINE = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+const asAgentSDK = (text) => text.replace(CLAUDE_CODE_LINE, AGENT_SDK_LINE)
+
 const hexID = () => randomUUID().replaceAll("-", "")
 
 // ---- the COSY envelope --------------------------------------------------------
@@ -1504,7 +1515,8 @@ function modelConfig(m, thinking) {
 // none is given). A site on this protocol with its own values (QwenWork)
 // passes itself last.
 function qoderBody(chat, m, named = "", task, site) {
-  const system = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
+  const given = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
+  const system = asAgentSDK(given)
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
   const baseSystem = site?.systemPrompt ?? QODER_SYS
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
@@ -4274,4 +4286,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

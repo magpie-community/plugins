@@ -106,6 +106,11 @@ itself.
 
 - It writes the chat completion as Qoder's request:
   - Qoder's own system line comes before yours.
+  - Claude Code's identity line, `You are Claude Code, Anthropic's official
+    CLI for Claude.`, goes as the Claude Agent SDK's, `You are a Claude
+    agent, built on Anthropic's Claude Agent SDK.` (since 0.2.72): Qoder
+    answers a prompt with that line with 400 `Cannot find model`, whatever
+    the model. The rest of the prompt and your messages go as written.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.
