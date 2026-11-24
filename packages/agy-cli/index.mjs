@@ -3016,6 +3016,11 @@ class Proc {
     if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
       args = { ...args, toolSummary: "Run command" }
     }
+    // Outer agy expects call_mcp_tool.Arguments as a JSON object for jsontext.Value,
+    // while Gemini schema translation exposes Arguments as type:"string" inside ACP.
+    if (name === "call_mcp_tool") {
+      args = unwrapCallMcpArguments(args)
+    }
     const signature = stableJSON(args)
     const running = turn.calls.find((call) => call.deferred && !call.lateDelivered &&
       call.name === name && stableJSON(call.arguments) === signature)
@@ -4267,6 +4272,25 @@ function stableJSON(value) {
   return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]))
     : item)
+}
+
+/**
+ * Parse a JSON-object string in call_mcp_tool.Arguments back into an object,
+ * leaving malformed or non-object values untouched.
+ */
+function unwrapCallMcpArguments(args) {
+  if (!args || typeof args.Arguments !== "string") return args
+  const raw = args.Arguments.trim()
+  if (!raw) return args
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...args, Arguments: parsed }
+    }
+  } catch {
+    // Keep the raw string so upstream schema/tool errors stay visible.
+  }
+  return args
 }
 
 function parseUserImage(block) {

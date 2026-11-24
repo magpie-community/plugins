@@ -24,6 +24,7 @@ for (const [name, mocks] of [
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
   ["tool-summary.mjs", false],
+  ["call-mcp-tool.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
