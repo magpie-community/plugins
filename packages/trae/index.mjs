@@ -2988,6 +2988,15 @@ function ending(calls, finish, usage, limit, cut) {
 // text it had written so far as the assistant's own
 const GO_ON = "Continue exactly where your previous message stopped. Do not repeat anything already written and do not add any preface."
 
+// THINK_ON is the turn a reply is asked again with when Trae cut every
+// round of it in the model's reasoning, nothing written yet: there is no
+// text to go on from, and asked the same, the model reasons the same
+// length again (plugins#1366, 0.2.51: AI/GLM-5.3-Flash and
+// AI/deekseek-v4.1-flash, round 1 completion_tokens=2000 with
+// reasoning_tokens 1983 and 1999, text_chars=0). It names neither magpie
+// nor Trae's limit: it goes to the model
+const THINK_ON = "Your previous reply ran out of room while you were still reasoning, before you wrote any answer. Do not start your reasoning over: keep what is left of it short, then write the answer or make the tool call directly."
+
 // CUT_ROUNDS bounds the asks one reply takes: 16 of TRAE_CUT is 32000
 // tokens, an enterprise model's usual max_tokens
 const CUT_ROUNDS = 16
@@ -3007,8 +3016,18 @@ const tune = { keepEvery: 2000 }
 // again first, and a round can go to the cut in it (plugins#1366, 0.2.49:
 // round 1 text_chars=1834, round 2 text_chars=0 reasoning_chars=7683,
 // both completion_tokens=2000). Its reasoning isn't sent back, so a model
-// that never gets past it would spend every round on it.
+// that never gets past it would spend every round on it. A reply that
+// wrote nothing in as many rounds ends as an error saying so (reasoned),
+// not as an empty reply cut for length.
 const THOUGHT_ROUNDS = 3
+
+// reasoned is the error a reply ends with that went rounds in a row only
+// reasoning, every one cut at Trae's round limit, and wrote nothing: the
+// gateway would call it an empty reply, which says nothing of why
+function reasoned(model, rounds, cut, why = "") {
+  const who = model ? `${model} ` : "the model "
+  return `${who}wrote no answer: it spent ${rounds} round${rounds === 1 ? "" : "s"} in a row only reasoning, each cut at Trae's ${cut}-token round limit for enterprise models${why ? `, and the next ask ${why}` : ""}. Try a shorter task or another model.`
+}
 
 // addUsage is two asks' usage as one: each ask is billed on its own, so
 // both its prompt and its reply count
@@ -3041,19 +3060,23 @@ function addUsage(a, b) {
 // until a round ends short of the cut, makes a whole call, the asked
 // limit is spent, or CUT_ROUNDS is reached. A round cut in its reasoning or
 // in a call, nothing written in it, is asked on too once an earlier round
-// wrote text to go on from (up to THOUGHT_ROUNDS in a row); a first round
-// with no text isn't, as there is nothing to go on from. A call cut
+// wrote text to go on from (up to THOUGHT_ROUNDS in a row). A reply whose
+// rounds so far only reasoned, no text and no call, is asked again with
+// THINK_ON (up to THOUGHT_ROUNDS too), and one that still wrote nothing
+// ends as the error reasoned says (plugins#1366, 0.2.52). A call cut
 // mid-arguments is dropped from the round it was cut in: the next round
 // writes it whole.
 // A later round that fails (an error, a stream broken off, nothing written
 // short of the cut) ends the asking: the text written stays, and the reply
 // ends for length, not as an error. The usage sent is every round's
 // together; a reply still cut at the end ends for length.
-async function* continued(answer, limit, cut, more) {
+async function* continued(answer, limit, cut, more, model = "") {
   let text = ""
   let total = null
   let parts = answer
   let thought = 0 // the rounds in a row that wrote no text
+  let onlyThought = 0 // the rounds, from the first, that only reasoned
+  let why = "" // how the last ask failed, for reasoned
   for (let round = 1; ; round++) {
     let usage = null
     let finish = ""
@@ -3070,6 +3093,7 @@ async function* continued(answer, limit, cut, more) {
             return
           }
           failed = true
+          why = `failed: ${p.error}`
           break
         }
         if (p.usage) {
@@ -3098,6 +3122,7 @@ async function* continued(answer, limit, cut, more) {
       // first ask's is the reply's own failure
       if (round === 1) throw e
       failed = true
+      why = `broke off: ${e?.message ?? e}`
     }
     total = addUsage(total, usage)
     const atCut = cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length")
@@ -3108,10 +3133,24 @@ async function* continued(answer, limit, cut, more) {
     const wasCut = failed || answeredNothing || atCut
     const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
     thought = wrote ? 0 : thought + 1
-    const next = !failed && !answeredNothing && wasCut && text && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more ? await more(text, left, round + 1).catch(() => null) : null
+    // a round that only reasoned to the cut, with no text before it: asked
+    // again with THINK_ON (more, text "")
+    const thinking = !text && atCut && !whole && !held.length
+    if (thinking) onlyThought++
+    if (answeredNothing && !text && !why) why = "answered nothing"
+    const ask = !failed && !answeredNothing && wasCut && (text || thinking) && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more
+    const next = ask ? await more(text, left, round + 1).catch(() => null) : null
     if (next) {
       parts = next
       continue
+    }
+    if (ask && !text) why = "was not answered"
+    // asked again (or about to be) and still nothing written: the reply is
+    // an error that says why, not an empty one cut for length
+    if (!text && onlyThought && (round > 1 || ask) && !whole && !held.length) {
+      if (total) yield { usage: total }
+      yield { error: reasoned(model, onlyThought, cut, why), code: "reasoning_only" }
+      return
     }
     if (!wasCut || round === 1) yield* held
     if (total) yield { usage: total }
@@ -3161,68 +3200,87 @@ async function* parts(events, tools = []) {
     return { call: { ...c, name, arguments: unwrapped(c.arguments, name, tools) } }
   }
   let finish = ""
-  for await (const { event, data } of events) {
-    const name = eventName(event)
-    const d = data && typeof data === "object" ? data : {}
-    if (data === "[DONE]") break
-    if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
-      const e = errorOf(d)
-      // the realm answering is named by the caller, which knows it; a bare
-      // word here reads as neither realm's
-      yield { error: e.message || "Trae returned an error", code: e.code }
-      return
-    }
-    if (name === "token_usage") {
-      const u = tokensOf(d.usage ?? d)
-      if (u) yield { usage: u }
-      continue
-    }
-    if (name === "done" || name === "response_done" || name === "stream_done") {
+  // with MAGPIE_TRAE_DEBUG, what Trae sent that nothing here reads: the
+  // events of other names, and the string fields of the answer's events
+  // past the ones read (plugins#1366, 0.2.51: reasoning_tokens 1983 with
+  // reasoning_chars=0 — was the reasoning sent under another name?)
+  const unread = traeDebug() ? new Map() : null
+  const note = (k, n) => unread && unread.set(k, (unread.get(k) ?? 0) + n)
+  try {
+    for await (const { event, data } of events) {
+      const name = eventName(event)
+      const d = data && typeof data === "object" ? data : {}
+      if (data === "[DONE]") break
+      if (unread) {
+        if (!ANSWER.has(name) && !["error", "token_usage", "done", "response_done", "stream_done"].includes(name)) note(`event:${name}`, JSON.stringify(data ?? "").length)
+        else if (ANSWER.has(name)) {
+          const read = new Set(["reasoning_content", "reasoning", "response", "content", "delta", "finish_reason", "stop_reason", "finishReason"])
+          for (const [k, v] of Object.entries(d)) if (!read.has(k) && typeof v === "string" && v) note(`${name || "data"}.${k}`, v.length)
+          const dl = d.delta && typeof d.delta === "object" ? d.delta : {}
+          for (const [k, v] of Object.entries(dl)) if (!read.has(k) && typeof v === "string" && v) note(`${name || "data"}.delta.${k}`, v.length)
+        }
+      }
+      if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
+        const e = errorOf(d)
+        // the realm answering is named by the caller, which knows it; a bare
+        // word here reads as neither realm's
+        yield { error: e.message || "Trae returned an error", code: e.code }
+        return
+      }
+      if (name === "token_usage") {
+        const u = tokensOf(d.usage ?? d)
+        if (u) yield { usage: u }
+        continue
+      }
+      if (name === "done" || name === "response_done" || name === "stream_done") {
+        const u = tokensOf(d.usage)
+        if (u) yield { usage: u }
+        finish = finishOf(d) || finish
+        break
+      }
+      if (!ANSWER.has(name)) continue
+      const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
+      // the reasoning's own fields, in the order Trae has put it under: an
+      // empty one is no answer, so the next is asked (an event carrying both
+      // reasoning_content: "" and reasoning: "…" says the thought in the second)
+      const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
+      if (said) {
+        const r = th.add(said)
+        if (r) yield { reasoning: r }
+      }
+      let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
+      // the IDE's own progress notes, not the model's
+      if (/^(Building prompt:|Completed building prompt)/.test(text)) text = ""
+      if (text) {
+        const r = tt.push(text)
+        const t = r.reasoning && th.add(r.reasoning)
+        if (t) yield { reasoning: t }
+        if (r.text) yield { text: r.text }
+        for (const c of r.calls) yield call({ ...c, id: callId() })
+        if (r.error) {
+          yield { error: r.error, code: null }
+          return
+        }
+      }
+      for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) nc.push(tc)
       const u = tokensOf(d.usage)
       if (u) yield { usage: u }
       finish = finishOf(d) || finish
-      break
     }
-    if (!ANSWER.has(name)) continue
-    const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
-    // the reasoning's own fields, in the order Trae has put it under: an
-    // empty one is no answer, so the next is asked (an event carrying both
-    // reasoning_content: "" and reasoning: "…" says the thought in the second)
-    const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
-    if (said) {
-      const r = th.add(said)
-      if (r) yield { reasoning: r }
+    const r = tt.push("", true)
+    const t = r.reasoning && th.add(r.reasoning)
+    if (t) yield { reasoning: t }
+    if (r.text) yield { text: r.text }
+    for (const c of r.calls) yield call({ ...c, id: callId() })
+    if (r.error) {
+      yield { error: r.error, code: null }
+      return
     }
-    let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
-    // the IDE's own progress notes, not the model's
-    if (/^(Building prompt:|Completed building prompt)/.test(text)) text = ""
-    if (text) {
-      const r = tt.push(text)
-      const t = r.reasoning && th.add(r.reasoning)
-      if (t) yield { reasoning: t }
-      if (r.text) yield { text: r.text }
-      for (const c of r.calls) yield call({ ...c, id: callId() })
-      if (r.error) {
-        yield { error: r.error, code: null }
-        return
-      }
-    }
-    for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) nc.push(tc)
-    const u = tokensOf(d.usage)
-    if (u) yield { usage: u }
-    finish = finishOf(d) || finish
+    for (const c of nc.take(tools)) yield call(c)
+    if (finish) yield { finish }
+  } finally {
+    if (unread?.size) console.error(`trae debug: unread ${JSON.stringify(Object.fromEntries(unread))} (chars)`)
   }
-  const r = tt.push("", true)
-  const t = r.reasoning && th.add(r.reasoning)
-  if (t) yield { reasoning: t }
-  if (r.text) yield { text: r.text }
-  for (const c of r.calls) yield call({ ...c, id: callId() })
-  if (r.error) {
-    yield { error: r.error, code: null }
-    return
-  }
-  for (const c of nc.take(tools)) yield call(c)
-  if (finish) yield { finish }
 }
 
 // first reads events up to the first that is the answer's, so an answer
@@ -4632,7 +4690,10 @@ const makePlugin = (site) => async ({ client }) => {
                     ...req,
                     max_completion_tokens: undefined,
                     max_tokens: left > 0 ? left : undefined,
-                    messages: [...(Array.isArray(req.messages) ? req.messages : []), { role: "assistant", content: text }, { role: "user", content: GO_ON }],
+                    // a reply with no text yet (every round so far only
+                    // reasoned) has nothing to go on from: it is asked again
+                    // with THINK_ON after the request's own turns
+                    messages: [...(Array.isArray(req.messages) ? req.messages : []), ...(text ? [{ role: "assistant", content: text }, { role: "user", content: GO_ON }] : [{ role: "user", content: THINK_ON }])],
                   }
                   const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
                   const id = randomUUID()
@@ -4651,7 +4712,7 @@ const makePlugin = (site) => async ({ client }) => {
                   const p = parts(sse(r.body), Array.isArray(req.tools) ? req.tools : [])
                   return traeDebug() ? debugEnd(id, p, body.max_tokens || 0, cut) : p
                 }
-                const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more) : got, () => ac.abort(), site, sent.max_tokens || 0, cut)
+                const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more, req.model) : got, () => ac.abort(), site, sent.max_tokens || 0, cut)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
@@ -4679,4 +4740,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

@@ -374,7 +374,12 @@ async function carried(answers) {
       asks: asks.length,
     }
   }
-  return { ask, asks }
+  // the reply as it came, for one that isn't a 200
+  const raw = (extra = {}) => {
+    asks.length = 0
+    return opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, max_tokens: 32768, ...extra }) })
+  }
+  return { ask, asks, raw }
 }
 
 test("a reply Trae cut at 2000 is asked on and goes out whole, in a body and in a stream", async () => {
@@ -429,12 +434,8 @@ test("a cut reply's call is written whole by the next ask; a whole call ends the
   expect(await once({ tools: WRITE })).toMatchObject({ finish: "tool_calls", calls: [WHOLE], asks: 1 })
 })
 
-test("a cut reply with no text, a short one and a preset's are not asked on", async () => {
-  // only reasoning, or a call cut with nothing written before it: there is
-  // nothing to go on from
-  let { ask } = await carried(() => sse([["output", { reasoning_content: "thinking" }], ["done", { usage: { prompt_tokens: 80, completion_tokens: 2000 } }]]))
-  expect(await ask()).toMatchObject({ finish: "length", asks: 1 })
-  ;({ ask } = await carried(() => round(part(1, 3), 1999)))
+test("a short reply and a preset's are not asked on", async () => {
+  let { ask } = await carried(() => round(part(1, 3), 1999))
   expect(await ask()).toMatchObject({ finish: "stop", asks: 1 })
   ;({ ask } = await carried(() => round(part(1, 40), 2000)))
   expect(await ask({ model: "glm-5" })).toMatchObject({ finish: "stop", asks: 1 })
@@ -586,4 +587,95 @@ test("a first round whose stream breaks off is still an error", async () => {
   const got = await ask({ stream: true })
   expect(got.finish).toBe("")
   expect(got.text).toBe("")
+})
+
+// the reporter's 0.2.51 logs (plugins#1366): a new request's first round
+// ends at the cut with only reasoning. AI/GLM-5.3-Flash: completion_tokens
+// 2000, reasoning_tokens 1983; AI/deekseek-v4.1-flash: 2000 and 1999; both
+// text_chars=0 reasoning_chars=0 calls=0 finish_sent=length, then the
+// gateway's 502 "an empty reply ... the whole output spent on reasoning".
+// Their reasoning text never reached the plugin (reasoning_chars=0), so
+// rounds of usage alone and rounds with reasoning text are both here.
+const thoughtOnly = (reasoning) => sse([
+  ...(reasoning ? [["output", { reasoning_content: reasoning }]] : []),
+  ["done", { usage: { prompt_tokens: 120, completion_tokens: 2000, completion_tokens_details: { reasoning_tokens: 1983 } } }],
+])
+for (const [how, said] of [["with no reasoning text", ""], ["with its reasoning", thinking(5800)]]) {
+  test(`a first round that only reasoned to the cut, ${how}, is asked again and goes on to its answer, in a body and in a stream`, async () => {
+    const { ask, asks } = await carried((n) => n === 1 ? thoughtOnly(said) : n === 2 ? round(part(1, 40), 2000) : round(part(41, 50), 300, "stop"))
+    for (const stream of [false, true]) {
+      const got = await ask({ max_tokens: 64000, stream })
+      expect(got).toMatchObject({ finish: "stop", text: part(1, 50), calls: [], asks: 3 })
+      expect(got.usage.completion_tokens).toBe(4300)
+      // asked again: the request's own turns and THINK_ON, with no empty
+      // assistant turn; the round after it goes on from its text
+      const last = asks[1].messages.at(-1)
+      expect(last.role).toBe("user")
+      expect(JSON.stringify(last.content)).toContain("ran out of room while you were still reasoning")
+      expect(asks[1].messages.some((m) => m.role === "assistant" && !m.content?.length && !m.tool_calls)).toBe(false)
+      expect(asks[1].session_id).toBe(asks[0].session_id)
+      expect(JSON.stringify(asks[2].messages.at(-2).content)).toContain("LINE-001")
+    }
+  })
+}
+
+test("a first round that only reasoned and is asked again makes its tool call", async () => {
+  const { ask } = await carried((n) => n === 1 ? thoughtOnly("") : cutCall(300, WHOLE))
+  expect(await ask({ tools: WRITE, max_tokens: 64000 })).toMatchObject({ finish: "tool_calls", calls: [WHOLE], asks: 2 })
+})
+
+test("THINK_ON names neither magpie nor Trae nor its limit", () => {
+  expect(_internal.THINK_ON).not.toMatch(/magpie|trae|2000|token|limit/i)
+})
+
+for (const [how, later, rounds, why] of [
+  ["every round only reasoning", () => thoughtOnly(""), 3, ""],
+  ["a later round failing", (n) => n === 2 ? thoughtOnly("") : sse([["error", { code: 500, message: "busy" }]]), 2, "the next ask failed: busy"],
+  ["a later round answering nothing", (n) => n === 2 ? thoughtOnly("") : sse([["done", {}]]), 2, "the next ask answered nothing"],
+]) {
+  test(`a reply that wrote nothing in its reasoning rounds, ${how}, ends with an error naming the model and the rounds, in a body and in a stream`, async () => {
+    const { raw, asks } = await carried((n) => n === 1 ? thoughtOnly("") : later(n))
+    for (const stream of [false, true]) {
+      const res = await raw({ max_tokens: 64000, stream })
+      let msg
+      if (stream) {
+        expect(res.status).toBe(200)
+        const ds = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)))
+        expect(ds.flatMap((x) => x.choices ?? []).some((c) => c.finish_reason)).toBe(false)
+        msg = ds.find((x) => x.error)?.error.message
+      } else {
+        expect(res.status).toBe(502)
+        msg = (await res.json()).error.message
+      }
+      expect(asks.length).toBe(3)
+      expect(msg).toContain("volc/deepseek-v4-1-flash wrote no answer")
+      expect(msg).toContain(`spent ${rounds} rounds in a row only reasoning, each cut at Trae's 2000-token round limit`)
+      if (why) expect(msg).toContain(why)
+      expect(msg).not.toContain("empty reply")
+    }
+  })
+}
+
+test("a first round that only reasoned is not asked again when the asked limit is spent", async () => {
+  const { ask } = await carried(() => thoughtOnly(""))
+  expect(await ask({ max_tokens: 2000 })).toMatchObject({ finish: "length", text: "", asks: 1 })
+})
+
+test("with MAGPIE_TRAE_DEBUG, what Trae sent that the plugin doesn't read is logged", async () => {
+  const was = process.env.MAGPIE_TRAE_DEBUG
+  const err = console.error
+  const logs = []
+  process.env.MAGPIE_TRAE_DEBUG = "1"
+  console.error = (...a) => logs.push(a.join(" "))
+  try {
+    const { ask } = await carried(() => sse([["thinking", { text: "abcdef" }], ["output", { thought: "xyz", response: "ok" }], ["done", { finish_reason: "stop", usage: { prompt_tokens: 1, completion_tokens: 3 } }]]))
+    expect(await ask({ model: "glm-5" })).toMatchObject({ text: "ok" })
+  } finally {
+    console.error = err
+    if (was === undefined) delete process.env.MAGPIE_TRAE_DEBUG
+    else process.env.MAGPIE_TRAE_DEBUG = was
+  }
+  const line = logs.find((l) => l.startsWith("trae debug: unread "))
+  expect(line).toContain('"event:thinking":17')
+  expect(line).toContain('"output.thought":3')
 })
