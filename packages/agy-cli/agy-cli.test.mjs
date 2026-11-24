@@ -39,6 +39,7 @@ for (const [name, mocks] of [
   ["masking-drift.mjs", false],
   ["spilled-output.mjs", false],
   ["tool-result-prefill.mjs", false],
+  ["image-bytes.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests

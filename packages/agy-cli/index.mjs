@@ -1164,10 +1164,10 @@ function resolveCatalogAlias(catalog, model) {
     return { id: base, inlineEffort }
   }
   const routeKeys = [...catalog.routes.keys()]
-  // "-preview"/"-exp" style suffixes ride the same family: agy asks its aux
-  // title/summary model "gemini-3.1-flash-lite-preview", which no account
-  // serves; route it onto the flash family the account does list.
-  if (/^(?:gemini-[0-9.]+-flash(?:-lite)?(?:-[a-z0-9.]+)?|claude-(?:[0-9.-]+-)?haiku(?:-[0-9.-]+)?)$/i.test(base)) {
+  // a -preview or -exp id rides the same family: agy asks its own title and
+  // summary model "gemini-3.1-flash-lite-preview", which no account serves.
+  // Any other suffix (-image, -tts) is another kind of model and stays.
+  if (/^(?:gemini-[0-9.]+-flash(?:-lite)?(?:-(?:preview|exp)(?:-[0-9]+)*)?|claude-(?:[0-9.-]+-)?haiku(?:-[0-9.-]+)?)$/i.test(base)) {
     const flashFamily = routeKeys.find((id) => /flash/i.test(id)) ||
       catalog.models.find((item) => /flash/i.test(item.id))?.id
     if (flashFamily) return { id: flashFamily, inlineEffort }
@@ -5708,40 +5708,41 @@ function imageContent(block) {
     source.data.length % 4 !== 0 || /[^A-Za-z0-9+/]/.test(source.data.replace(/={1,2}$/, ""))) {
     throw new UnsupportedContent("invalid base64 image data")
   }
-  // Decode enough of the payload to confirm it is a real image; Gemini answers
-  // "Unable to process input image" for base64 that is valid but not an image
-  // (a truncated capture, a tool's stub, a text file labelled image/png).
-  const decoded = Buffer.from(source.data, "base64")
-  if (!hasImageSignature(decoded, source.media_type)) {
-    const note = decoded.length === 0
-      ? "empty"
-      : `not a ${source.media_type} (first bytes: ${decoded.subarray(0, 8).toString("hex")})`
+  // Gemini answers "Unable to process input image" for base64 that is valid
+  // but no image (a truncated capture, a tool's stub, a text file labelled
+  // image/png). An image sent as another of the four types (a JPEG labelled
+  // image/png, common in screenshot tools) goes as what it is.
+  const mimeType = imageTypeOf(source.data)
+  if (!mimeType) {
+    const decoded = Buffer.from(source.data.slice(0, 16), "base64")
+    const note = decoded.length === 0 ? "empty" : `not an image (first bytes: ${decoded.subarray(0, 8).toString("hex")})`
     throw new UnsupportedContent(`an image whose data is ${note}`)
   }
-  return { type: "image", data: source.data, mimeType: source.media_type }
+  return { type: "image", data: source.data, mimeType }
 }
 
-// hasImageSignature is the data's magic bytes matching the type it was sent
-// as. WebP is RIFF....WEBP; the others are their file signatures.
+// imageTypeOf is the image type base64 data's first bytes say, of the four
+// Gemini takes, or null. WebP is RIFF....WEBP; the others are their file
+// signatures. Only the head is decoded.
+export function imageTypeOf(data) {
+  const buf = typeof data === "string" ? Buffer.from(data.slice(0, 16), "base64") : data
+  if (!buf || buf.length < 4) return null
+  if (buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return "image/png"
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg"
+  if (buf.length >= 6 &&
+    buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38 &&
+    (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) return "image/gif"
+  if (buf.length >= 12 &&
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp"
+  return null
+}
+
+// hasImageSignature is the data's magic bytes matching the type it was sent as.
 export function hasImageSignature(buf, mimeType) {
-  if (!buf || buf.length < 4) return false
-  switch (mimeType) {
-    case "image/png":
-      return buf.length >= 8 &&
-        buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
-        buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
-    case "image/jpeg":
-      return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
-    case "image/gif":
-      return buf.length >= 6 &&
-        buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38 &&
-        (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61
-    case "image/webp":
-      return buf.length >= 12 &&
-        buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
-        buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
-  }
-  return false
+  return !!mimeType && imageTypeOf(buf) === mimeType
 }
 
 // Keep text adjacent to its images, including when an old conversation has to
@@ -6539,20 +6540,15 @@ function toolResult(block) {
       if (part?.type === "document") return { type: "text", text: parseUserDocumentText(part, true) }
       if (part?.type === "search_result") return { type: "text", text: parseSearchResultText(part) }
       if (part?.type === "image" && part.source?.type === "base64" && part.source.data) {
-        const mimeType = (part.source.media_type || "").toLowerCase()
-        // a tool's image goes through agy only as PNG/JPEG/GIF/WebP with real
-        // image bytes — anything else Gemini refuses 400 "Unable to process
-        // input image". A bad capture is dropped with a text note instead.
-        const mt = mimeType === "image/jpg" ? "image/jpeg" : mimeType
-        const decoded = Buffer.from(part.source.data, "base64")
-        if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mt) || !hasImageSignature(decoded, mt)) {
-          return { type: "text", text: `[tool returned an image that could not be read (${mimeType || "no media type"}, ${decoded.length} bytes)]` }
+        // a tool's image goes through agy only as PNG/JPEG/GIF/WebP, as the
+        // type its bytes say; anything else Gemini refuses 400 "Unable to
+        // process input image", so a bad capture becomes a text note.
+        const mt = imageTypeOf(part.source.data)
+        if (!mt) {
+          const declared = String(part.source.media_type || "").toLowerCase() || "no media type"
+          return { type: "text", text: `[tool returned an image that could not be read (${declared}, ${Math.floor(part.source.data.length * 3 / 4)} bytes)]` }
         }
-        return {
-          type: "image",
-          data: part.source.data,
-          mimeType: mt,
-        }
+        return { type: "image", data: part.source.data, mimeType: mt }
       }
       throw new UnsupportedContent("this tool_result content")
     })

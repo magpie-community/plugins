@@ -2179,7 +2179,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const convId = inits().at(-1).convId
   const before = inits().length
   const second = continuation(first, events, [
-    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANAAAA" } },
   ])
   second.messages.at(-1).content.push(
     { type: "text", text: "[Image: original 3423x1834, displayed at 2000x1072. Multiply coordinates by 1.71 to map to original image.]" },
@@ -2199,7 +2199,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     !content.some(part => part.type === "image") &&
     content.some(part => part.text === IMAGE_FOLLOWS) &&
     steer.convId === convId &&
-    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANAAAA") &&
     steer.text.includes("Multiply coordinates by 1.71") &&
     steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
 
@@ -2210,7 +2210,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const readBefore = inits().length
   const readSecond = continuation(readFirst, readEvents, [
     { type: "text", text: "Image read successfully" },
-    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4AAQSkZJRgABcmVhZGltYWdl" } },
   ])
   const readResponse = await callFetch(readSecond)
   const readFinal = (await readSSE(readResponse)).events
@@ -2220,7 +2220,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
     JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
     readSteer.convId === readConv && readSteer.images === 1 &&
-    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    readSteer.content.some(part => part.type === "image" && part.data === "/9j/4AAQSkZJRgABcmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
     !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
   // Claude Code's Read of a PDF: the tool_result holds the file as a base64
@@ -2362,7 +2362,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
         role: "user",
         content: [
           { type: "text", text: "Hello token counter 中文" },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(4000) } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAAN" + "A".repeat(3984) } },
         ],
       }],
     }),
@@ -2698,7 +2698,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
       { type: "text", text: "look at this" },
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "cmVwbGF5aW1hZ2U=" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2710,7 +2710,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       imgReplay.text.includes("look at this") &&
       !imgReplay.text.includes("MIXED_IMAGE_RESULT") && mcpResultText(imgOld).includes("MIXED_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "cmVwbGF5aW1hZ2U="),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U="),
       `status=${imgRes.status}`)
   }
 
@@ -2723,7 +2723,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgSecond = continuation(imgFirst, imgEvents, "ONLY_IMAGE_RESULT")
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "b25seWltYWdl" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANb25seWltYWdl" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2734,7 +2734,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       !imgReplay.text.includes("ONLY_IMAGE_RESULT") && mcpResultText(imgOld).includes("ONLY_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "b25seWltYWdl"),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANb25seWltYWdl"),
       `status=${imgRes.status}`)
   }
 
@@ -2876,12 +2876,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
 {
   const first = { model, messages: [{ role: 'user', content: 'ESCCALL replay tool image regression' }], tools: [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
-  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cmVwbGF5aW1hZ2U=' } }])
+  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=' } }])
   second.messages.at(-1).content.push({ type: 'text', text: 'The user sent a new message while you were working:\nInspect that returned image' })
   const response = await callFetch(second)
   if (response.status === 200) await readSSE(response)
   else await response.text()
-  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'cmVwbGF5aW1hZ2U='))
+  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U='))
   if (response.status !== 200) await drive(first, events, 'cleanup replay image')
 }
 
