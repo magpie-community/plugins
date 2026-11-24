@@ -1092,16 +1092,19 @@ async function launchedModel(body) {
   check("UTF-8 split inside a code point preserves text", textOf(events).includes("中文😀"), textOf(events))
 }
 
+// a project folder of its own: os.tmpdir() holds HOME where HOME is a
+// mktemp folder (CI's), and a folder above home is never added (plugins#1405)
+const project = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smoke-project-"))
 for (const [name, system, headers, expectedDir, named] of [
-  ["local prompt", `Working directory: ${os.tmpdir()}`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["local prompt", `Working directory: ${project}`, {}, path.resolve(project), project],
   ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
-  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(os.tmpdir()) }, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(project) }, path.resolve(project), project],
   ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
   // plugins#1405 (Danco): the home folder is told, never added
   ["home folder prompt", `Working directory: ${os.homedir()}`, {}, null, os.homedir()],
   // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
   // sentence after the closing quote
-  ["quoted prompt ending a sentence", `Current working directory: "${os.tmpdir()}".`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["quoted prompt ending a sentence", `Current working directory: "${project}".`, {}, path.resolve(project), project],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events
@@ -3135,6 +3138,7 @@ else process.env.AGY_CLI_DISABLE_AUTO_UPDATE = originalAutoUpdate
 
 try { fs.rmSync(here, { recursive: true, force: true }) } catch {}
 try { fs.rmSync(stateDir, { recursive: true, force: true }) } catch {}
+try { fs.rmSync(project, { recursive: true, force: true }) } catch {}
 
 console.log(failures === 0 ? `\nALL OK (${checks} checks)` : `\n${failures} FAILURES (${checks} checks)`)
 process.exit(failures === 0 ? 0 : 1)
