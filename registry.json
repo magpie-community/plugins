@@ -1454,13 +1454,12 @@
       }
     },
     {
-      "package": "@magpie-community/opencode-tokenrhythm-auth",
+      "package": "@higanoneko/opencode-tokenrhythm-auth",
       "name": "TokenRhythm (OpenSquilla)",
       "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/tokenrhythm/assets/icon.png",
       "providers": [
         "tokenrhythm"
       ],
-      "community": true,
       "summary": {
         "en": "TokenRhythm (OpenSquilla): browser sign-in with a managed model key, a live wallet balance card, 30 models and the System One decision model for routing groups.",
         "zh": "TokenRhythm (OpenSquilla)：浏览器登录自动获取托管模型密钥，实时余额卡片，30 个模型，System One 决策模型接入路由组。"
