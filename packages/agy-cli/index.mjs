@@ -5392,6 +5392,24 @@ function requestSessionScope(fetchInput, init) {
   return session || subagent ? `${session}\n${subagent}` : ""
 }
 
+// A Codex side conversation (a side chat in the app, /side in the CLI) forks
+// its thread with the thread's session id, instructions and opening, so it
+// had the thread's key: asked while the thread waited on a tool, it carried
+// that call's result and steered the thread's own turn, and the two then
+// took the session from each other. Codex puts this boundary after the
+// inherited history; where the last one sits keys the fork apart.
+// shortcut: two side conversations forked at the same point share a key; tell
+// them apart by what follows the boundary if Codex ever runs two at once.
+const SIDE_BOUNDARY_RE = /Side conversation boundary\.\s+Everything before this boundary is inherited history from the parent thread\./
+
+function sideConversationScope(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.role === "user" && SIDE_BOUNDARY_RE.test(contentText(messages[index].content))) return `\nside:${index}`
+  }
+  return ""
+}
+
 function conversationKey(rawBody, sessionScope = "") {
   const body = canonicalBody(rawBody)
   const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body))) }])
@@ -7858,7 +7876,7 @@ export const AntigravityBridgePlugin = async () => {
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
-            const sessionScope = requestSessionScope(fetchInput, init)
+            const sessionScope = requestSessionScope(fetchInput, init) + sideConversationScope(body)
             // an account's conversations are its own: its agy has them
             const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
             const trailing = trailingMessages(body)
