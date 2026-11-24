@@ -2321,6 +2321,10 @@ class Proc {
     args.push(...own.args)
     // agy writes the conversation's steps under the folder it was given
     const home = currentHome()
+    // where agy keeps each session's brain, a tool output it cut short
+    // among it (spilledOutput)
+    this.agyDir = own.dir ? path.join(own.dir, "antigravity-cli")
+      : path.join(home || os.homedir(), ".gemini", "antigravity-cli")
     this.conversationsDir = process.env.AGY_BRIDGE_CONVERSATIONS_DIR ? null
       : own.dir ? path.join(own.dir, "antigravity-cli", "conversations")
         : home ? path.join(home, ".gemini", "antigravity-cli", "conversations")
@@ -3003,6 +3007,11 @@ class Proc {
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("agy bridge: invalid tool arguments")
     const tool = this.tools.find((item) => item.name === name)
     if (!tool) throw new Error(`agy bridge: undeclared tool ${name}`)
+    const spilled = spilledOutput(this.agyDir, name, args)
+    if (spilled) {
+      socket.end(JSON.stringify({ result: spilled }) + "\n")
+      return null
+    }
     // agy consumes its internal toolSummary instead of forwarding it to MCP.
     if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
       args = { ...args, toolSummary: "Run command" }
@@ -5227,6 +5236,42 @@ function lastAssistantCalls(messages) {
   while (start > 0 && messages[start - 1].role === "assistant") start--
   return messages.slice(start).flatMap(message => Array.isArray(message.content)
     ? message.content.filter(block => block.type === "tool_use") : [])
+}
+
+// agy cuts a tool result over its size short, saves the whole of it as
+// <agy dir>/brain/<session>/.system_generated/steps/<step>/output.txt and
+// has the model read that file. With magpie on a server (Docker) and the
+// client on another machine, the client's Read of that path fails: the
+// file is only where agy runs (Dani Ariyanto on Discord). So a read-type
+// tool whose one path is such a file is answered here, from the file, and
+// never reaches the client; null for any other call. Lines are numbered,
+// from offset (a line number) for at most limit lines when the call says.
+const SPILLED = /^brain[\\/][^\\/]+[\\/]\.system_generated[\\/]steps[\\/][^\\/]+[\\/]output\.txt$/
+
+export function spilledOutput(agyDir, name, args) {
+  if (!agyDir || !/read|view/i.test(name) || !args || typeof args !== "object") return null
+  const paths = Object.values(args).filter((value) => typeof value === "string" && path.isAbsolute(value))
+  if (paths.length !== 1 || !SPILLED.test(path.relative(agyDir, path.resolve(paths[0])))) return null
+  let text
+  try {
+    // a link out of agy's folder is not followed
+    const real = fs.realpathSync(paths[0])
+    if (!SPILLED.test(path.relative(fs.realpathSync(agyDir), real))) return null
+    text = fs.readFileSync(real, "utf8")
+  } catch {
+    return null
+  }
+  const number = (key) => {
+    const value = Number(args[key])
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+  }
+  const lines = text.split("\n")
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop()
+  const from = Math.max(1, number("offset"))
+  const to = number("limit") ? Math.min(lines.length, from - 1 + number("limit")) : lines.length
+  const out = []
+  for (let n = from; n <= to; n++) out.push(`${String(n).padStart(6)}\t${lines[n - 1]}`)
+  return { content: [{ type: "text", text: out.join("\n") }], isError: false }
 }
 
 // A bridge call's id, as #handleMcpCall makes it.
