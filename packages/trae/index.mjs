@@ -1718,6 +1718,173 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   return body
 }
 
+// ---- an enterprise model's own endpoint ------------------------------------
+//
+// directOf is where Trae's own client sends an enterprise model's chat, when
+// the model's detail says: an enterprise custom model whose provider is
+// custom_openai_compatible carries custom_config {base_url, ak, auth_type,
+// status, client_connect, custom_model_id, is_custom_base_url}, and Trae CN
+// 3.4.22 POSTs the chat straight to base_url (an OpenAI chat/completions
+// URL) with Authorization "Bearer <ak>" (auth_type 0), X-Model-Provider
+// the detail's provider, User-Agent hertz, the detail's model_name as model
+// and its max_tokens (plugins#1366, the reporter's captures of 2026-11-24:
+// tokenerpgw.asiainfo.com/erp/v1/chat/completions, max_tokens 32768, 8274
+// and 12182 completion tokens, finish_reason stop). llm_utils_chat cuts the
+// same model at 2000 a round (TRAE_CUT). null for anything else — another
+// auth_type, a model switched off, a field missing, a URL that isn't a chat
+// completions one — which goes through llm_utils_chat as before.
+const DIRECT_PROVIDER = "custom_openai_compatible"
+function directOf(entry) {
+  if (!enterpriseModel(entry)) return null
+  const d = enterpriseDetail(entry)
+  const c = d?.custom_config
+  if (!c || typeof c !== "object" || c.status !== true) return null
+  if (c.auth_type !== 0 && c.auth_type !== "0") return null
+  const provider = String(d.provider || entry.provider || "")
+  if (provider !== DIRECT_PROVIDER || !d.model_name) return null
+  const ak = typeof c.ak === "string" ? c.ak.trim() : ""
+  if (!ak) return null
+  let url
+  try {
+    url = new URL(String(c.base_url ?? "").trim())
+  } catch {
+    return null
+  }
+  if (!/^https?:$/.test(url.protocol) || !/\/chat\/completions\/?$/.test(url.pathname)) return null
+  return { url: url.href, ak, provider, model: String(d.model_name), most: Number(d.max_tokens) || 0 }
+}
+
+// akKey names an ak without keeping it: the one its endpoint turned away
+const akKey = (ak) => createHash("sha256").update(ak).digest("hex").slice(0, 16)
+
+// directBody is the request for an enterprise model's own endpoint: the
+// caller's OpenAI chat as it came, under the detail's model name, its
+// max_tokens held to the detail's as llm_utils_chat's is, always streamed
+// with the usage (as Trae's client asks it; a caller that didn't ask a
+// stream gets the reply whole from openai)
+const DIRECT_PASSED = ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "response_format"]
+function directBody(req, dir) {
+  const body = { model: dir.model }
+  const asked = req.max_completion_tokens ?? req.max_tokens
+  if (Number.isFinite(asked) && asked > 0) body.max_tokens = dir.most > 0 ? Math.min(Math.floor(asked), dir.most) : Math.floor(asked)
+  else if (dir.most > 0) body.max_tokens = dir.most
+  body.stream = true
+  if (Array.isArray(req.tools) && req.tools.length) {
+    body.tools = req.tools
+    if (req.tool_choice !== undefined) body.tool_choice = req.tool_choice
+    if (typeof req.parallel_tool_calls === "boolean") body.parallel_tool_calls = req.parallel_tool_calls
+  }
+  body.stream_options = { include_usage: true }
+  for (const k of DIRECT_PASSED) if (req[k] !== undefined && req[k] !== null) body[k] = req[k]
+  body.messages = req.messages
+  return body
+}
+
+// directHeaders are Trae's client's for the endpoint (the reporter's
+// capture): the X-AhaNet-* / x-bridge-transport / x-rust-request-timeout
+// ones it also carried are its own network layer's, not the endpoint's
+const directHeaders = (dir, rid) => ({
+  "Content-Type": "application/json",
+  "User-Agent": "hertz",
+  "X-Model-Provider": dir.provider,
+  "x-request-id": "req_" + rid,
+  Authorization: "Bearer " + dir.ak,
+})
+
+// directParts turns an OpenAI chat completion's chunks (or one whole
+// completion) into the answer's parts: text, reasoning (reasoning_content,
+// or vLLM's reasoning, as the reporter's endpoint sends it), the tool calls
+// gathered by index and sent whole at the end, the usage and the finish
+async function* directParts(events) {
+  const calls = new Map()
+  let lastKey = null
+  let finish = ""
+  for await (const { data } of events) {
+    if (data === "[DONE]") break
+    if (!data || typeof data !== "object") continue
+    if (data.error) {
+      const e = errorOf(data)
+      yield { error: e.message || "the endpoint returned an error", code: e.code || null }
+      return
+    }
+    for (const ch of Array.isArray(data.choices) ? data.choices : []) {
+      const d = (ch?.delta && typeof ch.delta === "object" ? ch.delta : ch?.message) ?? {}
+      const r = [d.reasoning_content, d.reasoning].find((v) => typeof v === "string" && v)
+      if (r) yield { reasoning: r }
+      if (typeof d.content === "string" && d.content) yield { text: d.content }
+      for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) {
+        const key = Number.isInteger(tc?.index) ? tc.index : tc?.id && ![...calls.values()].some((c) => c.id === tc.id) ? `id:${tc.id}` : lastKey ?? 0
+        lastKey = key
+        const c = calls.get(key) ?? { id: "", name: "", arguments: "" }
+        if (tc?.id) c.id = String(tc.id)
+        if (tc?.function?.name && !c.name) c.name = String(tc.function.name)
+        const a = tc?.function?.arguments
+        if (typeof a === "string") c.arguments += a
+        else if (a && typeof a === "object") c.arguments += JSON.stringify(a)
+        calls.set(key, c)
+      }
+      finish = finishOf(ch) || finish
+    }
+    const u = tokensOf(data.usage)
+    if (u) yield { usage: u }
+  }
+  for (const c of calls.values()) yield { call: { id: c.id || callId(), name: c.name, arguments: c.arguments || "{}" } }
+  if (finish) yield { finish }
+}
+
+// directRefused is, per model, the ak its endpoint turned away (401, 403),
+// by akKey: the endpoint isn't asked again until the list gives another
+const directRefused = new Map()
+
+// askDirect asks an enterprise model's own endpoint (directOf) and is its
+// answer as an OpenAI chat completion, or null when the endpoint didn't
+// answer one (not reached, an error status, not a stream or a completion,
+// an error before anything was written): the request then goes through
+// llm_utils_chat as before. The ak is never written: the debug line says
+// how long it is.
+async function askDirect(req, dir, base, ac, site) {
+  const sent = directBody(req, dir)
+  const rid = randomUUID()
+  const dbg = traeDebug()
+  if (dbg) console.error(`trae debug: request ${rid} POST ${dir.url} direct ak_chars=${dir.ak.length} ${JSON.stringify(debugBody(sent))}`)
+  let res
+  try {
+    res = await fetch(dir.url, { method: "POST", headers: directHeaders(dir, rid), body: JSON.stringify(sent), signal: ac.signal })
+  } catch (e) {
+    if (ac.signal.aborted) throw e
+    if (dbg) console.error(`trae debug: request ${rid} not answered (${e?.name ?? "error"}); asking llm_utils_chat`)
+    return null
+  }
+  const type = res.headers.get("content-type") ?? ""
+  if (dbg) console.error(`trae debug: request ${rid} answered ${res.status} ${type}`)
+  if (!res.ok || !res.body) {
+    if (res.status === 401 || res.status === 403) directRefused.set(base, akKey(dir.ak))
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  let events
+  if (/event-stream/i.test(type)) events = sse(res.body)
+  else if (/json/i.test(type)) {
+    const whole = parseJSON(await res.text())
+    events = (async function* () {
+      yield { data: whole }
+    })()
+  } else {
+    await res.body.cancel().catch(() => {})
+    return null
+  }
+  const it = directParts(events)
+  const got = await first(it)
+  if (got.held.some((p) => p.error) || (got.done && !got.held.length)) {
+    if (dbg) console.error(`trae debug: request ${rid} answered no reply; asking llm_utils_chat`)
+    await it.return?.().catch(() => {})
+    return null
+  }
+  let parts = chain(got.held, it)
+  if (dbg) parts = debugEnd(rid, parts, sent.max_tokens || 0, 0)
+  return openai(req, parts, () => ac.abort(), site, sent.max_tokens || 0, 0)
+}
+
 // MAGPIE_TRAE_DEBUG=1 in magpie's environment writes each chat request the
 // plugin sends and how Trae's answer ended to stderr, which magpie keeps in
 // app.log (plugins#1366: a seat's replies stopped at 2000 output tokens,
@@ -4620,6 +4787,17 @@ const makePlugin = (site) => async ({ client }) => {
             let why = null
             const tried = []
             const entry = liveEntryOf(base)
+            // an enterprise model with its own endpoint is asked there, as
+            // Trae's client asks it (directOf); one that endpoint doesn't
+            // answer goes on through llm_utils_chat below
+            const dir = max ? null : directOf(entry)
+            if (dir && directRefused.get(base) !== akKey(dir.ak)) {
+              const out = await askDirect(req, dir, base, ac, site)
+              if (out) {
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
+              }
+            }
             for (let round = 0; round < 2; round++) {
               const host = hostOf(a)
               let refused = false
@@ -4740,4 +4918,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused }

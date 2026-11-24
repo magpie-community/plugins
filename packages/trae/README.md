@@ -308,7 +308,25 @@ stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
 sent, so the agent doesn't take the pause for a dead stream; with
 `MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
 `wait_ms=`. **Not verified with a real enterprise seat**,
-nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
+nor how cleanly a model goes on from where it stopped.
+
+Since 0.2.53 an enterprise custom model whose detail carries a usable
+`custom_config` (provider `custom_openai_compatible`, `status` true,
+`auth_type` 0, an `ak`, and a `base_url` ending in `/chat/completions`) is
+not asked through `llm_utils_chat` at all: its chat goes straight to that
+`base_url`, as Trae CN 3.4.22's own client sends it (plugins#1366, the
+reporter's captures: 8274 and 12182 output tokens with `stop` on the
+same model that `llm_utils_chat` cuts at 2000). The request carries
+`Authorization: Bearer <ak>`, `X-Model-Provider`, `User-Agent: hertz`,
+the detail's `model_name` as `model`, the agent's `max_tokens` held to the
+detail's (the detail's when none is asked), the messages and tools as the
+agent sent them, and is always a stream with its usage; tool calls come
+back in OpenAI form. If the endpoint isn't reached, answers an error
+status, isn't a stream or a completion, or fails before writing anything,
+the request goes through `llm_utils_chat` as before; a 401 or 403 there
+keeps that model on `llm_utils_chat` until its list gives another `ak`.
+Any other `auth_type`, or a field missing, is `llm_utils_chat` too.
+**Not tried on a real enterprise seat.** A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -444,8 +462,11 @@ terminal or `docker logs` when magpie runs as `magpie serve`):
   Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
   finish the agent was sent.
 
-The request goes to Trae, not to an enterprise model's own gateway: Trae's
-cloud makes that request, so its body is not in magpie's log.
+An enterprise model asked at its own endpoint (0.2.53) writes
+`trae debug: request <id> POST <base_url> direct ak_chars=<n> <body>`: the
+`ak`'s length only, never the `ak`. Any other request goes to Trae, whose
+cloud asks the enterprise model's gateway, so that body is not in magpie's
+log.
 
 ## Usage
 
