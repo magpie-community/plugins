@@ -288,6 +288,18 @@ button {
   background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
   background-size: 22px 22px;
   touch-action: none;
+  /* 拖拽画布时不要把 SVG 里的节点标题当成文本选中（否则整屏蓝色选区）。 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#canvas text {
+  -webkit-user-drag: none;
+}
+
+#canvas * {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #canvas.panning {

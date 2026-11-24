@@ -45,6 +45,12 @@
     const width = () => svg.clientWidth || 900;
     const height = () => svg.clientHeight || 600;
 
+    // 拖拽前把可能存在的文本选区清掉：SVG 标题一旦被选中，整张图会盖上一层蓝色。
+    function dropSelection() {
+      const selection = window.getSelection?.();
+      if (selection && selection.rangeCount) selection.removeAllRanges();
+    }
+
     function screenToWorld(x, y) {
       const rect = svg.getBoundingClientRect();
       return {
@@ -366,6 +372,8 @@
         group.addEventListener("pointerdown", (event) => {
           if (event.button !== 0) return;
           event.stopPropagation();
+          event.preventDefault();
+          dropSelection();
           const point = screenToWorld(event.clientX, event.clientY);
           drag = {
             node,
@@ -521,6 +529,8 @@
     svg.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       if (event.target.closest(".node") || event.target.closest(".edge-hit")) return;
+      event.preventDefault();
+      dropSelection();
       pan = {
         x: event.clientX,
         y: event.clientY,
