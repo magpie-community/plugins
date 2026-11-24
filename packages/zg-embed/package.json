@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-zg-embed-auth",
-  "version": "0.1.0",
-  "description": "Bailian (DashScope) embedding for zvec-grep (zg) in OpenCode and magpie: bridges zg's hardcoded model names to the real models (flash by default), public or workspace endpoint, your API key",
+  "version": "0.2.0",
+  "description": "Routes every embedding name zvec-grep (zg) hardcodes to one configured upstream model (Bailian/DashScope flash by default) in OpenCode and magpie, with protocol auto-adaptation; your API key, public or workspace endpoint",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { ".": "./opencode2.mjs" },
@@ -31,6 +31,10 @@
     "test": "bun test"
   },
   "magpie": {
+    "options": {
+      "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.7-text-embedding-flash"
+    },
     "maxConcurrency": 4
   }
 }
