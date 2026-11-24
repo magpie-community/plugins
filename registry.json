@@ -90,6 +90,8 @@
       "summary": { "en": "New API's parameter override: set, delete, move or rewrite fields of every request, by model or by condition.", "zh": "New API 的参数覆盖：按模型或条件设置、删除、移动或改写每个请求的字段。" } },
     { "package": "@magpie-community/middleware-model-map", "name": "Model Map", "kind": "middleware", "community": true,
       "summary": { "en": "New API's model redirection: send a model under another name, by name or pattern; replies keep the name asked for.", "zh": "New API 的模型重定向：按名称或正则把模型换成另一个发出，回复里仍是原来的名字。" } },
+    { "package": "@magpie-community/middleware-incognito", "name": "Incognito", "kind": "middleware", "community": true,
+      "summary": { "en": "Makes any AI agent incognito to model upstreams: identity sentences neutralized with pure punctuation (meaning preserved), known poison sentences rewritten, [1M] model-name markers stripped — every agent, all three gateway paths, zero config.", "zh": "让任何 AI agent 在模型上游面前隐身：身份句纯标点改写（语义不变）、已知毒句深扫改写、剥 [1M] 模型名后缀——所有 agent、三条网关路径，零配置。" } },
     { "package": "@magpie-community/middleware-system-prompt", "name": "System Prompt", "kind": "middleware", "community": true,
       "summary": { "en": "Add your own system prompt to every request, or only some agents' or models', in each API's own place.", "zh": "给每个请求（或指定 agent、模型）加上自己的系统提示词，放在各 API 自己的位置。" } },
     { "package": "@magpie-community/middleware-output-strategy", "name": "Output Strategy", "kind": "middleware", "community": true,

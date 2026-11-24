@@ -1,0 +1,47 @@
+[
+  { "name": "claude code's identity sentence is punctuated, meaning intact",
+    "request": { "model": "qoder/qfmodel", "system": [{ "type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude." }], "messages": [{ "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "qoder/qfmodel", "system": [{ "type": "text", "text": "You are Claude Code (Anthropic's official CLI for Claude)." }], "messages": [{ "role": "user", "content": "hi" }] } },
+
+  { "name": "any agent's appositive identity sentence gets the same treatment",
+    "request": { "model": "qoder/fast", "messages": [{ "role": "system", "content": "You are Codex, OpenAI's coding agent for the terminal." }, { "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "system", "content": "You are Codex (OpenAI's coding agent for the terminal)." }, { "role": "user", "content": "hi" }] } },
+
+  { "name": "a lowercase-article identity sentence, proven safe, is left alone",
+    "request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK." }], "messages": [{ "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK." }], "messages": [{ "role": "user", "content": "hi" }] } },
+
+  { "name": "the DeepSeek Harness poison ends up in its safe final form",
+    "request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are an AI agent powered by DeepSeek Harness." }], "messages": [{ "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are an AI agent (powered by Agent Harness)." }], "messages": [{ "role": "user", "content": "hi" }] } },
+
+  { "name": "exact rules reach what the user types",
+    "request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "quote: You are an AI agent powered by DeepSeek Harness." }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "quote: You are an AI agent powered by Agent Harness." }] } },
+
+  { "name": "extra rules arrive through options",
+    "options": { "rules": [{ "from": "XX-my-poison-YY", "to": "safe" }] },
+    "request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "XX-my-poison-YY please" }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "safe please" }] } },
+
+  { "name": "harden_identity off leaves shapes alone but keeps exact rules",
+    "options": { "harden_identity": false },
+    "request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are NewAgent, a fresh coding agent." }], "messages": [{ "role": "user", "content": "You are an AI agent powered by DeepSeek Harness." }] },
+    "expect_request": { "model": "qoder/fast", "system": [{ "type": "text", "text": "You are NewAgent, a fresh coding agent." }], "messages": [{ "role": "user", "content": "You are an AI agent powered by Agent Harness." }] } },
+
+  { "name": "trailing [1M] on the model name is stripped",
+    "request": { "model": "qoder/fast[1M]", "messages": [{ "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "hi" }] } },
+
+  { "name": "a Responses-API instructions field is hardened too",
+    "request": { "model": "qoder/fast", "instructions": "You are Codex, OpenAI's coding agent for the terminal.", "input": "hi" },
+    "expect_request": { "model": "qoder/fast", "instructions": "You are Codex (OpenAI's coding agent for the terminal).", "input": "hi" } },
+
+  { "name": "poison inside a tool description is rewritten",
+    "request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "hi" }], "tools": [{ "type": "function", "name": "run", "description": "Use when the harness says You are an AI agent powered by DeepSeek Harness.", "parameters": {} }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "hi" }], "tools": [{ "type": "function", "name": "run", "description": "Use when the harness says You are an AI agent powered by Agent Harness.", "parameters": {} }] } },
+
+  { "name": "an innocent request passes byte-identical",
+    "request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "帮我修个 bug,You are welcome。" }] },
+    "expect_request": { "model": "qoder/fast", "messages": [{ "role": "user", "content": "帮我修个 bug,You are welcome。" }] } }
+]

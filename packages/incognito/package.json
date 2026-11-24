@@ -1,0 +1,36 @@
+{
+  "name": "@magpie-community/middleware-incognito",
+  "version": "0.1.0",
+  "description": "Makes any AI agent incognito to model upstreams: identity-sentence neutralizing (pure punctuation, meaning preserved), fingerprint-poison rewriting, [1M] suffix stripping — one plugin, every agent, zero config.",
+  "type": "module",
+  "files": [
+    "incognito.middleware.js",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-middleware",
+    "incognito",
+    "llm-gateway",
+    "fingerprint",
+    "agent",
+    "anthropic",
+    "openai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/incognito"
+  },
+  "magpie": {
+    "middleware": "./incognito.middleware.js",
+    "options": {
+      "harden_identity": true,
+      "strip_model_suffix": true,
+      "rules": [
+        { "from": "You are some Agent, poisoned by example.", "to": "You are some Agent, hydrated by example." }
+      ]
+    }
+  }
+}
