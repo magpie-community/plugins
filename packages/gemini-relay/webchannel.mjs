@@ -46,10 +46,11 @@ function modelHeaderBin(hex, mode, think = 1) {
 
 // The page function. Built as a plain string (not a template literal): it is
 // spliced into Runtime.evaluate, and its own string literals must survive.
-const PAGE_WC = `(async (hex, mode, depth, inner) => {
+const PAGE_WC = `(async (hex, mode, depth, inner, push) => {
   const Q = String.fromCharCode(34)
   const NL = String.fromCharCode(13, 10)
   const out = { log: [], served: [], reply: "", reasoning: "" }
+  const emit = (d) => { if (push) try { push(JSON.stringify(d)) } catch {} }
   const html = document.documentElement.innerHTML
   const kidx = html.indexOf("d2zJAe")
   const apiKey = kidx >= 0 ? (html.slice(kidx).match(/AIza[0-9A-Za-z_-]{35}/) || [""])[0] : ""
@@ -163,6 +164,12 @@ const PAGE_WC = `(async (hex, mode, depth, inner) => {
           if (ev.err) { errFrame = ev.err; done = true }
           if (ev.end) done = true
           if (ev.ack) ack = true
+          // classify already decides when a candidate marks the reply
+          // complete (cands[0][0] === "1"); that flag was computed and then
+          // dropped, so a finished reply kept the collector polling for the
+          // full 120 s and the turn ended in a bogus "cut off" error that
+          // re-ran the whole ask on the fallback transport. Honor it.
+          if (ev.done) done = true
           if (ev.inner) {
             const b = ev.inner
             if (typeof b[42] === "string" && b[42]) served.add(b[42])
@@ -172,9 +179,19 @@ const PAGE_WC = `(async (hex, mode, depth, inner) => {
             const c = b[4] && b[4][0]
             if (Array.isArray(c)) {
               if (typeof c[0] === "string" && c[0].slice(0, 3) === "rc_") rcid = c[0]
-              if (c[1] && typeof c[1][0] === "string" && c[1][0].length > reply.length) reply = c[1][0]
+              if (c[1] && typeof c[1][0] === "string" && c[1][0].length > reply.length) {
+                reply = c[1][0]
+                // the reply is cumulative; push the whole running text and
+                // let the node side diff it into deltas (the same shape the
+                // old plugin's onUpdate and gemini-web2api-go's onLine use)
+                emit({ text: reply })
+              }
               const th = c[37] && c[37][0] && c[37][0][0]
-              if (typeof th === "string" && th.length > reasoning.length) reasoning = th
+              if (typeof th === "string" && th.length > reasoning.length) {
+                reasoning = th
+                emit({ reasoning })
+              }
+              if (served.size) emit({ served: [...served] })
             }
           }
         })
@@ -205,8 +222,15 @@ const PAGE_WC = `(async (hex, mode, depth, inner) => {
   catch (e) { out.err = "ofs1: " + String(e && e.message || e); collecting = false; return out }
   if (p1.status !== 200) { out.err = "ofs1 status " + p1.status; collecting = false; return out }
   // ---- wait for the end frame ----
+  // A candidate whose first slot is "1" is complete (classify's done). The
+  // last frames can still carry the tail of the text, so a done does not
+  // end the wait at once: the collector keeps polling briefly and stops on
+  // its own once done has stood still for a moment. Without this the whole
+  // wait ran to 120 s even though the reply had arrived in the first second.
   const t1 = Date.now()
   while (!done && Date.now() - t1 < 120000) await new Promise(r => setTimeout(r, 400))
+  if (done) await new Promise(r => setTimeout(r, 600)) // let the tail frames land
+  collecting = false
   try { await post(2, [null, null, null, [1]]) } catch {}
   out.ack = ack
   out.served = [...served]
@@ -225,9 +249,14 @@ const PAGE_WC = `(async (hex, mode, depth, inner) => {
 // pageWebChannelEval splices the page function with the inner request
 // passed as an argument (never interpolated): hex for the model header,
 // mode the tier byte, depth the thinking depth, inner the 99-slot
-// request built by relay.mjs's buildInner.
-export function pageWebChannelEval(hex, mode, depth, inner) {
-  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${mode ?? 1}, ${depth ?? 1}, ${JSON.stringify(inner)}) })()`
+// request built by relay.mjs's buildInner. push is the CDP binding name
+// the page calls with each running-text delta; when set, the page also
+// reports progress through it (the binding was installed by the caller).
+export function pageWebChannelEval(hex, mode, depth, inner, push = "") {
+  const pushExpr = push
+    ? `(window[${JSON.stringify(push)}] || null)`
+    : "null"
+  return `(async function(){ const f = ${PAGE_WC}; return await f(${JSON.stringify(hex || "56fdd199312815e2")}, ${mode ?? 1}, ${depth ?? 1}, ${JSON.stringify(inner)}, ${pushExpr}) })()`
 }
 
 // what a tier byte is expected to serve (2026-11-22 measurements): 1 the

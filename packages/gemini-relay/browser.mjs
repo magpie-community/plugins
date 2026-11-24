@@ -334,6 +334,26 @@ export class RelayBrowser {
     // the rotator factory is injectable so tests can stub it; production
     // wires the real one in index.mjs via browser.rotatorFactory
     this.rotatorFactory = null
+    // page→node push channel: the page function installs a binding and
+    // calls it per delta; onDelta handlers run here (the events array is
+    // a poll fallback, but a live handler avoids the 350 ms poll lag)
+    this.deltaHandlers = new Set()
+  }
+
+  // onDelta registers a handler for the page's streaming deltas. It fires
+  // from Runtime.bindingCalled events for the given binding name; the
+  // handler receives the parsed payload the page passed. Returns an
+  // unsubscribe function.
+  onDelta(name, fn) {
+    const h = (msg) => {
+      if (msg.method !== "Runtime.bindingCalled") return
+      if (msg.params?.name !== name) return
+      let payload = msg.params.payload
+      try { payload = JSON.parse(payload) } catch {}
+      fn(payload)
+    }
+    this.deltaHandlers.add(h)
+    return () => this.deltaHandlers.delete(h)
   }
 
   started() {
@@ -433,6 +453,7 @@ export class RelayBrowser {
           this.pending.delete(msg.id)
           msg.error ? rej(new Error(msg.error.message)) : res(msg.result)
         } else if (msg.method) {
+          for (const h of this.deltaHandlers) h(msg)
           this.events.push(msg)
           this._waiters = this._waiters.filter((w) => !w(msg))
         }
@@ -463,6 +484,14 @@ export class RelayBrowser {
     await page.send("Page.enable")
     await page.send("Runtime.enable")
     return page
+  }
+
+  // installBinding exposes `window[name](payload)` inside the page; every
+  // call arrives here as a Runtime.bindingCalled event. The page function
+  // uses it to push reply deltas the moment it reads them, instead of the
+  // caller waiting for the whole turn.
+  async installBinding(page, name) {
+    await page.send("Runtime.addBinding", { name })
   }
 
   async stop() {
