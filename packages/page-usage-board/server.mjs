@@ -825,6 +825,7 @@ function main(resolve, reject) {
       const confirm = await new Promise((r2) => setTimeout(() => probe(`${URL_HOST}:${target}`).then(r2, () => r2(null)), 1500));
       if (confirm && confirm.build === BUILD_ID) {
         console.log(`[magpie-usage] port ${target} in use by the same build (${BUILD_ID}) — reusing it`);
+        takeOver(target);
         resolve(target);
         return;
       }
@@ -835,6 +836,20 @@ function main(resolve, reject) {
       : `port ${target} is in use and not by this board — free it or set PORT`));
   };
   attempt();
+
+  // 复用不是终局（#1500）：magpie 滚动自更新时，持有端口的正是要退出的上一个宿主——
+  // 它一走端口就空了。每秒试着绑一次：它还在，绑不上（EADDRINUSE）；它一松手就接过来。
+  function takeOver(p) {
+    const tick = async () => {
+      if (server.listening) return;
+      if (await bindOnce(p)) {
+        if (server.listening) console.log(`[magpie-usage] the instance holding port ${p} let go — took it over`);
+        return;
+      }
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  }
 
   function bindOnce(p) {
     return new Promise((res) => {

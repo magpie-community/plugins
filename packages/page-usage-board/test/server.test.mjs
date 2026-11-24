@@ -546,6 +546,30 @@ test('reuses a live instance of the same build, never a different one', { timeou
   }
 });
 
+test('a reused port is taken over when the instance holding it exits (#1500)', { timeout: 45000 }, async () => {
+  // magpie 滚动自更新：新宿主的看板复用了旧宿主的同构建实例，0.2s 后旧宿主退出，
+  // 端口从此没人监听。复用的一方要在持有方走后自己绑上。
+  const p = await freePort();
+  const a = start({ PORT: String(p) });
+  let b;
+  try {
+    await a.ready;
+    b = start({ PORT: String(p) });
+    b.ready.catch(() => {});
+    await waitFor(() => /reusing it/.test(b.captured.out), 15000);
+    assert.match(b.captured.out, /reusing it/, b.captured.out.slice(0, 400));
+    a.c.kill();
+    await waitFor(() => /took it over/.test(b.captured.out), 15000);
+    assert.match(b.captured.out, /took it over/, b.captured.out.slice(0, 600));
+    const r = await request(p, '/api/health');
+    assert.equal(r.status, 200);
+  } finally {
+    a.c.kill();
+    b?.c.kill();
+    for (const d of [a.dir, b?.dir].filter(Boolean)) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
+  }
+});
+
 test('index.mjs: importing has no side effects, server() starts and awaits listen', { timeout: 30000 }, async () => {
   // The community import-check imports this file for inspection; a module-level
   // startServer would grab a port and write config during that check. The child
