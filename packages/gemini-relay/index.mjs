@@ -26,10 +26,14 @@ const ANONYMOUS = "anonymous"
 // visitors get the app's Auto only (the old gemini-web plugin's way)
 const VISITOR = { "gemini-auto": MODELS["gemini-auto"] }
 
-// the Gemini sparkle as a vector: crisp at any size (the favicon PNG got
-// blurry on the provider card)
-const ICON =
-  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCIgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iZzEiIHgxPSI4IiB5MT0iNDAiIHgyPSI0MCIgeTI9IjgiIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNDI4NUY0Ii8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjMzIiBzdG9wLWNvbG9yPSIjOUI3MkNCIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iLjY2IiBzdG9wLWNvbG9yPSIjRDk2NTcwIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI0YyQTYwQyIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8cGF0aCBmaWxsPSJ1cmwoI2cxKSIgZD0iTTI0IDRjMS4xIDcuOSA0LjIgMTMuNiA4LjQgMTcuMkMzNiAyNC41IDQxIDI2LjQgNDQgMjYuNnYuOGMtMyAuMi04IDIuMS0xMS42IDUuNEMyOC4yIDM2LjQgMjUuMSA0Mi4xIDI0IDUwYy0xLjEtNy45LTQuMi0xMy42LTguNC0xNy4yQzEyIDI5LjUgNyAyNy42IDQgMjcuNHYtLjhjMy0uMiA4LTIuMSAxMS42LTUuQzE5LjggMTcuNiAyMi45IDExLjkgMjQgNHoiIHRyYW5zZm9ybT0idHJhbnNsYXRlKDAgLTMpIi8+Cjwvc3ZnPgo="
+// the icon magpie renders natively on provider cards (a base64 data-URL
+// shows as a square box there — registry.json's gemini-color is the name)
+const ICON = "gemini-color"
+
+// a non-streamed turn must answer within magpie's first-token deadline
+// (60 s) or the gateway reads "no answer": the hard cap sits below it so
+// the caller gets a real error, not a gateway timeout
+const NON_STREAM_BUDGET_MS = 55_000
 
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
@@ -263,14 +267,32 @@ export function createPlugin({ profileDir, headless = true, signInImpl = signIn,
           try {
             if (body.stream)
               return await sse({ id, model, signal: request.signal, promptTokens, ask: (onUpdate, sig) => wrapAsk(session, prompt, { ...askOptions, signal: sig }, onUpdate) })
-            const final = await session.ask(prompt, askOptions)
-            return Response.json(completion({ id, model, final, promptTokens: promptTokens() }))
+            // non-streamed: the whole answer must land inside magpie's
+            // first-token deadline (60 s), so the turn is cut at 55 s with
+            // a real error — the gateway's own "no answer in 1m0s" reads
+            // as a dead model, this reads as what happened
+            const budget = new AbortController()
+            const timer = setTimeout(() => budget.abort(new Error("回答超过 55 秒仍未完成（非流式上限，可改用 stream）。")), NON_STREAM_BUDGET_MS)
+            const onAbort = () => budget.abort(request.signal?.reason)
+            request.signal?.addEventListener("abort", onAbort, { once: true })
+            try {
+              const final = await session.ask(prompt, { ...askOptions, signal: budget.signal })
+              return Response.json(completion({ id, model, final, promptTokens: promptTokens() }))
+            } finally {
+              clearTimeout(timer)
+              request.signal?.removeEventListener("abort", onAbort)
+            }
           } catch (e) {
             // a client abort travels as a real AbortError (or as the
             // relay's own cancelled error): rethrow so the SDK sees the
             // cancel — never answer it with a body, and never with an
             // invalid 499 status that the Response constructor rejects
-            if (e?.name === "AbortError" || e?.name === "TimeoutError" || e?.code === "aborted") throw new DOMException("已取消", "AbortError")
+            if (e?.name === "AbortError" || e?.name === "TimeoutError" || e?.code === "aborted") {
+              // the 55 s budget, not the client: say so, as a gateway
+              // timeout the SDK can show
+              if (request.signal && !request.signal.aborted) return json(504, "回答超过 55 秒仍未完成（非流式上限，可改用 stream）。", "timeout")
+              throw new DOMException("已取消", "AbortError")
+            }
             return json(e?.status ?? 502, String(e?.message ?? e), e?.code ?? "gemini_error")
           }
         },
