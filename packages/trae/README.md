@@ -283,7 +283,11 @@ CN 3.4.22's own agent task puts it — read from the binary, **not verified
 with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
 after using every token it was let have — the `max_tokens` sent, or 2000
 for an enterprise model — ends with `finish_reason: "length"`, so an agent
-knows it was cut. Since 0.2.48 a tool call such a reply was cut in (its
+knows it was cut. Trae's `completion_tokens` count the reasoning, which
+`max_tokens` doesn't bound, so since 0.2.54 a reply is taken as cut at
+`max_tokens` only when the count is that limit exactly or what it said past
+its reasoning reached it (plugins#1503: GLM-5.3's whole "OK" to
+`max_tokens` 16, 55 tokens of them 52 reasoning, went out as `length`). Since 0.2.48 a tool call such a reply was cut in (its
 arguments not whole JSON) is not sent as a call: the reply ends with
 `length` and the text before the call (plugins#1366, a call cut at 2000
 went out as `tool_calls` and the agent stopped on it). A whole call in a

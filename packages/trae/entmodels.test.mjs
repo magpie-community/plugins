@@ -679,3 +679,32 @@ test("with MAGPIE_TRAE_DEBUG, what Trae sent that the plugin doesn't read is log
   expect(line).toContain('"event:thinking":17')
   expect(line).toContain('"output.thought":3')
 })
+
+// plugins#1503 (a personal Trae CN account, 0.2.51, debug log): GLM-5.3
+// answered "OK" to max_tokens 16 and said "stop", with completion_tokens 55,
+// 52 of them reasoning. Trae's count holds the reasoning, which max_tokens
+// doesn't bound; the reply was whole and went out as length.
+test("a whole reply whose reasoning took it past max_tokens keeps Trae's stop, in a body and in a stream", async () => {
+  const u = (c, r) => ({ completion_tokens: c, completion_tokens_details: { reasoning_tokens: r } })
+  expect(_internal.cutFinish("", u(55, 52), 16, 0)).toBe("")
+  expect(_internal.cutFinish("stop", u(176, 173), 16, 0)).toBe("stop")
+  // a reply that said as much as it was let, or came to the count exactly
+  expect(_internal.cutFinish("stop", u(70, 52), 16, 0)).toBe("length")
+  expect(_internal.cutFinish("stop", u(16, 10), 16, 0)).toBe("length")
+  const hooks = await plugin([preset, ...listed])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "OK" }], ["token_usage", { usage: { prompt_tokens: 15, completion_tokens: 55, reasoning_tokens: 52, total_tokens: 70 } }], ["done", { finish_reason: "stop" }]]))
+  const opts = await hooks.auth.loader(async () => signedIn())
+  for (const stream of [false, true]) {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5", messages: [{ role: "user", content: "Reply only OK" }], max_tokens: 16, stream }) })
+    expect(res.status).toBe(200)
+    if (!stream) {
+      const b = await res.json()
+      expect(b.choices[0].message.content).toBe("OK")
+      expect(b.choices[0].finish_reason).toBe("stop")
+      continue
+    }
+    const lines = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)))
+    expect(lines.map((x) => x.choices?.[0]?.finish_reason).filter(Boolean)).toEqual(["stop"])
+  }
+})

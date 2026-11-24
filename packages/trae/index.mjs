@@ -3145,10 +3145,18 @@ const TRAE_CUT = 2000
 // answer for a whole one. A reply that used every token it was let have
 // (limit, the max_tokens sent; or cut, Trae's own TRAE_CUT for an
 // enterprise model, 0 for a preset, which wasn't seen cut) ended for length.
+//
+// Trae's completion_tokens count the reasoning too, and the reasoning isn't
+// held to max_tokens: GLM-5.3 answered "OK" to max_tokens 16 with
+// completion_tokens 55, 52 of them reasoning, and Trae's own finish "stop"
+// (plugins#1503). So a reply came to its limit when the count is the limit
+// exactly, or what it said past its reasoning reached it; a count past the
+// limit by reasoning alone is a whole reply.
 function cutFinish(finish, usage, limit, cut = 0) {
   if (finish && finish !== "stop") return finish
   const c = Number(usage?.completion_tokens) || 0
-  if (c > 0 && ((limit > 0 && c >= limit) || (cut > 0 && c === cut))) return "length"
+  const r = Number(usage?.completion_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens) || 0
+  if (c > 0 && ((limit > 0 && (c === limit || c - r >= limit)) || (cut > 0 && c === cut))) return "length"
   return finish
 }
 
