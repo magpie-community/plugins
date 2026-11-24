@@ -85,8 +85,11 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   接着写；
 - `AGY_BRIDGE_PREFILL=0` 恢复原来的 400 拒绝；`AGY_BRIDGE_PREFILL_CARRIER_NOTE`
   自定义载体提示行。
+- 跟在 tool_result 后面的预填（magpie 续写一条中途断开的回复，或客户端重试时带上
+  已收到的半截回复）按被打断的工具轮处理：会话里还在等的调用拿到真实结果，预填
+  作为下一条 prompt 的续写载体；会话接不上时，连同工具结果整轮重放。
 
-已知限制：与 live tool_result 共存的预填、以及未应答 tool_use 后紧跟的预填仍被 400 拒绝；前面没有 user 消息的
+已知限制：未应答 tool_use 后紧跟的预填仍被 400 拒绝；前面没有 user 消息的
 连续 assistant 尾整段视为预填（该轮降级为新会话，下一轮自愈）；向客户端开放
 哪些模型仍由 agy 决定。
 
