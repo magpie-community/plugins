@@ -88,7 +88,24 @@ test("a live report names on each window the ids the listed catalog serves", () 
   assert.deepEqual(pools.map(w => w.used), [0, 0, 66.394961, 0, 0])
   // agy names a family in the description even though it lists no bare id.
   assert.ok(pools[2].models.includes("gpt-oss-120b"))
-  assert.ok(result.windows.every(w => w.aside === true))
+  // the pools' windows are set aside: they hold their models at a cap
+  assert.ok(pools.every(w => w.aside === true))
+  storeCatalogRows(null)
+})
+
+// will930128 on X: an Opus 5.5 routing group showed the agy-cli account's
+// share as not known, last behind every account known, while its card
+// showed Claude & GPT's 5 hours and 7 days. Every window was aside, so
+// magpie's routing had none to weigh it by.
+test("a model's own window is not set aside, so routing weighs the account by it", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  const own = result.windows.filter(w => w.model)
+  assert.equal(own.length, 6)
+  assert.ok(own.every(w => !w.aside && w.used !== undefined && w.models.length > 0))
+  const opus = own.find(w => w.model === "claude-opus-5-5")
+  assert.deepEqual([opus.pool, opus.used, opus.aside], ["Claude & GPT", 66.394961, undefined])
+  assert.ok(opus.models.includes("claude-opus-5-5-high"))
   storeCatalogRows(null)
 })
 

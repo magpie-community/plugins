@@ -183,6 +183,13 @@ function vendorOf(id, name) {
 // digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
 // card shows the pools, and "Every model" lists the models, as it did for
 // the antigravity plugin.
+//
+// A model's own window is not set aside: it is what routing weighs the
+// account by for that model, as the antigravity plugin's were, so a
+// routing group of Opus 5.5 reads the account's Claude & GPT share, not
+// "not known yet" behind every account known (will930128 on X). The
+// pool's own windows stay aside and hold their models at a cap the user
+// sets on the pool (magpie's PoolWindow), as the antigravity plugin's did.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
@@ -214,7 +221,7 @@ export function parseUsageReport(value) {
       const w = {
         name: period.name,
         pool,
-        // This feature displays quota only; it must not change model routing.
+        // the pool's own: its models' windows stop them (below)
         aside: true,
         ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
@@ -234,7 +241,6 @@ export function parseUsageReport(value) {
         model: f.id,
         family: vendorOf(f.id, f.name),
         pool,
-        aside: true,
         models: f.ids,
         used: tightest.used,
         ...(tightest.span ? { span: tightest.span } : {}),

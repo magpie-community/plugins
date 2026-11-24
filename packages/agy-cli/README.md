@@ -71,7 +71,7 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   都在客户端侧完成。
 - **助手预填**：以 assistant 结尾的预填请求（SillyTavern 预设、继续写、bot 框架）不再
   400 拒绝：预填留在本轮并渲染为续写载体，会话跨轮保持对齐，见下文「助手预填」。
-- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口，仅作展示，额度耗尽时不会自动拦截请求。
+- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。
 
 ## 助手预填（assistant prefill）
 
@@ -276,6 +276,9 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
   按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
   magpie 据此让这个账号歇到重置，并改问下一个账号。
+  结尾是 "⚠ Third-party quota reached. Please switch to Gemini models … Resets in 3h22m19s."
+  （这个账号 Claude 和 GPT-OSS 的额度用完，Gemini 的还在）时也一样结束本轮，magpie 让这个模型
+  歇到重置，改问下一个账号或模型，这个账号的 Gemini 模型照常可用。
   结尾是 "⚠ Our servers are experiencing high traffic right now …"（Google 这个模型暂时没有
   余量，agy 的重试也都碰上了 503）时，按 `overloaded_error`（非流式为 HTTP 503）结束本轮，
   不让账号歇着，magpie 会再试或改问别处。（由 ifccod 发现并移植自他的补丁。）
