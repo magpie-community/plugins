@@ -1127,6 +1127,28 @@ test("a stored sign-in with time left is read directly first, so a slow agy -p d
   await f.assertClean()
 })
 
+// plugins#1522: a direct read that can't connect hung until the deadline,
+// and agy -p, run after it with a second left, timed the card out.
+test("a direct read that hangs leaves agy -p the time it needs", async t => {
+  const f = await fixture(t)
+  const deadlines = []
+  const quota = async o => {
+    deadlines.push(o.deadline - Date.now())
+    await new Promise(r => setTimeout(r, Math.max(0, o.deadline - Date.now())))
+    throw new Error("The operation timed out.")
+  }
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 9000, quota, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.windows.length, 1)
+  assert.equal(deadlines.length, 1)
+  assert.ok(deadlines[0] <= 5000, `the direct read had ${deadlines[0]}ms`)
+  const p = (await f.logs()).find(l => l.args[0] === "-p")
+  assert.ok(Number(p.args.at(-1).replace(/s$/, "")) >= 3, `agy -p had ${p.args.at(-1)}`)
+  await f.assertClean()
+})
+
 test("a direct read that can't answer goes through agy -p, and agy's answer stands", async t => {
   const f = await fixture(t)
   let asked = 0

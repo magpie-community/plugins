@@ -9,6 +9,9 @@ import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./sig
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
 const MAX_OUTPUT_BYTES = 1024 * 1024
+// The direct read made before agy -p (fetchUsage's first) takes about 1.5
+// seconds; agy -p, 5 to 10. The first gets this long, agy -p the rest.
+const FIRST_READ_MS = 5_000
 
 // kind: "auth" (agy says it needs a sign-in), "timeout" (output: what agy
 // had printed by then, never shown), "cancel", or none.
@@ -561,10 +564,15 @@ export async function fetchUsage(agy, {
     // seconds. When they can't answer (a sign-in that can't be read, a
     // refusal, a reply with no quota), agy -p is asked as before, in the
     // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    //
+    // It gets FIRST_READ_MS of the deadline, not all of it: a read that
+    // can't connect (a proxy down, a network that drops Google) hung until
+    // the deadline and left agy -p a second, so the card said "timed out"
+    // when agy -p alone would have answered (plugins#1522).
     let firstFailed = ""
     if (first) {
       try {
-        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        const data = await quota({ env, version: version.stdout.trim(), deadline: Math.min(deadline, Date.now() + FIRST_READ_MS), signal })
         return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
       } catch (error) {
         if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
