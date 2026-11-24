@@ -78,15 +78,12 @@
     }
 
     function updateLabels() {
-      const showAll = transform.k > 1.5;
+      const showAll = transform.k >= 1.45 || visible.size <= 100;
       for (const node of nodes) {
         if (!node.el) continue;
         const show =
           !node.hidden &&
-          (showAll ||
-            node.degree >= 12 ||
-            node.id === hovered ||
-            node.id === selected);
+          (showAll || node.id === hovered || node.id === selected);
         node.el.classList.toggle("show-label", show);
       }
     }
@@ -112,6 +109,8 @@
         const lit = Boolean(hot) && focus && focus.has(edge.a) && focus.has(edge.b);
         edge.el.classList.toggle("hl", Boolean(lit));
       }
+
+      updateLabels();
     }
 
     function simulate() {

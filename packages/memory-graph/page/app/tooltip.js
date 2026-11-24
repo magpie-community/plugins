@@ -270,19 +270,21 @@
           const bar = document.createElement("span");
           bar.className = "bar";
           const fill = document.createElement("i");
-          fill.style.width = `${(edge.s / 3) * 100}%`;
+          fill.style.width = `${(Number(edge.score) || 0) * 100}%`;
           bar.appendChild(fill);
 
           const who = document.createElement("span");
           who.className = "who";
           who.textContent = peer.title || peer.id;
 
-          const rank = node.id === edge.a ? edge.ra : edge.rb;
+          const own = node.id === edge.a ? edge.ra : edge.rb;
+          const other = node.id === edge.a ? edge.rb : edge.ra;
+          const rank = own || other;
           const score = document.createElement("span");
           score.className = "s";
-          score.textContent = `${strengthLabel(edge.s)} · ${rank ? `第${rank}位` : "—"}${
-            edge.m ? " · 双向" : ""
-          }`;
+          score.textContent = `${(Number(edge.score) || 0).toFixed(3)} · ${
+            rank ? `${own ? "" : "对向"}第${rank}位` : "—"
+          }${edge.m ? " · 双向" : ""}`;
 
           row.append(bar, who, score);
           row.addEventListener("click", () => handlers.onFocus?.(peer));
@@ -291,7 +293,9 @@
       }
 
       foot.hidden = false;
-      foot.textContent = `${node.degree || 0} 条关联 · 强度合计 ${node.strengthSum || 0} · 排序来自 memory_search`;
+      foot.textContent = `${node.degree || 0} 条关联 · 关联度合计 ${Number(node.scoreSum || 0).toFixed(
+        3,
+      )} · 位次折算自 memory_search`;
     }
 
     function renderEdge(edge, ctx) {
@@ -303,7 +307,8 @@
       const a = ctx.byId?.get(edge.a);
       const b = ctx.byId?.get(edge.b);
       title.textContent = `${a?.title || edge.a} ↔ ${b?.title || edge.b}`;
-      addMeta("强度", strengthLabel(edge.s));
+      addMeta("关联度", (Number(edge.score) || 0).toFixed(3));
+      addMeta("强度档", strengthLabel(edge.s));
       addMeta("方向", edge.m ? "双向" : "单向");
       if (edge.ra) addMeta("A 侧位次", `第 ${edge.ra} 位`);
       if (edge.rb) addMeta("B 侧位次", `第 ${edge.rb} 位`);
@@ -323,7 +328,8 @@
       }
 
       foot.hidden = false;
-      foot.textContent = "强度是 memory_search 位次折算，不是余弦相似度";
+      foot.textContent =
+        "关联度是 memory_search 位次折算（第 1 位 1.000），不是余弦相似度";
     }
 
     function show(node, ctx) {

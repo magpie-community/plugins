@@ -26,13 +26,15 @@ For every memory with `status: active`, the plugin calls the built-in tool:
 
 The returned order is the only signal. The plugin skips the memory itself and the first 8 remaining hits become edges:
 
-| Position in `memory_search` | Link strength |
-| --- | --- |
-| 1–2 | strong |
-| 3–5 | medium |
-| 6–8 | weak |
+| Position in `memory_search` | Link strength | Score shown |
+| --- | --- | --- |
+| 1–2 | strong | 1.000–0.875 |
+| 3–5 | medium | 0.750–0.500 |
+| 6–8 | weak | 0.375–0.125 |
 
-If both memories put each other in their top 8, the edge is marked **mutual** and gets one extra step (capped at strong). This is a **rank-derived relative strength, not a cosine similarity**. There is no score to show because `memory_search` does not return one, and the same pair can rank differently under a different query — that is the nature of retrieval, not a bug.
+The number shown is `(8 - rank + 1) / 8`, rounded to three decimals; a mutual edge gets `+0.05` capped at `1.000`. It is a **rank-normalized score, not a cosine similarity** — `memory_search` returns order, not a distance, so this is the only honest numeric signal available. A pair can rank differently under a different query; that is retrieval, not a bug.
+
+Labels are hidden by default on a large graph. They appear when you zoom past `1.45×`, or when the current filter leaves at most 100 visible nodes; hover and selection always show a label.
 
 Superseded memories are drawn as hollow nodes with a dashed ring; they can be link targets but are never used as query anchors. `candidate` and `archived` memories are not drawn.
 
@@ -64,8 +66,8 @@ Each node's card shows, in order:
 5. tags — click one to filter the graph;
 6. created / updated timestamps;
 7. sources — agent, shortened directory, quoted evidence;
-8. related memories, with strength, rank and mutual marker; click one to focus it;
-9. degree and total link strength.
+8. related memories, each with a three-decimal score, rank and mutual marker; click one to focus it;
+9. degree and total score.
 
 Edges also have a hover card with both endpoints, strength, direction and rank.
 
@@ -73,6 +75,7 @@ Edges also have a hover card with both endpoints, strength, direction and rank.
 
 - drag a node to pin it while dragging; drag the background to pan; wheel to zoom;
 - click a node for a one-hop highlight; double-click to focus two hops; `Esc` resets;
+- labels stay off on a dense graph; zoom past `1.45×` or filter down to 100 nodes to show them;
 - `/` or `⌘K` focuses search; `0` or `F` fits the graph;
 - filters: kind, scope, tag, free text, mutual-only, hide superseded;
 - **Rebuild all** re-queries every active memory (about 50 seconds for 120 memories).

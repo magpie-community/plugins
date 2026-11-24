@@ -300,7 +300,7 @@ button {
 
 .edge {
   stroke: var(--edge);
-  stroke-opacity: 0.13;
+  stroke-opacity: 0.08;
   stroke-linecap: round;
   fill: none;
 }
@@ -311,12 +311,12 @@ button {
 
 .edge.s2 {
   stroke-width: 1.5;
-  stroke-opacity: 0.24;
+  stroke-opacity: 0.18;
 }
 
 .edge.s3 {
   stroke-width: 2.4;
-  stroke-opacity: 0.42;
+  stroke-opacity: 0.38;
 }
 
 .edge.one {

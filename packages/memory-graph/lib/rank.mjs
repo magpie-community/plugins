@@ -55,10 +55,15 @@ export function edgesFromHits(nodes, hits, { topK = 8, visible = null } = {}) {
   const edges = [];
   for (const edge of pairs.values()) {
     const mutual = edge.ra && edge.rb ? 1 : 0;
+    const ranks = [edge.ra, edge.rb].filter(Boolean);
+    const bestRank = Math.min(...ranks);
+    const base = (topK - bestRank + 1) / topK;
+    const score = Math.min(1, base + (mutual ? 0.05 : 0));
     edges.push({
       a: edge.a,
       b: edge.b,
       s: Math.min(3, Math.max(edge.sa, edge.sb) + (mutual ? 1 : 0)),
+      score: Number(score.toFixed(3)),
       m: mutual,
       ra: edge.ra,
       rb: edge.rb,

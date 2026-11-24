@@ -32,11 +32,14 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
 
   const degree = new Map();
   const strength = new Map();
+  const scoreSum = new Map();
   for (const edge of edges) {
     degree.set(edge.a, (degree.get(edge.a) || 0) + 1);
     degree.set(edge.b, (degree.get(edge.b) || 0) + 1);
     strength.set(edge.a, (strength.get(edge.a) || 0) + edge.s);
     strength.set(edge.b, (strength.get(edge.b) || 0) + edge.s);
+    scoreSum.set(edge.a, (scoreSum.get(edge.a) || 0) + (edge.score || 0));
+    scoreSum.set(edge.b, (scoreSum.get(edge.b) || 0) + (edge.score || 0));
   }
 
   const payloadNodes = visibleNodes.map((node) => ({
@@ -57,6 +60,7 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
     bodyTruncated: Boolean(node.bodyTruncated),
     degree: degree.get(node.id) || 0,
     strengthSum: strength.get(node.id) || 0,
+    scoreSum: Number((scoreSum.get(node.id) || 0).toFixed(3)),
   }));
 
   payloadNodes.sort(
