@@ -222,7 +222,10 @@ WSL). npm 12 blocks `npx github:…` by default, so don't start from that.
 `npx`, `magpie plugin add magpie-plugin-msmoli` and `magpie plugin update` all
 follow the npm package. The current release is **0.3.0**: one provider for
 both sites, the row-level ledger dedupe, the chunked-echo masking, and the
-budgets this document describes.
+budgets this document describes. Everything merged to `main` after the 0.3.0
+tag — the masking fixes this document's later sections describe — is in a
+clone and in the next release, not in that package yet; `magpie plugin update`
+moves you when that release lands.
 
 If you are on **0.2.0**, that version ships an older `bin/sync.mjs` with both
 directions, but it keeps the international site in a second provider and
@@ -239,7 +242,7 @@ It syncs the **domestic site only**: the built-in preset it reads is the
 | `--to-preset` | The other way round; a preset that already holds a different key needs `--force` |
 | `--force` | Replace a single existing plugin account whose key differs |
 | `--from <id>` | Pick the preset when more than one provider could be it |
-| `--dry-run` | Print the commands, masked, without running them or writing anything; no magpie binary needed. Exits 0 whether or not there is work — the verdict belongs to `--status`, which exits 1 when there is something to run. A plan it refuses (a mismatched key, a different `--dir`) still exits 1: the refusal is the answer |
+| `--dry-run` | Print the commands, masked, without running them or writing anything; no magpie binary needed. Exits 0 whether or not there is work — the verdict belongs to `--status`, which exits 1 when there is something to run. A plan it refuses for its own reason (a mismatched key) still exits 1: the refusal is the answer. The `--dir`/`--magpie` folder check asks the binary where it would write, so it runs only when a command would actually run; a dry run has no binary to ask and does not make that check |
 | `--dir <folder>` | Where magpie's config is (a portable install's `data` folder) |
 | `--magpie <path>` | Path to the magpie binary; a bare `magpie` is refused |
 | `--version` | Print the version (read from the package's own `package.json`) |
@@ -618,6 +621,17 @@ from being refused as an echo.
 A key quoted in a frame keeps the frame: `(ghp_…Qrst)`, `[ghp_…]`, `"ghp_…"`.
 The mask spends four characters at each end on the key's own, so the brackets
 are printed as written rather than eaten by it.
+
+Two key-shaped halves with no vendor front (`AbCd1234EfGh5678 IjKl9012MnOp3456`)
+are read as one cut key and masked once: they can be a cut key's halves, and
+two masks kept eight characters at the seam. Two keys that show their fronts
+(`ms-aaaa…5555 ms-zzzz…5555`) stay two masks.
+
+Some ordinary text is masked because it cannot be told from a key: a source
+line of capitalised words (`calculateMonthlyInvoiceTotal`), a comma-joined list
+of model names, and a table of columns all have the shape of a key cut up the
+same way, and a reading that left them alone would leave that key alone too.
+This is the mask's safe direction, and it is the trade it makes.
 
 The plugin writes two things, both onto the sign-in it already has and through
 the host's own `client.auth.set`: the nickname, as `accountId` (so the card

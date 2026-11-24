@@ -140,7 +140,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 | --- | --- | --- |
 | **连登管家** | 任务腿 `streak` / 看板 / `workbuddy_tasks_streak` | 一键幂等收割：按月取最近断点补签 → 领新手礼包/活动补偿 → 兑换 `7d / 14d / 28d` 档位 → 耗尽剩余抽奖次数；看板附带连登数据与近 28 天日历 |
 | **每日活跃** | 每个 Job 开跑前自动执行 | 每账号每个北京日向计费域发送一条 chat 事件点亮连登，通过 `state/daily-activity.json` 保证幂等，失败不阻断主任务 |
-| **每日签到** | 看板「每日签到」 / `POST /api/checkin` | **仅手动触发**（自动签到归社区插件 `auth.checkin`）；回执精准区分 `claimed` / `done` / `pending`（防假成功） / `failed`，支持 404/网络异常备用域兜底 |
+| **每日签到** | 看板「每日签到」 / `POST /api/checkin` | **每日自动签到归社区插件 `auth.checkin`**（开关在 magpie `settings.json` 的 **`workbuddyCheckin`**，或 Settings → Usage → Plugins 的开关；本插件不重复签，避免与它冲突）；这里的手动入口用于补签/调试，回执精准区分 `claimed` / `done` / `pending`（防假成功） / `failed`，支持 404/网络异常备用域兜底。签到收益会记一条 `leg: "checkin"` 的历史行并计入「今日积分」（含 magpie 本体自动签的收益，按账号取较大值不重复相加） |
 | **猫猫旅行** | 任务腿 `travel` | 单次推进一步：`arrived` 领奖 → `idle` 派出（未选中 Buddy 自动切换重试）→ `traveling` 展示剩余分钟数 |
 | **Buddy 盲盒** | 任务腿 `buddy` | 查询 `quota` 后批量开启 `min(affordable, max_open_count)` 个盲盒。**会消耗成长能量且默认不勾选/不排程**；若在途旅行中则自动跳过防覆盖，执行顺序先于 `travel` |
 
@@ -170,7 +170,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 
 ### 边界清单：本插件刻意不做什么
 
-- **不做自动签到**：避免与社区插件 `@magpie-community/opencode-workbuddy-auth` 的 `auth.checkin` 冲突。
+- **不做自动签到**：避免与社区插件 `@magpie-community/opencode-workbuddy-auth` 的 `auth.checkin` 冲突。**想让 WorkBuddy 每天自动签到，请打开 magpie 自己的开关**：`settings.json` 的 `workbuddyCheckin`（Settings → Usage → Plugins 也有开关与「Check in now」）—— 本插件没有这个开关是设计如此，不是缺陷。
 - **不伪造不可自动化任务**：`Buddy_App_QQ`（仅提供深链）、`wb_wechat_oa_subscribe_task`（关注公众号满 24 小时）、`Expert_Philanthropy`（真实捐款）以及手机端 App 对话活动任务均不接取、不上报、不假装完成。
 - **不处理国际版与企业版**：`workbuddy-ai` 与企业版账号全程过滤，不进统计、不参与任务。
 - **不采集任何遥测**：除了必要的 WorkBuddy 上游请求与 Magpie 自身的 GitHub 更新检查外，无任何第三方出站请求。

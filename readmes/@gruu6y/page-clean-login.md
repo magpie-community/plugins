@@ -2,269 +2,317 @@
 
 **简体中文** · [English](README.en.md)
 
+[![npm](https://img.shields.io/npm/v/@gruu6y/page-clean-login?style=flat-square&logo=npm)](https://www.npmjs.com/package/@gruu6y/page-clean-login)
 [![tag](https://img.shields.io/github/v/tag/Gruu6y/magpie-clean-login?style=flat-square)](https://github.com/Gruu6y/magpie-clean-login/tags)
 [![ci](https://github.com/Gruu6y/magpie-clean-login/actions/workflows/ci.yml/badge.svg)](https://github.com/Gruu6y/magpie-clean-login/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-**一句话：让你在 magpie 里登录多个账号时，每个账号看起来都是一台独立的电脑、从独立的网络出口上网。**
+**一句话：通过独立的指纹浏览器，在插件页面接管 [magpie](https://usemagpie.ai) 的多账号登录与续期——每个账号一套固定浏览器指纹、一条独立网络出口，缓解多账号关联与封号焦虑。**
 
-如果你只用一个账号，magpie 本身就够了。如果你有好几个账号——比如两个 Claude、三个 WorkBuddy——那就需要它。
+如果你只用一个账号，magpie 本身就够了。如果你要同时维护多个账号（例如多个 WorkBuddy、Qoder、Codex 等），就需要它把每个账号隔离开。
 
-![干净登录的供应商页：四个标签页、一次性的登录浏览器准备，以及可以直接开始登录的供应商卡片](assets/screenshot-providers.png)
+![干净登录的供应商页：标签页、一次性的登录浏览器准备，以及可以直接开始登录的供应商卡片](assets/screenshot-providers.png)
 
-> **这是非官方插件。** 由 [Gruu6y](https://github.com/Gruu6y/magpie-clean-login) 开发维护，**不是** magpie 官方或 `magpie-community` 发布的。代码全部公开，欢迎读、欢迎提 issue、欢迎提 PR。
+> **非官方插件声明：** 本插件由 [Gruu6y](https://github.com/Gruu6y/magpie-clean-login) 独立开发维护，**不是** magpie 官方或 `magpie-community` 发布的项目。npm 包 [`@gruu6y/page-clean-login`](https://www.npmjs.com/package/@gruu6y/page-clean-login) 是 magpie 的插件分发包（非独立 JS 库）。代码完全开源，欢迎审计、提 issue 与 PR。
 
-> **新 · 多平台：** 登录浏览器现在支持 **Windows x64、macOS（Apple Silicon + Intel）和 Linux（x64 / arm64）**——随插件自动下载约 150 MB、经 sha256 校验的精简 Camoufox，一次装好，不用手动装浏览器。
+> **重要供应商提醒：**
+> - **Claude 系（`claude` / `claudecode` 等）**：**请不要通过本插件使用 Claude，请改用 `claude-cage`。**
+> - **Google Antigravity / AGY 系（`antigravity` / `agy-cli` 等）**：未实付的账号无法通过本插件缓解封禁焦虑，且暂时不建议通过 magpie 使用 AGY 供应商。
+
+<a id="tldr"></a>
+
+## 30 秒速览（人类 & Agent 统一入口）
+
+| 维度 | 事实 |
+| --- | --- |
+| **定位** | magpie 非官方页面插件（Page + 本地回环服务）+ 零依赖 CLI / Agent HTTP 接口 |
+| **npm 包名 / 仓库** | `@gruu6y/page-clean-login` · [GitHub](https://github.com/Gruu6y/magpie-clean-login) |
+| **人类安装入口** | magpie → **Plugins** → **Discover** → **Unofficial** → 搜索 **Clean Login** 安装 |
+| **支持平台** | **Windows x64** · **macOS（Apple Silicon 完整验证 / Intel 尽力支持）** · **Linux x64 / arm64** |
+| **运行时与浏览器** | Bun **≥ 1.4.2**；内置一次性下载的精简 Camoufox（`158.0.1-beta.41`，153–176 MB，sha256 校验） |
+| **核心页面** | **供应商** · **代理 IP** · **账号** · **使用说明**（四语言，自动跟随 magpie 深浅色） |
+| **Agent 一步接入** | 默认回环服务 `http://127.0.0.1:3492`；运行 `clean-login agent` 或 `GET /api/agent`（带 `x-clean-login-token`）获取全量紧凑 JSON 摘要；异步接口支持 `--wait` / `?wait=<ms>` 免轮询 |
+| **核心边界** | 一个账号、一套固定指纹、一条固定出口；**不绕过验证、不替你注册账号、零遥测** |
 
 <a id="contents"></a>
 
 ## 目录
 
-- [它到底解决什么问题](#what)
+- [30 秒速览（人类 & Agent 统一入口）](#tldr)
+- [它解决什么问题](#what)
 - [为什么用它](#why)
-- [环境要求](#requirements)
-- [安装](#install)
+- [环境要求与平台支持](#requirements)
+- [安装（magpie 与 npm 说明）](#install)
 - [快速开始](#quick-start)
-- [四个标签页](#tabs)
-- [功能](#features)
-- [命令行与 agent](#cli)
+- [核心页面一览](#tabs)
+- [核心功能与防关联机制](#features)
+- [Agent 与命令行接口（CLI / HTTP API）](#cli)
 - [排查问题](#troubleshooting)
-- [隐私与数据存放位置](#privacy)
+- [隐私、数据目录与环境变量](#privacy)
 - [参与贡献](#contributing)
 - [许可](#license)
 
 <a id="what"></a>
 
-## 它到底解决什么问题
+## 它解决什么问题
 
-你在 magpie 里登录一个 AI 服务，正常流程是：弹出浏览器 → 你输入账号密码 → 登录完成 → 凭据存进 magpie。
+在 magpie 里正常登录一个 AI 服务时：弹出系统浏览器 → 输入账号密码 → 登录完成 → 凭据写进 magpie。
 
-一个账号时这样没问题。**但你要登第二个账号时，麻烦来了。**
+单个账号这样没问题，**但登录第二个账号时，关联风险就开始累积：**
 
-供应商（Claude、OpenAI、各家国产服务）会记录「这次登录是从哪台电脑、哪个网络来的」。它们看的不只是 IP，还有浏览器指纹——你的显卡型号、装了哪些字体、屏幕分辨率、canvas 渲染出来的细微差别。这些东西合起来，几乎等于一台电脑的身份证号。
+- 供应商记录的不只是出口 IP，还包括浏览器指纹（显卡、字体、分辨率、canvas 渲染等），合在一起几乎相当于一台设备的身份证号。
+- 用同一个浏览器登账号 A 再登账号 B，在供应商眼里就是**同一台机器上的两个账号**。
+- 凭据到期后的**续期**，以及登录后 magpie 发出的日常请求，如果继续共用同一套身份和全局出口，等于反复提醒对方这些账号同源。
 
-于是：
+**干净登录的做法很直接：把每个账号关进它自己独立的浏览器身份和固定出口里。**
 
-- 你用同一个浏览器登了账号 A，再登账号 B —— 供应商看到的是**同一台电脑上的两个账号**。
-- 更麻烦的是**续期**。凭据过期后自动刷新，走的还是同一套浏览器身份，等于每隔一段时间就再提醒对方一次：这两个账号是一家的。
-- 一旦某个账号出问题，其他账号很容易被连坐。
-
-**干净登录做的事很简单：把每个账号关进它自己的浏览器里。**
-
-| | 不用干净登录 | 用干净登录 |
+| 环节 | 不用干净登录 | 用干净登录 |
 | --- | --- | --- |
-| 浏览器身份 | 所有账号共用一套指纹 | 每个账号一套，登录后固定不变 |
-| 网络出口 | 跟着系统/magpie 的全局设置 | 每个账号用你指定的那条代理 |
-| 退出再登录 | 可能变成一台"新电脑" | 还是原来那台，身份保留 |
-| 续期 | 同一套身份反复出现 | 各走各的身份和出口 |
+| 浏览器身份 | 所有账号共用一套指纹与 Cookie | 每账号独立持久 Profile 与固定指纹，登录后锁定 |
+| 登录与日常出口 | 跟随系统 / magpie 全局设置 | 登录过程走指定代理，登录后自动同步到 magpie 单账号出口（热生效） |
+| 退出再登录 | 容易变成一台“新电脑” | 保留身份与 Profile，**沿用旧指纹**回来 |
+| 凭据续期 | 统一运行时刷新，容易暴露关联 | 可按账号开通**续期托管**，到期前在原指纹 + 原出口下静默重登 |
 
 <a id="why"></a>
 
 ## 为什么用它
 
-**因为 magpie 自己不做这件事。** magpie 的维护者不愿意和供应商对着干，所以 magpie 里没有任何机制去遮掩"同一台机器登录了很多账号"。这不是 bug，是它的取舍。
+**因为 magpie 自身刻意不做这件事。** magpie 的维护者不希望与供应商对抗，因此不会去遮掩“同一台机器登录多个账号”的事实。这是产品取舍，不是 bug。
 
-干净登录补的就是这一块，具体三条：
+干净登录补上的正是这一层隔离：
 
-1. **一个账号就是一台机器。** 浏览器配置、cookie、指纹从不共用。退出登录不会丢掉这个身份，下次登录还是用它——供应商看到的是一台老电脑回来了，不是一台新电脑。确实需要换一台机器时，在账号行点 **更换指纹**。
-2. **你选的出口就是真正的出口。** 登录浏览器**和**插件自己发出的请求都走你选的那条代理。选"直连"就是真直连，不会悄悄退回 magpie 的全局代理。
-3. **不用自己维护供应商名单。** 它直接读你已经装好的供应商插件和 magpie 市场目录。你往 magpie 里加一个供应商，这里就多一张卡片。
+1. **一账号即一设备。** 每个账号有独立的 `identity.json` 与持久化浏览器目录，退出登录不会丢弃身份。确实想让某个账号彻底变成一台“新电脑”时，再手动点 **更换指纹**。
+2. **你选的出口就是真实出口。** HTTP/HTTPS 代理会同时接管隔离浏览器和插件自身发起的授权/换码请求；选“直连”就强制直连，绝不悄悄回退到 magpie 全局代理；登录完成后还会自动写入 magpie 的 `providers.json` 单账号出口（`accountProxies`），无需重启 magpie 即刻热生效。
+3. **自动跟随你的供应商生态。** 直接扫描你已安装的 magpie 供应商插件与市场目录，无需手工维护名单。
 
-> **说清楚边界：** 一个账号、一个指纹、一个出口。供应商怎么用它的服务仍然由它决定——**本插件不绕过任何验证，也不替你注册账号。**
+> **说清边界：** 一个账号、一个指纹、一个出口。服务怎么风控仍由供应商决定——**本插件不绕过任何验证，也不替你注册账号。**
 
 <a id="requirements"></a>
 
-## 环境要求
+## 环境要求与平台支持
 
-| | |
+| 项目 | 要求 |
 | --- | --- |
-| 宿主 | [magpie](https://usemagpie.ai)，带 Plugins 面板 |
-| 系统 | **Windows x64 · Linux x64 / arm64 · macOS（Apple Silicon 和 Intel）** —— 随插件下载的登录浏览器是这些平台的精简 Camoufox 构建 |
-| 运行时 | Bun **≥ 1.4.2** |
-| 磁盘 | 下载约 153–176 MB（随平台而定），安装时需要约 1 GB 可用空间 —— 只需一次 |
-| 网络 | 只用于你自己发起的动作：代理测速、信任分与身份检测页面、运行时下载，以及供应商自己的登录 |
+| 宿主 | [magpie](https://usemagpie.ai)（带 Plugins 面板） |
+| 操作系统 | **Windows x64 · macOS（Apple Silicon / Intel）· Linux x64 / arm64** |
+| 运行时 | Bun **≥ 1.4.2**（仅运行随附 CLI 时，Node 18+ 或 Bun 均可） |
+| 磁盘空间 | 首次下载 **153–176 MB**（随平台而定），安装阶段需要约 **1 GB** 可用空间（含浏览器解压、约 213 MB `fpgen` 指纹模型与 256 MB 安全余量），仅需一次 |
+| 网络 | 仅用于你显式发起的操作：代理测速、信任分与身份检测、登录浏览器下载、供应商登录 |
 
-macOS 说明：**Apple Silicon（M 系列）已完整验证**——在真实 arm64 环境做过端到端测试（下载、启动、窗口可见、字体与渲染），用的就是 `darwin/arm64` 包，日常使用推荐它。**Intel Mac** 走 `darwin/x64` 包（按进程架构选择，Rosetta 2 下的 Node 自然命中 x86_64），但 Intel 侧只做了 Rosetta 冒烟，未在真机 Intel 上验证，属于尽力支持。其他平台暂时不支持；需要的话请提到 [issue tracker](https://github.com/Gruu6y/magpie-clean-login/issues)。
+各平台精简 Camoufox（`158.0.1-beta.41`，解包前强制校验固定 sha256）实测包体：
 
-macOS 的精简包是在官方 zip 里删掉 `Camoufox.app/Contents/Resources/fonts/` 的字体系（约 2.1 GB）只留原生字体，这是一次对“不改官方包”原则的明确破例：上游 macOS 包本身没有代码签名，插件侧也不再做 notarize，Gatekeeper 对未隔离文件不拦启动。构建脚本在 `scripts/build-slim-artifact.mjs`，产物清单见 release 的 `inventory.json`。
+| 平台与架构 | 压缩包下载 | 解压后大小 | 验证状态 |
+| --- | --- | --- | --- |
+| **Windows x64** (`win32:x64`) | ~176 MB | ~433 MB | 完整验证 |
+| **macOS Apple Silicon** (`darwin:arm64`) | ~154 MB | ~378 MB | 完整验证（含真实 macOS Camoufox + WKWebView E2E，日常推荐） |
+| **macOS Intel** (`darwin:x64`) | ~162 MB | ~398 MB | 尽力支持（Rosetta 2 冒烟通过，按进程架构自动命中） |
+| **Linux x64** (`linux:x64`) | ~159 MB | ~395 MB | 完整验证 |
+| **Linux arm64** (`linux:arm64`) | ~153 MB | ~371 MB | 完整验证 |
+
+> **macOS 精简包说明：** 精简构建移除了上游 zip 内约 2.1 GB 的 `Camoufox.app/Contents/Resources/fonts/` 多余字体包并保留系统/哨兵字体。上游 macOS 包无代码签名，插件侧也不做 notarize，Gatekeeper 不拦截未带隔离属性的文件。构建脚本见 [`scripts/build-slim-artifact.mjs`](scripts/build-slim-artifact.mjs)，产物校验清单见对应 release 的 `inventory.json`。暂不支持其他架构，需要请提 [issue](https://github.com/Gruu6y/magpie-clean-login/issues)。
 
 <a id="install"></a>
 
-## 安装
+## 安装（magpie 与 npm 说明）
+
+### 在 magpie 中安装（推荐）
 
 1. 打开 magpie → **Plugins** → **Discover** → **Unofficial**（非官方插件）。
-2. 找到 **Gruu6y** 发布的 **Clean Login**，点 **Install**。列表没同步出来就点 **Retry**——magpie 缓存的是 GitHub 告诉它的结果。
-3. 从侧栏打开 **Clean Login**，你会看到上面那张图里的页面。
+2. 找到 **Gruu6y** 发布的 **Clean Login**，点击 **Install**（列表未同步时点 **Retry**）。
+3. 从左侧栏打开 **Clean Login**，进入插件页面。
 
-每个版本都在本仓库打了 tag（当前 `v0.2.x`，更早是 `v0.1.x`），[tag 列表](https://github.com/Gruu6y/magpie-clean-login/tags)就是版本历史。
+### 关于 npm 包 `@gruu6y/page-clean-login`
+
+- 本仓库通过标签 `vX.Y.Z` 自动发布至 npm：[`@gruu6y/page-clean-login`](https://www.npmjs.com/package/@gruu6y/page-clean-login)（[版本历史 / Tags](https://github.com/Gruu6y/magpie-clean-login/tags)）。
+- **面向普通用户**：这是 magpie 安装插件时拉取的分发包，**不需要**自己手动 `npm install`。
+- **面向脚本与 Agent**：安装进 magpie 后，插件目录里自带零依赖 CLI（`bin/clean-login.mjs`），无需额外装包即可直接驱动本地服务（详见 [Agent 与命令行接口](#cli)）。
 
 <a id="quick-start"></a>
 
 ## 快速开始
 
-下面四步走完，你就有一个干净登录的账号了。全程大约 5 分钟，其中大部分时间在等浏览器下载。
+走完下面四步大约 5 分钟（大部分时间在等浏览器首次下载）。
 
 ### 第 1 步：准备登录浏览器（只做一次）
 
-打开插件后，供应商页顶部有一块 **登录浏览器设置**。点 **准备浏览器**，等它下载完。
+打开插件的 **供应商** 页，在顶部 **登录浏览器设置** 卡片点击 **准备浏览器**：
 
-- 下载约 **153–176 MB**（随平台而定），用固定的 sha256 摘要校验，只下一次。
-- 第一张图里这块的徽标写 **未安装** —— 生成截图用的是一个空的浏览器目录，正好就是你第一次打开时看到的样子。
-- 下载失败可以直接重试，不影响其他功能。
+- 下载对应平台的精简 Camoufox（**153–176 MB**，sha256 校验）与 `fpgen` 指纹模型（约 1.56 MB），解压到插件独立缓存目录，不影响你日常用的浏览器。
+- 徽标变为 **已就绪** 即完成；中途可取消，失败可重试。
 
-这一步装的是一个**独立的浏览器**，不是你日常用的那个。以后所有登录都在它里面进行，不会污染你平时的浏览器。
+### 第 2 步：添加并测试代理出口
 
-### 第 2 步：加一条代理出口
+切到 **代理 IP** 页：
 
-切到 **代理 IP** 标签页 → 点右上角 **添加代理** → 填名称、类型（HTTP / HTTPS / SOCKS5）、地址、端口，需要认证就填用户名密码。
-
-加完点这一行的 **测试**。它会真的通过这条代理连出去，然后告诉你：**出口 IP 是什么、在哪个地区、延迟多少毫秒**。
+- **单条添加**：点 **添加代理**，填写名称、类型（HTTP / HTTPS / SOCKS5）、主机、端口及可选认证信息（支持 IPv6）。
+- **批量导入**：点 **批量导入**，每行粘贴一条（支持 `http://user:pass@host:port#备注`、`备注|url`、`host:port`、`host:port:user:pass`、`user:pass@host:port` 等格式，支持 `#` / `//` 注释），单批最多 200 条，自动跳过重复连接，可统一设置默认类型与名称前缀。
+- **测速与验证**：单行点 **测试** 或顶部点 **全部测试**（可随时取消）。
 
 ![代理 IP 页：右上角选择测速目标，下面是每条出口的实测结果、地区筛选和操作按钮](assets/screenshot-proxies.png)
 
-看上图的几个细节：
+几个值得留意的细节：
 
-- 右上角 **测速目标** 可以选"通用（出口检测）"，也可以选某家供应商。选了供应商，测的就是**到那家 API 主机**的延迟，而不是到一个通用测试站。
-- `JP 静态 01` 那行写的是 `~512 ms`，下面标着 `qoder-cn · TLS`。**波浪号是有含义的**：只完成了 TLS 握手、没拿到 HTTP 响应，所以这个数字只是握手耗时，不是真正的请求延迟。插件不会把它伪装成一个漂亮数字。
-- 测试失败**不会**偷偷退回直连，而是把失败原因摆给你看。
+- **测速目标**：默认测“通用（出口检测）”，返回真实出口 IP、地区与延迟；也可切换到某家供应商，直接测到**那家 API 主机**的往返延迟。
+- **`~` 握手标记**：像 `JP 静态 01` 上的 `~512 ms` 这样带波浪号的数字，表示只完成了 TLS 握手但未拿到 HTTP 响应（常见于 WAF 拦截），这是下限参考值而非完整请求延迟。
+- **绝不静默降级**：代理不通或认证失败时直接报错，不会悄悄走直连。
 
-### 第 3 步：选供应商，开始登录
+### 第 3 步：选供应商并登录
 
-回到 **供应商** 标签页，找到你要登的那家，点卡片上的 **添加账号**。
+回到 **供应商** 页，可按关键词搜索或用分类筛选（**全部 / 可登录 / 已有账号 / 市场目录**），点目标卡片上的 **添加账号**：
 
-在弹出的对话框里：
+1. **选代理出口**：下拉会标出实测延迟，并把**这家供应商尚未用过的出口**排在前面。
+2. **选方式 / 填字段**：若该供应商有多种登录路径（如站点登录、团队版、复用桌面会话、粘贴密钥）或需先填参数（手机号、站点、密钥），按提示填写后点 **开始登录**。
+3. **完成登录**：浏览器登录会弹出隔离窗口，登录完自动收尾（关闭窗口即取消）；一次性验证码方式回到对话框输入并点 **提交验证码**。
+4. 成功后提示 **登录完成，凭据已写入 magpie**，同时该账号的出口会自动同步到 magpie 的 `providers.json` 并热生效。
 
-1. **选一条代理**——下拉里会显示每条出口的实测延迟，并且把**这家供应商还没用过的**排在前面。
-2. 如果这家要求先填个值（手机号、站点地址、密钥），对话框里会给出输入框，填好再点 **开始登录**。
-3. 需要浏览器登录的，会弹出一个独立窗口。你在里面照常登录就行，完成后它自己收尾，账号随即出现在 magpie 里。想取消？直接关掉那个窗口。
-4. 如果供应商发来一次性验证码，回到同一个对话框输入，点 **提交验证码**。
+> 卡片上没有 **添加账号**？卡片会写明原因——通常是市场目录里的插件尚未在 magpie 安装（可点卡片安装或用 CLI `market install`），或该插件未暴露可驱动的登录方式。
 
-登录成功后会提示：**登录完成，凭据已写入 magpie。**
+### 第 4 步：在「账号」页确认身份干净
 
-> 卡片上没有"添加账号"按钮？卡片上会写清原因——通常是这家还没在 magpie 里装对应插件，或者它的插件没有提供可驱动的登录方式。
-
-### 第 4 步：确认它真的干净
-
-切到 **账号** 标签页，你会看到刚登进去的账号、它固定的指纹、上次登录用的出口。
-
-账号多了以后，用 **按供应商查看** 只看某一家的账号：主行是最常用的几家，其余全部收在 **更多供应商** 里，展开后可以按名称或标识搜索。它和状态筛选、搜索、排序可以叠加使用，右边的 **清除筛选** 一次全部复位。
-
-想再确认一下，点这一行的 **检测**，再点 **开始检测**。插件会通过这个账号的出口去访问第三方站点 `who.1ms.dog`，让它给出一个 A/B/C/D 判定。
+切到 **账号** 页，可以看到每个账号锁定的指纹、凭据到期状态、上次登录出口、当前生效出口、检测评级与续期托管状态。
 
 ![账号页：按供应商筛选、A/B/C/D 判定图例、每个账号固定的指纹、上次登录的地区与出口](assets/screenshot-accounts.png)
 
-- **A 干净·可以用** / **B 可用·有痕迹** / **C 建议换出口** / **D 不要用这个出口**
-- 拿到 C 或 D，说明这条出口不太干净，换一条代理重新登录即可。
-- 想让这个账号**真的变成另一台电脑**（而不是换出口），点这一行的 **更换指纹**：它会用一套新抽的指纹重新登录同一个账号，并删掉旧的浏览器配置，账号和凭据都留着。普通的「重新登录」是沿用旧指纹的，两者别搞混。
+- **身份检测**：点行内 **检测** → **开始检测**，插件会用该账号固定的指纹通过指定出口访问第三方站点 `who.1ms.dog`，返回 **A 干净·可以用 / B 可用·有痕迹 / C 建议换出口 / D 不要用这个出口**。拿到 C/D 建议换出口重登。
+- **普通重登 vs 更换指纹**：普通的「重新登录」会**沿用旧指纹**；只有点 **更换指纹** 才会抽一套新指纹重登并删除旧浏览器配置（且仅在前置检查与浏览器启动就绪后才替换，失败不会破坏旧配置），账号和凭据都会保留。
 
-> **这是第三方站点 who.1ms.dog 的判定，不等于供应商风控结论，也不是我们自建的指纹评分。** 它只是给你一个第二意见。
+> **免责口径：** `who.1ms.dog` 是第三方站点的第二意见，**不等于供应商风控结论，也不是本插件自建的指纹评分。**
 
 <a id="tabs"></a>
 
-## 四个标签页
+## 核心页面一览
 
-**供应商** —— 你能登录哪些服务。卡片来自你已安装的插件和 magpie 市场目录，每张卡上直接开始登录。顶部搜索框支持按名称、ID 或插件名找。
-
-**代理 IP** —— 管理登录和后续请求走的出口，并测试它们。可按地区、延迟区间、名字里的标签（家宽 / 静态）筛选。详见上面第 2 步。
-
-**账号** —— 每个登录过的账号、它锁定的浏览器指纹，以及第三方站点对这个身份的判定。详见上面第 4 步。
-
-**使用说明** —— 页内自带一份写给第一次使用者的说明书，十一节讲清为什么要开发这个插件、准备浏览器、加代理、登录账号、看懂身份检测结论、续期托管，以及不会用时怎么直接交给你的 agent。四种语言各写一份，不是把英文句子机翻过去。纯文字页面，不联网、不下载、不执行任何东西。
+| 页面 | 用途与核心能力 |
+| --- | --- |
+| **供应商 (`Providers`)** | 汇总已安装供应商插件与 magpie 市场目录；支持搜索与分类筛选（全部 / 可登录 / 已有账号 / 市场目录）、一次性准备登录浏览器、查看特化风险提醒、以及一键 **报告问题**（本地脱敏拼好 GitHub Issue 草稿）。 |
+| **代理 IP (`Proxy IPs`)** | 管理 HTTP / HTTPS / SOCKS5 出口；支持单条添加与 **批量导入**（最多 200 条/批，自动去重）、单条测试与 **全部测试**、按供应商 API 测速、获取 Claude 信任分（`ip.net.coffee/claude`，0–100）；支持按地区、名称标签（家宽/静态）、延迟区间、关键词、状态（可用/失败/未测）、使用情况（使用中/未使用）组合筛选与多维排序。 |
+| **账号 (`Accounts`)** | 查看每个账号的固定指纹、到期倒计时、登录/生效出口与检测记录；支持 **导入 magpie 已有账号**（同时覆盖 `plugin-auth.json` 与 `logins.json`，预览与导入同源）；支持按供应商（含可搜索的 **更多供应商**）、状态（已登录 / 已退出 / 续期已暂停 / 即将到期）、搜索与排序组合筛选；提供单账号出口修改（跟随 / 直连 / 指定代理）、备注、`who.1ms.dog` 身份检测、**续期托管** 与 **更换指纹**。 |
+| **使用说明 (`Guide`)** | 页内自带 11 节首次使用说明书，英文、简体中文、繁體中文、日本語四份独立撰写；纯文本页面，不联网、不下载、不执行任何操作。 |
 
 ![使用说明页：页内十一节说明书的第一节，讲清为什么要开发这个插件](assets/screenshot-guide.png)
 
-> **关于这些截图：** 全部由本仓库当前的代码在真实 Chrome 里渲染，没有手绘、没有拼接、没有替换任何页面元素。其中有四样是演示数据，因为它们会把生成截图那台机器的信息发到公开仓库：**账号与代理记录**用文档保留段 IP（`203.0.113.x`、`198.51.100.x`、`192.0.2.x`）和虚构账号名；**登录浏览器面板里的安装位置与可用磁盘**也是中性值（`C:\Users\Public\…` 与一个整数 256 GB），因为不这么做的话那张图里就会出现这台机器的账户名和磁盘水位。徽标状态、下载大小与需求空间是 shipped 代码真的算出来的。供应商卡片、logo、界面文案都是真的。生成脚本是 [`scripts/shoot-readme-screenshots.mjs`](scripts/shoot-readme-screenshots.mjs)，跑 `bun scripts/shoot-readme-screenshots.mjs` 就能重出这四张图。
+> **关于 README 截图：** 本页中文截图与英文 README 的英文截图均由本仓库真实代码在 Chrome 中直接渲染，无手绘、无拼接。为避免泄露本机信息，图中仅采用**演示数据**：代理与账号使用 RFC 5737 文档保留网段 IP（`203.0.113.x`、`198.51.100.x`、`192.0.2.x`）与虚构账号名；登录浏览器面板的安装路径与可用磁盘使用**中性值**（`C:\Users\Public\…` 与 `256 GB`）。其余状态徽标、包体大小、供应商卡片、图标与文案均为真实计算结果。运行 `bun scripts/shoot-readme-screenshots.mjs --lang zh-Hans` / `--lang en`（[`scripts/shoot-readme-screenshots.mjs`](scripts/shoot-readme-screenshots.mjs)）可重现中英文全部截图。
 
 <a id="features"></a>
 
-## 功能
+## 核心功能与防关联机制
 
-**登录**
+### 登录与反关联加固
 
-- 读你已安装的供应商插件，只要其中暴露了可运行的登录方式（登录页、表单、一次性验证码），就给出 **添加账号**。一个插件暴露多家供应商时，每家一张卡。
-- magpie 自带的供应商没有插件可读，入口改为走 magpie 自己的登录。magpie 的登录页被关掉时，那条登录会把链接打印出来，由干净登录替你打开。
-- 一家供应商提供多条路径时（按站点登录、团队版、复用桌面端会话、粘贴密钥），由你来选，每条路径开始前都标好了类型。
-- 卡片上的 **报告问题** 会打开一个 GitHub issue，标题和正文都替你写好了，你只需要点 **Create**（[它是怎么工作的](docs/reporting.md)）。
+- **双腿出口一致**：HTTP / HTTPS 出口同时接管 Camoufox 浏览器与插件自身的 `authorize()` / `callback()` HTTP 请求；“直连”显式绕过 magpie 全局代理。**SOCKS5 出口仅能接管浏览器窗口**（受 Bun `fetch` 代理协议限制），插件会在界面与状态中给出明确非致命提示，需要全程同出口时请使用 HTTP / HTTPS 代理。
+- **magpie 单账号出口自动同步**：登录完成后自动写入 magpie 的 `providers.json`（`providers[].accountProxies`），magpie 监听文件变更热重载无需重启。切回直连登录时会自动清掉旧代理绑定写入 `"direct"`；修改代理连接信息或密码后自动重同步所有绑定账号；删除账号时自动清理其出口覆盖与续期策略；服务启动时仅补齐缺失项，不覆盖你在 magpie 里手工配置的出口。
+- **安全指纹轮换**：**更换指纹**只在插件加载、参数校验、`authorize()` 与浏览器可执行文件全部就绪后才轮换并删除旧 Profile，前置失败绝不损坏现有身份。
+- **多形态登录支持**：兼容 OAuth 浏览器登录、设备码、短信/邮箱一次性验证码（带超时回收，等待期目录受保护不被误清理）、多路径选择，以及 magpie 内置供应商原生登录（自动接管打印出的 OAuth 链接）。
+- **脱敏问题反馈**：卡片上的 **报告问题** 在本地白名单拼装无凭据的 Issue 正文并打开 GitHub 新建页，提交前可全文预览（详见 [docs/reporting.md](docs/reporting.md)）。
 
-**续期托管（默认关闭）**
+### 续期托管（默认关闭，按账号独立开通）
 
-- 在账号页点某一行的 **托管续期**，再点 **开通托管**，这一个账号才会被托管。**默认全部关闭**，装好插件不会开通任何东西，也没有「全部开通」。
-- 开通后，这个账号的续期就**交给干净登录接管**：在凭据**到期前**主动在后台静默重跑一次它自己的登录 —— 用这个账号登录时固化的**同一套浏览器指纹**（同一个 `identity.json` 与同一个持久 profile）、**同一条出口**（登录时记下的那条代理；当时是直连就仍然直连），headless，不弹窗口。新凭据经与手动登录完全相同的写回路径回到 magpie。
-- **提前续是安全的**：续期走的是一次完整登录（authorize → callback），**不使用 refresh token**，所以不存在和 magpie 抢一次性令牌的问题；两边唯一共享的是 `plugin-auth.json` 里那条凭据，而那由 magpie 自己的锁与写回路径保证。凭据提前续好之后，magpie 自己的到期续期自然不会再触发；万一 magpie 先续上了，托管会读到新的到期时间并顺延，不会重复续。
-- **提前量按凭据寿命走**：一小时期的提前 15 分钟，一天期的提前约 72 分钟，半月和月期的**提前 5 天**就开始续 —— 长会话值得早点续，这样一次临时失败还有好几天可以重试，而不是直接过期。续期成功后会记住这次签发了多久，下一次就按真实寿命排程。
-- 同一时刻只跑一个续期，也不会和你手动发起的登录或身份检测同时进行。两次尝试至少间隔 30 分钟，**不设每日上限** —— 有效期短的凭据一天本来就要续很多次，设了上限等于把托管掐死。临时失败不会因为「连续两次」就关掉托管：只要凭据还没过期，就在续期窗口里一直按退避重试；只有**过了到期时间仍然连续失败**才判定这个账号真的下线。
-- 反复失败，或者这次登录**需要你本人回答**（验证码、设备码、一次性代码），托管会**自动关闭**并把原因写在对话框里 —— 要再开得你自己重新点一次。页面顶部会同时出现一条提示，不用特意去账号页找。续期拿到的账号与这套指纹固化的账号不一致时，一律拒绝写回。
-- 对话框里能随时 **立即续期**（忽略到期时钟，但保留上面所有护栏）、**停止这次续期**、**关闭托管**，并看到最近 10 次续期记录。
+- **默认全关、绝无一键全开**：只有在 **账号** 页进入单个账号的 **续期托管** 并点击 **开通托管**，该账号才会被接管。
+- **原指纹 + 原出口静默续期**：在凭据**到期前**以 headless 方式重跑一次该账号自己的完整登录——沿用同一份 `identity.json`、同一个持久 Profile、登录时记下的同一条出口（直连仍直连），通过与手动登录完全相同的锁写回 magpie。
+- **不与 magpie 抢 refresh token**：托管走完整登录（authorize → callback），不使用 refresh token；若 magpie 先续期，托管会自动读取新到期时间并顺延。
+- **按凭据寿命动态提前**：1 小时级提前 15 分钟；1 天级提前约 72 分钟（5%，15 分钟–12 小时区间）；≥10 天（如半月/月期）**提前 5 天**开始续期，给临时波动留足重试窗口。
+- **护栏与自停**：全局串行，绝不与手动登录或身份检测并发；同账号两次尝试间隔 ≥30 分钟且**不设每日上限**；未过期前的临时失败按指数退避重试，不会轻易关停；只有**过期后仍连续失败**、遇到需人工介入（验证码 / 设备码 / 一次性码）、或续期回来的账号身份与指纹绑定不一致时，才会拒绝写回、自动暂停并在页面顶部提示原因。
+- 对话框支持 **立即续期**、**停止这次续期**、**关闭托管**，并保留最近 10 次续期记录。
 
 ![续期托管对话框：已开通的账号、凭据到期时间、使用的出口与指纹，以及续期记录](assets/screenshot-hosting.png)
 
-**出口与身份**
+### 日常使用体验
 
-- 添加账号时选定的代理，整次登录都用它：浏览器窗口，以及插件用来生成链接、交换验证码的那些请求。**SOCKS 出口只能带浏览器窗口**，带不了插件自己的请求——运行时的代理支持只认 HTTP/HTTPS。
-- 出口下拉显示每条出口的实测延迟，并把这家供应商还没用过的排在前面。
-- 可以选择通过这条代理去取 Claude 信任分（`ip.net.coffee/claude`，0–100）并留在行上。
-- 测速目标选到某家供应商时，测的是到它 API 主机的往返；只完成 TLS 握手而没拿到 HTTP 响应时，那个数字会明确标成握手耗时（`~`），不冒充请求延迟。
-- 把账号退出登录不会丢掉它的浏览器身份，再次登录复用同一个。确实要换一台机器时用账号行的 **更换指纹**：新指纹重新登录、旧配置删除、账号与凭据不变。
-
-**日常使用**
-
-- 每张供应商卡片都带着 magpie 自己发布的那个品牌标，并按主题重新上色。画它们不需要任何网络拉取：这一套已经拷进 `assets/icons/`，取自哪里写在 `assets/icons/index.json`，归属声明写在 `assets/icons/NOTICES.md`。
-- **四种语言**：English、简体中文、繁體中文、日本語，跟随 magpie 的语言设置。
-- 界面深浅色跟随 magpie 的主题设置，页面开着的时候切换也会立即跟上。
-- 一切都留在这台电脑上：没有账号，没有遥测，也不会为了画一个 logo 向外发请求。
+- **离线品牌图标**：内置 magpie 供应商图标集（`assets/icons/`，来源索引见 `assets/icons/index.json`，归属声明见 `assets/icons/NOTICES.md`），随主题自动着色，绘制图标零网络请求。
+- **四语言 & 主题热同步**：支持 English、简体中文、繁體中文、日本語，语言与深浅色均实时跟随 magpie。
 
 <a id="cli"></a>
 
-## 命令行与 agent
+## Agent 与命令行接口（CLI / HTTP API）
 
-**不会用？没关系，告诉你的 agent，让它替你操作。**
+**不想点页面？直接让你的 AI Agent 驱动干净登录。** 插件自带零依赖命令行客户端与面向程序的紧凑 HTTP 接口，只依赖全局 `fetch`（Bun / Node 18+ 均可，毫秒级启动，不加载 Camoufox 模块）。
 
-这一页是给拿鼠标的人做的，但插件同时自带一套命令行和 agent 接口。你平时对话的那个 agent 可以直接驱动同一个服务：
+### 给 Agent 的 3 步快速接入
+
+1. **找到 CLI 入口（无需重装依赖）**：
+   - 已通过 magpie 安装（推荐）：`bun ~/.config/magpie/plugins/node_modules/@gruu6y/page-clean-login/bin/clean-login.mjs <命令>`（或改用 `node`）
+   - 在本仓库源码目录内：`bun bin/clean-login.mjs <命令>`
+   - 若已全局安装 npm 包：`clean-login <命令>`
+2. **一次调用拿全局状态**：运行 `agent`（对应 `GET /api/agent`），一次返回版本号、服务端口、命令目录、浏览器准备状态、在途任务、供应商卡片、代理列表（不含密码）、账号列表、以及损坏恢复告警（`recovered`），省去四语言冗余文案。
+3. **用 `--wait` / `?wait=<ms>` 替代轮询循环**：所有异步操作支持阻塞等待直到任务落定或需要调用方输入（`waiting-code` / `paste-required`）。CLI 裸 `--wait` 默认等 `60000` ms；HTTP `?wait=<ms>` 服务端上限 `120000` ms。
+
+### 连接、鉴权与输出契约
+
+- **默认地址**：`http://127.0.0.1:3492`（可通过 `--port` / `--url` 或环境变量 `CLEAN_LOGIN_PORT` / `CLEAN_LOGIN_URL` 覆盖）。
+- **自动鉴权**：访问本机回环地址时，CLI 自动从服务首页 `<meta name="clean-login-token">` 读取每进程随机 token 并通过请求头 `x-clean-login-token` 发送，**从不打印 token**。连接非回环远端服务（如 `magpie web`）时，CLI 拒绝自动抓取，必须显式传 `--token <HEX>`。
+- **机器可读输出**：成功时 stdout 输出合法 JSON（加 `--raw` 输出单行紧凑 JSON），退出码 `0`；失败时 stderr 输出单行 JSON `{"error":"...","status":...,"message":"..."}`，退出码 `1`（注：`proxy test` 收到 `ok: false` 也会返回退出码 `1`）。
+- **账号参数约定**：操作单个账号的命令（`accounts exit` / `note` / `delete`、`check`）均以 `<provider> <key>` **两个独立位置参数**传参（CLI 会自动 URL 编码，确保 key 里的 `#` 不被截断）；仅 `accounts import run --only <provider>#<recordId>` 使用单段复合键（可重复传参）。
+
+### 完整 CLI 命令速查表
+
+| 分类 | 命令 | 说明 |
+| --- | --- | --- |
+| **总览与健康** | `agent` / `status` / `providers` | 服务紧凑摘要（`GET /api/agent`）/ 健康检查 / 供应商卡片列表 |
+| **代理管理** | `proxies` | 查看所有代理（不含密码，仅 `hasPassword`） |
+| | `proxies add <name> <type> <host> <port> [--user U] [--pass P]` | 添加代理（`http\|https\|socks5`；端口为位置参数，避免与服务 `--port` 冲突） |
+| | `proxies import [--file PATH \| <text>] [--type T] [--prefix P]` | 批量导入代理（文本或 UTF-8 文件，自动去重） |
+| | `proxies update <proxyId> [--name N] [--type T] [--host H] [--exit-port P] [--user U] [--pass P] [--clear-password]` | 修改代理（改连接会清空探测结果并重同步绑定账号；代理端口用 `--exit-port`） |
+| | `proxies delete <proxyId>` / `proxies targets` | 删除代理 / 查看可测速的供应商目标 |
+| **代理探测** | `proxy test <proxyId> [--provider ID]` | 实测代理连通性（可选测到指定供应商 API） |
+| | `proxy score <proxyId> [--wait ms]` / `score status [--wait ms]` / `score cancel` | 启动、查询或停止 Claude 信任度评分 |
+| **账号管理** | `accounts` | 列出已知账号与登录状态 |
+| | `accounts import plan` / `accounts import run [--only <provider>#<recordId>]...` | 预览或执行从 magpie 导入已有账号（预览与导入走同一函数） |
+| | `accounts exit <provider> <key> [--mode inherit\|direct\|custom] [--proxy ID]` | 查看或设置账号生效出口 |
+| | `accounts note <provider> <key> <text>` / `accounts delete <provider> <key>` | 设置备注 / 删除已退出账号 |
+| | `accounts prune` / `accounts hosting` | 清理无凭据孤立目录 / 查看续期托管策略与在途任务 |
+| **登录流程** | `signin start --provider ID [--proxy ID] [--method LABEL] [--input k=v]... [--single] [--wait ms]` | 启动插件供应商隔离登录 |
+| | `signin status [--wait ms]` / `signin code <code>` / `signin cancel` | 查询登录状态 / 提交一次性验证码 / 取消登录 |
+| | `native start --provider ID [--wait ms]` / `native status [--wait ms]` / `native paste <text>` / `native cancel` | 驱动 magpie 原生供应商登录（粘贴回调链接或代码） |
+| **环境与检测** | `env [--wait ms]` / `env prepare [--wait ms]` / `env cancel` | 查询、启动或取消一次性登录浏览器下载 |
+| | `check <provider> <key> [--wait ms]` | 查询账号 `who.1ms.dog` 身份检测任务 |
+| **市场与反馈** | `market status` / `market install <package>` | 查询市场安装任务 / 从 magpie 市场安装供应商插件 |
+| | `report --provider ID [--note TEXT] [--language LANG]` | 生成脱敏的供应商问题报告正文 |
+
+### 常用命令示例
 
 ```sh
-bun bin/clean-login.mjs agent       # 整个服务的一份紧凑 JSON 摘要
-bun bin/clean-login.mjs providers   # 只看供应商卡片
-bun bin/clean-login.mjs proxies     # 只看出口，不含凭据
-bun bin/clean-login.mjs accounts    # 只看账号
-bun bin/clean-login.mjs assets      # 只看已登记的资产（邮箱、手机号、Apple ID）
-```
+# 1) 一步读取全局状态（推荐 Agent 首条命令）
+bun bin/clean-login.mjs agent
 
-账号、出口和资产登记都能在命令行完成，不用开页面：
+# 2) 准备浏览器并等待完成
+bun bin/clean-login.mjs env prepare --wait
 
-```sh
-bun bin/clean-login.mjs proxies add 家宽01 http 127.0.0.1 7102   # 存一条出口
-bun bin/clean-login.mjs proxies update <proxyId> --host 10.0.0.2 --exit-port 1080   # 改一条出口（改连接会清空探测结果）
-bun bin/clean-login.mjs accounts import plan                     # 预览 magpie 已有的账号
+# 3) 管理代理：单条添加、批量导入、修改、测速与信任分
+bun bin/clean-login.mjs proxies add 家宽01 http 127.0.0.1 7102
+bun bin/clean-login.mjs proxies import --file ./exits.txt --type http --prefix HK
+bun bin/clean-login.mjs proxies update <proxyId> --host 10.0.0.2 --exit-port 1080
+bun bin/clean-login.mjs proxy test <proxyId> --provider workbuddy
+bun bin/clean-login.mjs proxy score <proxyId> --wait
+
+# 4) 账号导入、登录、验证码、出口与备注
+bun bin/clean-login.mjs accounts import plan
 bun bin/clean-login.mjs accounts import run --only <provider>#<recordId>
+bun bin/clean-login.mjs signin start --provider workbuddy --proxy hk-home-1 --wait
+bun bin/clean-login.mjs signin code 123456
 bun bin/clean-login.mjs accounts exit <provider> <key> --mode custom --proxy <proxyId>
 bun bin/clean-login.mjs accounts note <provider> <key> 备用号
 bun bin/clean-login.mjs accounts delete <provider> <key>
-bun bin/clean-login.mjs assets add google-mail a@b.com --note 主邮箱   # 登记一条资产
-bun bin/clean-login.mjs assets get <id>                                 # 按 id 取一条
-bun bin/clean-login.mjs assets update <id> --note 备用                  # 改类型/账号/备注
-bun bin/clean-login.mjs assets delete <id>                              # 删掉一条
+
+# 5) 维护与任务控制
+bun bin/clean-login.mjs accounts prune
+bun bin/clean-login.mjs accounts hosting
+bun bin/clean-login.mjs env cancel
+bun bin/clean-login.mjs score cancel
 ```
 
-`accounts import` 只读预览与真导入走的是同一个函数，所以预览与实际导入不可能对不上；不带 `--only` 时导入整份计划。`assets add` 的 `<type>` 取 `google-mail`、`microsoft-mail`、`cn-phone` 或 `apple-id`，格式校验由服务端负责。
+### 直接调用 HTTP API（给无 Shell 的 Agent）
 
-CLI 默认在 `127.0.0.1:3492` 找服务（用 `--port` 或 `--url` 覆盖），从服务自己送出的页面里读取每进程一份的页面 token，并且从不把这个 token 打印出来。除了运行时的 `fetch` 它没有任何依赖，所以毫秒级启动，也不会加载浏览器模块。
+所有 `/api/*` 路由均要求请求头 `x-clean-login-token: <token>`，常见入口：
 
-有两件事让程序不必轮询：
-
-- **`GET /api/agent`** 返回一份紧凑、自描述的摘要：版本、服务端口、命令目录，以及合并后的供应商卡片、代理、账号和正在跑的任务状态。它不带页面需要的四语言描述，也从不带密码。
-- 异步状态路由上的 **`?wait=<ms>`**（`/api/signin`、`/api/native-signin`、`/api/proxy-score`、`/api/environment/job`、`/api/accounts/:provider/:key/check`）会在服务内部阻塞，直到任务落定或时限用完。一个请求就替掉了轮询循环。需要调用方动手的状态（一次性验证码、要粘贴的值）会立刻结束等待。
-
-```sh
-bun bin/clean-login.mjs signin start --provider workbuddy --proxy hk-home-1 --wait
-bun bin/clean-login.mjs signin code 123456
-bun bin/clean-login.mjs proxy score hk-home-1 --wait
-bun bin/clean-login.mjs accounts prune                # 扫掉不再持有凭据的账号目录
-bun bin/clean-login.mjs accounts hosting              # 续期托管的开关与正在跑的任务
-bun bin/clean-login.mjs env cancel                    # 停掉登录浏览器下载
-bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
-```
-
-完整命令列表跑 `bun bin/clean-login.mjs help`。远程服务（`magpie web`）没有回环页面可读，那里要显式传 `--token`。
+- **紧凑总览**：`GET /api/agent`、`GET /api/health`
+- **支持 `?wait=<ms>` 阻塞等待的异步路由**：
+  - `GET /api/signin?wait=<ms>`（启动 `POST /api/signin`，提交验证码 `POST /api/signin/code`，取消 `POST /api/signin/cancel`）
+  - `GET /api/native-signin?wait=<ms>`（启动 `POST /api/native-signin`，粘贴 `POST /api/native-signin/paste`，取消 `POST /api/native-signin/cancel`）
+  - `GET /api/proxy-score?wait=<ms>`（启动 `POST /api/proxies/:id/score`，取消 `POST /api/proxy-score/cancel`）
+  - `GET /api/environment/job?wait=<ms>`（启动 `POST /api/environment/prepare`，取消 `POST /api/environment/cancel`）
+  - `GET /api/accounts/:provider/:key/check?wait=<ms>`（启动 `POST /api/accounts/:provider/:key/check`，取消 `POST .../check/cancel`）
+- **其他读写路由**：`/api/proxies`（及 `/api/proxies/bulk`、`/api/proxies/:id/test`）、`/api/accounts`（及 `/import/plan`、`/import`、`/prune`、`/hosting`、`/:provider/:key/exit`、`/:provider/:key/hosting`）、`/api/market/install`、`/api/report`。
+- **并发护栏**：同一时间只允许 1 个登录 / 检测 / 续期任务运行，冲突时返回 `409`。完整 CLI 帮助请跑 `bun bin/clean-login.mjs help`。
 
 <a id="troubleshooting"></a>
 
@@ -272,47 +320,52 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 
 | 现象 | 怎么办 |
 | --- | --- |
-| 某张供应商卡没有 **添加账号** | 卡片上写了原因。市场条目需要先在 magpie 里装上它的插件；只有插件的供应商需要一个暴露了浏览器登录方式的插件。 |
-| 登录浏览器显示*未安装* / 下载失败 | 首次运行会取一个 153–176 MB 的平台压缩包（Windows x64 约 176 MB，macOS x64 约 155 MB，macOS arm64 约 147 MB，Linux x64 约 159 MB，Linux arm64 约 153 MB）。检查磁盘空间和网络，然后从供应商页重试。压缩包在解包前会做 sha256 校验。 |
-| 登录失败，报 `no_url` 或 `method_input_required` | 插件要一个值（手机号、站点、密钥），而对话框没收集到。把那个字段填好再试；一直失败就用卡片上的 **报告问题**。 |
-| 代理测试失败 | 测试是通过那条出口建立真实连接，绝不退回直连。检查主机、端口、凭据，以及这条出口是否允许访问目标。 |
-| 延迟数字前面有个 `~` | 那是握手耗时，不是请求延迟：目标完成了 TLS 握手但没返回 HTTP 响应（常见于 WAF 拦截）。换一条出口再测。 |
-| 已登录的账号看起来像一台新机器 | 到 **账号** 页看它固定的指纹。再次登录会复用同一个身份；删掉账号数据才会把它移除。 |
-| 想让某个账号真的换一台机器 | 在 **账号** 页已登录的那一行点 **更换指纹**：用新指纹重新登录同一个账号，旧的浏览器配置会被清掉，账号与凭据保持不变。普通的「重新登录」沿用旧指纹。 |
-| 身份检测拿到 C 或 D | 这条出口不干净。换一条代理，重新登录这个账号。 |
-| 其他情况 | 提一个 [issue](https://github.com/Gruu6y/magpie-clean-login/issues)，写清你预期什么、实际发生了什么、涉及哪家供应商或哪条代理。一张报错截图很有价值。**请永远不要把真实 token 或代理密码贴进 issue。** |
+| 某张供应商卡没有 **添加账号** | 卡片上会写明原因：市场条目需先在 magpie 安装对应插件；已安装插件则需暴露可驱动的登录方式。 |
+| 登录浏览器显示*未安装* / 下载失败 | 首次运行会下载对应平台的精简包（153–176 MB：Windows x64 约 176 MB、macOS x64 约 162 MB、macOS arm64 约 154 MB、Linux x64 约 159 MB、Linux arm64 约 153 MB），解包前做 sha256 校验。请检查约 1 GB 可用磁盘空间与网络后重试。 |
+| 登录报错 `no_url` 或 `method_input_required` | 该供应商登录方式要求先填字段（手机号、站点、密钥）。补全后重试；仍失败请点卡片上的 **报告问题**。 |
+| 选了 SOCKS5 代理，提示插件请求未走该代理 | 运行时 `fetch` 仅支持 HTTP/HTTPS 代理，SOCKS5 只能带浏览器窗口。要求全程同出口请改用 HTTP/HTTPS 代理。 |
+| 代理测试失败 | 测试直接走该代理真实建连，绝不退回直连。检查主机、端口、账号密码，以及出口能否访问目标站点。 |
+| 延迟数字前带 `~` | 表示只完成了 TLS 握手但未拿到 HTTP 响应（常见于目标 WAF 拦截），不是完整请求耗时，建议换一条出口。 |
+| 已登录账号看起来像新机器 / 想真的换一台机器 | 普通「重新登录」会**沿用旧指纹**；到 **账号** 页核对固定指纹即可。真要换一台机器，在已登录行点 **更换指纹**：抽新指纹重登并删旧配置，账号与凭据不变。 |
+| 身份检测拿到 C 或 D | 这条出口不够干净，换一条代理出口重新登录该账号。 |
+| 续期托管自动暂停了 | 点开该行 **续期托管** 查看具体原因（如需要验证码/设备码、账号身份不匹配、过期后连续失败），处理完后手动重新开通即可。 |
+| 其他问题 | 提交 [issue](https://github.com/Gruu6y/magpie-clean-login/issues)，附上预期行为、实际现象、涉及供应商/代理及脱敏报错截图。**切勿粘贴真实 token、Cookie 或代理密码。** |
 
 <a id="privacy"></a>
 
-## 隐私与数据存放位置
+## 隐私、数据目录与环境变量
 
-- 没有遥测，也没有账号。唯一的网络调用就是你自己发起的那些：代理测试、信任分页面、身份检测页面、运行时下载，以及供应商自己的登录。
-- 代理、账号、指纹和浏览器配置都在 `~/.config/magpie/magpie-clean-login/`（用 `MAGPIE_CLEAN_LOGIN_DATA` 覆盖；配置根本身用 `MAGPIE_CONFIG_DIR`）。市场目录从 `~/.cache/magpie/` 读取（`MAGPIE_CACHE_DIR`）。续期托管的开通状态与最近记录在同一个目录下的 `renew-hosting.json`，里面只有开关、时间和结果，没有任何凭据。
-- 登录浏览器在 Windows 上解包到 `%LOCALAPPDATA%/magpie-clean-login/camoufox`，在 macOS 上解包到 `~/Library/Caches/magpie-clean-login/camoufox`，在 Linux 上解包到 `$XDG_CACHE_HOME/magpie-clean-login/camoufox`（均可用 `MAGPIE_CLEAN_LOGIN_BROWSER_DIR` 覆盖）。
-- 在无界面的 Linux 上，若未设置 `DISPLAY` 和 `WAYLAND_DISPLAY` 且需要把登录浏览器指向指定 X11 显示（如 `:99`），可用 `MAGPIE_CLEAN_LOGIN_DISPLAY` 显式开启；若需改用系统字体配置而非 Camoufox 默认的防指纹字体配置，可设置 `MAGPIE_CLEAN_LOGIN_FONTCONFIG=system`（`/etc/fonts/fonts.conf`）或自定义的 `fonts.conf` 路径（不会覆盖已有的 `FONTCONFIG_FILE`）。
-- 存下来的代理密码不会到达页面，也不会写进日志。页面 token 每进程一份，只存在于服务送出的页面里。
+- **零遥测、无云端账号**：除你主动发起的动作（代理测速、信任分、身份检测、浏览器下载、供应商登录）外，插件不向外发任何请求。
+- **数据存放位置**：
+  - 代理、账号台账、固定指纹、独立 Profile 与续期策略（`renew-hosting.json`，仅开关/时间/结果，无凭据）均存于 `~/.config/magpie/magpie-clean-login/`。
+  - 市场目录读取自 `~/.cache/magpie/`；单账号出口同步写入 `~/.config/magpie/providers.json`。
+  - 登录浏览器与指纹模型缓存位置：Windows `%LOCALAPPDATA%/magpie-clean-login/camoufox` · macOS `~/Library/Caches/magpie-clean-login/camoufox` · Linux `$XDG_CACHE_HOME/magpie-clean-login/camoufox`。
+- **凭据安全**：代理密码仅存本机且永不回传页面或写入日志；每进程生成独立页面 token，且页面仅允许嵌入 magpie 沙箱 frame 中运行。
+
+### 环境变量一览
+
+| 环境变量 | 用途 |
+| --- | --- |
+| `MAGPIE_CONFIG_DIR` | 覆盖 magpie 配置根目录（默认 `~/.config/magpie`） |
+| `MAGPIE_CLEAN_LOGIN_DATA` | 覆盖本插件数据目录（默认 `<MAGPIE_CONFIG_DIR>/magpie-clean-login`） |
+| `MAGPIE_CACHE_DIR` | 覆盖 magpie 市场缓存目录（默认 `~/.cache/magpie`） |
+| `MAGPIE_CLEAN_LOGIN_BROWSER_DIR` | 覆盖登录浏览器与 `fpgen` 模型缓存目录 |
+| `MAGPIE_CLEAN_LOGIN_BROWSER_URL` / `MAGPIE_CLEAN_LOGIN_BROWSER_SHA256` | 覆盖登录浏览器下载地址与 sha256 校验值（用于私有镜像） |
+| `CAMOUFOX_EXECUTABLE_PATH` | 指定已存在的 Camoufox 可执行文件路径 |
+| `MAGPIE_CLEAN_LOGIN_DISPLAY` | 无界面 Linux 未设 `DISPLAY`/`WAYLAND_DISPLAY` 时显式指定 X11 显示（如 `:99`） |
+| `MAGPIE_CLEAN_LOGIN_FONTCONFIG` | Linux 覆盖字体配置：`system`（`/etc/fonts/fonts.conf`）或自定义 `fonts.conf` 路径（不覆盖已有 `FONTCONFIG_FILE`） |
+| `CLEAN_LOGIN_URL` / `CLEAN_LOGIN_PORT` | 覆盖 CLI 目标服务地址 / 端口（默认 `http://127.0.0.1:3492`） |
+| `MAGPIE_CLEAN_LOGIN_IP_ENDPOINT` | 覆盖通用出口测速地址 |
+| `MAGPIE_CLEAN_LOGIN_PROXY_TIMEOUT_MS` / `MAGPIE_CLEAN_LOGIN_SCORE_TIMEOUT_MS` / `MAGPIE_CLEAN_LOGIN_CHECK_TIMEOUT_MS` | 覆盖代理测速 / 信任分 / 身份检测超时毫秒数 |
 
 <a id="contributing"></a>
 
 ## 参与贡献
 
-欢迎 pull request。测试套件就是契约：`bun test` 跑全部，一个没有测试的改动就是以后没人敢信的改动。改 `lib/`、`ui/`、`page/` 或 `index.mjs` **不需要自己升版本号**——版本由合并方在合并点分配；`node scripts/check-version-bump.mjs` 仍会拒绝降级或等于已发布的版本号。动手前先读 [AGENTS.md](AGENTS.md) 与 [docs/releasing.md](docs/releasing.md)。
-
-### 提交 Issue 与双线自动分流
-
-提交问题或功能建议时，Issue 表单中的 **预计改动范围 / 风险区域**（`route_scope` 字段）用于自动分流处理执行器（完整规则见 [docs/auto-maintainer.md](docs/auto-maintainer.md)）：
-
-- **`agent:cindy`（Cindy 自动线）**：处理范围明确的低风险 / 简单任务。仅当 `route_scope` 选择以下之一时才会路由到此线：
-  - `纯文档 / README / Issue 模板修改`
-  - `纯文案或不涉及逻辑的简单样式修改`
-  - `纯测试补充`
-  - `单个非核心文件小 Bug（已附完整复现步骤与验收条件）`（须同时填写非空的 **复现步骤** 与 **验收条件**）
-  - 若为功能建议（Feature Request），还要求 **是否需要对应 CLI 支持** 选择 `不需要（仅涉及页面展示或内部逻辑）`。
-- **`agent:agy`（agy 代理线）**：处理常规、复杂、跨平台或涉及核心逻辑 / CLI 的任务。当 `route_scope` 保留默认的 `核心功能 / 复杂改动 / 跨平台 / 不确定`，或缺少上述必要字段、功能建议需要或不确定是否同步 CLI、空白 Issue 以及卡片 **报告问题**（`from-plugin`）提交的 Issue 时，均由 `agent:agy` 接管。
-- **拿不准怎么选？** 直接保留默认的 `核心功能 / 复杂改动 / 不确定` 即可。维护者也可随时手工增删 `agent:cindy` / `agent:agy` 标签改判；若 Cindy 评估后发现超出范围，也会自动退回给 `agent:agy` 接管。
+欢迎提交 PR。本仓库以完整测试套件为契约：提交前跑全量 `bun test`，功能与修复必须带测试。改动 `lib/`、`ui/`、`page/` 或 `index.mjs` **不要自己修改 `package.json` 的 `version`**——版本号由合并方在合并点统一分配并打 tag 自动发布 npm（`node scripts/check-version-bump.mjs` 会拦截降级或重复版本号）。动手前请先读 [AGENTS.md](AGENTS.md) 与 [docs/releasing.md](docs/releasing.md)。
 
 <a id="license"></a>
 
 ## 许可
 
-[MIT](LICENSE) © 2026 Gruu6y. [tag 列表 / 版本历史](https://github.com/Gruu6y/magpie-clean-login/tags) · [反馈问题](docs/reporting.md) · [CI](https://github.com/Gruu6y/magpie-clean-login/actions/workflows/ci.yml)
+[MIT](LICENSE) © 2026 Gruu6y · [npm 包](https://www.npmjs.com/package/@gruu6y/page-clean-login) · [版本历史 / Tags](https://github.com/Gruu6y/magpie-clean-login/tags) · [反馈问题](docs/reporting.md) · [CI](https://github.com/Gruu6y/magpie-clean-login/actions/workflows/ci.yml)

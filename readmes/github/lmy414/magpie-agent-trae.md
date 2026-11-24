@@ -4,7 +4,21 @@
 
 让 Trae CN 使用 Magpie 中配置的模型和路由组。接入后，在 Trae 自己的模型菜单中切换带“· Magpie”的条目。
 
-这是非官方 Agent 适配器，支持 **Windows 上已核验的 Trae CN 3.4.18 和 3.4.20 构建**。插件调用 Trae 客户端内部接口，并校验客户端文件哈希。其他构建、国际版、macOS 和 Linux 尚未适配。
+## 平台适配
+
+**Windows 上的 Trae CN 3.4.24 不支持通过本插件自动同步自定义模型。** 在 Magpie 中新增、编辑或删除模型后，Trae 的原生模型菜单不会跟着更新。请在 Trae 的“设置 → 模型”中逐个添加、修改或删除对应条目。已经配好且在 Magpie 中仍然可用的模型可以继续对话。
+
+我们希望 Trae 提供管理自定义模型的官方命令行接口，支持列出、添加、编辑和删除模型。这样插件就可以沿用当前登录，在后台更新模型列表。
+
+| 平台 | 接入方式 | 验证范围 |
+| --- | --- | --- |
+| Windows 默认位置安装的 Trae CN 3.4.18、3.4.20 | 自动同步模型目录，写入前校验构建 | 已验证的构建见下表 |
+| Windows 上的 Trae CN 3.4.24 | 手动管理自定义模型 | 本机已验证通过已有模型对话 |
+| Windows 其他构建或安装位置 | 手动添加自定义模型 | 安装发现和桥接使用独立测试 |
+| macOS arm64 | 手动添加自定义模型，保留应用签名 | CI 测试插件和网关。菜单刷新时机及 TraeWork 实际对话待 Mac 用户确认 |
+| Linux | CI 运行可移植代码的单元测试 | Trae 桌面端适配尚待验证 |
+
+感谢 **CN-P5** 在 [Magpie Trae Evergreen](https://github.com/CN-P5/magpie-trae-evergreen) 中对 Windows 多盘安装发现和可选客户端刷新的贡献。本项目借鉴了这两项设计。用 `TRAE_APP` 可以指定含 `product.json` 的应用资源目录。Windows 也会检查默认目录、Program Files 和注册表 App Paths。设置 `MAGPIE_TRAE_NO_CLIENT_PATCH=1` 可跳过刷新组件安装，重启 Magpie 后生效。
 
 0.3.4 修复了 Trae 升级到 3.4.20 后无法新增模型的问题，并适配新版客户端的菜单刷新组件。凭据模块仍逐一核对两个 DLL 的 SHA-256。客户端入口备份按 Trae 版本分别保存，恢复时使用对应版本的原文件。
 
@@ -18,18 +32,22 @@
 先安装并登录 Trae CN，在 Magpie 配置可用的模型，然后运行：
 
 ```powershell
-magpie plugin add "github:lmy414/magpie-agent-trae#v0.3.4"
+magpie plugin add "github:lmy414/magpie-agent-trae#main"
 ```
 
 也可以下载 [Release](https://github.com/lmy414/magpie-agent-trae/releases) 中的源码，进入解压后的目录，运行 `magpie plugin add .`。
 
 1. 在 Magpie 的 Agent 页面找到 Trae，打开接入开关。列表较长时，展开底部“显示其余”区域。
-2. 首次安装客户端刷新组件，或 Trae 升级后重新安装该组件时，自行重启 Trae 一次。
-3. 在 Trae 的模型菜单选择带“· Magpie”的条目。之后新增、移除模型和断开接入会自动刷新已打开的窗口。
+2. **自动同步**。Windows 首次安装或重新安装刷新组件后，重启 Trae 一次，在菜单中选择带“· Magpie”的模型。
+3. **手动接入**。在源码目录运行 `node cli.mjs setup` 和 `node cli.mjs models`。在 Trae 的“设置 → 模型”添加 OpenAI Chat Completions 自定义模型，打开“完整 URL”，填写 setup 显示的本机地址、桥接标记和 models 列出的模型 ID。手动创建的条目也由你在 Trae 中移除。[Trae 模型设置](https://docs.trae.cn/work_models)
+
+macOS 首次连接也可以运行 `magpie trae-local provider magpie`。资源库的规则和技能使用主目录路径，MCP 自动写入目前仅覆盖 Windows。更换安装目录或升级 Trae 后重启 Magpie，使插件重新识别客户端。
 
 保持 Magpie 运行、Trae 登录。插件不会切换窗口焦点、修改输入框或自动选择模型。只安装本仓库与社区包中的一个版本，避免两个运行时同时管理同一套配置。
 
 ## 能力
+
+下表中的模型目录、模型能力、目录更新和断开清理仅适用于支持自动同步的构建。手动接入的模型同样可以通过本地桥接转发请求。
 
 | 功能 | 行为 |
 | --- | --- |
@@ -99,7 +117,9 @@ Trae 要求凭据使用原生编码格式。[`trae-local-token.mjs`](https://git
 
 ## 恢复与卸载
 
-在 Magpie 关闭 Trae 接入，等待同步状态变为 `disconnected`，再卸载插件。插件只处理日志中记录的模型 ID：自己新增的条目会删除，接管过的条目会还原。手动修改过的条目会保留，并显示 `model_edited_in_trae`。
+手动接入时，在 Magpie 关闭 Trae 接入，然后在 Trae 的“设置 → 模型”中移除不再使用的条目，即可卸载插件。
+
+使用自动同步时，在 Magpie 关闭 Trae 接入，等待同步状态变为 `disconnected`，再卸载插件。插件只处理日志中记录的模型 ID：自己新增的条目会删除，接管过的条目会还原。手动修改过的条目会保留，并显示 `model_edited_in_trae`。
 
 创建、更新和删除都有恢复日志。响应丢失时，插件读取原生目录核对结果；删除只有在确认条目不存在后才完成。账户发生变化时，插件停止使用原账户的恢复日志。
 
@@ -110,6 +130,12 @@ node cli.mjs restore-client
 ```
 
 不要在恢复前删除 `.config/magpie-trae`。该目录包含恢复日志和备份。
+
+## 会话与用量
+
+Magpie 将桥接请求记到 `trae-local`。请求携带有效的会话 ID 时，桥接会把它写入 `X-Magpie-Session`。同一会话可跨模型归集。缺少 ID 的请求只计单次用量。旧记录需要原始 ID 才能归集，现有桥接不导入 Trae 本地历史。
+
+两个会话分别发出请求后，可用 `node cli.mjs status` 查看最近请求的 `lastRequest.sessionHeader`。该字段显示识别到的请求头名称，`null` 表示这次请求没有可用的会话头。打开 Magpie 的会话正文记录开关后，正文留存由 Magpie 管理。
 
 ## 诊断
 

@@ -64,20 +64,21 @@ Keel 侧使用：
 
 ## Keel 地址
 
-默认按 Keel CLI 的顺序自动探测：
+默认先按当前 Hong Cowork（0.146 及以上）CLI 的顺序探测，再探测旧版 Keel 的 223xx 端口：
 
 | 运行方式 | 地址 |
 | --- | --- |
-| 本地桌面开发 | `http://127.0.0.1:22343` |
-| 开发 / RC | `http://127.0.0.1:22342` |
-| 正式桌面版 | `http://127.0.0.1:22340` |
-| Headless | `http://127.0.0.1:22341` |
+| 本地桌面开发 | `http://127.0.0.1:21343` |
+| 开发 / RC | `http://127.0.0.1:21342` |
+| 正式桌面版 | `http://127.0.0.1:21340` |
+| Headless | `http://127.0.0.1:21341` |
+| 旧版 Keel | `22343`、`22342`、`22340`、`22341` |
 
 固定地址或调整轮询：
 
 ```bash
 magpie plugin options gestwork-magpie-plugin '{
-  "keelUrl": "http://127.0.0.1:22343",
+  "keelUrl": "http://127.0.0.1:21342",
   "pollMs": 1000,
   "requestTimeoutMs": 4000
 }'
@@ -112,7 +113,7 @@ magpie plugin --json
 magpie log -n 100
 ```
 
-如果 Keel 使用自定义端口，设置 `keelUrl`。
+Hong Cowork 0.146 起本机 API 在 `21342`（开发版），不再使用旧的 `22342`。插件会自动探测；如果 App 使用自定义端口，设置 `keelUrl`。
 
 **Keel 拒绝本地网关**
 

@@ -101,7 +101,8 @@ Errors come back as OpenAI-style `{ error: { message, code } }`, and the message
 ## Known limitations
 
 - No true streaming: the upstream reply is one-shot, SSE is synthesized locally, so the first token only arrives when generation finishes;
-- no tool calling, no image input, and `max_tokens` is ignored (the SDK channel takes `{ model, messages, temperature, topP }` only);
+- tool calling needs aiProxy 1.1.0 or later — redeploy the function (`tcb fn deploy aiProxy --force`) after upgrading the plugin from 0.2.4 or earlier;
+- no image input;
 - very long outputs can hit the function's 120 s timeout;
 - no quota reporting (no official API for it); the gift quota itself expires (6 months).
 
