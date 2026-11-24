@@ -33,10 +33,15 @@ import { precheckImages, rewriteBodyChanged, rewriteBodyObj, translateError } fr
 import {
   readUaaToken,
   requireBrowser,
-  renewSilently,
+  renewSilently as renewSilentlyImpl,
   signInWithBrowser,
   tokenFresh,
 } from "./lib/browser.mjs"
+
+// 续期实现走一个可替换的引用：测试把 renewSilently 换成可控假体（不走真
+// 浏览器），宿主路径始终用 lib/browser.mjs 的真实现。生产代码不读这个变量
+// 以外的东西，行为与直接 import 完全一致。
+let renewSilently = renewSilentlyImpl
 
 const PROVIDER_ID = "intern-inkstone"
 const NPM = "@ai-sdk/openai-compatible"
@@ -44,6 +49,32 @@ const NAME = "书生·端砚"
 const EARLY_MS = 10 * 60_000
 const QUOTA_TTL_MS = 60_000
 const DEFAULT_LOGIN_TIMEOUT_MS = 8 * 60_000
+
+// 静默续期失败退避：连续失败按 30s→1m→2m→4m…指数拉长，封顶 1 小时；成功清零。
+// 模块级而不是插件实例级：退避是"这台机器的浏览器/网络现在不行"这一事实，
+// 和哪个账号无关，也不该随宿主重新加载插件而丢失。
+const RENEW_BASE_MS = 30_000
+const RENEW_MAX_MS = 60 * 60_000
+let renewFailures = 0
+let renewBlockedUntil = 0
+
+/** 距离下次允许续期的等待毫秒数（0 = 现在可以试）。 */
+function renewBackoffMs() {
+  return Math.min(RENEW_BASE_MS * 2 ** renewFailures, RENEW_MAX_MS)
+}
+
+/** 记一次续期失败：指数退避，封顶 1 小时。 */
+function noteRenewFailure() {
+  renewFailures += 1
+  renewBlockedUntil = Date.now() + renewBackoffMs()
+  return renewBlockedUntil
+}
+
+/** 记一次续期成功：冷却清零，下个 token 到期前不再打扰。 */
+function noteRenewSuccess() {
+  renewFailures = 0
+  renewBlockedUntil = 0
+}
 
 const apiBase = () => ENDPOINTS.api
 
@@ -210,6 +241,20 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   // two accounts must not read each other's credits or model lists.
   const quotaCache = new Map() // uaa token -> { at, value }
   const renewing = new Map() // account -> in-flight renew promise
+  // 本次 usage()/checkin() 调用链里已经尝试过续期的 token（P0-3）：401 分支
+  // 看到它就不再第二次续期。调用结束即清，不影响下一次调用。
+  const alreadyRenewed = new Set()
+
+  /**
+   * 成功与失败的结果都进缓存（P0-2）：失败也缓存，60 秒轮询的重复调用才
+   * 不会每次都穿到控制台——以前只有成功路径写缓存，续期失败时每分钟都
+   * 重走一遍「开浏览器→失败→401→再开浏览器」的全链路。
+   */
+  const cacheQuotaValue = (token, value) => {
+    quotaCache.set(token, { at: Date.now(), value })
+    if (quotaCache.size > 8) quotaCache.clear()
+    return value
+  }
 
   const apiKeyOf = (auth) => {
     if (!auth) return ""
@@ -251,6 +296,13 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   /** 静默续期（单飞，按账号分桶）：保留的 SSO 会话还在，就换一张新的 uaa-token。 */
   const renew = async (auth) => {
     if (!keepSignInOn()) return ""
+    // 退避期内的失败不再重试：token 过期时 60 秒一次的 usage() 若每次都开
+    // 浏览器，就是每分钟两开浏览器（ensureFreshToken 一次 + 401 再来一次）。
+    // 失败留痕，按 30s→1m→2m→…封顶 1h 的节奏等它自己冷却。
+    if (Date.now() < renewBlockedUntil) {
+      log("info", "inkstone: silent renewal is cooling down after failures; skipping this attempt")
+      return ""
+    }
     // 桶键用凭据指纹而不是显示名：两个账号可能同名，凭据不会。
     const bucket = fingerprint(apiKeyOf(auth) || uaaTokenOf(auth) || JSON.stringify(auth))
     const inflight = renewing.get(bucket)
@@ -258,7 +310,10 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     const flight = (async () => {
       try {
         const token = await renewSilently({ browserPath, log })
-        if (!token) return ""
+        if (!token) {
+          noteRenewFailure()
+          return ""
+        }
         // 同一个 profile 可能同时开着另一个账号的会话：续期回来的 token 不属于
         // 本页的账号，再存回去就会串号，先核对一遍再决定。
         const expecting = firstNonEmpty(usernameOf(auth))
@@ -272,6 +327,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             return ""
           }
         }
+        noteRenewSuccess()
         putToken(auth, token)
         await save(auth)
         return token
@@ -288,7 +344,14 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     if (!token) return ""
     if (tokenFresh(token, EARLY_MS)) return token
     log("info", "inkstone: console token is near expiry; renewing silently")
-    return (await renew(auth)) || token
+    // 续期失败把过期 token 还回去（调用方拿它去请求、吃 401），但**不再**
+    // 在同一次调用链里第二次续期——401 分支会看到 alreadyRenewed 直接短路。
+    alreadyRenewed.add(token)
+    try {
+      return (await renew(auth)) || token
+    } finally {
+      alreadyRenewed.delete(token)
+    }
   }
 
   const readQuota = async (getAuth, auth, depth = 0) => {
@@ -314,35 +377,38 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     if (balanceRes.status === "rejected") {
       const status = balanceRes.reason?.status
       if (status === 403) {
-        return {
+        return cacheQuotaValue(token, {
           plan: "墨点计划 (Token Plan)",
           windows: [],
           error: "TokenPlan account disabled in the console",
           signIn: "kept",
-        }
+        })
       }
       if (status === 401) {
         // 整次额度读取只允许一次续期重试：同一枚过期 token 反复续期没有意义。
-        if (depth < 1) {
+        // ensureFreshToken 刚试过（token 在 alreadyRenewed 里）或退避期内，
+        // 这里就不再开第二次浏览器——以前 401 分支会再续一次，单次 usage()
+        // 因此两开浏览器、两吃 1.5s 的全表扫描。
+        if (depth < 1 && !alreadyRenewed.has(token) && Date.now() >= renewBlockedUntil) {
           const fresh = await getAuth()
           const next = uaaTokenOf(fresh)
           if (next && next !== token) return await readQuota(getAuth, fresh, depth + 1)
           const renewed = await renew(auth)
           if (renewed && renewed !== token) return await readQuota(getAuth, putToken(structuredClone(auth), renewed), depth + 1)
         }
-        return {
+        return cacheQuotaValue(token, {
           plan: "墨点计划 (Token Plan)",
           windows: [],
           error: "console session expired; sign in again to see ink credits",
           signIn: "kept",
-        }
+        })
       }
-      return {
+      return cacheQuotaValue(token, {
         plan: "墨点计划 (Token Plan)",
         windows: [],
         error: cleanDetail(`credit balance: ${balanceRes.reason?.message ?? balanceRes.reason}`),
         signIn: "kept",
-      }
+      })
     }
 
     const balance = balanceRes.value?.data ?? {}
@@ -356,9 +422,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     const user = maskUser(firstNonEmpty(userData?.phone, userData?.name, userData?.username, userData?.nickname, usernameOf(auth)))
     const value = cardOf({ balance, packages, user, errors })
     // 包读取失败但余额成功：余额本身仍是真数据，只把包明细的错误挂上。
-    quotaCache.set(token, { at: Date.now(), value })
-    if (quotaCache.size > 8) quotaCache.clear()
-    return value
+    return cacheQuotaValue(token, value)
   }
 
   const declareModels = () => {
@@ -724,5 +788,16 @@ export const _internal = {
   ENDPOINTS,
   PROVIDER_ID,
   NPM,
+  /** swap renewSilently for a controllable fake (renewal-backoff tests) */
+  __setRenewSilentlyForTests(fn) {
+    renewSilently = fn
+  },
+  /** reset the module-level cooldown between tests */
+  __resetRenewalStateForTests() {
+    renewFailures = 0
+    renewBlockedUntil = 0
+  },
+  /** the backoff after the n-th consecutive failure (ms), capped at 1h */
+  __renewBackoffForTests: (n) => Math.min(RENEW_BASE_MS * 2 ** n, RENEW_MAX_MS),
 }
 

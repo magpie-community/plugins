@@ -282,16 +282,24 @@ class Cdp {
   }
 }
 
+/**
+ * 强杀浏览器进程树。返回 true 表示树刚才还活着、已按树杀掉（Windows 上
+ * taskkill /t /f 覆盖整棵树）；返回 false 表示进程早已退出、或杀失败了——
+ * 只有后一种情况才需要调用方考虑全表扫描兜底。
+ */
 function killTree(child) {
-  if (!child || child.exitCode !== null || child.killed) return
+  if (!child || child.exitCode !== null || child.killed) return false
   try {
     if (process.platform === "win32") {
       spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true })
+      return true
     } else {
       child.kill("SIGKILL")
+      return true
     }
   } catch {
     /* 进程可能已经退出 */
+    return false
   }
 }
 
@@ -313,6 +321,32 @@ function killProfileProcessesWindows(profile, log = () => {}) {
   } catch (e) {
     log(`cleaning leftover browsers failed: ${e?.message ?? e}`)
   }
+}
+
+/**
+ * 该 profile 的 CDP 端口现在是否还有浏览器在应答——廉价的残留探测。
+ * 端口文件是上一轮启动时写的；残留浏览器还活着就仍在监听这个端口，
+ * 本机回环上"连接被拒"是毫秒级的，只有真有东西应答才值得做全表扫描。
+ */
+async function profilePortAlive(profile) {
+  try {
+    const port = Number(readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0])
+    if (!Number.isInteger(port) || port <= 0) return false
+    return await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(700) })
+      .then((r) => r.ok)
+      .catch(() => false)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 续期开跑前清理残留浏览器（P2）：先按已知 PID 杀树（若有）；再探一次
+ * CDP 端口，仍应答才走全表扫描。happy path 上没有可用 PID、端口也无应答，
+ * 一次 PowerShell 都不用跑——原来每次续期固定 2 次、每次约 1.5 秒。
+ */
+async function killLeftoverForRenewal(profile, log) {
+  if (await profilePortAlive(profile)) killProfileProcesses(profile, log)
 }
 
 function killProfileProcessesUnix(profile, log = () => {}) {
@@ -450,17 +484,18 @@ export async function openSession({ browserPath, profile, headless = false, plai
           /* 浏览器可能已退出 */
         }
         cdp?.detach()
+        // 已知 PID 先按树杀（taskkill，毫秒级）。杀完若 CDP 端口已无应答，
+        // 就不必做 1.5s 的全表扫描兜底；Edge "换父"（启动 PID 退出而浏览器
+        // 还活着）时端口仍有应答，才走 PowerShell 按命令行清残留。
         killTree(child)
-        // Edge 在 Windows 上会"换父"：启动 PID 可能已退出而浏览器还活着，
-        // 按 user-data-dir 兜底清一遍。
-        killProfileProcesses(profile, log)
+        if (await profilePortAlive(profile)) killProfileProcesses(profile, log)
         await sleep(600)
       },
     }
   } catch (e) {
     cdp?.detach()
     killTree(child)
-    killProfileProcesses(profile, log)
+    if (await profilePortAlive(profile)) killProfileProcesses(profile, log)
     await sleep(300)
     // Never delete the profile here: it holds the signed-in session, and a
     // transient launch failure must not force a fresh sign-in.
@@ -690,25 +725,49 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
 /**
  * 静默续期：专用 profile 里 headless 打开控制台页，SSO 会话还在就会重新
  * 下 `uaa-token`。读不到就返回空串（交给调用方提示重新登录），不抛错。
+ *
+ * 单飞在**模块级**：浏览器 profile 全局唯一，多账号并发续期也必须排队，
+ * 不能按账号各开一个（index.mjs 的 renewing Map 只防同一账号的重入）。
+ * 等待有 30 秒上限（P1）：以前等的人每 200ms 自旋、永不放弃，把共享事件
+ * 循环挂在别人可能挂死的续期上；现在超时就让路，下一次额度刷新再来。
  */
-export async function renewSilently({ browserPath, timeoutMs = 20_000, log = () => {} } = {}) {
+let renewingAll = null
+export async function renewSilently({ browserPath, timeoutMs = 20_000, waitMs = 30_000, log = () => {} } = {}) {
   const dir = profileDir()
   if (!existsSync(dir)) return ""
   // 登录正在进行时不要抢 profile：下一次额度刷新再续。
   if (profileBusy > 0) return ""
-  return await exclusive(async () => {
-    killProfileProcesses(dir, log)
-    let session
+  if (renewingAll) return await renewingAll
+  const deadline = Date.now() + waitMs
+  const flight = (async () => {
     try {
-      session = await openSession({ browserPath, profile: dir, headless: true, log })
-      return await waitForToken(session, { timeoutMs, log })
+      return await exclusive(
+        async () => {
+          // 先按已知 PID 杀树；若 CDP 端口仍有应答（残留/换父）才全表扫描兜底。
+          await killLeftoverForRenewal(dir, log)
+          let session
+          try {
+            session = await openSession({ browserPath, profile: dir, headless: true, log })
+            return await waitForToken(session, { timeoutMs, log })
+          } catch (e) {
+            log(`silent renewal failed: ${e?.message ?? e}`)
+            return ""
+          } finally {
+            await session?.close().catch(() => {})
+          }
+        },
+        () => Date.now() > deadline,
+      )
     } catch (e) {
-      log(`silent renewal failed: ${e?.message ?? e}`)
+      // 等待超时（cancelled）等错误在这里兜住：续期失败对调用方就是 ""，
+      // 同时不让单飞 promise 带 rejection——后面的等待者直接拿到 ""。
       return ""
-    } finally {
-      await session?.close().catch(() => {})
     }
-  })
+  })()
+  renewingAll = flight
+  const out = await flight
+  if (renewingAll === flight) renewingAll = null
+  return out
 }
 
 export { removeProfile, killTree, LOGIN_URL }
