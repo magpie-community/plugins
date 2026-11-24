@@ -1625,6 +1625,7 @@ class Turn {
     this.clientProgressAt = this.lastProgressAt
     this.deadlineAt = null
     this.baseHistory = trailingMessages({ messages }).history.map((message) => ({ ...message }))
+    this.requestHash = digest(historyKey(messages))
     this.events = []
     this.waiters = []
     this.calls = []
@@ -3447,6 +3448,95 @@ function dropFromPool(proc) {
   if (pool.get(proc.convKey) === proc) pool.delete(proc.convKey)
 }
 
+// Sibling branches share a base conversationKey (for instance a main session
+// and a forked sidechat carrying the same prompt-cache key). Each branch keeps
+// its own pool entry (`base` or `base#<id>`) under the shared base lock.
+const MAX_BRANCHES_PER_CONV = 4
+
+function baseConvKey(key) {
+  if (typeof key !== "string") return ""
+  const sep = key.indexOf("#")
+  return sep < 0 ? key : key.slice(0, sep)
+}
+
+function branchesFor(convKey) {
+  const base = baseConvKey(convKey)
+  const out = []
+  const primary = pool.get(base)
+  if (primary) out.push(primary)
+  const prefix = `${base}#`
+  for (const [key, proc] of pool) {
+    if (key.startsWith(prefix)) out.push(proc)
+  }
+  return out
+}
+
+function branchKey(convKey, opts) {
+  const base = baseConvKey(convKey)
+  if (!pool.has(base)) return base
+  return `${base}#${opts?.reqId || randomBytes(4).toString("hex")}`
+}
+
+// Two histories sharing at least one completed turn (>= 2 messages) that either
+// rewind to a strict prefix (parent resuming after a fork advanced the live
+// session) or diverge at a user message belong to sibling branches.
+function isHistoryBranch(existingMessages, incomingHistory) {
+  if (!Array.isArray(existingMessages) || !Array.isArray(incomingHistory)) return false
+  if (existingMessages.length < 2 || incomingHistory.length < 2) return false
+  const shared = Math.min(existingMessages.length, incomingHistory.length)
+  if (incomingHistory.length < existingMessages.length &&
+    historyKey(existingMessages.slice(0, shared)) === historyKey(incomingHistory)) return true
+  for (let i = 0; i < shared; i++) {
+    if (historyKey([existingMessages[i]]) !== historyKey([incomingHistory[i]])) {
+      return i >= 2 && existingMessages[i]?.role === "user" && incomingHistory[i]?.role === "user"
+    }
+  }
+  return false
+}
+
+// True when an incoming request unmistakably belongs to a sibling branch of
+// proc's active turn rather than retrying, steering, or superseding that turn.
+function isSiblingOfActiveTurn(proc, turn, opts, isFreshConversation = false) {
+  if (!turn || turn.steering || turn.cancelRequested || turn.done || turn.finalized) return false
+  const base = turn.baseHistory
+  const history = opts?.history
+  if (!Array.isArray(base) || !Array.isArray(history)) return false
+  const ids = new Set(turn.calls.map((call) => call.id))
+  const carried = (opts.messages || []).some((message) => Array.isArray(message?.content) &&
+    message.content.some((block) =>
+      (block?.type === "tool_use" && ids.has(block.id)) ||
+      (block?.type === "tool_result" && ids.has(block.tool_use_id))))
+  if (carried) return false
+  if (turn.attached) {
+    if (!opts.hasToolResults) {
+      if (isFreshConversation) return false
+      return digest(historyKey(opts.messages || [])) !== turn.requestHash
+    }
+    if (base.length >= 2 &&
+      (history.length < base.length || historyKey(history.slice(0, base.length)) !== historyKey(base))) return true
+    if (history.length > base.length && Array.isArray(proc.expectedMessages) &&
+      proc.expectedMessages.length > base.length) {
+      const existingTurnUser = proc.expectedMessages[base.length]
+      const incomingTurnUser = history[base.length]
+      if (existingTurnUser?.role === "user" && incomingTurnUser?.role === "user" &&
+        historyKey([existingTurnUser]) !== historyKey([incomingTurnUser])) return true
+    }
+    return false
+  }
+  if (turn.hasPendingMcp() && base.length >= 2 && Array.isArray(proc.expectedMessages)) {
+    if (!opts.hasToolResults && history.length > base.length &&
+      historyKey(history.slice(0, base.length)) === historyKey(base) &&
+      proc.expectedMessages.length > base.length) {
+      const existingTurnUser = proc.expectedMessages[base.length]
+      const incomingTurnUser = history[base.length]
+      if (existingTurnUser?.role === "user" && incomingTurnUser?.role === "user" &&
+        historyKey([existingTurnUser]) !== historyKey([incomingTurnUser])) return true
+    }
+    if (opts.hasToolResults && isHistoryBranch(proc.expectedMessages, history)) return true
+  }
+  return false
+}
+
 function digest(value) {
   return createHash("sha256").update(value).digest("hex")
 }
@@ -3583,13 +3673,7 @@ function resumeWorkspace(workspace) {
   return /^magpie-agy-bridge-[A-Za-z0-9]{6}$/.test(path.basename(resolved)) ? resolved : null
 }
 
-function takeParked(convKey, opts) {
-  loadParked()
-  const entry = parked.get(convKey)
-  if (!entry) return null
-  parked.delete(convKey)
-  unparked.add(convKey)
-  saveParked()
+function matchParkedEntry(entry, opts) {
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
     entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
     entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
@@ -3604,6 +3688,33 @@ function takeParked(convKey, opts) {
   const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
   if (!idsOk || !sansOk) return null
   return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+}
+
+function takeParked(convKey, opts) {
+  loadParked()
+  const base = baseConvKey(convKey)
+  const prefix = `${base}#`
+  const candidates = []
+  if (parked.has(base)) candidates.push([base, parked.get(base)])
+  for (const [key, entry] of parked) {
+    if (key.startsWith(prefix)) candidates.push([key, entry])
+  }
+  if (!candidates.length) return null
+  for (const [key, entry] of candidates) {
+    const matched = matchParkedEntry(entry, opts)
+    if (matched) {
+      parked.delete(key)
+      unparked.add(key)
+      saveParked()
+      return matched
+    }
+  }
+  if (candidates.length === 1 && candidates[0][0] === base) {
+    parked.delete(base)
+    unparked.add(base)
+    saveParked()
+  }
+  return null
 }
 
 async function retire(key, proc) {
@@ -3752,21 +3863,22 @@ function evictIdleSpares(cutoff) {
 const acquireLocks = new Map()
 
 async function withAcquireLock(key, fn) {
-  const previous = acquireLocks.get(key) || Promise.resolve()
+  const lockKey = baseConvKey(key)
+  const previous = acquireLocks.get(lockKey) || Promise.resolve()
   let release
   const current = new Promise((resolve) => { release = resolve })
-  acquireLocks.set(key, current)
+  acquireLocks.set(lockKey, current)
   await previous
   try {
     return await fn()
   } finally {
     release()
-    if (acquireLocks.get(key) === current) acquireLocks.delete(key)
+    if (acquireLocks.get(lockKey) === current) acquireLocks.delete(lockKey)
   }
 }
 
 async function withAcquireLocks(keys, fn) {
-  const unique = [...new Set(keys.filter(Boolean))].sort()
+  const unique = [...new Set(keys.filter(Boolean).map(baseConvKey))].sort()
   const run = (index) => {
     if (index >= unique.length) return fn()
     return withAcquireLock(unique[index], () => run(index + 1))
@@ -3784,14 +3896,14 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   const launch = !forceNew && isFreshConversation && statelessRequest(opts)
     ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
-    const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
+    const keys = extra && baseConvKey(extra) !== baseConvKey(convKey) ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
-      const locked = new Set(keys)
-      if (!forceNew && !pool.get(convKey)) {
+      const locked = new Set(keys.map(baseConvKey))
+      if (!forceNew && !branchesFor(convKey).length) {
         const candidate = (isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)) ??
           findStatelessDonor(opts, launch)
         const needed = candidate?.convKey
-        if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
+        if (needed && !locked.has(baseConvKey(needed)) && attempt < 2) return { retry: needed }
       }
       const value = await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked, launch)
       return { value: begin ? { ...value, turn: await begin(value.proc, value.history) } : value }
@@ -3804,117 +3916,188 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   }
 }
 
+function matchIdleProc(proc, opts, isFreshConversation) {
+  let matchedHistory = opts.history
+  if (!proc.dead && !proc.retiring && proc.unsentPrompt &&
+    Array.isArray(opts.messages) && Array.isArray(proc.expectedMessages)) {
+    const k = proc.expectedMessages.length
+    if (k > matchedHistory.length && k <= opts.messages.length &&
+      proc.matchesHistory(opts.messages.slice(0, k))) {
+      matchedHistory = opts.messages.slice(0, k)
+    }
+  }
+  const continuedFresh = isFreshConversation && proc.hasSentFirstTurn &&
+    isContinuedOpening(proc, Array.isArray(opts.messages) ? opts.messages[0] : null)
+  const compatible = !proc.dead && !proc.retiring &&
+    proc.workDir === opts.workDir && sameInstructions(proc.instructions, opts.instructions) &&
+    (proc.matchesHistory(matchedHistory) || continuedFresh)
+  const reusable = compatible && (!(isFreshConversation && proc.hasSentFirstTurn) || continuedFresh)
+  return { matchedHistory, continuedFresh, reusable }
+}
+
 // Caller holds the conversation lock; recovery must not acquire it recursively.
-async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey]), launch = null) {
+async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([baseConvKey(convKey)]), launch = null) {
   await evictIdle()
-  let existing = pool.get(convKey)
-  if (existing?.turn?.cancelRequested) {
-    await Promise.race([existing.turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
+  const base = baseConvKey(convKey)
+  for (const proc of branchesFor(base)) {
+    if (proc.turn?.cancelRequested) {
+      await Promise.race([proc.turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
+    }
+    if (!proc.dead && proc.turn && !proc.retiring &&
+      staleTurnVerdict(proc, proc.turn).stale) {
+      // The held turn can never progress again: free the conversation for this request.
+      const orphan = proc.turn
+      logBridgeEvent(proc, orphan, "reclaim", staleTurnVerdict(proc, orphan).reason, opts)
+      await reclaimStaleTurn(proc, orphan)
+    }
   }
-  if (existing && !existing.dead && existing.turn && !existing.retiring &&
-    staleTurnVerdict(existing, existing.turn).stale) {
-    // The held turn can never progress again: free the conversation for this request.
-    const orphan = existing.turn
-    logBridgeEvent(existing, orphan, "reclaim", staleTurnVerdict(existing, orphan).reason, opts)
-    await reclaimStaleTurn(existing, orphan)
-    existing = null
+  let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
+  let historyDiff
+  let sparedActive = false
+  // First check whether any live idle branch under this key already matches
+  // this request's history, so a returning branch reuses its warm session
+  // without colliding with or superseding a sibling's active turn.
+  if (!forceNew) {
+    for (const proc of branchesFor(base)) {
+      if (proc.dead || proc.retiring || proc.turn) continue
+      const { matchedHistory, continuedFresh, reusable } = matchIdleProc(proc, opts, isFreshConversation)
+      if (!reusable) continue
+      if (continuedFresh) {
+        const first = Array.isArray(opts.messages) ? opts.messages[0] : null
+        // Snapshot the unsent tail before openingText advances to this turn.
+        proc.pendingFlattenedTurn = flattenedContinuationMessage(proc, first)
+        proc.openingText = openingTextOf(first) || proc.openingText
+        proc.openingImages = openingImagesOf(first)
+      }
+      await proc.updateTools(opts.tools)
+      // agy never listed the tools this request declares (an agy started
+      // with none whose MCP server never connected): a new one may.
+      if (proc.toolsListed()) return { proc, history: matchedHistory }
+      why = "tools_unlisted"
+      proc.retiring = true
+      dropFromPool(proc)
+      await proc.stop().catch(() => {})
+    }
   }
-  if (existing && !existing.dead && existing.turn) {
-    let lineage = lineageVerdict(existing, existing.turn, opts)
+  for (const proc of branchesFor(base)) {
+    if (proc.dead || proc.retiring || !proc.turn) continue
+    if (isSiblingOfActiveTurn(proc, proc.turn, opts, isFreshConversation)) {
+      sparedActive = true
+      continue
+    }
+    let lineage = lineageVerdict(proc, proc.turn, opts)
     if (lineage === "dropped") {
-      const held = existing.turn
-      const kept = await keepDroppedTurn(existing, held, opts)
-      logBridgeEvent(existing, held, kept ? "kept" : "keep_failed", "lineage_dropped", opts)
-      if (!kept) lineage = "fork"
+      const held = proc.turn
+      const kept = await keepDroppedTurn(proc, held, opts)
+      logBridgeEvent(proc, held, kept ? "kept" : "keep_failed", "lineage_dropped", opts)
+      if (!kept) {
+        lineage = "fork"
+      } else if (!forceNew && !proc.dead && !proc.retiring && !proc.turn) {
+        const { matchedHistory, reusable } = matchIdleProc(proc, opts, isFreshConversation)
+        if (reusable) {
+          await proc.updateTools(opts.tools)
+          if (proc.toolsListed()) return { proc, history: matchedHistory }
+          why = "tools_unlisted"
+        }
+      }
     }
     if (lineage === "fork" || lineage === "answered") {
-      const orphan = existing.turn
-      logBridgeEvent(existing, orphan, "superseded", lineage === "fork" ? "lineage_fork" : "lineage_answered", opts,
+      const orphan = proc.turn
+      logBridgeEvent(proc, orphan, "superseded", lineage === "fork" ? "lineage_fork" : "lineage_answered", opts,
         { superseded_turn_id: orphan.turnId })
-      await reclaimStaleTurn(existing, orphan, SUPERSEDED_NOTE)
-      existing = null
+      await reclaimStaleTurn(proc, orphan, SUPERSEDED_NOTE)
+      continue
     } else if (lineage === "conflict") {
       throw new ConflictError("agy bridge: this request carries the pending tool call but no matching result. Stop resending it; send the tool result or continue from the last self-consistent message.", "tool_state_conflict")
+    }
+    if (!proc.dead && proc.turn) {
+      if (isFreshConversation && !forceNew &&
+        !opts.hasToolResults && !proc.turn.cancelRequested && proc.turn.model !== opts.model) {
+        // A new conversation that opens as a running one did (one system prompt and
+        // one first message), for another model, is a conversation of its own, not
+        // a resend of the running one: magpie's Test models sends every model the
+        // same "hi" at once (swang20201 on X). It gets an agy of its own, under a
+        // key of its own; its follow-ups key as the first. The same request for
+        // the same model while the first runs is still refused as a resend.
+        sparedActive = true
+        why = "concurrent_opening"
+        continue
+      }
+      throw new BusyError("agy bridge: this conversation still has an unfinished response")
     }
   }
   // A flattened, growing first message changes conversationKey, so the live
   // session is under the previous key. Reuse it when the new opening continues
   // the whole previous opening (not just a shared prefix).
-  if (!existing && !forceNew && isFreshConversation) {
+  let existing = null
+  const remaining = branchesFor(base)
+  if (!remaining.length && !forceNew && isFreshConversation) {
     const candidate = findLiveContinuedProc(opts)
-    if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
+    if (candidate && lockedKeys.has(baseConvKey(candidate.convKey))) existing = rekeyProc(candidate, base)
   }
-  if (!existing && !forceNew && !isFreshConversation) {
-    const candidate = findRemaskedProc(convKey, opts)
-    if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
-  }
-  let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
-  let historyDiff
-  let key = convKey
-  if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
-    !opts.hasToolResults && !existing.turn.cancelRequested && existing.turn.model !== opts.model) {
-    // A new conversation that opens as a running one did (one system prompt and
-    // one first message), for another model, is a conversation of its own, not
-    // a resend of the running one: magpie's Test models sends every model the
-    // same "hi" at once (swang20201 on X). It gets an agy of its own, under a
-    // key of its own; its follow-ups key as the first. The same request for
-    // the same model while the first runs is still refused as a resend.
-    key = `${convKey}#${opts.reqId || randomBytes(4).toString("hex")}`
-    existing = null
-    why = "concurrent_opening"
+  if (!remaining.length && !existing && !forceNew && !isFreshConversation) {
+    const candidate = findRemaskedProc(base, opts)
+    if (candidate && lockedKeys.has(baseConvKey(candidate.convKey))) existing = rekeyProc(candidate, base)
   }
   if (existing) {
-    if (!existing.dead && existing.turn) {
-      throw new BusyError("agy bridge: this conversation still has an unfinished response")
-    }
-    let matchedHistory = opts.history
-    if (!forceNew && !existing.dead && !existing.retiring && existing.unsentPrompt &&
-      Array.isArray(opts.messages) && Array.isArray(existing.expectedMessages)) {
-      const k = existing.expectedMessages.length
-      if (k > matchedHistory.length && k <= opts.messages.length &&
-        existing.matchesHistory(opts.messages.slice(0, k))) {
-        matchedHistory = opts.messages.slice(0, k)
-      }
-    }
-    const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
-      isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
-    const compatible = !forceNew && !existing.dead && !existing.retiring &&
-      existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
-      (existing.matchesHistory(matchedHistory) || continuedFresh)
-    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
+    const { matchedHistory, continuedFresh, reusable } = matchIdleProc(existing, opts, isFreshConversation)
+    if (reusable) {
       if (continuedFresh) {
         const first = Array.isArray(opts.messages) ? opts.messages[0] : null
-        // Snapshot the unsent tail before openingText advances to this turn.
         existing.pendingFlattenedTurn = flattenedContinuationMessage(existing, first)
         existing.openingText = openingTextOf(first) || existing.openingText
         existing.openingImages = openingImagesOf(first)
       }
       await existing.updateTools(opts.tools)
-      // agy never listed the tools this request declares (an agy started
-      // with none whose MCP server never connected): a new one may.
       if (existing.toolsListed()) return { proc: existing, history: matchedHistory }
       why = "tools_unlisted"
-    } else {
-      why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
-        existing.workDir !== opts.workDir ? "work_dir" :
-        !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
-        !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
-      // where the history first differs from the session's, with no text,
-      // as drop_live logs it (yetone/magpie#7223)
-      if (why === "history") historyDiff = firstHistoryDiff(existing.expectedMessages, matchedHistory)
-    }
-    if (!forceNew && launch && statelessRequest(opts) &&
-      statelessDonor(existing, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)) {
-      // the same stateless request again: its agy answers it in a new session
-      return await reuseStateless(existing, key, opts, why)
     }
     existing.retiring = true
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
+  const idleSiblings = branchesFor(base).filter((proc) => !proc.turn)
+  if (idleSiblings.length) {
+    const latestIdle = idleSiblings.reduce((best, proc) => (!best || proc.lastUsed > best.lastUsed ? proc : best), null)
+    const { matchedHistory, continuedFresh } = matchIdleProc(latestIdle, opts, isFreshConversation)
+    if (why === "no_live") {
+      why = forceNew ? "forced" : latestIdle.dead ? "dead" : latestIdle.retiring ? "retiring" :
+        latestIdle.workDir !== opts.workDir ? "work_dir" :
+        !sameInstructions(latestIdle.instructions, opts.instructions) ? "instructions" :
+        !(latestIdle.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
+      // where the history first differs from the session's, with no text,
+      // as drop_live logs it (yetone/magpie#7223)
+      if (why === "history") historyDiff = firstHistoryDiff(latestIdle.expectedMessages, matchedHistory)
+    }
+    if (!forceNew && !sparedActive && idleSiblings.length === 1 && launch && statelessRequest(opts) &&
+      statelessDonor(latestIdle, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)) {
+      // the same stateless request again: its agy answers it in a new session
+      return await reuseStateless(latestIdle, base, opts, why)
+    }
+    const keepBranch = (proc) => !proc.dead && !proc.retiring && !isFreshConversation && proc.hasSentFirstTurn &&
+      proc.workDir === opts.workDir && sameInstructions(proc.instructions, opts.instructions) &&
+      isHistoryBranch(proc.expectedMessages, opts.history)
+    for (const proc of idleSiblings) {
+      if (keepBranch(proc)) continue
+      if (forceNew && sparedActive) continue
+      proc.retiring = true
+      dropFromPool(proc)
+      await proc.stop().catch(() => {})
+    }
+    // Bound kept sibling branches per base conversationKey so single-session
+    // rewinds never crowd the pool.
+    while (branchesFor(base).length >= MAX_BRANCHES_PER_CONV) {
+      const evictable = branchesFor(base).filter((proc) => !proc.turn && !proc.retiring)
+      if (!evictable.length) break
+      const oldest = evictable.reduce((best, proc) => (!best || proc.lastUsed < best.lastUsed ? proc : best), null)
+      await retire(oldest.convKey, oldest)
+    }
+  }
+  if (sparedActive && why === "no_live") why = "concurrent_branch"
+  const key = branchKey(base, opts)
   if (!forceNew && isFreshConversation && launch) {
     const donor = findStatelessDonor(opts, launch)
-    if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
+    if (donor && lockedKeys.has(baseConvKey(donor.convKey)) && key === base) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
   const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
@@ -4221,7 +4404,7 @@ async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn 
 // client has moved past them), so waiting on it would only return errors.
 async function recoverStaleTurn(ctx) {
   return withAcquireLock(ctx.convKey, async () => {
-    const current = pool.get(ctx.convKey)
+    const current = pool.get(ctx.proc.convKey)
     const held = current?.turn
     if (!current || !held || held.cancelRequested) return { kind: "fallthrough" }
     if (current !== ctx.proc || held !== ctx.turn) {
@@ -7995,7 +8178,8 @@ export const AntigravityBridgePlugin = async () => {
                     return streamResponse(proc, turn, body, init.signal)
                   }
                 }
-                const held = pool.get(convKey)
+                const held = branchesFor(convKey).find((proc) => proc.turn && !proc.turn.cancelRequested &&
+                  !isSiblingOfActiveTurn(proc, proc.turn, acquireOpts, isFresh))
                 if (held?.turn && !held.turn.cancelRequested) {
                   // No live MCP call waits for these results, but the
                   // conversation's session holds a turn. A turn streaming to
