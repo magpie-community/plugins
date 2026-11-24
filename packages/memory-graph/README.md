@@ -2,9 +2,9 @@
 
 # @magpie-community/page-memory-graph
 
-Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Whether two memories are linked is decided **only by magpie's own `memory_search` order** — no embeddings, no external model, no API key. Hover any node to read its full text, kind, scope, tags, why, sources, and the rank that links it to the top three neighbours.
+Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Whether two memories are linked is decided **only by magpie's own `memory_search` order** — no embeddings, no external model, no API key. Click a node to read its full text, kind, scope, tags, why, sources, and the rank that links it to the top three neighbours; hovering only highlights its neighbours.
 
-把 magpie 已保存的记忆画成 Obsidian 式关系图谱。两条记忆是否关联，**只由 magpie 内置 `memory_search` 的排序结果决定**：不自建向量、不调用外部模型、不需要 API key。悬浮任意节点，可以看正文、类型、范围、标签、记录原因、来源，以及它与前三个关联的位次。
+把 magpie 已保存的记忆画成 Obsidian 式关系图谱。两条记忆是否关联，**只由 magpie 内置 `memory_search` 的排序结果决定**：不自建向量、不调用外部模型、不需要 API key。**点击**节点看正文、类型、范围、标签、记录原因、来源，以及它与前三个关联的位次；悬浮只点亮相邻节点。
 
 ## Install
 
@@ -34,7 +34,7 @@ The returned order is the only signal. The plugin skips the memory itself and th
 
 If both memories put each other in their top 3, the edge is marked **双向** and both ranks are shown. There is no score, because `memory_search` does not return one: the only honest thing to display is the position it returned. A pair can rank differently under a different query — that is retrieval, not a bug.
 
-Labels are hidden by default on a large graph. They appear when you zoom past `1.45×`, or when the current filter leaves at most 100 visible nodes; hover and selection always show a label.
+Labels are hidden by default on a large graph. They appear when you zoom past `1.45×`, or when the current filter leaves at most 100 visible nodes; hover, click and double-click always show a label.
 
 Superseded memories are drawn as hollow nodes with a dashed ring; they can be link targets but are never used as query anchors. `candidate` and `archived` memories are not drawn.
 
@@ -69,12 +69,14 @@ Each node's card shows, in order:
 8. the top three related memories, each with the rank that links it (`第 1 位`, `第 2 位 · 双向`, …); click one to focus it;
 9. degree, with a note that ranks come from `memory_search`.
 
-Edges also have a hover card with both endpoints, direction and the rank on each side.
+Clicking an edge opens a card with both endpoints, direction and the rank on each side; both endpoints are buttons that jump to that memory's card. The card is anchored next to what you clicked and follows it while you zoom, pan or drag; close it with `×`, a click on the background, another click on the same node, or `Esc`.
 
 ## Controls
 
 - drag a node to pin it while dragging; drag the background to pan; wheel to zoom;
-- click a node for a one-hop highlight; double-click to focus two hops; `Esc` resets;
+- hover a node to highlight its one-hop neighbours;
+- click a node to open its detail card; click an edge to open the link card; click the same node again, the background, `×` or `Esc` to close;
+- double-click a node to focus two hops; `Esc` also resets the view;
 - labels stay off on a dense graph; zoom past `1.45×` or filter down to 100 nodes to show them;
 - `/` or `⌘K` focuses search; `0` or `F` fits the graph;
 - filters: kind, scope, tag, free text, mutual-only, hide superseded;
@@ -133,7 +135,7 @@ The local service binds `127.0.0.1` only, checks `Host` against loopback, allows
 - `index.mjs` — plugin host, local HTTP service, token/Host/Origin checks;
 - `lib/` — memory scan, frontmatter parser, MCP client, ranking, cache, graph payload;
 - `page/index.html`, `page/boot.js` — sandboxed hand-off page;
-- `page/app/` — the real UI, force layout and hover card.
+- `page/app/` — the real UI, force layout and the click-opened detail card.
 
 ## License
 

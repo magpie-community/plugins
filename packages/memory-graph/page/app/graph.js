@@ -19,7 +19,7 @@
     return a < b ? `${a}|${b}` : `${b}|${a}`;
   }
 
-  function create({ svg, onHover, onSelect, onFocus, onBackground }) {
+  function create({ svg, onSelect, onFocus, onBackground, onEdge, onView }) {
     const viewport = svg.querySelector("#viewport");
     const edgeLayer = svg.querySelector("#edges");
     const nodeLayer = svg.querySelector("#nodes");
@@ -35,6 +35,7 @@
     let running = false;
     let raf = 0;
     let hovered = null;
+    let hoveredEdge = null;
     let selected = null;
     let focusSet = null;
     let drag = null;
@@ -52,12 +53,32 @@
       };
     }
 
+    // 详情卡要贴在节点旁边，所以需要节点的视口坐标（含缩放）与半径。
+    function screenPoint(id) {
+      const node = byId.get(id);
+      if (!node) return null;
+      const rect = svg.getBoundingClientRect();
+      return {
+        x: rect.left + transform.x + node.x * transform.k,
+        y: rect.top + transform.y + node.y * transform.k,
+        r: node.r * transform.k,
+      };
+    }
+
+    function edgeScreenPoint(a, b) {
+      const one = screenPoint(a);
+      const two = screenPoint(b);
+      if (!one || !two) return null;
+      return { x: (one.x + two.x) / 2, y: (one.y + two.y) / 2, r: 0 };
+    }
+
     function applyTransform() {
       viewport.setAttribute(
         "transform",
         `translate(${transform.x.toFixed(2)},${transform.y.toFixed(2)}) scale(${transform.k.toFixed(3)})`,
       );
       updateLabels();
+      onView?.();
     }
 
     function neighbors(id, depth = 1) {
@@ -107,7 +128,7 @@
         edge.el.classList.toggle("dim", Boolean(focus) && !inside);
         edge.hit?.classList.toggle("dim", Boolean(focus) && !inside);
         const lit = Boolean(hot) && focus && focus.has(edge.a) && focus.has(edge.b);
-        edge.el.classList.toggle("hl", Boolean(lit));
+        edge.el.classList.toggle("hl", Boolean(lit) || edge === hoveredEdge);
       }
 
       updateLabels();
@@ -211,6 +232,7 @@
       simulate();
       simulate();
       render();
+      onView?.();
       if (alpha > 0.03) {
         raf = requestAnimationFrame(frame);
       } else {
@@ -236,6 +258,7 @@
       raf = 0;
       running = false;
       hovered = null;
+      hoveredEdge = null;
       selected = null;
       focusSet = null;
 
@@ -290,10 +313,19 @@
 
         const hit = document.createElementNS(NS, "line");
         hit.setAttribute("class", "edge-hit");
-        hit.addEventListener("pointerenter", (event) => onHover?.(null, edge, event));
-        hit.addEventListener("pointermove", (event) => onHover?.(null, edge, event));
-        hit.addEventListener("pointerleave", () => onHover?.(null, null, null));
-        hit.addEventListener("click", (event) => event.stopPropagation());
+        hit.addEventListener("pointerenter", () => {
+          hoveredEdge = edge;
+          paint();
+        });
+        hit.addEventListener("pointerleave", () => {
+          if (hoveredEdge !== edge) return;
+          hoveredEdge = null;
+          paint();
+        });
+        hit.addEventListener("click", (event) => {
+          event.stopPropagation();
+          onEdge?.(edge, event);
+        });
         edge.hit = hit;
         edgeLayer.appendChild(hit);
       }
@@ -322,16 +354,13 @@
         label.setAttribute("y", String(node.r + 13));
         group.appendChild(label);
 
-        group.addEventListener("pointerenter", (event) => {
+        group.addEventListener("pointerenter", () => {
           hovered = node.id;
           paint();
-          onHover?.(node, null, event);
         });
-        group.addEventListener("pointermove", (event) => onHover?.(node, null, event));
         group.addEventListener("pointerleave", () => {
           hovered = null;
           paint();
-          onHover?.(null, null, null);
         });
 
         group.addEventListener("pointerdown", (event) => {
@@ -569,6 +598,8 @@
       zoomToFit,
       reheat,
       neighbors,
+      screenPoint,
+      edgeScreenPoint,
       edgeBetween: (a, b) => edgeMap.get(keyOf(a, b)) || null,
       get selected() {
         return selected;

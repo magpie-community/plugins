@@ -2,7 +2,7 @@
   "name": "@magpie-community/page-memory-graph",
   "version": "0.1.0",
   "_ai": "本文由AI自动生成",
-  "description": "Obsidian-style memory graph for magpie. Two memories are linked only when magpie's own memory_search puts one in the other's top 3; hover a node for its full text, kind, tags, why, sources and the rank that links it. Read-only: it never writes memory files.",
+  "description": "Obsidian-style memory graph for magpie. Two memories are linked only when magpie's own memory_search puts one in the other's top 3; click a node for its full text, kind, tags, why, sources and the rank that links it. Read-only: it never writes memory files.",
   "type": "module",
   "main": "./index.mjs",
   "author": "pzjyyds666 (https://github.com/pzjyyds666)",
@@ -38,8 +38,8 @@
     "name": "记忆图谱",
     "icon": "data:image/svg+xml;base64,PCEtLSDmnKzmlofnlLFBSeiHquWKqOeUn+aIkCAtLT4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmNzY2ZSIvPgogIDxnIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9Ii41NSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPgogICAgPHBhdGggZD0iTTIwIDIyIDQ0IDE4TTIwIDIyIDMwIDQ0TTQ0IDE4IDMwIDQ0TTQ0IDE4IDUwIDM2TTMwIDQ0IDUwIDM2Ii8+CiAgPC9nPgogIDxnIGZpbGw9IiNmZmZmZmYiPgogICAgPGNpcmNsZSBjeD0iMjAiIGN5PSIyMiIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNDQiIGN5PSIxOCIgcj0iNiIvPgogICAgPGNpcmNsZSBjeD0iMzAiIGN5PSI0NCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNTAiIGN5PSIzNiIgcj0iNCIvPgogIDwvZz4KPC9zdmc+Cg==",
     "summary": {
-      "en": "Draws your magpie memories as a graph whose edges come only from magpie's own memory_search order. Read-only, no embeddings, no API key. Hover any node for text, kind, tags, why, sources and the rank that links it.",
-      "zh": "把 magpie 记忆画成关系图谱：两条记忆是否关联，只由内置 memory_search 的排序决定。只读、不自建向量、不需要 API key；悬浮节点看正文、类型、标签、原因、来源与关联位次。"
+      "en": "Draws your magpie memories as a graph whose edges come only from magpie's own memory_search order. Read-only, no embeddings, no API key. Click a node for text, kind, tags, why, sources and the rank that links it; click an edge for both endpoints and their ranks.",
+      "zh": "把 magpie 记忆画成关系图谱：两条记忆是否关联，只由内置 memory_search 的排序决定。只读、不自建向量、不需要 API key；点击节点看正文、类型、标签、原因、来源与关联位次，点击连线看两端与各自位次。"
     },
     "page": {
       "title": "Memory Graph",

@@ -73,32 +73,38 @@
     toastTimer: 0,
   };
 
+  let card = null;
+
   const graph = window.MemoryGraph.create({
     svg: els.canvas,
-    onHover(node, edge, event) {
-      if (node) {
-        tip.show(node, context(event));
-      } else if (edge) {
-        tip.showEdge(edge, context(event));
-      } else {
-        tip.hideSoon();
-      }
-    },
     onSelect(node) {
       if (!node) {
+        closeCard();
         setStatus();
         return;
       }
+      openNodeCard(node);
       setStatus(`已选中：${node.title || node.id}`);
-      tip.hideNow();
+    },
+    onEdge(edge) {
+      graph.select(null);
+      openEdgeCard(edge);
+      const a = state.byId.get(edge.a);
+      const b = state.byId.get(edge.b);
+      setStatus(`选中关联：${a?.title || edge.a} ↔ ${b?.title || edge.b}`);
     },
     onFocus(node) {
-      tip.hideNow();
-      if (node) setStatus(`聚焦：${node.title || node.id} 两跳以内`);
+      if (!node) return;
+      graph.focus(node.id);
+      openNodeCard(node);
+      setStatus(`聚焦：${node.title || node.id} 两跳以内`);
     },
     onBackground() {
-      tip.hideNow();
+      closeCard();
       setStatus();
+    },
+    onView() {
+      followView();
     },
   });
 
@@ -107,28 +113,55 @@
       state.filters.tags.add(tag);
       applyFilters();
       renderBadges();
-      tip.hideNow();
       toast(`已筛选标签 #${tag}`);
     },
     onFocus(node) {
       graph.focus(node.id);
       graph.select(node.id);
-      tip.hideNow();
+      openNodeCard(node);
       setStatus(`聚焦：${node.title || node.id}`);
     },
     onCopy(id) {
       toast(id ? `已复制 ${id}` : "复制失败，请手动选中");
     },
+    onClose() {
+      card = null;
+      graph.select(null);
+      setStatus();
+    },
   });
 
-  function context(event) {
+  function cardContext() {
     return {
-      x: event?.clientX || window.innerWidth / 2,
-      y: event?.clientY || window.innerHeight / 2,
       adj: state.adj,
       byId: state.byId,
       edgeFor: (a, b) => graph.edgeBetween(a, b),
     };
+  }
+
+  function openNodeCard(node) {
+    if (!node) return;
+    card = { type: "node", id: node.id };
+    tip.open(node, cardContext(), graph.screenPoint(node.id));
+  }
+
+  function openEdgeCard(edge) {
+    if (!edge) return;
+    card = { type: "edge", a: edge.a, b: edge.b };
+    tip.openEdge(edge, cardContext(), graph.edgeScreenPoint(edge.a, edge.b));
+  }
+
+  function closeCard() {
+    if (!card && !tip.visible) return;
+    card = null;
+    tip.close();
+  }
+
+  // 缩放 / 平移 / 拖拽 / 布局微动时，让卡片跟着节点走。
+  function followView() {
+    if (!card || !tip.visible) return;
+    if (card.type === "node") tip.anchor(graph.screenPoint(card.id));
+    else tip.anchor(graph.edgeScreenPoint(card.a, card.b));
   }
 
   async function api(path, options = {}) {
@@ -730,7 +763,7 @@
       if (event.key === "Escape") {
         if (editing) document.activeElement.blur();
         graph.reset();
-        tip.hideNow();
+        closeCard();
         closeMenu();
       } else if (!editing && (event.key === "0" || event.key.toLowerCase() === "f")) {
         graph.zoomToFit();

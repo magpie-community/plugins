@@ -41,13 +41,8 @@
   const MAX_LINKS = 3;
 
   function create(el, handlers = {}) {
-    let hideTimer = 0;
-    let showTimer = 0;
     let currentId = "";
-    let pendingId = "";
-    let currentEdgeKey = "";
-    let lastPoint = { x: 0, y: 0 };
-    let lastRenderer = null;
+    let size = { w: 0, h: 0 };
 
     el.textContent = "";
 
@@ -62,7 +57,18 @@
     idButton.className = "tip-id";
     idButton.title = "复制记忆 id";
 
-    head.append(kind, idButton);
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "tip-close";
+    closeButton.title = "关闭";
+    closeButton.setAttribute("aria-label", "关闭");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      close();
+      handlers.onClose?.();
+    });
+
+    head.append(kind, idButton, closeButton);
 
     const title = document.createElement("div");
     title.className = "tip-title";
@@ -110,45 +116,35 @@
       }
     });
 
-    el.addEventListener("pointerenter", () => {
-      clearTimeout(hideTimer);
-    });
-
-    el.addEventListener("pointerleave", () => {
-      scheduleHide(140);
-    });
-
-    function scheduleHide(delay = 180) {
-      clearTimeout(showTimer);
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => {
-        el.hidden = true;
-        currentId = "";
-        pendingId = "";
-        currentEdgeKey = "";
-        lastRenderer = null;
-      }, delay);
+    // 点击驱动的卡片：不再靠 hover 计时器，开着就一直开着，直到 close()。
+    function measure() {
+      size = { w: el.offsetWidth || 380, h: el.offsetHeight || 300 };
     }
 
-    function move(x, y) {
-      lastPoint = { x, y };
-      if (!el.hidden) place(x, y);
-    }
-
-    function place(x, y) {
-      el.style.visibility = "hidden";
-      el.hidden = false;
-      const box = el.getBoundingClientRect();
+    function place(point) {
       const gap = 14;
-      let left = x + gap;
-      let top = y + gap;
-      if (left + box.width > window.innerWidth - 8) left = x - box.width - gap;
-      if (top + box.height > window.innerHeight - 8) top = y - box.height - gap;
-      left = Math.max(8, Math.min(left, window.innerWidth - box.width - 8));
-      top = Math.max(8, Math.min(top, window.innerHeight - box.height - 8));
+      const radius = point.r || 0;
+      let left = point.x + radius + gap;
+      let top = point.y - 18;
+      if (left + size.w > window.innerWidth - 8) left = point.x - radius - size.w - gap;
+      if (top + size.h > window.innerHeight - 8) top = window.innerHeight - size.h - 8;
+      left = Math.max(8, Math.min(left, window.innerWidth - size.w - 8));
+      top = Math.max(8, Math.min(top, window.innerHeight - size.h - 8));
       el.style.left = `${left}px`;
       el.style.top = `${top}px`;
-      el.style.visibility = "visible";
+    }
+
+    function anchor(point) {
+      if (!point) return;
+      if (el.hidden) return;
+      if (!size.w) measure();
+      place(point);
+    }
+
+    function close() {
+      el.hidden = true;
+      currentId = "";
+      size = { w: 0, h: 0 };
     }
 
     function reset() {
@@ -327,65 +323,38 @@
       foot.textContent = "关联只由 memory_search 的位次决定，没有相似度分数";
     }
 
-    function show(node, ctx) {
-      lastPoint = { x: ctx?.x || 0, y: ctx?.y || 0 };
-
-      // 卡片已经开着同一节点：只跟着光标走，不重绘。
-      if (currentId === node.id && !el.hidden) {
-        place(lastPoint.x, lastPoint.y);
-        return;
-      }
-
-      lastRenderer = () => renderNode(node, ctx);
-
-      // 指针在同一个节点上移动时，只更新位置，不要把 110ms 的计时器一遍遍重置。
-      if (pendingId === node.id && showTimer) return;
-
-      clearTimeout(showTimer);
-      clearTimeout(hideTimer);
-      pendingId = node.id;
-      currentEdgeKey = "";
-      showTimer = setTimeout(() => {
-        if (!lastRenderer) return;
-        lastRenderer();
-        el.hidden = false;
-        place(lastPoint.x, lastPoint.y);
-        lastRenderer = null;
-        pendingId = "";
-      }, 110);
+    function open(node, ctx, point) {
+      renderNode(node, ctx);
+      currentId = node.id;
+      show(point);
     }
 
-    function showEdge(edge, ctx) {
-      const key = `${edge.a}|${edge.b}|${edge.ra}|${edge.rb}|${edge.m}`;
-      lastPoint = { x: ctx?.x || 0, y: ctx?.y || 0 };
-      if (currentEdgeKey === key && !el.hidden) {
-        place(lastPoint.x, lastPoint.y);
-        return;
-      }
-      clearTimeout(showTimer);
-      clearTimeout(hideTimer);
-      pendingId = "";
-      currentEdgeKey = key;
+    function openEdge(edge, ctx, point) {
       renderEdge(edge, ctx);
+      currentId = "";
+      show(point);
+    }
+
+    // 先量再显示：量尺寸时藏起来，避免卡片在上一次的位置闪一下。
+    function show(point) {
+      el.style.visibility = "hidden";
       el.hidden = false;
-      place(lastPoint.x, lastPoint.y);
+      size = { w: 0, h: 0 };
+      measure();
+      anchor(point);
+      el.style.visibility = "visible";
     }
 
     return {
-      show,
-      showEdge,
-      move,
-      hideSoon: () => scheduleHide(180),
-      hideNow: () => {
-        clearTimeout(showTimer);
-        clearTimeout(hideTimer);
-        el.hidden = true;
-        currentId = "";
-        pendingId = "";
-        currentEdgeKey = "";
-      },
+      open,
+      openEdge,
+      anchor,
+      close,
       get id() {
         return currentId;
+      },
+      get visible() {
+        return !el.hidden;
       },
     };
   }

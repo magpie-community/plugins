@@ -518,6 +518,8 @@ button {
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--fg);
+  cursor: default;
+  user-select: text;
 }
 
 .tip[hidden] {
@@ -592,6 +594,27 @@ button {
 .tip-id:hover {
   border-color: var(--accent);
   color: var(--accent-2);
+}
+
+.tip-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tip-close:hover {
+  background: var(--panel-2);
+  color: var(--accent);
 }
 
 .tip-title {
