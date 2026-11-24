@@ -263,6 +263,82 @@ test("an account of agy's own that agy held once reads its own usage, and sends 
   }
 })
 
+// mayne_wong on X: magpie's gateway run as a LaunchDaemon searches only
+// System.keychain, so agy's sign-in in the login keychain reads as none
+// there (44) while the window reads it. An account of agy's own the window
+// kept runs in its kept home there; one it never kept is told why, not to
+// sign in again (which the window answered with "already signed in").
+test("out of the login keychain's reach (a LaunchDaemon), an account of agy's own runs with the sign-in the window kept", async () => {
+  const signIn = (email) => ({
+    token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: email,
+  })
+  const options = {
+    platform: "darwin", modelsBehavior: DYNAMIC_OK,
+    storedSignIn: "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn("a@example.com"))).toString("base64") + "\n",
+    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
+  }
+  const asked = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    asked.push(init.headers.Authorization)
+    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
+      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: 0.9 }],
+    }] }
+    return new Response(JSON.stringify(reply), { status: 200 })
+  }
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "b@example.com" } }
+      // the window, in the login session: a is read from the keyring, and kept
+      const first = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(first.error, undefined, JSON.stringify(first))
+      const accounts = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts")
+      const keptHome = path.join(accounts, fs.readdirSync(accounts)[0])
+
+      // the gateway, as a LaunchDaemon: the login keychain is there, but not searched
+      fs.mkdirSync(path.join(kit.env.HOME, "Library", "Keychains"), { recursive: true })
+      fs.writeFileSync(path.join(kit.env.HOME, "Library", "Keychains", "login.keychain-db"), "")
+      options.storedSignIn = "missing"
+      options.keychains = '    "/Library/Keychains/System.keychain"\n'
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(ua.error, undefined, JSON.stringify(ua))
+      assert.equal(ua.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"), asked.join())
+      const la = await kit.plugin.auth.loader(async () => a)
+      const served = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.length > 0)
+      assert.ok(kit.acpSpawns.every(s => s.env.HOME === keptHome), "a's request ran outside its kept home")
+
+      // b was never kept: told why, not to sign in again
+      const before = kit.acpSpawns.length
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const refused = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.equal(refused.status, 401)
+      const why = await refused.text()
+      assert.match(why, /LaunchDaemon/)
+      assert.match(why, /magpie daemon install/)
+      assert.doesNotMatch(why, /sign in again in magpie/)
+      assert.equal(kit.acpSpawns.length, before, "agy was run where it can't read its sign-in")
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.signIn, "expired")
+      assert.match(ub.error, /LaunchDaemon/)
+      assert.doesNotMatch(ub.error, /Sign in again/)
+      // the keychain was only read
+      assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || ["find-generic-password", "list-keychains"].includes(c.args[0])))
+      await settle(kit)
+    })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 // The first request after a start, before anything read agy's keyring,
 // isn't sent as the account agy holds either.
 test("an account of agy's own: the first request after a start waits for the keyring read", async () => {

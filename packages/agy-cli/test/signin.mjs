@@ -54,6 +54,35 @@ test("a value of another shape, or an API key, concludes nothing", () => {
   }
 })
 
+test("macOS: a login keychain this process doesn't search (a LaunchDaemon) is out of reach, not a missing sign-in", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kc-"))
+  try {
+    const dir = path.join(home, "Library", "Keychains")
+    const env = { HOME: home }
+    const mac = (find, list, listCode = 0) => async (_file, args) => args[0] === "list-keychains" ? { code: listCode, stdout: list } : { code: find, stdout: "" }
+    const system = '    "/Library/Keychains/System.keychain"\n'
+    const login = `    "${dir}/login.keychain-db"\n` + system
+    // no login keychain at all: nothing is out of reach
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, system), env })).state, "missing")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "login.keychain-db"), "")
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, login), env })).state, "missing")
+    for (const code of [44, 36]) {
+      const s = await readStoredSignIn({ platform: "darwin", exec: mac(code, system), env })
+      assert.equal(s.state, "unreachable", String(code))
+      assert.match(cannotSignIn(s), /LaunchDaemon[\s\S]*magpie daemon install[\s\S]*Add another Google account/)
+    }
+    // a search list it can't read concludes nothing new
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, "", 1), env })).state, "missing")
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(51, ""), env })).state, "unknown")
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test("readStoredSignIn asks each system's keyring the way go-keyring stores it", async () => {
   const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-12T00:00:00Z" })
   const calls = []

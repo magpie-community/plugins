@@ -666,6 +666,8 @@ export function createUsageReader(resolveAgy, options = {}) {
     let stored
     try { stored = await signIn() } catch { stored = { state: "unknown" } }
     const why = cannotSignIn(stored)
+    // out of this process's reach, signing in again here mends nothing
+    if (why && stored?.state === "unreachable") return { windows: [], error: `${why}.`, signIn: "expired" }
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"

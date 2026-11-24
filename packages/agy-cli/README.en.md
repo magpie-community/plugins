@@ -265,6 +265,13 @@ and can't be renewed, or with one agy already failed on, agy is not run: the
 account shows its sign-in has expired until you sign in again. Other failed
 usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 
+On macOS, a Magpie run as a LaunchDaemon is outside your login session and
+can't read your login keychain, and neither can agy there. An account of agy's
+own then runs with the copy of its sign-in the Magpie window kept (see above);
+one with no copy says why: run Magpie with `magpie daemon install` (a service of
+your own) or the Magpie app instead, or sign it in with "Add another Google
+account", which keeps its sign-in in a file.
+
 ## Environment variables
 
 | Name | Default value | What it does |

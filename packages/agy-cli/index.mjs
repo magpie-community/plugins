@@ -7666,9 +7666,11 @@ async function homeOfAuth(getAuth) {
 // can't tell, and its kept home (keptFor) while agy holds another. With
 // none kept, it is agy's own still, and is told agy holds another.
 // While agy holds it, it is kept again when agy's sign-in has changed.
+// Out of this magpie's reach (a LaunchDaemon: signin.mjs), it runs in its
+// kept home too, which the magpie that could read it (the window) wrote.
 function ownHome(email, stored) {
   if (!email) return null
-  if (heldByAnother(stored, email)) return keptFor(email)
+  if (heldByAnother(stored, email) || stored?.state === "unreachable") return keptFor(email)
   inAccount(null, () => keepOwn(email, stored)).catch(() => {})
   return null
 }
@@ -7696,6 +7698,9 @@ function readUsageOf(home, email = "") {
     if (email) {
       let stored = null
       try { stored = await storedSignIn() } catch {}
+      // out of reach: read with the sign-in kept for it, when there is one
+      const kept = stored?.state === "unreachable" ? keptFor(email) : null
+      if (kept) return readUsageOf(kept)
       if (heldByAnother(stored, email)) {
         // kept while agy held it: read with its own sign-in
         const kept = keptFor(email)
@@ -7830,8 +7835,9 @@ export const AntigravityBridgePlugin = async () => {
             const stored = storedSignInNow()
             const notSignedIn = cannotSignIn(stored)
             if (notSignedIn) {
-              return jsonError(401, `${notSignedIn}: sign in again in magpie, or run \`agy\` in a terminal`, undefined,
-                { headers: { "X-Magpie-Sign-In": "expired" } })
+              // out of reach, signing in again here mends nothing
+              const why = stored?.state === "unreachable" ? notSignedIn : `${notSignedIn}: sign in again in magpie, or run \`agy\` in a terminal`
+              return jsonError(401, why, undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
             }
             // an account of agy's own that agy no longer holds: its request
             // would go out as the account agy holds now
