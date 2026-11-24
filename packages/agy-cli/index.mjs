@@ -5442,7 +5442,12 @@ function requestSessionScope(fetchInput, init) {
   return session || subagent ? `${session}\n${subagent}` : ""
 }
 
-function conversationKey(rawBody, sessionScope = "") {
+// workDir: the directory the client names for this conversation. Two chats
+// whose opening is identical (DSH opens every session with the same
+// approval-policy notice) but run in different folders are different
+// conversations; without it they share one agy session and each one's
+// request is refused while the other's response runs.
+function conversationKey(rawBody, sessionScope = "", workDir = "") {
   const body = canonicalBody(rawBody)
   const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body))) }])
   const first = body.messages?.[0]
@@ -5454,7 +5459,7 @@ function conversationKey(rawBody, sessionScope = "") {
   const firstText = first ? historyKey([first]) : ""
   const userId = body.metadata?.user_id || ""
   const discriminator = sessionScope ? `${userId}\n${sessionScope}` : userId
-  const source = discriminator + "\n" + system + "\n===\n" + firstText
+  const source = discriminator + "\n" + system + "\n===\n" + firstText + (workDir ? "\n@@@\n" + workDir : "")
   return createHash("sha256").update(source).digest("hex")
 }
 function appendSchemaHint(node, hint) {
@@ -7913,14 +7918,14 @@ export const AntigravityBridgePlugin = async () => {
             const selection = { model: requestedModel, effort: requestedEffort(body) }
             const sessionScope = requestSessionScope(fetchInput, init)
             // an account's conversations are its own: its agy has them
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
+            const callerWorkDir = namedWorkDirectory(body, init)
+            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "")
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
             // magpie going on from a reply its stream cut after a tool round:
             // the round's results, then what the reply had said (plugins#1512)
             const prefillAfterResults = resultBlocks.length > 0 && prefillTailEnabled() && !!prefillRun(body.messages)
-            const callerWorkDir = namedWorkDirectory(body, init)
             const workDir = workDirectory(callerWorkDir)
             const instructions = sessionInstructions(body, callerWorkDir)
 
