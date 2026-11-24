@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/agent-cteno",
+  "version": "0.1.0",
+  "description": "Cteno (cteno.cn) as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "cteno.agent.js",
+    "index.mjs",
+    "bridge.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "cteno",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/cteno"
+  },
+  "magpie": {
+    "name": "Cteno",
+    "agent": "./cteno.agent.js",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjIyIiBmaWxsPSIjMEYzQjU3Ii8+PHBhdGggZD0iTTYwIDIwLjVIMzYuNVEyMC41IDIwLjUgMjAuNSAzNi41djI3UTIwLjUgNzkuNSAzNi41IDc5LjVINjAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSIxMyIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxyZWN0IHg9IjQ3IiB5PSIzMiIgd2lkdGg9IjI2IiBoZWlnaHQ9IjgiIHJ4PSI0IiBmaWxsPSIjRkZGRkZGIi8+PHJlY3QgeD0iNTQiIHk9IjQ2IiB3aWR0aD0iMzIiIGhlaWdodD0iOCIgcng9IjQiIGZpbGw9IiM2RkQ2RTIiLz48cmVjdCB4PSI0NyIgeT0iNjAiIHdpZHRoPSIyNiIgaGVpZ2h0PSI4IiByeD0iNCIgZmlsbD0iI0ZGRkZGRiIvPjwvc3ZnPg=="
+  }
+}

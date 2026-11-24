@@ -304,6 +304,7 @@ it off puts the config back.
 | [zycode](packages/zycode) | [zycode](https://github.com/zy1233/pi-python) (`zypi`, the VS Code extension, the ACP agent): Magpie's model in the `[model]` table of `~/.pi-python/agent.toml`, set by a host part that follows `local.env` and puts the file back byte for byte; restart zycode after choosing a model |
 | [meowcode](packages/meowcode) | [MeowCode](https://github.com/MuLiuSaMa/MeowCode): magpie's models in MeowCode's own model list, written to an overlay file beside its settings that MeowCode reads at start-up; restart MeowCode after choosing a model |
 | [lorca](packages/lorca) | [Lorca](https://lorca.app): `~/.lorca/credentials.json` as a custom provider, mirroring Magpie's models with thinking levels and MCP support via `~/.lorca/mcp.json` |
+| [cteno](packages/cteno) | [Cteno](https://cteno.cn) (`cteno-host-cli` and desktop app): a `magpie` profile in Cteno's app-data `profiles.json` (`com.cteno-host.gui` or `$CTENO_APP_DATA_DIR`), synced by a host bridge that preserves user profiles and restores the file byte for byte; restart Cteno after choosing a model |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
