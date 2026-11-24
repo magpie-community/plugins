@@ -40,7 +40,13 @@ function serviceBase(value) {
 const apiBase = () => serviceBase(process.env.MISTRAL_VIBE_API_BASE || "https://api.mistral.ai/v1")
 const consoleApi = () => serviceBase(process.env.MISTRAL_VIBE_CONSOLE_API || "https://console.mistral.ai/api")
 
+// The browser sign-in polls the console for minutes; POLL_EVERY_MS is how
+// often it asks. MISTRAL_VIBE_POLL_MS shortens that in tests.
 const POLL_EVERY_MS = 1500
+const pollEveryMs = () => {
+  const n = Number(process.env.MISTRAL_VIBE_POLL_MS)
+  return Number.isFinite(n) && n > 0 ? n : POLL_EVERY_MS
+}
 const SIGN_IN_TTL_MS = 10 * 60 * 1000
 // one sign-in call's own deadline: the console answers these in well under a
 // second, so a call still open after this is a dead connection to replace
@@ -273,6 +279,10 @@ const READ_TRIES = 2
 // hand, and a reset that eats them costs the user the whole browser round
 // trip rather than a page of numbers
 const SIGN_IN_TRIES = 3
+// consecutive 429s after which the sign-in gives up: the poll keeps asking
+// through a single busy moment, but a proxy node Cloudflare has throttled
+// would otherwise keep the card spinning until the link's 10 minutes are gone
+const POLL_429_MAX = 6
 const retryDelay = (attempt) => RETRY_MS * (attempt + 1) + Math.floor(Math.random() * 100)
 
 // Only read-only methods can be replayed after a transport failure.
@@ -338,6 +348,11 @@ const newVerifier = () => randomBytes(48).toString("base64url")
 const challengeOf = (verifier) => createHash("sha256").update(verifier).digest("base64url")
 
 const UA = () => "magpie-mistral-vibe/0.2.0"
+// The console's sign-in endpoints sit behind Cloudflare and are tuned for the
+// official Vibe CLI's own client identifier. Sending the plugin's UA there is
+// what got the poll rate-limited (429) and reset, so the sign-in speaks as the
+// client those endpoints expect: mistral-vibe vibe/utils/http.py's get_user_agent.
+const SIGN_IN_UA = "mistral-client-python/Mistral-Vibe/3.1.3"
 
 function checkedTarget(input, expected) {
   const actual = new URL(input instanceof Request ? input.url : input)
@@ -360,7 +375,11 @@ function checkedPollTarget(pollUrl, base) {
 }
 
 function consoleHeaders(extra = {}) {
-  return { accept: "application/json", "user-agent": UA(), ...extra }
+  // connection: close keeps a sign-in off a pooled keep-alive socket: the poll
+  // runs for minutes through the host's proxy, and a socket the proxy dropped
+  // is otherwise handed back by the pool, leaving the poll waiting on a dead
+  // connection until its own deadline. Every request here is one-shot.
+  return { accept: "application/json", "user-agent": SIGN_IN_UA, connection: "close", ...extra }
 }
 
 // withTimeout gives a call its own deadline beside the caller's: whichever
@@ -399,6 +418,7 @@ async function startSignIn(signal) {
 
 function signInResponseError(status, message) {
   const error = new Error(message)
+  error.status = status
   if (status === 429 || status >= 500) error.transient = true
   return error
 }
@@ -423,7 +443,10 @@ async function pollSignIn(pollUrl, signal, base = consoleApi()) {
   if (res.status === 410) return { status: "expired" }
   if (!res.ok) {
     const error = signInResponseError(res.status, `Mistral sign-in poll answered ${res.status}${why(text)}`)
-    if (res.status === 429) error.retryAfterMs = retryAfterMs(res.headers.get("retry-after"))
+    if (res.status === 429) {
+      error.retryAfterMs = retryAfterMs(res.headers.get("retry-after"))
+      error.cfRay = res.headers.get("cf-ray") ?? ""
+    }
     throw error
   }
   return data
@@ -732,7 +755,18 @@ function mistralBody(body) {
 
 // ---- the plugin ----
 
-export const MistralVibeAuthPlugin = async ({ client } = {}) => ({
+// pluginLogOf is the host's app.log behind the plugin API, so a sign-in that
+// never comes back leaves a trail in magpie's log instead of only a spinner.
+const pluginLogOf = (client) => (level, message) => {
+  try {
+    const pending = client?.app?.log?.({ body: { service: ID, level, message } })
+    if (typeof pending?.catch === "function") pending.catch(() => {})
+  } catch {}
+}
+
+export const MistralVibeAuthPlugin = async ({ client } = {}) => {
+  const log = pluginLogOf(client)
+  return {
   config: async (cfg) => {
     cfg.provider ??= {}
     cfg.provider[ID] ??= {
@@ -776,7 +810,14 @@ export const MistralVibeAuthPlugin = async ({ client } = {}) => ({
         type: "oauth",
         label: "Sign in with Mistral (browser)",
         authorize: async (_inputs, { signal } = {}) => {
-          const p = await startSignIn(signal)
+          let p
+          try {
+            p = await startSignIn(signal)
+          } catch (e) {
+            log("error", `sign-in could not start: ${e?.message ?? e}`)
+            throw e
+          }
+          log("info", `sign-in started process=${p.process_id}`)
           return {
             url: p.sign_in_url,
             instructions: "Sign in to your Mistral account on the page that opens. The sign-in finishes here by itself.",
@@ -792,23 +833,42 @@ export const MistralVibeAuthPlugin = async ({ client } = {}) => ({
               // link's own deadline. A 4xx that isn't 410 is the server
               // refusing the process, and asking again would only repeat it.
               let misses = 0
+              let rate429 = 0
+              let loggedWaiting = false
               while (Date.now() < deadline) {
                 let r
                 try {
                   r = await pollSignIn(p.poll_url, s, p.base)
                   misses = 0
+                  rate429 = 0
                 } catch (e) {
                   if (s?.aborted) throw e
+                  if (e.status === 429) {
+                    rate429++
+                    log("warn", `sign-in poll 429 (${rate429}/${POLL_429_MAX})` +
+                      `${e.retryAfterMs ? ` retry-after=${e.retryAfterMs}ms` : ""}${e.cfRay ? ` cf-ray=${e.cfRay}` : ""}`)
+                  } else {
+                    rate429 = 0
+                    log("warn", `sign-in poll failed (${e.status ?? "network"}): ${e?.message ?? e}`)
+                  }
                   if (!transient(e)) return { type: "failed", error: e?.message ?? String(e) }
                   misses++
-                  const wait = Math.max(Math.min(POLL_EVERY_MS * misses, 10_000), e.retryAfterMs ?? 0)
+                  const wait = Math.max(Math.min(pollEveryMs() * misses, 10_000), e.retryAfterMs ?? 0)
                   if (wait >= deadline - Date.now()) {
                     return { type: "failed", error: `Sign-in poll failed: ${e?.message ?? e}. Start sign-in again.` }
+                  }
+                  if (e.status === 429 && rate429 >= POLL_429_MAX) {
+                    log("warn", `sign-in gave up after ${rate429} consecutive 429s process=${p.process_id}`)
+                    return {
+                      type: "failed",
+                      error: `Sign-in poll rate-limited (429): ${e?.message ?? e}. Switch the proxy node, then start sign-in again.`,
+                    }
                   }
                   await sleep(wait, s)
                   continue
                 }
                 if (r?.status === "completed" && r.exchange_token) {
+                  log("info", `sign-in completed process=${p.process_id}; exchanging the token`)
                   // the token stays good until the process expires, so a
                   // transient failure here is asked again rather than thrown
                   // away: the user's browser round trip is not spent twice
@@ -816,21 +876,39 @@ export const MistralVibeAuthPlugin = async ({ client } = {}) => ({
                     try {
                       const key = await exchangeSignIn(p.process_id, r.exchange_token, p.code_verifier, s, p.base)
                       const who = await whoami(key, p.base).catch(() => null)
+                      log("info", `sign-in succeeded process=${p.process_id} plan=${accountIdentity(who).plan ?? "unknown"}`)
                       const out = { type: "success", key, metadata: { plan: accountIdentity(who).plan, vibeEntitlement: who?.has_paid_vibe_entitlement } }
                       if (who?.customer_id != null) out.accountId = String(who.customer_id)
                       return out
                     } catch (e) {
-                      if (!transient(e) || Date.now() > deadline) return { type: "failed", error: `Sign-in exchange failed: ${e?.message ?? e}` }
-                      await sleep(POLL_EVERY_MS, s)
+                      if (!transient(e) || Date.now() > deadline) {
+                        log("error", `sign-in exchange failed process=${p.process_id}: ${e?.message ?? e}`)
+                        return { type: "failed", error: `Sign-in exchange failed: ${e?.message ?? e}` }
+                      }
+                      await sleep(pollEveryMs(), s)
                     }
                   }
                 }
-                if (r?.status === "expired") return { type: "failed", error: "The sign-in expired; start it again" }
-                if (r?.status === "denied") return { type: "failed", error: r.message || "The sign-in was denied" }
-                if (r?.status === "error") return { type: "failed", error: r.message || "The sign-in failed" }
-                await sleep(Math.min(POLL_EVERY_MS, Math.max(0, deadline - Date.now())), s)
+                if (r?.status === "expired") {
+                  log("warn", `sign-in expired process=${p.process_id}`)
+                  return { type: "failed", error: "The sign-in expired; start it again" }
+                }
+                if (r?.status === "denied") {
+                  log("warn", `sign-in denied process=${p.process_id}`)
+                  return { type: "failed", error: r.message || "The sign-in was denied" }
+                }
+                if (r?.status === "error") {
+                  log("warn", `sign-in error process=${p.process_id}: ${r.message ?? "unknown"}`)
+                  return { type: "failed", error: r.message || "The sign-in failed" }
+                }
+                if (!loggedWaiting) {
+                  loggedWaiting = true
+                  log("info", `sign-in waiting for the browser process=${p.process_id}`)
+                }
+                await sleep(Math.min(pollEveryMs(), Math.max(0, deadline - Date.now())), s)
               }
               s?.throwIfAborted()
+              log("warn", `sign-in timed out process=${p.process_id}`)
               return { type: "failed", error: "The sign-in timed out; start it again" }
             },
           }
@@ -852,7 +930,8 @@ export const MistralVibeAuthPlugin = async ({ client } = {}) => ({
       return got && Object.keys(got).length ? got : (provider?.models ?? {})
     },
   },
-})
+  }
+}
 
 // for tests
 export const _internal = {
