@@ -85,6 +85,13 @@ stops, the daemon removes the `magpie/*` entries from 灵犀, restores the model
   magpie gateway is at `127.0.0.1:3425`.
 - **After a 灵犀 update**: the app may restart without the debug port; run
   `launch-lingxi.cmd` again.
+- **A command window on every magpie start**: fixed in 0.1.1. The daemon used to
+  be created by WMI as a console program, which got a visible console window
+  for as long as it ran. It is now created through `spawn-daemon.vbs`
+  (`wscript.exe`, a GUI program with no console), which starts Bun with its
+  window hidden. On an older version, run `magpie plugin update`. If a window
+  still shows, `spawn-error.log` in the data dir says whether the launcher was
+  skipped and the direct spawn used (Windows Script Host disabled, for example).
 
 ## Disclaimer
 

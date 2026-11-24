@@ -106,3 +106,9 @@ bun bench.mjs --per-model 5 --concurrency 24 --rounds 2 --gap 15
 
 本项目仅供个人研究与学习使用。它依赖上游服务当前公开的认证方式；请遵守上游服务条款，
 不要用于批量滥用或对外分发。上游随时可能更换认证方式，届时插件可能失效。
+
+
+## 429 的两种终态（不重试）
+
+- `daily_token_quota`：免费池**全局日额度**用光，`Retry-After` / `next_release_at` 给出恢复时间（通常次日 08:00）。换出口没用，插件立即返回，不冷却节点。
+- `memfit_client`：免费模型只允许受支持的 Memfit 客户端，实测加 UA / X-Yak-Version 也绕不过。这类模型直接跳过。

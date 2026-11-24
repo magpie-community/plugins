@@ -13,8 +13,8 @@
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
+- **「从客户端读取」修好了**（`0.4.4`）。这个登录方式之前完全失效：SQLite 内部页的子页号读错导致解析出 0 行、profile 路径认不出客户端的 `aha/users/<hash>/profile_explorer` 布局、v10 Cookie 的 host 摘要算错导致值变成垃圾串。三处都修了，感谢 [@kunxiang1](https://github.com/kunxiang1) 在 [#16](https://github.com/miaocell/magpie-doubao-work-auth/issues/16) 定位到行。
 - **诊断落盘 + 风控冷却提前解除**（`0.4.2`，来自 [@CGAdmin544](https://github.com/CGAdmin544) 的 [PR #11](https://github.com/miaocell/magpie-doubao-work-auth/pull/11)）。上游拒绝时会存一份脱敏后的请求体（正文只留长度和前 120 字，Cookie/token 不入盘），能看出是哪个部分撑大的；风控冷却期内会探测服务端是否放行，用户在网页过掉验证后不用干等 5 分钟。
-- **设备上下文用真实值**（`0.4.1`）。`fp` 不再拿 `deviceId` 拼假指纹，直接用 Cookie 里的 `s_v_web_id`；`ttwid` 也真正随请求发送了。SSE 同时认 CRLF / CR 行尾，完整消息放在 `content` 里也能取到。
 - **模型菜单按账号类型走**（`0.4.1`）。有订阅的账号能出到 12 个模型（多出 Qwen 4 Max、Qwen 3.8 Max、Qwen 3.8 Flash），飞书登录的账号仍是 9 个——菜单来自网页 SSR，和基线取并集，只增不减。
 
 ## 拿到的模型

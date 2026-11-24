@@ -14,6 +14,10 @@ magpie provider test index-translate
 
 本地开发才需要先 clone：`git clone https://github.com/Qelvoria/magpie-index-translate`，再 `magpie plugin add ./magpie-index-translate`。
 
+## 页面
+
+装上后 magpie 侧边栏会多一个「翻译」页：选模型、改选项（目标语言、翻译约束、术语表），直接在对话框里翻译，流式出字，支持公式渲染。页面基于 magpie-chat 裁剪，翻译请求和 agent 走同一条改写路径。
+
 ## 模型
 
 | 模型 | 上下文 | 图片 | 适合 |
@@ -38,6 +42,10 @@ magpie provider test index-translate
 | glossary | 空 | 术语表，`原文：译名`，一行一条 |
 
 也可以直接在命令行翻译：`bun bin/cli.mjs "文本" -t zh`
+
+## 浏览器桥
+
+不用 magpie 也能用：双击 `bridge/serve.bat` 起本地网桥（默认 127.0.0.1:8080），给沉浸式翻译这类浏览器插件直连公网接口用。magpie 里不需要它。
 
 ## 注意
 

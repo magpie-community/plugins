@@ -6,7 +6,7 @@
 
 模型实验室把鹈鹕 HTML 动画、模型指纹、原糖果推理题和定时自动测试放在同一个页面。直接使用 Magpie 已配置的供应商和模型，可比较回答、查看思考与输出用量、回放动画、追踪每日表现。
 
-**正式版 1.0.6** · MIT · Magpie 0.1.2905+ · [GitHub Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.6)
+**1.0.8** · MIT · Magpie 0.1.2905+ · [GitHub Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8)
 
 Model Lab evaluates and compares AI models in Magpie through HTML animations, model fingerprints and the original candy reasoning puzzle, with per-model scheduled tests. It uses your existing providers and keeps results locally.
 
@@ -18,12 +18,12 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 | **模型指纹** | 每个模型进行 3 次数字采样，与参考库匹配；显示采样进度、候选模型和详细证据。 |
 | **糖果测试** | 只保留原糖果题，答案为 **21**；高级设置可重复测试，不设固定轮数上限；各模型／账号的轮次相邻排列，详情显示判分与重复统计。 |
 | **自动测试** | 每个模型／账号目标分别设置糖果、动画计划；糖果用成功率与时间格展示，动画按目标排列为横向长廊。 |
-| **历史记录** | 手动结果按提交批次查看，自动结果按日期、类型和时刻分组；支持备注标签检索、组合筛选、记录保护、保留时间及批次 JSON 留档。 |
+| **历史记录** | 手动结果按提交批次查看，自动结果按日期、类型和时刻分组；支持备注检索、组合筛选、记录保护、保留时间及批次 JSON 留档。 |
 
-- **先选供应商，再选模型**：默认显示全部供应商，支持搜索、多选、一键清空和跨供应商对比。
+- **先选供应商，再选模型**：默认显示全部供应商，支持搜索、多选、一键清空和跨供应商对比。列表每 5 分钟自动刷新，也可手动刷新。
 - **参数自己控制**：可选择模型支持的思考档位、输出上限、生成超时与并行数；插件不限制单批模型数量。
 - **模式记忆与常用参数**：三种手动测试分别保存参数；「常用参数 → 添加 / 编辑方案」直接编辑名称、超时、输出上限、并行数及模式专用参数，保存后可应用到测试。保存未确认时保留草稿，生成采用点击时的参数。
-- **多账号独立评测**：同模型可选自动分配或多个固定账号，支持全选可用账号和部分选择计数；收藏、计划、历史和原条件复测保留目标身份。只有可信路由证据才显示账号已核实。
+- **多账号独立评测**：同模型可选自动分配或多个固定账号，普通供应商的主 Key 和附加 Key 也可分别勾选，对比不同分组的同名模型；收藏、计划、历史和原条件复测保留目标身份。只有可信路由证据才显示账号已核实。
 - **配置导入与分享**：专用 JSON 可去除账号绑定，导入时重新绑定、选择保留或覆盖，预览后确认；受影响或新计划保持暂停。
 - **请求控制与每日统计**：按供应商／固定账号设置并行和间隔，保留 429 等待；每日用量展示请求数、已知 Token 和来源明细，指纹每个采样分别记账。删除历史不会减少用量。
 - **重复测试**：糖果原题支持重复轮次，接受可精确表示的正整数；结果按模型／账号分行，各轮连续排列，执行按轮次交错。各轮使用同一题面、答案和判分条件，汇总成功率与耗时。准备数据超过 8 MiB 时在保存和发送请求前整批拒绝，避免超大批次占满内存。自动计划每个时刻执行一次原题。
@@ -32,7 +32,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 - **原条件复测**：入口与本批次、历史批次标题对齐；手动批次可多选，自动历史一次复测所选模型、所选时刻的一条记录；指纹保留原题和原库，创建新的手动批次并保留来源。
 - **失败原因与定向复测**：区分超时、限流、认证、响应中断、截断及答案不匹配等原因，保留原始错误；核对原条件后可按原因选择复测记录。
 - **同目标近期趋势**：详情中展开最近 20 条同账号目标、同完整条件的记录；查看结果率、耗时和用量，以及有记录依据的连续异常或近期变慢提示。
-- **备注与历史筛选**：详情显式保存备注和标签；历史通过轻索引组合筛选模型、账号、日期、结果及保护状态，不读取正文。
+- **备注与历史筛选**：详情直接显示备注输入框，点击「保存备注」保存；历史通过轻索引组合筛选备注、模型、账号、日期、结果及保护状态，不读取正文。
 - **分类设置与清晰入口**：右上角主题按钮旁的「本地设置」分为运行提醒、请求控制、每日用量和配置迁移；历史筛选和保留时间分别打开独立面板。开始按钮有独立位置，切换页面时本地设置和主题保持固定。
 - **用量统一展示**：三种测试均显示思考／输出 Token；接口尚未返回用量时显示流式字符数。
 - **每个模型独立定时**：指定时刻或固定间隔，支持工作日、周末、自选星期和时区，每种测试每天最多 24 次。
@@ -45,7 +45,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 
 ### 本地安装包
 
-从 [1.0.6 Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.6) 下载 `magpie-pelican-bench-1.0.6.zip` 并核对同页 SHA-256 校验文件。将 ZIP 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
+从 [1.0.8 Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8) 下载 `magpie-pelican-bench-1.0.8.zip` 并核对同页 SHA-256 校验文件。将 ZIP 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
 
 也可以在解压目录运行：
 
@@ -63,7 +63,7 @@ Windows 可使用 `tools/install.ps1`；Magpie 不在 PATH 中时，传入 `-Mag
 magpie plugin add github:xiaopeng66/magpie-model-lab
 ```
 
-可在仓库地址后加 `#v1.0.6` 固定安装本次正式版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
+可在仓库地址后加 `#v1.0.8` 固定安装本次正式版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
 
 公开版通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
 

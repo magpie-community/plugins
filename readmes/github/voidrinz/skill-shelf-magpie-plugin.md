@@ -69,6 +69,10 @@ magpie plugin options /absolute/path/to/skill-shelf-magpie-plugin '{"open":false
 
 Magpie 目前只给网关中间件显示图形化的**选项**按钮；Skill Shelf 不处理网关请求，因此不会为了这个按钮注册空中间件。扫描来源、外观、AI 和同步等业务设置仍在**书架设置**中管理，不需要编辑启动选项。
 
+### 在 Magpie 中开发
+
+运行 `pnpm build:magpie-dev`，把命令输出的 `.magpie-dev/skill-shelf-magpie-plugin-dev` 目录添加为本地插件，不要添加仓库根目录。侧栏显示 **Skill Shelf Dev**，可与正式版同时使用，开发版使用独立的书架数据和首选端口 `47824`。改完代码后重新运行命令并重启 Magpie。
+
 ## 第一次打开，先做这几件事
 
 1. 在**工作台**查看发现了哪些 Agent 和 Skills。

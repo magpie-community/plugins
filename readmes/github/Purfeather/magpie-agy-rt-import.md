@@ -23,13 +23,17 @@ magpie plugin add github:Purfeather/magpie-agy-rt-import
 
 打开插件后自动识别本机保存的 AGY 账号。在账号行点击 **复制 RT** 或 **复制 JSON** 导出该账号。扫描成功但没有账号时显示空列表；读取失败时展开 **手动选择账号目录**，可选择整个 `accounts` 目录或单个账号目录。
 
+自动列表以当前 Magpie 的 `plugin-auth.json` 登记为准，优先显示邮箱。仅有邮箱的旧式登录记录会关联 AGY 按邮箱保存的 `own…` 副本目录。副本邮箱不匹配时禁用导出。已删除账号留下的历史目录不进入自动列表。登记文件损坏或无权读取时显示错误，可手动选择目录。
+
+页面使用 Magpie 主窗口的背景、卡片、文字和强调色，主窗口切换浅色或深色主题时会实时跟随。
+
 右上角 **刷新** 会重新打开整个插件页，清空当前 RT 输入、目录选择、筛选条件和导出结果，再重新识别账号。刷新不修改已保存的账号或系统剪贴板。独立文件工作台刷新后需要重新输入会话码。
 
 默认目录是 Windows 的 `%USERPROFILE%\.local\state\magpie-agy-bridge\accounts` 或 macOS / Linux 的 `~/.local/state/magpie-agy-bridge/accounts`。设置了 `XDG_STATE_HOME` 时使用 `$XDG_STATE_HOME/magpie-agy-bridge/accounts`。
 
 ### 独立浏览器中扫描本机账号
 
-在插件目录的个人交互式终端运行以下命令（Node.js 22+ 或 Bun）。可选参数为含 `plugin-auth.json` 的 Magpie 配置目录；省略时扫描默认状态目录，按 Profile ID 展示账号。
+在插件目录的个人交互式终端运行以下命令（Node.js 22+ 或 Bun）。可选参数为含 `plugin-auth.json` 的 Magpie 配置目录。省略时使用 `$XDG_CONFIG_HOME/magpie` 或 `~/.config/magpie`。
 
 ```sh
 node index.mjs --workbench

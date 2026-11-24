@@ -10,7 +10,7 @@ Deva 本身是开源的桌面 agent harness：[sqfcyily/deva](https://github.com
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
-- **供应商不再显示成网关地址**（`3f254db`）。在 Deva 里手动加过指向网关的供应商时，那一行一直显示 `127.0.0.1:3425`，现在改成 `magpie`。
+- **模型显示真实上下文长度**（`c687a83`）。之前一律显示 128k，因为 Deva 按模型名猜；现在写入网关给的真实值，`group/gpt-6.1-sol` 显示 400k。
 - **不再抢走你在 Deva 里选的模型**（`3f254db`）。之前每 2 秒会把当前模型改成 magpie 列表里的第一个，在 Deva 里选别家的模型会被改回去。
 - **Deva 开着时断开，还原不会再丢**（`3f254db`）。之前会先把还原记录删掉，Deva 随即覆盖回去，供应商就永久留下了。
 
@@ -43,7 +43,7 @@ magpie plugin add ./magpie-agent-deva
 |---|---|
 | `models.providers[]` | 找到 / 新建指向网关的那个供应商 |
 | 该供应商的 `name` | 若是 Deva 自动填的网关地址，改成 `magpie`；你起过的名字不动；断开时还原 |
-| 该供应商的 `models[]` | 加入勾选的模型；上次加过、这次取消勾选的移出 |
+| 该供应商的 `models[]` | 加入勾选的模型；上次加过、这次取消勾选的移出；写入网关给的 `contextWindow` / `maxOutput`（你手填过的保留） |
 | 该供应商的 `enabled` | 置为 `true`（否则 Deva 不会用它）；断开时还原 |
 | `models.activeModelId` | 只在它指向 magpie、而那个模型被移出时，改指列表里第一个；你在 Deva 里选别家的模型不动；断开时还原 |
 

@@ -2,10 +2,10 @@
 
 [![repo](https://img.shields.io/badge/github-Betsy20/magpie--Jet--Hub-blue)](https://github.com/Betsy20/magpie-Jet-Hub)
 
-把 **deepseek-harness-codearts 插件本体**装进 magpie。装上之后，magpie 的供应商列表里会多出 29 家 AI 编码渠道，用的是你在 DSH 里已经登录好的那批账号 —— 不需要重新登录，也不需要复制凭据。
+把 **deepseek-harness-codearts 插件本体**装进 magpie。装上之后，magpie 的供应商列表里会多出 32 家 AI 编码渠道，用的是你在 DSH 里已经登录好的那批账号 —— 不需要重新登录，也不需要复制凭据。
 
 > **上游插件**：[`iJetLi/dsh-providers-hub`](https://github.com/iJetLi/dsh-providers-hub)（MIT）。
-> 它给 DSH 提供 29 家供应商的登录、多账号池、静默续期、积分领取。
+> 它给 DSH 提供 32 家供应商的登录、多账号池、静默续期、积分领取。
 > 本仓库**不是它的分支、也不修改它的行为** —— 只把它的发布产物装进 [`vendor/`](vendor/)，
 > 外面加一层 magpie 适配。供应商适配、登录流程、续期算法本身的问题去上游提；
 > 装不进 magpie、卡片显示不对、控制台没反应，才是本仓库的。
@@ -15,7 +15,7 @@
 
 - [架构](#架构)
 - [安装](#安装)
-- [29 个供应商，不是一个](#29-个供应商不是一个)
+- [32 个供应商，不是一个](#32-个供应商不是一个)
 - [账号](#账号)
 - [凭据：不需要再登一次](#凭据不需要再登一次)
 - [从 dsh-providers-hub 的备份导入](#从-dsh-providers-hub-的备份导入)
@@ -31,12 +31,12 @@
 
 ## 架构
 
-magpie 的一个插件包可以注册多个供应商：宿主取模块导出的**每一个函数**当插件工厂，本包的 `index.mjs` 正好导出 29 个 `JetHub*Plugin`。
+magpie 的一个插件包可以注册多个供应商：宿主取模块导出的**每一个函数**当插件工厂，本包的 `index.mjs` 正好导出 32 个 `JetHub*Plugin`。
 
 ```
 magpie 网关（默认 3425，JET_HUB_USER_GATEWAY 可覆盖）
   ├─ jet-hub-codearts   ┐
-  ├─ jet-hub-workbuddy  │ 29 个 provider id
+  ├─ jet-hub-workbuddy  │ 32 个 provider id
   ├─ jet-hub-qoder      ├─ 全部共用同一个容器实例
   └─ …                  ┘
        └─ auth.loader().fetch → JetHubContainer（内嵌 cordis + 本体 lib/index.js）
@@ -47,7 +47,7 @@ magpie 网关（默认 3425，JET_HUB_USER_GATEWAY 可覆盖）
 两个要点：
 
 - **没有内嵌 HTTP 网关**。本体自己会开一个 OpenAI 兼容网关，但那层只是 `ctx.llm` 的 HTTP 外壳。插件在本进程里直接握着 `ctx.llm`，所以 `container.forward()` 进程内就完成整件事 —— 不占端口、不需要 apiKey。
-- **容器必须模块级共享**。29 个工厂各自 new 一个容器会拉起 29 份账号池和模型目录，冷启动直接炸。
+- **容器必须模块级共享**。32 个工厂各自 new 一个容器会拉起 32 份账号池和模型目录，冷启动直接炸。
 
 ## 安装
 
@@ -87,9 +87,14 @@ magpie plugin add github:Betsy20/magpie-Jet-Hub
 
 装完可以用 `npm ls --depth=0` 对一眼 —— 根 `package.json` 的 `dependencies` 必须覆盖 `vendor/` 里本体 import 的全部第三方包（`jose`、`undici` 这两个漏过，换机一加载就 `ERR_MODULE_NOT_FOUND`，表现为「控制台打不开」）。`tests/t-deps.mjs` 会扫 Node 侧全部源码的 import 守着这条。
 
-## 29 个供应商，不是一个
+## 32 个供应商，不是一个
 
-本体里有 31 个 provider，其中 **2 个是路由组**（`aggregate` 聚合路由、`jet-hub-auto` 自动选号）。路由组没有自己的账号池和模型目录，注册成 magpie 供应商只会得到一张永远空着的卡，所以**本插件只接那 29 家真渠道**。
+本体 `PROVIDER_REGISTRY` 里有 33 个 id，其中 **`aggregate` 是路由组**（聚合路由），没有自己的账号池和模型目录，
+注册成 magpie 供应商只会得到一张永远空着的卡，所以**本插件只接那 32 家真渠道**。另一个路由组
+`jet-hub-auto`（自动选号）**从来不在 registry 里**，它只在 `modelAdapters` 表里，同样不注册。
+
+> ⚠ 别拿 `channel: false` 反推路由组 —— `doubao`（豆包）也是 `channel: false`，但它是真渠道（有模型目录、
+> 有 `modelAdapters` 条目）。上游刻意留 `false` 是因为豆包凭据是 cookie、没有 refresh 端点 / auth 服务。
 
 完整名单以 `src/plugin.mjs` 的 `DSH_PROVIDERS` 为准（下表只列几行示例）。
 
@@ -104,7 +109,10 @@ magpie plugin add github:Betsy20/magpie-Jet-Hub
 | `jet-hub-magicrewintl` | MagiCrew (国际版) |
 | `jet-hub-marvis` | 腾讯 Marvis |
 | `jet-hub-qiniu` | Qiniu (七牛云) |
-| …共 29 家 | |
+| `jet-hub-doubao` | 豆包 (字节) |
+| `jet-hub-agnescode` | AgnesCode |
+| `jet-hub-agnescodeintl` | AgnesCode (国际版) |
+| …共 32 家 | |
 
 模型 id 是 `<provider>/<model>`：
 
@@ -276,7 +284,7 @@ models.dev 目录（`~/.cache/magpie/models.json`）按**模型尾名**匹配生
 
 本体冷启动要建容器、拉凭据链、预热目录，**20–30 秒**（预热过的实例通常 1–2 秒），而 magpie 给 `provider.models` 的超时只有 **20 秒**。所以在 `models()` 里 `await` 必然超时。
 
-`models()` 因此分三档：内存缓存命中 → 立刻返回并后台刷新；磁盘缓存命中 → 立刻返回真实目录；都没有 → 返回静态兜底表（29 家各一条），启动甩到后台。`authorize()` 与 `usage()` 由用户点击触发、允许长时间，走真等。
+`models()` 因此分三档：内存缓存命中 → 立刻返回并后台刷新；磁盘缓存命中 → 立刻返回真实目录；都没有 → 返回静态兜底表（**30 家**各一条；`agnescode` / `agnescodeintl` 上游自己就不给静态兜底，见 `AGNESCODE_FALLBACK_MODELS`），启动甩到后台。`authorize()` 与 `usage()` 由用户点击触发、允许长时间，走真等。
 
 ## 侧栏页与控制台
 
@@ -287,8 +295,18 @@ magpie 里这个插件有两个界面：
 
 **本地控制台**（`console/`）是完整功能，注册在 `http://127.0.0.1:18500/`。端口被占时向后顺延（18501、18502…），
 但**只有拿到首发端口 18500 的那个实例**才会把地址写进 `~/.config/magpie/jet-hub-console.json` ——
-漂移到别的端口时不写，别拿那个文件当唯一来源。左栏是**供应商列表**（注册 29 家，快照里 29 家都有模型条目
-—— `marvis` 那条是静态兜底（`main-auto`），上游没有模型目录端点），底部一行三个切页按钮，主区是**账号页**（默认视图）：
+漂移到别的端口时不写，别拿那个文件当唯一来源。
+
+左栏是**供应商列表** —— 注册 32 家，快照 `page/models.js` 里只有 **29 家**有模型条目：
+
+| 家 | 为什么没快照 |
+|---|---|
+| `doubao` | 要 cookie 凭据，2026-11-24 这轮没跑快照 |
+| `agnescode` / `agnescodeintl` | 上游 `AGNESCODE_FALLBACK_MODELS` 是空数组，连静态兜底都没有 |
+
+（`marvis` 的 `main-auto` 那条是静态兜底 —— 上游没有模型目录端点，不是快照来的。）
+
+底部一行三个切页按钮，主区是**账号页**（默认视图）：
 
 | 位置 | 做什么 |
 |---|---|
@@ -304,7 +322,8 @@ magpie 里这个插件有两个界面：
 > 同一天「账号」也不再是一个标签：侧栏点供应商就是看账号池，它不值得和概览/设置/备份并列。
 
 界面照搬上游 `jet-hub.js` 的设计语言：`#1677ff` 品牌色、卡片 14px 圆角、`0 2px 8px rgb(31 35 41/3%)` 阴影、
-228px 侧栏。供应商图标直接内联上游 `provider-icons.js` 的 data URI（`console/icons.js`，29 个）；
+228px 侧栏。供应商图标直接内联上游 `provider-icons.js` 的 data URI（`console/icons.js`，**33 个** ——
+含不上侧栏的 `aggregate`；2026-11-24 新进的 `doubao` / `agnescode` / `agnescodeintl` 三家也已补齐 —— 图形与 `src/icons.mjs` 同源，按 `<g transform="scale(.375)">` 缩到 24 视口）；
 账号列表是**卡片流**而不是表格 —— 每张卡把凭据 ref / 有效期 / 可续期 / 出口代理 / 操作
 收在一处，操作按钮贴在该行最右；容器窄于 420px 时按钮自动落到「操作」标签下方换行。
 （正文灰 `--fg3` 刻意比上游深一档：`#7c838e` 而非 `#8f959e` —— 后者对白底只有 3.02:1，压暗后 3.82:1。）
@@ -365,16 +384,16 @@ npm run test:all                 # 等价于第二条
 ## 目录结构
 
 ```
-index.mjs              只导出 29 个插件工厂（宿主遍历全部导出）
+index.mjs              只导出 32 个插件工厂（宿主遍历全部导出）
 src/
-  plugin.mjs           29 个工厂、auth 契约（methods / loader / usage / checkin）
+  plugin.mjs           32 个工厂、auth 契约（methods / loader / usage / checkin）
   container.mjs        内嵌 cordis 容器、直连转发、选号钉住、死号过滤
   llm-bridge.mjs       进程内直连本体 ctx.llm
   credentials.mjs      ~/.dsh/.credentials.yaml ⇄ 容器 credentials 服务
   connection.mjs       给容器补一个 connection 服务（DSH 里由宿主提供）
   hub-server.mjs       控制台 HTTP 服务
   attachments.mjs      图片附件服务
-  icons.mjs            29 家内联图标（SVG / PNG data URI 混用）
+  icons.mjs            32 家内联图标（SVG / PNG data URI 混用）
   site-icons.mjs       四家从官网取的位图（base64）
   magicrew-icon.mjs    \ 两家单独存放的位图，体积大、与上面分开
   zcode-icon.mjs       /
@@ -390,5 +409,5 @@ docs/                  截图、vendor.md、testing.md
 ## 上游与致谢
 
 - 上游插件：[`iJetLi/dsh-providers-hub`](https://github.com/iJetLi/dsh-providers-hub)（MIT，`Copyright (c) 2026 Jet`）—— 本仓库 `vendor/` 是它的构建产物，`vendor/LICENSE` 随目录一起分发。
-- 29 家渠道的登录 / 续期 / 选号逻辑全部来自上游，本仓库只做 magpie 适配层。
+- 32 家渠道的登录 / 续期 / 选号逻辑全部来自上游，本仓库只做 magpie 适配层。
 - 图标：多数来自各厂商官方标识，少数取自 [LobeHub icons](https://github.com/lobehub/lobe-icons)。

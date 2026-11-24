@@ -22,16 +22,18 @@ The function returns one complete result; the plugin reshapes it into OpenAI Cha
 
 ## Models
 
-| Model ID | Context |
-| --- | --- |
-| `hy4-flash` | 1M |
-| `hy4` | 1M |
-| `hy4-preview` | 1M |
-| `hy3` | 256K |
-| `deepseek-v4.1-flash` | 1M |
-| `deepseek-v4.1-flash-1017` | 1M |
+| Model ID | Context | Image input |
+| --- | --- | --- |
+| `hy4-flash` | 1M | yes |
+| `hy4` | 1M | yes |
+| `hy4-preview` | 1M | not in the official list; images are forwarded (retired 2026-12-07, then served as `hy4`) |
+| `hy3` | 256K | no |
+| `deepseek-v4.1-flash` | 1M | yes |
+| `deepseek-v4.1-flash-1017` | 1M | yes |
 
-No console opt-in needed; usage is deducted from the gift pack automatically. Availability can vary per environment — if CloudBase answers `AI_MODEL_NOT_SUPPORTED`, go by what your environment actually supports. The image-generation model `hy-image-v3.5-preview` is out of scope for this plugin: the bridge only carries text chat.
+Image input follows the [official model list](https://docs.cloudbase.net/ai/available-models) and needs aiProxy 1.3.0 or later. Images go in user messages as OpenAI `image_url` parts (an `http(s)` link or a `data:image/...;base64` URL) and count toward the 6 MiB request size.
+
+No console opt-in needed; usage is deducted from the gift pack automatically. Availability can vary per environment — if CloudBase answers `AI_MODEL_NOT_SUPPORTED`, go by what your environment actually supports. The image-generation model `hy-image-v3.5-preview` is out of scope for this plugin: the bridge carries chat only (text and image in, text out).
 
 ## What you need
 
@@ -102,7 +104,7 @@ Errors come back as OpenAI-style `{ error: { message, code } }`, and the message
 
 - No true streaming: the upstream reply is one-shot, SSE is synthesized locally, so the first token only arrives when generation finishes;
 - tool calling needs aiProxy 1.1.0 or later — redeploy the function (`tcb fn deploy aiProxy --force`) after upgrading the plugin from 0.2.4 or earlier;
-- no image input;
+- image input needs aiProxy 1.3.0 or later, on user messages only; `hy3` takes text only, and video / file input is not forwarded;
 - very long outputs can hit the function's 120 s timeout;
 - no quota reporting (no official API for it); the gift quota itself expires (6 months).
 
