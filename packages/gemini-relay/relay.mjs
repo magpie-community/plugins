@@ -245,7 +245,7 @@ export class RelaySession {
   // temporary-chat slot); otherwise the whole flattened prompt rides in
   // a fresh temporary chat. A failed continuation falls back to the
   // temporary path once.
-  async ask(prompt, { model = this.model, signal, strictModel = false, messages = null, continueConversation = true, files = null } = {}) {
+  async ask(prompt, { model = this.model, signal, strictModel = false, messages = null, continueConversation = true, files = null, onUpdate = null } = {}) {
     if (prompt.length > 600_000)
       throw new GeminiError(`请求有 ${prompt.length} 个字符，超过能可靠发送的 600000。请压缩上下文后再试。`, {
         code: "context_length_exceeded",
@@ -269,6 +269,7 @@ export class RelaySession {
         state: usePool ? prior : null,
         messages,
         binding,
+        onUpdate,
       }).catch((e) => ({ err: e }))
       if (!r.err) return r
       lastError = r.err
@@ -292,7 +293,7 @@ export class RelaySession {
   // text, no slot 45) or the temporary chat (whole prompt, slot 45).
   // files are the uploaded file references for inner[0][3]; they ride the
   // model option (index.mjs spreads them in) and never force a rebuild.
-  async _run(prompt, { model, signal, strictModel, usePool, state, messages, binding }) {
+  async _run(prompt, { model, signal, strictModel, usePool, state, messages, binding, onUpdate = null }) {
     const mode = model.mode ?? model.b14 ?? 1
     const think = model.think ?? 1
     const files = model.files ?? null
@@ -317,10 +318,31 @@ export class RelaySession {
         // the page is read fresh every try: a reopen must be used, not the
         // closed one this attempt started on
         const page = await this.browser.ensure()
+        // streaming deltas: the page pushes the running text through a CDP
+        // binding as it reads frames; the node side diffs it (Streamer) and
+        // calls onUpdate. The binding lives only for this turn.
+        let offDelta = null
+        const pushName = onUpdate ? "__gwrDelta" + Math.floor(Math.random() * 1e9) : ""
+        if (onUpdate) {
+          const seen = { text: "", reasoning: "" }
+          const fire = (d) => {
+            if (typeof d?.text === "string" && d.text.length > seen.text.length) {
+              seen.text = d.text
+            }
+            if (typeof d?.reasoning === "string" && d.reasoning.length > seen.reasoning.length) {
+              seen.reasoning = d.reasoning
+            }
+            try { onUpdate({ text: seen.text, reasoning: seen.reasoning }) } catch {}
+          }
+          this.browser.deltaHandlers ??= new Set()
+          const unsub = this.browser.onDelta(pushName, fire)
+          offDelta = () => { unsub(); try { page.send("Runtime.removeBinding", { name: pushName }).catch(() => {}) } catch {} }
+          await this.browser.installBinding(page, pushName).catch(() => {})
+        }
         try {
           const r =
             transport === "webchannel"
-              ? await page.eval(pageWebChannelEval(model.hex, mode, think, inner))
+              ? await page.eval(pageWebChannelEval(model.hex, mode, think, inner, pushName))
               : await page.eval(streamGenerateEval(inner, model.hex))
           if (signal?.aborted) throw new GeminiError("已取消", { code: "aborted", status: 499 })
           // the page function reports transport trouble in its result (it
@@ -353,6 +375,7 @@ export class RelaySession {
           }
           return { text: r.reply, reasoning: r.reasoning ?? "", model: r.model ?? r.served?.[0] }
         } catch (e) {
+          offDelta?.()
           if (e?.code === "model_served_mismatch") throw e // never blind-retry into the same downgrade
           if (e?.code === "aborted") throw e
           // a mapped server error (quota, IP block, …) is final: no retry,
@@ -371,6 +394,8 @@ export class RelaySession {
             continue
           }
           break // this transport failed; try the next one
+        } finally {
+          offDelta?.()
         }
       }
     }
