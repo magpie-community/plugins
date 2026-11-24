@@ -708,3 +708,47 @@ test("a whole reply whose reasoning took it past max_tokens keeps Trae's stop, i
     expect(lines.map((x) => x.choices?.[0]?.finish_reason).filter(Boolean)).toEqual(["stop"])
   }
 })
+
+// plugins#1501 (a personal Trae CN Credits account, 0.2.51): glm-5.4 is in
+// the account's list, chat_v3 answers it with 1005 {"plan":2}, and the
+// other functions with 4001. The request ended on the last 4001, a 502
+// "the param is invalid", and the plan refusal was lost. It is the model's
+// refusal (glm-5.3 answers on the same account), so it goes out as a 403
+// that says the model isn't available, which magpie rests the model for,
+// not the account.
+test("a plan's 1005 outlives the other functions' 4001, and says the model isn't available", async () => {
+  const glm54 = { config_name: "glm-5.4", usage: "chat_completion", config_source: 1, is_preset: true, display_config: { display_name: "GLM-5.4" } }
+  const hooks = await plugin([preset, glm54])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => (r.json.function === "chat_v3"
+    ? sse([["error", { code: 1005, message: "", extra: '{"plan":2}' }]])
+    : sse([["error", { code: 4001, message: REPORTED }]])))
+  const opts = await hooks.auth.loader(async () => signedIn())
+  // MAGPIE_TRAE_DEBUG names each function's refusal, its extra too
+  const logged = []
+  const was = console.error
+  process.env.MAGPIE_TRAE_DEBUG = "1"
+  console.error = (...a) => logged.push(a.join(" "))
+  let res
+  try {
+    res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5.4", messages: [{ role: "user", content: "hi" }] }) })
+  } finally {
+    console.error = was
+    delete process.env.MAGPIE_TRAE_DEBUG
+  }
+  expect(logged.some((l) => l.includes("function chat_v3 refused in the stream code=1005") && l.includes('{\\"plan\\":2}'))).toBe(true)
+  expect(logged.some((l) => l.includes("function solo_coder refused in the stream code=4001"))).toBe(true)
+  expect(res.status).toBe(403)
+  const msg = (await res.json()).error.message
+  expect(msg).toContain("the model is not available to this account's plan (code 1005, plan 2)")
+  expect(msg).toContain("model glm-5.4 asked through chat_v3, solo_work_lite")
+  expect(msg).not.toContain("4001")
+  // magpie's words for a model's refusal, and none of an account's
+  expect(msg).toMatch(/model.{0,80}not available/i)
+  expect(msg).not.toMatch(/quota|insufficient|balance|credit|billing|exceeded|rate.?limit|usage.?limit|余额|额度|套餐|用量|上限/i)
+  // the last function's refusal alone is as before
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["error", { code: 4001, message: REPORTED }]]))
+  const again = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5.4", messages: [{ role: "user", content: "hi" }] }) })
+  expect(again.status).toBe(502)
+  expect((await again.json()).error.message).toContain("(code 4001)")
+})

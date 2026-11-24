@@ -3426,7 +3426,7 @@ async function* parts(events, tools = []) {
         const e = errorOf(d)
         // the realm answering is named by the caller, which knows it; a bare
         // word here reads as neither realm's
-        yield { error: e.message || "Trae returned an error", code: e.code }
+        yield { error: e.message || "Trae returned an error", code: e.code, extra: d.extra ?? null, plan: planOf(d) }
         return
       }
       if (name === "token_usage") {
@@ -3631,6 +3631,39 @@ async function openai(req, it, abort, site, limit = 0, cut = 0) {
 
 // a model or function this account's chat_v3 doesn't take: another may
 const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
+
+// planOf is the plan a refusal names in its extra: Trae CN answers a model
+// the account's plan doesn't offer with 1005 and {"plan":2}, though its list
+// names the model (plugins#1501: glm-5.4 for a Credits account whose
+// glm-5.3 answers). That is the model's refusal, not the account's: it
+// goes out as a 403 that says the model isn't available, which magpie
+// rests that model alone for, never the account. null when it names none.
+function planOf(d) {
+  let x = d?.extra
+  if (typeof x === "string") {
+    try {
+      x = JSON.parse(x)
+    } catch {
+      return null
+    }
+  }
+  return x && typeof x === "object" && x.plan != null ? x.plan : null
+}
+const planOfText = (text) => {
+  try {
+    const v = JSON.parse(text)
+    return planOf(v?.error && typeof v.error === "object" ? v.error : v)
+  } catch {
+    return null
+  }
+}
+
+// keptRefusal is the refusal a request that no function answered ends
+// with: a plan's refusal one function gave outlives another's generic one,
+// so 1005 {"plan":2} isn't lost behind the last function's 4001
+// (plugins#1501). A 1005 naming no plan is kept no longer than before: a
+// function may give it for a model it doesn't serve.
+const keptRefusal = (why, next) => (why?.plan != null && next.plan == null ? why : next)
 
 // ---- the model lists ------------------------------------------------------------
 
@@ -4851,7 +4884,8 @@ const makePlugin = (site) => async ({ client }) => {
                 if (!res.ok) {
                   const text = await res.text()
                   const e = errorOf(text)
-                  why = { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host }
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused ${res.status} code=${e.code} message=${JSON.stringify(e.message)}`)
+                  why = keptRefusal(why, { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host, plan: planOfText(text) })
                   last = failure(site, why.status, why.code, why.message)
                   if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
                   if (res.status === 400 && wrongFunction(e.code)) continue
@@ -4860,9 +4894,11 @@ const makePlugin = (site) => async ({ client }) => {
                 const ct = res.headers.get("content-type") ?? ""
                 if (!ct.includes("event-stream") && ct.includes("json")) {
                   // an answer that isn't a stream is an error in a 200
-                  const e = errorOf(await res.text())
-                  why = { status: 502, code: e.code, message: e.message, host }
-                  last = failure(site, 502, e.code, e.message)
+                  const body = await res.text()
+                  const e = errorOf(body)
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused code=${e.code} message=${JSON.stringify(e.message)}`)
+                  why = keptRefusal(why, { status: 502, code: e.code, message: e.message, host, plan: planOfText(body) })
+                  last = failure(site, why.status, why.code, why.message)
                   if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
                   if (wrongFunction(e.code)) continue
                   break
@@ -4871,8 +4907,9 @@ const makePlugin = (site) => async ({ client }) => {
                 const { held, done } = await first(it)
                 const err = held.find((p) => p.error)
                 if (err) {
-                  why = { status: 502, code: err.code, message: err.error, host }
-                  last = failure(site, 502, err.code, err.error)
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused in the stream code=${err.code} message=${JSON.stringify(err.error)} extra=${JSON.stringify(err.extra ?? null)}`)
+                  why = keptRefusal(why, { status: 502, code: err.code, message: err.error, host, plan: err.plan ?? null })
+                  last = failure(site, why.status, why.code, why.message)
                   if (onConsole(host) && consoleRefuses(err.code)) {
                     it.return?.()
                     res.body.cancel?.().catch(() => {})
@@ -4935,7 +4972,8 @@ const makePlugin = (site) => async ({ client }) => {
               await save(toAuth(a, site))
               readAt.delete(who)
             }
-            if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
+            if (why?.plan != null && last.status !== 401) last = errorResponse(403, `${site.realm}: the model is not available to this account's plan (code ${why.code}, plan ${why.plan}); ${await askedOf(a, base, entry, [...new Set(tried)], why.host)}`)
+            else if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
           },

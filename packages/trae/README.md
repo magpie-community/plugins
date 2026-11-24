@@ -448,6 +448,7 @@ IDE may therefore ask you to sign in again after magpie renews.
 | --- | --- |
 | 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
+| code 1005 naming a plan (`extra` `{"plan":2}`), from any function | 403 "the model is not available to this account's plan", naming the plan, the model and the functions tried |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
 
 ### Seeing what is sent
