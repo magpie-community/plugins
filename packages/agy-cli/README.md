@@ -287,6 +287,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Our servers are experiencing high traffic right now …"（Google 这个模型暂时没有
   余量，agy 的重试也都碰上了 503）时，按 `overloaded_error`（非流式为 HTTP 503）结束本轮，
   不让账号歇着，magpie 会再试或改问别处。（由 ifccod 发现并移植自他的补丁。）
+  结尾是 "⚠ UNAUTHENTICATED (code 401): …" 或 "⚠ Authentication expired. Please log back in." 时
+  （常见于长驻 `agy acp` 进程在整小时 OAuth 刷新窗口仍持有旧内存 token），若尚未向客户端发出正文或工具调用，
+  插件会销毁旧进程并在新进程上自动重放一次以加载最新凭证；若仍失败或已产生部分输出，
+  则以 `authentication_error`（状态码 401）结束本轮并丢弃该进程，不再当作正常回复返回。
 - **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
   again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
   "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样
