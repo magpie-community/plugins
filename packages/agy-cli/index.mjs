@@ -5480,6 +5480,25 @@ function foldSplitCalls(body) {
   return changed ? { ...body, messages: out } : body
 }
 
+// Claude Code's AgentSummary: the sub-agent's own conversation, sent again
+// while it works with its last user message ending in the ask for a few
+// words of progress ("Describe your most recent action in 3-5 words. Do not
+// use tools."), as magpie's agentSummaryAsk tells it. Only a sub-agent's
+// (x-magpie-subagent) is one. In the worker's scope
+// it was the worker's conversation, whose response was still running: seven
+// 503 "already has an active response" over ~34s, each try retried
+// (plugins#1545). It gets a scope of its own, beside the worker's.
+const AGENT_SUMMARY_SCOPE = "\nagent-summary"
+
+function agentSummaryAsk(body) {
+  const last = body?.messages?.at(-1)
+  if (last?.role !== "user") return false
+  const part = typeof last.content === "string" ? { type: "text", text: last.content } : last.content?.at?.(-1)
+  if (part?.type !== "text" || typeof part.text !== "string") return false
+  const ask = part.text.trim()
+  return ask.startsWith("Describe your ") && ask.includes(" in 3-5 words")
+}
+
 function sameSessionScope(proc, sessionScope = "") {
   return (proc?.sessionScope || "") === sessionScope
 }
@@ -8104,7 +8123,8 @@ export const AntigravityBridgePlugin = async () => {
               return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
             }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
-            const sessionScope = requestSessionScope(fetchInput, init)
+            const sessionScope = requestSessionScope(fetchInput, init) +
+              (requestHeader(fetchInput, init, "x-magpie-subagent") && agentSummaryAsk(body) ? AGENT_SUMMARY_SCOPE : "")
             // an account's conversations are its own: its agy has them
             const callerWorkDir = namedWorkDirectory(body, init)
             const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "")
