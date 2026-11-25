@@ -2547,7 +2547,16 @@ class Proc {
     // instead, so every tool stays (plugins#1140). The trimmed list is kept
     // per catalog: agy asks again on every tools/list_changed.
     if (this.fittedFor !== this.toolsSignature) {
-      this.fitted = fitTools(this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
+      this.fitted = fitTools(this.tools.map((tool) => {
+        const listed = { ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } }
+        const { required, ...inputSchema } = tool.inputSchema
+        if (Array.isArray(required) && required.includes("toolSummary")) {
+          const remaining = required.filter((key) => key !== "toolSummary")
+          if (remaining.length) inputSchema.required = remaining
+          listed.inputSchema = inputSchema
+        }
+        return listed
+      }))
       this.fittedFor = this.toolsSignature
     }
     return this.fitted
@@ -3023,8 +3032,10 @@ class Proc {
       return null
     }
     // agy consumes its internal toolSummary instead of forwarding it to MCP.
-    if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
-      args = { ...args, toolSummary: "Run command" }
+    const required = tool.inputSchema.required
+    const needsSummary = Array.isArray(required) && required.includes("toolSummary")
+    if ((needsSummary || (name === "run_command" && tool.inputSchema.properties?.toolSummary)) && !Object.hasOwn(args, "toolSummary")) {
+      args = { ...args, toolSummary: name === "run_command" ? "Run command" : "Tool call" }
     }
     // Outer agy expects call_mcp_tool.Arguments as a JSON object for jsontext.Value,
     // while Gemini schema translation exposes Arguments as type:"string" inside ACP.
@@ -5645,11 +5656,6 @@ function normalizeTools(body) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }
     const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(expandToolSchema(rawSchema)))
-    // agy adds its own required toolSummary to MCP tools. A duplicate makes
-    // the resulting JSON Schema invalid before the agent can start.
-    if (tool.name === "run_command" && Array.isArray(inputSchema.required)) {
-      inputSchema.required = inputSchema.required.filter((key) => key !== "toolSummary")
-    }
     tools.push({
       name: tool.name,
       description: typeof tool.description === "string" ? tool.description : "",
