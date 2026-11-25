@@ -270,6 +270,13 @@ that model with one space as its content, as the same model on QwenWork
 serves it (#1213). A turn with text, and every other model, go as they
 came; `kimi-k3` takes the empty turn.
 
+WorkBuddy sends `"tool_calls": []` on every streamed delta, including
+reasoning. OpenAI-compatible clients treat any present `tool_calls` field as
+the end of the active reasoning block, which can create thousands of tiny
+reasoning parts and make OpenCode Desktop freeze when restoring a session.
+Since 0.2.38 the plugin removes only that empty list from forwarded deltas;
+real tool calls and unaffected events pass through unchanged (#1532).
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
