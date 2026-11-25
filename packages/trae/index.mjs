@@ -2167,7 +2167,7 @@ async function recordOf(a, site, session, signal, budget) {
     const input = numOrNull(info.input_token ?? info.inputToken)
     const output = numOrNull(info.output_token ?? info.outputToken)
     // an empty envelope is a record still being written: keep waiting
-    if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead }
+    if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead, input, output }
     return null
   } catch {
     return null
@@ -2176,28 +2176,52 @@ async function recordOf(a, site, session, signal, budget) {
   }
 }
 
+// total is what a reading comes to: its tokens, cache and charge together.
+// Every one of them only grows within a conversation, so two readings of the
+// same total are the same record, and one that went back is another record.
+const total = (r) => (r?.input ?? 0) + (r?.output ?? 0) + (r?.cacheRead ?? 0) + (r?.credits ?? 0)
+
+// remember keeps a reading as the conversation's baseline, keeping the map
+// from growing without bound.
+function remember(key, record) {
+  if (!readings.has(key) && readings.size >= BILLING_KEPT) readings.delete(readings.keys().next().value)
+  readings.set(key, record)
+}
+
 // turnBilling is one turn's share of the conversation's record. wait bounds
 // how long the answer's end waits for it, so a slow settlement costs the
-// answer a bounded delay at most, never an open connection.
+// answer a bounded delay at most, never an open connection. A record that
+// hasn't moved past the last reading is one still being written - Trae has the
+// earlier turns in it already, and this one's charge is not there yet - so it
+// is asked again within the wait, and a turn that never moved reports nothing
+// rather than a false 0: its share is then taken with the next turn's, which
+// is what keeps a real cache hit from reading as a 0% miss.
 async function turnBilling(a, site, session, { signal = null, wait = BILLING_WAIT.body } = {}) {
   if (!session) return null
   const key = (a.uid || a.accountId || "") + "|" + session
+  const before = readings.get(key) ?? null
+  const saw = before ? total(before) : null
   const deadline = Date.now() + wait
   let record = null
   for (let attempt = 0; ; attempt++) {
     record = await recordOf(a, site, session, signal, deadline - Date.now())
     if (record === false) return null // a record Trae refused: asking again will not settle it
-    if (record) break
+    if (record && (saw === null || total(record) > saw)) break // this turn's charge is in it
+    if (record && total(record) < saw) {
+      // its books went back: another record (a new period, a reset), not
+      // this turn's share. It becomes the baseline, and this turn reports
+      // nothing of Trae's.
+      remember(key, record)
+      return null
+    }
     const pause = BILLING_SETTLE[attempt]
     if (!pause || Date.now() + pause >= deadline) break
     await new Promise((r) => setTimeout(r, pause))
   }
-  if (!record) return null
-  const before = readings.get(key)
-  if (!readings.has(key) && readings.size >= BILLING_KEPT) readings.delete(readings.keys().next().value)
-  readings.set(key, record)
+  if (!record || (saw !== null && total(record) <= saw)) return null // never moved: keep the old baseline
+  remember(key, record)
   if (!before) return null // the conversation's first turn: this reading is its baseline
-  const share = (now, then) => (now == null || then == null ? null : Math.max(0, now - then))
+  const share = (now, then) => Math.max(0, (now ?? 0) - (then ?? 0))
   return { credits: share(record.credits, before.credits), cacheRead: share(record.cacheRead, before.cacheRead) }
 }
 

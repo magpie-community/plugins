@@ -163,7 +163,11 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     it: the record now, less the record last read for that conversation. The
     conversation's first turn has no baseline to take and reports only what
     Trae's own stream said; the reading it takes is the baseline of the turns
-    after it. Its `credits_by_source` (a string, where `credits_float` rounds
+    after it. A record that hasn't moved past that baseline is one still being
+    written — it holds the earlier turns already — so it is read again within
+    the wait; a turn whose record never moves reports nothing, no `credit`
+    and no `cached_tokens`, rather than a false 0, and the next turn's share
+    then covers both. Its `credits_by_source` (a string, where `credits_float` rounds
     a small charge to 0) goes on the response as `usage.credit` (and
     `usage.credits`): magpie's ledger reads the singular `credit`, as kiro
     reports it (yetone/magpie#4328), and its

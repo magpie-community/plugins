@@ -108,3 +108,37 @@ test("a record that never answers does not hold the answer's end", async () => {
   expect(usage.magpie_cache_unknown).toBe(true)
   expect(took).toBeLessThan(2000)
 })
+
+// A record that lands on the second read after the answer (about 150 ms,
+// well inside a stream's wait). Until it moves past the last reading it
+// holds the earlier turns only: accepting it as this turn's would report
+// before - before = 0, a 0% cache hit and no credits, the next turn taking
+// both. So a reading that hasn't moved is one still being written.
+test("a record that hasn't moved yet is not this turn's 0", async () => {
+  f = fakeTrae()
+  let turns = 0
+  let asks = 0
+  let settled = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", () => {
+    turns++
+    asks = 0
+    return sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]])
+  })
+  f.route("POST /api/v1/commercial/get_session_usage", () => {
+    asks++
+    if (asks >= 2) settled = turns
+    return json(record(settled))
+  })
+  const session = "ses_late"
+  const turn = () => ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }, { session })
+  // the first turn's charge is not in the record yet: its reading is the
+  // baseline of the conversation, and it reports nothing
+  const first = await usageOf(await turn())
+  expect(first.credit).toBeUndefined()
+  expect(first.magpie_cache_unknown).toBe(true)
+  // its second turn: the record moved, so its share is the one turn's
+  const second = await usageOf(await turn())
+  expect(second.credit).toBe(0.12)
+  expect(second.prompt_tokens_details.cached_tokens).toBe(4096)
+  expect(second.magpie_cache_unknown).toBeUndefined()
+})
