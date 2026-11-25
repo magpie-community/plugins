@@ -71,7 +71,9 @@ them, are under "Other ways to sign in…".
   kiro-cli refreshes its own token first (`kiro-cli debug refresh-auth-token`).
   A token the plugin refreshes itself is written back, so kiro-cli and the
   IDE go on with it. An external-IdP sign-in read from either source sends
-  the control-plane `TokenType` that Kiro's own clients send.
+  the control-plane `TokenType` that Kiro's own clients send, and is
+  renewed by the company's identity provider itself (its token endpoint,
+  client ID and the scopes it granted), not by Kiro.
 - **Kiro API key (`ksk_…`)**: sent with `tokentype: API_KEY`, as kiro-cli
   sends it. `GetProfile` is asked in us-east-1, then eu-central-1, for the
   region the key's profile is in; a key it finds none for is used in
