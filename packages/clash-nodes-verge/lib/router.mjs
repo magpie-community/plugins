@@ -28,11 +28,13 @@ const EXE_CANDIDATES = [
   'C:\\Program Files\\Clash Verge\\resources\\sidecar\\mihomo.exe',
   path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Clash Verge', 'resources', 'sidecar', 'mihomo.exe'),
   '/usr/local/bin/mihomo', '/usr/bin/mihomo', '/opt/homebrew/bin/mihomo',
+  '/Applications/Clash Verge.app/Contents/MacOS/mihomo',
 ].filter(Boolean);
 
 const MAIN_CONFIG_CANDIDATES = [
   process.env.MIHOMO_CONFIG,
   path.join(os.homedir(), 'AppData', 'Roaming', 'io.github.clash-verge-rev.clash-verge-rev', 'config.yaml'),
+  path.join(os.homedir(), 'Library', 'Application Support', 'io.github.clash-verge-rev.clash-verge-rev', 'config.yaml'),
   path.join(os.homedir(), '.config', 'clash-verge', 'config.yaml'),
   path.join(os.homedir(), 'AppData', 'Roaming', 'mihomo-party', 'work', 'config.yaml'),
   path.join(os.homedir(), 'AppData', 'Roaming', 'mihomo-party', 'config.yaml'),
@@ -286,16 +288,13 @@ function spawnText(cmd, argv, opts = {}) {
   });
 }
 
-// Windows launch chain: Node -> PowerShell (router-spawn.ps1) -> WMI Create ->
-// cmd.exe /c router-run.cmd -> mihomo.
-//  * WMI detaches mihomo from Magpie's process tree, so a plugin reload or
-//    Magpie exit does not take the router down.
-//  * Only two hops are used because this machine's security policy refuses
-//    longer ones: WMI-created wscript/cscript exit immediately without running
-//    their script, and a WMI-created PowerShell with a long -EncodedCommand
-//    payload never executes, while short powershell/cmd command lines do.
-//  * The mihomo command line therefore lives in router-run.cmd; WMI only
-//    receives `cmd.exe /c <that file>` (ASCII paths, no spaces, no quoting).
+// Windows fallback launch chain (only when a plain detached spawn is refused):
+// Node -> PowerShell (router-spawn.ps1) -> WMI Create -> cmd.exe /c router-run.cmd -> mihomo.
+//  * Parenting mihomo under WmiPrvSE keeps the node ports alive across a
+//    magpie plugin reload or exit, and succeeds where a detached child of the
+//    host is refused.
+//  * WMI only receives `cmd.exe /c <that file>`: the mihomo command line lives
+//    in router-run.cmd, so the WMI call stays a short ASCII string.
 //  * The pid is resolved afterwards from the mihomo command line, which
 //    carries our config path.
 function writeLaunchCmd(file, exe, args, logFile) {
@@ -458,27 +457,45 @@ export async function startRouter(nodes, opts = {}) {
   try { fs.writeFileSync(logFile, ''); } catch {}
   try { fs.rmSync(pidFile, { force: true }); } catch {}
 
-  if (process.platform === 'win32') {
-    const cmdFile = writeLaunchCmd(path.join(stateDir(), 'router-run.cmd'), exe,
-      ['-d', stateDir(), '-f', configPath()], logFile);
-    const spawnPs = writeSpawnPs(path.join(stateDir(), 'router-spawn.ps1'));
-    const cmdExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
-    // No quotes anywhere: these ASCII paths contain no spaces, and WMI passes
-    // the string through verbatim, so quoting only leaks into the child's argv.
-    const cmdLine = `${cmdExe} /c ${cmdFile}`;
-    const psExe = path.join(process.env.SystemRoot || 'C:\\Windows',
-      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const launched = await spawnText(psExe, [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-File', spawnPs, '-CmdLine', cmdLine,
-    ], { timeout: 25000 });
-    if (launched.status !== 0) {
-      throw new Error(`启动 mihomo 失败：WMI 返回 ${launched.status}${launched.stderr ? `：${launched.stderr.trim()}` : ''}`);
-    }
-  } else {
+  const spawnDetached = () => {
     const child = spawn(exe, ['-d', stateDir(), '-f', configPath()], { detached: true, stdio: 'ignore' });
     child.unref();
     try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
+    return child;
+  };
+
+  if (process.platform === 'win32') {
+    // Prefer an ordinary detached child — same as on macOS/Linux. It stays in
+    // magpie's process tree, which a host kill cleans up; only when that child
+    // is refused (some machines won't let an unsigned plugin host spawn a
+    // detached binary) do we fall back to the WMI launch below.
+    const child = spawnDetached();
+    const upDirect = await waitForController(controllerPort, 6000);
+    if (!upDirect) {
+      // Detached spawn was refused or died instantly. WMI parents the new
+      // process under WmiPrvSE instead of magpie, which keeps the node ports
+      // alive across a magpie reload/exit — and gets a launch that a plain
+      // detached spawn could not.
+      try { child.kill(); } catch { /* already gone */ }
+      const cmdFile = writeLaunchCmd(path.join(stateDir(), 'router-run.cmd'), exe,
+        ['-d', stateDir(), '-f', configPath()], logFile);
+      const spawnPs = writeSpawnPs(path.join(stateDir(), 'router-spawn.ps1'));
+      const cmdExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+      // No quotes anywhere: these ASCII paths contain no spaces, and WMI passes
+      // the string through verbatim, so quoting only leaks into the child's argv.
+      const cmdLine = `${cmdExe} /c ${cmdFile}`;
+      const psExe = path.join(process.env.SystemRoot || 'C:\\Windows',
+        'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const launched = await spawnText(psExe, [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', spawnPs, '-CmdLine', cmdLine,
+      ], { timeout: 25000 });
+      if (launched.status !== 0) {
+        throw new Error(`启动 mihomo 失败：WMI 返回 ${launched.status}${launched.stderr ? `：${launched.stderr.trim()}` : ''}`);
+      }
+    }
+  } else {
+    spawnDetached();
   }
 
   const up = await waitForController(controllerPort);

@@ -57,6 +57,7 @@ export function readControllerHints() {
   const home = os.homedir();
   const candidates = [
     path.join(home, 'AppData', 'Roaming', 'io.github.clash-verge-rev.clash-verge-rev', 'config.yaml'),
+    path.join(home, 'Library', 'Application Support', 'io.github.clash-verge-rev.clash-verge-rev', 'config.yaml'),
     path.join(home, '.config', 'clash-verge', 'config.yaml'),
     path.join(home, 'AppData', 'Roaming', 'mihomo-party', 'mihomo.yaml'),
     path.join(home, 'AppData', 'Roaming', 'mihomo-party', 'config.yaml'),

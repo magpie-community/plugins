@@ -28,6 +28,7 @@ export function clashRoot() {
   const cands = [
     process.env.CLASH_VERGE_DIR,
     path.join(os.homedir(), 'AppData', 'Roaming', 'io.github.clash-verge-rev.clash-verge-rev'),
+    path.join(os.homedir(), 'Library', 'Application Support', 'io.github.clash-verge-rev.clash-verge-rev'),
     path.join(os.homedir(), '.config', 'clash-verge'),
     process.env.MIHOMO_PARTY_DIR,
     path.join(os.homedir(), 'AppData', 'Roaming', 'mihomo-party'),
