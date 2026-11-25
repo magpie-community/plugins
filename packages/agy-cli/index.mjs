@@ -3022,9 +3022,14 @@ class Proc {
       socket.end(JSON.stringify({ result: spilled }) + "\n")
       return null
     }
-    // agy consumes its internal toolSummary instead of forwarding it to MCP.
-    if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
-      args = { ...args, toolSummary: "Run command" }
+    // agy consumes its internal toolSummary instead of forwarding it to MCP, so
+    // a call it makes reaches us without one. The client (an outer agy) declared
+    // the field required on the tool, so put a value back before handing the
+    // call on. We dropped the incoming toolSummary from every tool's required
+    // list above, so this restore is for every tool whose schema declares it,
+    // not run_command alone.
+    if (tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
+      args = { ...args, toolSummary: name === "run_command" ? "Run command" : name }
     }
     // Outer agy expects call_mcp_tool.Arguments as a JSON object for jsontext.Value,
     // while Gemini schema translation exposes Arguments as type:"string" inside ACP.
@@ -5645,9 +5650,14 @@ function normalizeTools(body) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }
     const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(expandToolSchema(rawSchema)))
-    // agy adds its own required toolSummary to MCP tools. A duplicate makes
-    // the resulting JSON Schema invalid before the agent can start.
-    if (tool.name === "run_command" && Array.isArray(inputSchema.required)) {
+    // agy adds its own required toolSummary to every tool it loads (run_command
+    // and the MCP tools alike). When the client already lists toolSummary as
+    // required — e.g. an outer agy injected it before forwarding the tool here —
+    // agy re-adds it and the duplicate ('allOf' /required items 0 and 1 equal)
+    // makes the JSON Schema invalid, so the toolbox fails to build. Drop the
+    // incoming toolSummary from every tool's required list so agy adds exactly
+    // one, as it does for a tool it sees fresh.
+    if (Array.isArray(inputSchema.required)) {
       inputSchema.required = inputSchema.required.filter((key) => key !== "toolSummary")
     }
     tools.push({

@@ -1773,6 +1773,40 @@ test("a body over 12 MB is refused before it is signed or sent (#1121)", async (
   assert.match(await res.text(), /13\.0 MB/)
   assert.equal(calls, 0)
 })
+test("InferHub's 001001005 on a chat over 10 MB is the size: a 413 that names it, never retried", async () => {
+  const cred = await makeCred()
+  const refused = '{"error_code":"InferHub.001001005.400","error_msg":"The request param is invalid"}'
+  for (const answer of [
+    () => new Response(refused, { status: 400 }),
+    // inside a 200, as the gateway also answers it when streaming
+    () => sseResponse(sse(JSON.parse(refused))),
+  ]) {
+    let calls = 0
+    let renewals = 0
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, {
+      fetch: async (url) => {
+        if (String(url) === x.STS_TOKEN_ENDPOINT) {
+          renewals += 1
+          return new Response("{}", { status: 500 })
+        }
+        calls += 1
+        return answer()
+      },
+      ...fastRetry,
+    })
+    const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+    const image = "data:image/png;base64," + "A".repeat(10 * 1024 * 1024)
+    const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] }))
+    assert.equal(res.status, 413)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    const text = await res.text()
+    assert.match(text, /10 MB/)
+    assert.match(text, /InferHub\.001001005/)
+    assert.equal(calls, 1, "the size is not retried")
+    assert.equal(renewals, 0)
+  }
+})
+
 test("a 403 is a sign-in the account no longer has, on chats and other requests alike", async () => {
   const cred = await makeCred()
   const denied = '{"error_code":"APIG.0305","error_msg":"access denied"}'
