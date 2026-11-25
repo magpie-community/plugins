@@ -333,13 +333,24 @@ const CATALOG = [
   { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
 ]
 
-// Every model listed takes text alone: the vision ones (`-vl`) are left out
-// (parseModelInfo), and the rest answer an image with
+// CodeArts' agent kernel (0.2.9, measured 2026-11-23) declares these five in
+// its `multimodalModels` init config. The kernel sends the image to the same
+// `/api/v2/chat/completions` endpoint as a data URL, and all five answered one
+// on a real account. Every other model is text-only: the vision ones (`-vl`)
+// are left out (parseModelInfo), and the rest answer an image with
 // `InferHub.001001020.406` "The request model is not multimodal". Said in so
 // many words (`image: false`, not left out, which magpie reads as unknown),
-// so magpie describes an image for the model or leaves it out, and an agent
-// is told it takes none.
+// so magpie describes an image for a text-only model or leaves it out, and an
+// agent is told it takes none.
 const TEXT_ONLY = { input: { text: true, image: false, audio: false, video: false, pdf: false } }
+const MULTIMODAL = new Set([
+  "deepseek-v4.1-flash-1017",
+  "glm-5.3-flash",
+  "deepseek-v4.1-flash",
+  "kimi-k3.1-pro",
+  "kimi-k3",
+])
+const isMultimodal = (id) => MULTIMODAL.has(String(id ?? "").toLowerCase())
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -3253,15 +3264,19 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
   // The ledger's key: the signer, which outlives a sign-in; else the session.
   const ledgerKey = async (cred) => accountIdentityOf(cred).id || (await accountSessionIds(cred)).sessionId
 
-  const configModel = (m) => ({
-    name: m.name ?? m.id,
-    // Declared so a caller never sends its own, larger default.
-    limit: { context: m.context ?? 0, output: MAX_OUTPUT_TOKENS },
-    tool_call: true,
-    // Text only (TEXT_ONLY): said, not left out, so an agent sends no image.
-    attachment: false,
-    modalities: { input: ["text"], output: ["text"] },
-  })
+  const configModel = (m) => {
+    const sees = isMultimodal(m.id)
+    return {
+      name: m.name ?? m.id,
+      // Declared so a caller never sends its own, larger default.
+      limit: { context: m.context ?? 0, output: MAX_OUTPUT_TOKENS },
+      tool_call: true,
+      // Said either way, never left out: magpie reads a missing input.image as
+      // unknown and falls back to models.dev's vote for a same-named model.
+      attachment: sees,
+      modalities: { input: sees ? ["text", "image"] : ["text"], output: ["text"] },
+    }
+  }
 
   /**
    * The reasoning levels a host is told about.
@@ -3283,12 +3298,14 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
 
   const modelOf = (provider, live, state) => {
     const base = provider.models?.[live.id] ?? {}
+    const sees = isMultimodal(live.id)
     const capabilities = {
-      temperature: true, toolcall: true, output: { text: true }, attachment: false,
+      temperature: true, toolcall: true, output: { text: true }, attachment: sees,
       ...(base.capabilities ?? {}),
       ...(live.reasoning ? { reasoning: true } : {}),
-      // what the user's own config says of a kind stands; the rest is text only
-      input: { ...TEXT_ONLY.input, ...(base.capabilities?.input ?? {}) },
+      // what the user's own config says of a kind stands; the known multimodal
+      // set and TEXT_ONLY fill the rest
+      input: { ...TEXT_ONLY.input, ...(sees ? { image: true } : {}), ...(base.capabilities?.input ?? {}) },
     }
     // magpie's own fields: `free` (from the free daily pool, the same answer
     // the signed `maas_type: benefit` header follows, so a model never shows

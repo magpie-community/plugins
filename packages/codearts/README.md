@@ -151,10 +151,15 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
   `mcp__plugin_android-emulator_android-emulator__android_discover_project`) goes as its first
   55 characters, `_` and 8 hex of its SHA-256, and the tool calls in the answer, streamed or
   not, carry the agent's own name again.
-- Every model is listed as text only (`modalities.input: ["text"]`, `image: false`): CodeArts
-  answers an image with `InferHub.001001020.406` "The request model is not multimodal". Since
-  0.2.4 magpie is told so, and describes an image for the model or leaves it out. That refusal,
-  inside a `200` or with any status, comes back as a `400`, not a `502` an agent would ask again.
+- The five models CodeArts' agent kernel declares in `multimodalModels` (`deepseek-v4.1-flash-1017`,
+  `glm-5.3-flash`, `deepseek-v4.1-flash`, `kimi-k3.1-pro`, `kimi-k3`; measured on CodeArts 0.2.9,
+  2026-11-23) are listed as taking images (`modalities.input: ["text", "image"]`); the kernel sends
+  the image to the same `/api/v2/chat/completions` endpoint as a data URL, and all five answered one
+  on a real account. Every other model is listed as text only (`modalities.input: ["text"]`,
+  `image: false`): CodeArts answers an image with `InferHub.001001020.406` "The request model is not
+  multimodal". Since 0.2.4 magpie is told so, and describes an image for a text-only model or leaves
+  it out. That refusal, inside a `200` or with any status, comes back as a `400`, not a `502` an agent
+  would ask again.
 
 ## Usage and check-in
 
@@ -329,7 +334,10 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   只对流式回答计量积分），调用方要非流式时折叠回 JSON；默认注入 `thinking: { type: "enabled" }`，思考与
   正文分开；200 里内嵌的错误换算为 `429` / `400` / `502` 并带厂商原话；码道只接受不超过 64 个字符的工具名，
   更长的（如 MCP 工具名）发出时缩为前 55 个字符 + `_` + 8 位 SHA-256，回答（流式与非流式）里的工具调用再换回原名。
-  0.2.4 起所有模型都声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
+  码道 0.2.9 的 agent kernel 在 `multimodalModels` 里声明了五个可收图片的模型（`deepseek-v4.1-flash-1017`、
+  `glm-5.3-flash`、`deepseek-v4.1-flash`、`kimi-k3.1-pro`、`kimi-k3`；2026-11-23 实测），它们声明为
+  `modalities.input: ["text", "image"]`；kernel 也是把图片以 data URL 发到同一个 `/api/v2/chat/completions`，
+  五个模型都能读图。其余模型仍声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
   magpie 会替模型描述图片或把图片略去；这个拒绝不论放在 200 里还是带别的状态码，都换算为 `400`，而不是让智能体反复重试的 `502`。
 - **用量与签到**：总积分决定账号是否可用，其余积分桶只做明细；另有每日免费额度窗口。各批积分的到期
   时间读自码道控制台同一批接口，读不到时退回插件的签到账本 `~/.config/magpie/codearts-checkins.json`
