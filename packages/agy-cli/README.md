@@ -184,6 +184,11 @@ your location"），尽管它自己查的额度已经拿到了。这时插件按
 登录已过期且无法续期、或 agy 已在这份登录上失败过时，不运行 agy，账号显示登录已过期，直到重新登录。
 其他失败的额度查询等 10 分钟再试，每次翻倍，最长 6 小时。
 
+macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里，读不到登录钥匙串，agy 在那里也读不到。
+这时 agy 自己的账号用 Magpie 窗口为它复制的那份登录（见上文）；没有复制的，账号会说明原因：
+改用 `magpie daemon install`（以你自己的服务运行）或 Magpie 应用，或用“添加另一个 Google 账号”登录，
+它的登录保存在文件里。
+
 ## 环境变量
 
 | 变量 | 默认值 | 作用 |
@@ -194,6 +199,7 @@ your location"），尽管它自己查的额度已经拿到了。这时插件按
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
 | `AGY_BRIDGE_TELEMETRY` | 关闭（agy 不上报） | 插件启动 agy 时带上 `--disable-telemetry`（agy 的 `acp --help` 没这个开关就带不上）；设成 `1` 保留 agy 自己的上报 |
+| `AGY_BRIDGE_ALLOW_AGY_TOOLS` | 关闭 | 设为 `1` 让每个 `agy acp` 带 `--dangerously-skip-permissions` 启动，agy 自带的工具（shell、改文件、浏览器）自动放行，不再由 bridge 逐个拒绝 `session/request_permission`。客户端 `ide-tools` 仍在客户端自己的权限下运行。agy 的工具在 magpie 所在的电脑上以你的用户权限运行，凡是到达这个 provider 的请求都能用：另一台机器上的客户端、或持有网关密钥的任何人，都能在这台电脑上执行命令。只有你自己用时才打开 |
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |

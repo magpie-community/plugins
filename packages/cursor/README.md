@@ -307,6 +307,10 @@ go without the list for 5 minutes instead of each waiting for it again.
 ## Usage
 
 magpie shows Cursor Models, Other Models and Total for the billing period.
+Each window that resets at the billing cycle's end says the cycle's length
+(its start to its end) as its span when Cursor sends the start, so magpie's
+Usage table puts it in the column for that length, and routing reads it as
+a budget of a day or more rather than a rate cap (0.2.49).
 A plan of Cursor's merged billing (`GetPlanInfo`'s `isMerged`, the newer
 plans) has no Other Models pool: its included usage is one allowance every
 model draws on, as the dashboard's "Weekly usage limit" shows it. magpie
