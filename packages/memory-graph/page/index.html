@@ -1,0 +1,116 @@
+<!-- 本文由AI自动生成 -->
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI_记忆图谱</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfaf7;
+        --fg: #1c1a17;
+        --muted: #6b6560;
+        --accent: #0f766e;
+      }
+      html[data-theme="dark"] {
+        --bg: #17171a;
+        --fg: #eceae6;
+        --muted: #9a948c;
+        --accent: #2dd4bf;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif;
+      }
+      .wrap {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 24px;
+        text-align: center;
+      }
+      .dots {
+        display: flex;
+        gap: 6px;
+      }
+      .dots i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        opacity: 0.35;
+        animation: pulse 1.2s infinite ease-in-out;
+      }
+      .dots i:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+      .dots i:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.25;
+          transform: translateY(0);
+        }
+        50% {
+          opacity: 1;
+          transform: translateY(-3px);
+        }
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 32em;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: color-mix(in srgb, var(--fg) 8%, transparent);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      .err {
+        color: #dc2626;
+        font-weight: 600;
+      }
+      .retry {
+        display: none;
+        margin-top: 2px;
+        padding: 5px 14px;
+        border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+        border-radius: 7px;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      .retry:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .retry.on {
+        display: inline-block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <p id="msg">正在打开记忆图谱…</p>
+      <button type="button" id="retry" class="retry">重试</button>
+    </div>
+    <script src="_magpie/bridge.js"></script>
+    <script src="boot.js"></script>
+  </body>
+</html>
