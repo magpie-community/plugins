@@ -1117,17 +1117,33 @@ function normalizeEffort(value) {
   return EFFORT_ORDER.includes(direct) ? direct : ""
 }
 
-function requestedEffort(body) {
+// The level the request names. magpie says the effort the client asked for in
+// X-Magpie-Effort (said): its Anthropic body carries only a thinking budget,
+// held under max_tokens, or no thinking at all when max_tokens is small, so a
+// level read from the budget put reasoning_effort "high" at max_tokens 4000 on
+// -low, and "low" at max_tokens 1500 on the family's default high
+// (plugins#1540). What magpie says comes first; the budget is the last guess.
+function namedEffort(body, said = "") {
   const forced = normalizeEffort(process.env.AGY_BRIDGE_EFFORT)
   if (forced) return forced
   const thinking = body.thinking?.type
   if (thinking === "disabled") return ""
+  const told = normalizeEffort(said)
+  if (told) return told
   const generic = [body.reasoning_effort, body.reasoningEffort, body.reasoning?.effort,
     body.generationConfig?.thinkingConfig?.thinkingLevel].map(normalizeEffort).find(Boolean)
   if (generic) return generic
   if (thinking !== "enabled" && thinking !== "adaptive") return ""
-  const direct = normalizeEffort(body.output_config?.effort)
-  if (direct) return direct
+  return normalizeEffort(body.output_config?.effort)
+}
+
+function requestedEffort(body, said = "") {
+  return namedEffort(body, said) || budgetEffort(body)
+}
+
+function budgetEffort(body) {
+  const thinking = body.thinking?.type
+  if (thinking !== "enabled" && thinking !== "adaptive") return ""
   const budget = Number(body.thinking?.budget_tokens)
   if (!Number.isFinite(budget) || budget <= 0) return ""
   if (budget <= 4096) return "low"
@@ -1193,12 +1209,13 @@ function resolveCatalogAlias(catalog, model) {
   return { id: model, inlineEffort: "" }
 }
 
-function resolveAgyModel(listed, model, body) {
+function resolveAgyModel(listed, model, body, said = "") {
   const catalog = listed.routing ?? listed
   const { id: resolvedId, inlineEffort } = resolveCatalogAlias(catalog, model)
   const family = catalog.routes.get(resolvedId)
   if (!family) return resolvedId
-  const requested = requestedEffort(body) || inlineEffort
+  // a level in the model's id beats one guessed from a thinking budget
+  const requested = namedEffort(body, said) || inlineEffort || budgetEffort(body)
   const effort = requested ? closestEffort(requested, family.efforts) : family.defaultEffort
   return family.byEffort.get(effort)
 }
@@ -5471,6 +5488,13 @@ function sameInstructions(a, b) {
   return instructionsIdentity(a) === instructionsIdentity(b)
 }
 
+function requestHeader(fetchInput, init, name) {
+  const headers = new Headers(
+    init?.headers ?? (fetchInput instanceof Request ? fetchInput.headers : undefined) ?? {},
+  )
+  return headers.get(name)?.trim() || ""
+}
+
 // The model is not part of the key: agy switches models inside a live session.
 function requestSessionScope(fetchInput, init) {
   const headers = new Headers(
@@ -7997,8 +8021,9 @@ export const AntigravityBridgePlugin = async () => {
             const layout = requestLayout(body)
             body = { ...foldSplitCalls(canonicalBody(body)), model: requestedModel }
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
-            const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
-            const selection = { model: requestedModel, effort: requestedEffort(body) }
+            const saidEffort = requestHeader(fetchInput, init, "x-magpie-effort")
+            const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body, saidEffort)
+            const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
             const sessionScope = requestSessionScope(fetchInput, init)
             // an account's conversations are its own: its agy has them
             const callerWorkDir = namedWorkDirectory(body, init)
