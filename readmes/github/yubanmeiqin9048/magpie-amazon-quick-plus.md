@@ -26,6 +26,11 @@
 - **长连接分片重组与稳定性强化**：
   - 支持入站 `_chunked_frame` 分片重组，避免超长响应跨多帧被截断；内置 WebSocket 建连（15s）与流式空闲（90s）超时保护并返回明确 HTTP `504`。
   - 桌面端凭证基于 `profiles.json` 文件 `mtime` 与 Token 过期时间（支持数字时间戳与 ISO-8601 字符串）智能缓存，避免每轮重复拉起系统凭据进程；Quick 账号配置（`settings`）按账号缓存 2 分钟；浏览器 OAuth 回调服务支持超时自动关闭，防止放弃登录时残留本地端口占用。
+- **Draft Agent 系统指令通道（carrier）**：
+  - 调用方的 `system` / `developer` 消息除了内联进 `<instructions>`，还会通过数据平面 `/integration/quick-work/qbs-event` 的 `invokeAgent` 信封走 `api/ws-rpc`：`create_agent_draft` 建草稿拿 `agent_id` → `update_chat_agent_config` 写入中性载体指令；**不发布草稿**（`publish_agent_draft` 会超时），对话时在 `user_message` 里带 `chat_agent_id` + `use_draft: true` 引用它。
+  - 按账号复用**同一个**中性 carrier agent：`agentId` 持久化到本地 JSON（默认 `~/.quickwork/carrier-agents.json`），**插件重启后继续复用**，且成功缓存**不会按时间过期**，只有真正失效时才重建；首轮并发用 in-flight 去重。每条消息都新建草稿会逐步耗尽 `max_custom_agents` 配额，这是刻意避免的。载体指令只描述「遵循对话中的 `<instructions>`」，不含任何越狱 / 对抗词。
+  - 草稿若在服务端被清理（或换了登录），该轮会在模型输出前失败；插件随即 `forget` 掉这个失效 id（内存 + 磁盘）并以 `chat_agent_id: null` 自动重试一次，调用方仍能拿到回答。鉴权失败（401/403）与主动取消不触发该降级。
+  - 创建或写入失败（含 gateway 不支持、配额已满、网络异常）会在 10 分钟内记负缓存并**平滑降级**回 `chat_agent_id: null` + 内联 `<instructions>`，绝不阻断对话。开关见 `MAGPIE_QUICK_AGENT_MODE`。
 - **动态模型列表与用量查询**：通过 `api/ws-rpc`（`get_settings`）获取账号已启用的模型槽位，并通过 `profile/usage` 查询月度与会话配额窗口及重置时间。
 - **CJK 思维链与工具实参语言对齐**：中文 / 日文 / 韩文工具会话自动在 `custom_prompt` 注入语言一致性约束，避免将日志、报错文案或检索词翻译成英文导致查找失败；亦可通过环境变量隐藏上游 `reasoning_content`。
 
@@ -39,8 +44,8 @@ https://github.com/yubanmeiqin9048/magpie-amazon-quick-plus
 
 ## 登录方式
 
-1. **Amazon Quick 浏览器登录（推荐）** *（尤其在 macOS 上：一键浏览器授权，独立会话，不触碰系统钥匙串）*
-   - 直接打开浏览器前往 AWS IAM Identity Center（支持 Google / Amazon / Builder ID 等登录），完成授权后自动回传独立的 `access_token` 与 `refresh_token`，不依赖桌面端保持运行（`tenantUrl` 会从本机 `~/.quickwork/profiles.json` 自动识别）。
+1. **Amazon Quick 浏览器登录（推荐）** *（支持本机与 Docker / 远程网页端；一键或两步回调完成授权，不触碰系统钥匙串）*
+   - 若本机已存在 `~/.quickwork/profiles.json` 则直接拉起 AWS IAM Identity Center 登录；若未安装桌面端（如 Docker / 远程部署），自动通过 `quick.aws.com/sn` 两跳发现流程获取账号 `tenantUrl` 与邮箱信息，并附带 `&port=` 触发 Magpie 回调粘贴框（分两步粘贴 `/callback?...` 与 `/?code=...` 即可完成远程登录）。
    - **若浏览器打开后提示 `Your session has expired`**：通常是浏览器里残留了过期的 AWS Builder ID 会话 Cookie（`signin.aws`）。在浏览器地址栏左侧进入「Cookie 和网站数据 → 管理设备上的网站数据」（或 Chrome 打开 `chrome://settings/content/all?searchSubpage=signin.aws`）清除 `signin.aws` / `us-east-1.signin.aws` 的全部 Cookie 后重试即可；也可将授权链接复制到无痕窗口打开完成登录。
 2. **复用 Amazon Quick 桌面端登录** *（Windows / Linux 开箱即用，macOS 会触发钥匙串授权）*
    - 自动复用当前桌面端已登录账号，不会改动磁盘或凭据库中的刷新令牌。
@@ -83,6 +88,9 @@ https://github.com/yubanmeiqin9048/magpie-amazon-quick-plus
 
 - `QUICKWORK_DIR` / `AWS_QUICK_DIR`：覆盖默认的 `~/.quickwork` 配置目录路径。
 - `MAGPIE_QUICK_STRIP_REASONING_CONTENT`：设为 `1` / `true` / `yes` / `on` 时不向调用方下发上游 `reasoning_content`（等价于 `executeSncsChat` 的 `stripReasoning: true`，显式传参优先）。
+- `MAGPIE_QUICK_AGENT_MODE`：Draft Agent 通道开关（默认 `off`，回到仅内联 `<instructions>` 的方案）。设为 `carrier` 时启用草稿 agent 指令层。
+- `MAGPIE_QUICK_AGENT_CACHE_FILE`：Carrier 草稿 agent 缓存文件路径（默认 `<quickworkDir>/carrier-agents.json`，即通常是 `~/.quickwork/carrier-agents.json`；亦受 `QUICKWORK_DIR` / `AWS_QUICK_DIR` 影响）。只记录创建成功的 `agentId`，失败不落盘；读写异常自动退回纯内存。
+- `MAGPIE_QUICK_WEB_SEARCH`：未显式传 `web_search_enabled` 时的默认值（默认开启，与桌面端一致）。设为 `false` / `0` / `off` / `no` 时默认关闭云端联网，避免抢答调用方自己的工具链；请求体显式传参始终优先。
 
 ## 测试
 
@@ -109,7 +117,7 @@ Works with **OpenCode 1.x**, **OpenCode 2.x**, and **Magpie** with zero external
 - **Import from JSON**: Supports importing exported Amazon Quick credential JSON files.
 - **SNCS WebSocket Bridge**: Adapts OpenAI-compatible `/chat/completions` (both streaming SSE and non-streaming JSON, including `reasoning_effort` / `thinking_delta` → `reasoning_content`) onto Amazon Quick's SpaceNeedleConversationService (`SNCS`) bidirectional WebSocket (`AIDP` and `Gateway` transports), backed by the account's `tenantUrl` or `https://quick.aws.com/v1` base URL.
 - **Web Search & Client Tool Calling**:
-  - Defaults `web_search_enabled` to `true` (matching the desktop app; override with `web_search_enabled: false`) and handles server-side tool stream events (`tool_start`, `tool_result`, etc.).
+  - Defaults `web_search_enabled` to `true` (matching the desktop app; override with `web_search_enabled: false`, or flip the default for every request with `MAGPIE_QUICK_WEB_SEARCH=false` so Quick's cloud search does not answer ahead of your own tool chain) and handles server-side tool stream events (`tool_start`, `tool_result`, etc.).
   - Places `system` instructions and OpenAI `tools` declarations inside `<instructions>`, appends a trailing `<client_tool_directive>` to prevent Quick's cloud sandbox from writing to `/workspace` instead of calling client tools, formats `tool` results as `<tool_result>`, and parses both chunked `<tool_call>` JSON blocks (including fenced JSON) and Anthropic `<function_calls><invoke><parameter>` XML calls with schema-aware type coercion while omitting fabricated `outpostId` values (make sure write/terminal tools are enabled in your client such as Zed/Magpie Write mode rather than read-only Ask mode).
 - **Stateful Thread Continuation (1M Context), 64 KB Frame Fitting & Cloud Attachments**:
   - Tracks active `(account, session / message-prefix, tools digest)` threads and reuses Quick's server-side `thread_id` (`session_connect` with `session_id` + `focus_only: true`), sending **only the incremental `User` / `<tool_result>` delta** on matching follow-up turns; when dynamic IDE `system` context (open files, cursor, diagnostics) updates between turns, appends a compact `<system_context_update>` delta without breaking `thread_id` continuity.
@@ -117,6 +125,11 @@ Works with **OpenCode 1.x**, **OpenCode 2.x**, and **Magpie** with zero external
   - Measures the encoded `AIDP` Base64 outbound frame size (kept within 62 KB, safely below Amazon Quick's 64 KB limit) and progressively compacts verbose schemas, older turns, and oversized system text while protecting the current turn's parallel tool results with proportional inline budgets and `<client_tool_directive>`, mapping upstream size-limit errors to HTTP `400`. Also supports multimodal `image_url` inputs (`data:` URLs and `http(s):` URLs) and full current-turn spillover (`prompt_context.txt`) via Quick cloud attachment uploads (`AIDP` + `Gateway` presigned upload with normalized MIME types, DLP status polling, and `files/upload/{threadId}` delivery), notifying the model about `prompt_context.txt` only after upload succeeds. (Branch `v0.1.3` preserves the earlier purely stateless release.)
 - **Inbound Chunked Frames & Connection Hardening**:
   - Reassembles inbound `_chunked_frame` payloads across out-of-order chunks, guards WebSocket connects (`15s`) and response idle stalls (`90s`) with HTTP `504` timeouts, caches desktop credentials against `profiles.json` `mtime` + token expiry (supporting numeric epochs and ISO-8601 strings), caches account settings for 2 minutes, and auto-closes abandoned OAuth loopback listeners.
+- **Draft Agent system-instruction channel (carrier)**:
+  - Caller `system` / `developer` messages ride inline in `<instructions>` and, in addition, reach Quick's agent instruction layer through `api/ws-rpc` over the data-plane `/integration/quick-work/qbs-event` `invokeAgent` envelope: `create_agent_draft` returns an `agent_id`, then `update_chat_agent_config` writes the neutral carrier instructions; the draft is **never published** (`publish_agent_draft` outlives the relay timeout), and turns reference it with `chat_agent_id` + `use_draft: true`.
+  - One **shared** neutral carrier agent per account keeps every conversation off the `max_custom_agents` quota. Its id is persisted to a small local JSON file (default `~/.quickwork/carrier-agents.json`), so a plugin restart keeps reusing it, and a successful id **never expires on a timer** — it is rebuilt only when it actually fails. Concurrent first turns are de-duplicated by an in-flight promise. The carrier instructions only restate "follow the caller's `<instructions>`" and contain no jailbreak or override phrasing.
+  - If the draft is removed server-side (or the sign-in changed), the turn fails before any model output; the plugin then `forget`s that id (memory and disk) and retries once with `chat_agent_id: null`, so the caller still gets an answer. Auth failures (401/403) and deliberate aborts do not trigger this downgrade.
+  - Any failure (unsupported gateway surface, quota exhaustion, network error, missing `agent_id`) is negatively cached for 10 minutes and **degrades smoothly** back to `chat_agent_id: null` plus inline `<instructions>`; a turn is never blocked. Toggle with `MAGPIE_QUICK_AGENT_MODE`.
 - **Dynamic Models & Usage**: Discovers active model slots from `api/ws-rpc` (`get_settings`) and reports monthly & session quota windows from `profile/usage`.
 - **CJK Reasoning & Tool-Argument Alignment**: Automatically appends a language-consistency rule to `custom_prompt` for Chinese / Japanese / Korean tool sessions so log lines, filenames, and search queries stay verbatim rather than being translated into English; optionally strips upstream `reasoning_content` via environment variable.
 
@@ -173,6 +186,9 @@ When monthly overage (`overage_monthly`) is enabled on an account, it is display
 
 - `QUICKWORK_DIR` / `AWS_QUICK_DIR`: Override the default `~/.quickwork` profile directory path.
 - `MAGPIE_QUICK_STRIP_REASONING_CONTENT`: Set to `1` / `true` / `yes` / `on` to withhold upstream `reasoning_content` from callers (equivalent to `stripReasoning: true` in `executeSncsChat`; explicit option takes precedence).
+- `MAGPIE_QUICK_AGENT_MODE`: Draft Agent channel switch (default `off`, staying on the inline `<instructions>` path). Set to `carrier` to enable the draft-agent instruction layer.
+- `MAGPIE_QUICK_AGENT_CACHE_FILE`: Path of the carrier draft-agent cache (default `<quickworkDir>/carrier-agents.json`, normally `~/.quickwork/carrier-agents.json`; also honours `QUICKWORK_DIR` / `AWS_QUICK_DIR`). Only successfully created `agentId`s are stored, failures are never written, and any read/write error silently falls back to memory.
+- `MAGPIE_QUICK_WEB_SEARCH`: Default for `web_search_enabled` when a request does not set it (on by default, matching the desktop app). Set to `false` / `0` / `off` / `no` to default off so Quick's cloud search cannot answer ahead of the caller's own tool chain; an explicit request field always wins.
 
 ## Tests
 

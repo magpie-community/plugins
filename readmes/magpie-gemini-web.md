@@ -4,7 +4,7 @@
 
 中文 | [English](README.en.md) | [贡献与反馈指南](CONTRIBUTING.md)
 
-让 [Magpie](https://usemagpie.ai/) 通过你的 Google 账号使用 **Google AI Studio** 与 **Gemini 网页版**。插件在本机自动运行 [AIStudio2API](https://github.com/Mag1cFall/AIStudio2API) 与 [gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)，提供对话、原生工具调用、Nano Banana 图片生成与 Deep Research 等能力。
+让 [Magpie](https://usemagpie.ai/) 通过你的 Google 账号使用 **Google AI Studio** 与 **Gemini 网页版**，也可在 [Agent2API](https://github.com/aimod-cc/Agent2API) 中加载。插件在本机自动运行 [AIStudio2API](https://github.com/Mag1cFall/AIStudio2API) 与 [gemini-web2api-go](https://github.com/zexadev/gemini-web2api-go)，提供对话、原生工具调用、Nano Banana 图片生成与 Deep Research 等能力。
 
 > **新模型支持说明**：两个 Provider 均已收录 **`gemini-4-hydrogen`** 与 **`gemini-4-carbon`**。AI Studio 默认自动跟随官方稳定版，Hydrogen 含 `xhigh` 思考档位；Gemini Web 从一键本地后端 **`4.30.0-magpie.1`** 起提供独立模型 ID，其中 Hydrogen 支持登录账号（含免费账号），Carbon 需付费 / Ultra 等具备权益的账号，旧 `gemini-4-argon` 名称保留为 Carbon 别名。上游 v4.31.0 已包含付费模型 `gemini-4-neon` 与其思考档，`gemini-3.1-pro` 保留为 Neon 兼容别名。优化后端 **`4.31.0-magpie.2`** 在这份目录上把 Argon/Carbon 身份错误排除出代理熔断。
 
@@ -79,6 +79,14 @@
 
 > **为什么必须用无痕窗口？** 后端会定时刷新会话来保活。若与日常浏览器共用同一登录会话，Google 会将整个会话作废，导致你的浏览器退出所有 Google 服务。使用无痕窗口（或单独准备 Google 小号）可提供独立会话。
 
+### 在 Agent2API 中使用
+
+[Agent2API](https://github.com/aimod-cc/Agent2API) 可以把本插件当作 Magpie / OpenCode 插件加载。在它的插件目录里安装 `magpie-gemini-web`，登录步骤与上面相同。模型来自本机的 Google AI Studio 与 Gemini 网页版。
+
+- 两个 Provider 的登录方式都会列出。本地服务没在运行时，开始登录才会启动它。
+- 连接已有后端时，在密码框里填写 API key。
+- AI Studio 的账号管理页留在当前已经授权的本机登录页上。
+
 ---
 
 ## 多账号与额度卡片
@@ -143,6 +151,8 @@ magpie plugin options magpie-gemini-web '{"studio":{"proxy":"http://127.0.0.1:78
 | `requestTimeoutMs` / `modelTimeoutMs` | Web：`570000` / `10000`；Studio：`1800000` / `10000` | 共用（`studio.*` 可覆盖） | 单次等待后端 / 拉取模型列表的超时（毫秒）；收到流数据后重新计时，显式配置优先 |
 | `stripCitations` | `true` | 仅 `gemini-web` | 剥离回复与工具参数中的 `[cite: 1]`、`[cite_start]` 标记（AI Studio 不支持剥离） |
 | `proxy` | 无 | 仅 `gemini-web` | 一键配置后端访问 Google 的代理（`http` / `https` / `socks5` / `socks5h`），也可用环境变量 `GEMINI_WEB_PROXY` 或在登录第一步填写 |
+| `quickSignIn` | `false` | 仅 `gemini-web` | 一键配置时不再询问代理和账号索引：代理取 `proxy` 选项、`GEMINI_WEB_PROXY` 或代理池，账号索引取粘贴内容（粘贴 `{"cookie":"…","authuser":4}` 可指定），否则为 0 |
+| `openBrowser` | `true` | 仅 `gemini-web` | 一键配置时是否自动用默认浏览器打开 Gemini；设为 `false` 时只在说明里显示地址，便于直接在无痕窗口操作 |
 | `baseURL` | `http://127.0.0.1:8083/v1` | 仅 `gemini-web` | Gemini Web 默认后端地址 |
 | `contextLimit` / `outputLimit` | `1000000` / `8192` | 仅 `gemini-web` | 向客户端声明的上下文 / 输出上限 |
 | `studio.proxy` | 无 | 仅 `ai-studio` | 访问 Google 的代理（`http` / `https` / `socks5`），也可用环境变量 `AI_STUDIO_PROXY`；设置后优先于管理页里保存的代理，留空等于不设置 |

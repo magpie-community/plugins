@@ -6,7 +6,7 @@
 
 - provider id: `breeze`
 - display name: `BreezeBlue`
-- model: `breeze-tts-2` (display name `Breeze TTS 2`, `text` input, `audio` output)
+- models: listed from Breeze's `/v1/models` (currently `breeze-tts-2` and `breeze-tts-2-multilingual`), each with `text` input and `audio` output; falls back to the `breeze-tts-2` declaration when there is no API key or the vendor list cannot be read (request failure, non-2xx, unparsable or empty payload)
 - UI copy: `en` / `zh` / `zh-TW` / `ja` / `de`, falling back to English
 - only network target: `https://api.breeze.blue`
 - icon: `magpie.icon` points to BreezeBlue's official `https://breezeblue.ai/favicon.png`; it is not bundled here. The icon belongs to BreezeBlue; remove the field or use your own icon if the vendor objects.
@@ -54,13 +54,14 @@ curl http://127.0.0.1:3425/v1/audio/speech \
 
 | Field | Required | Default | Notes |
 | --- | --- | --- | --- |
+| `model` | yes | — | Model id, e.g. `breeze/breeze-tts-2-multilingual`; a `provider/` prefix is ignored and the remaining id is sent as Breeze's `model_id` |
 | `input` | yes | — | Text to read; a blank string returns 400 |
 | `voice` | yes | — | Breeze voice id, e.g. `voc_...`; URL-path encoded |
 | `response_format` | no | `mp3` | See 3.2 for the mapping; unknown values use `mp3` |
 | `speed` | no | `1` | Clamped to 0.5–2; not sent when 1 |
 | `instructions` | no | not sent | Tone or emotion instructions |
 | `language_code` | no | `zh` | Breeze extension, two-letter ISO 639-1 code |
-| `model_id` | no | `breeze-tts-2` | Breeze extension |
+| `model_id` | no | from `model` | Breeze extension; overrides `model` |
 | `guidance_scale` | no | `1` | Breeze extension, clamped to 1–10; not sent when 1 |
 | `use_speaker_boost` | no | `false` | Breeze extension; sent only when `true` |
 
@@ -120,7 +121,7 @@ The balance appears only on Magpie's provider card and usage. The usage card als
 
 ## 5. Network and security
 
-- The plugin talks only to `https://api.breeze.blue`: `/v1/text-to-speech/{voice_id}` and `/v1/balance`.
+- The plugin talks only to `https://api.breeze.blue`: `/v1/text-to-speech/{voice_id}`, `/v1/models`, and `/v1/balance`.
 - The custom `fetch` handles only `/v1/audio/speech`; every other path returns a JSON error and is never forwarded to Breeze.
 - Requests to Breeze carry only Breeze's `xi-api-key`; headers such as Magpie's `authorization` are not forwarded.
 - The API key never appears in logs, error messages, or response bodies.

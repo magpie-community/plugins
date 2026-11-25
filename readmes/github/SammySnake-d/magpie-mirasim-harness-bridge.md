@@ -17,7 +17,7 @@ agent。这个插件不是新的 agent：它让 Mirasim 里的每个 harness 用
 
 | | |
 | --- | --- |
-| Models | Claude Code in Mirasim lists what magpie gives Claude Code (`magpie models claude`), Codex what it gives Codex, DSH and Pi likewise, under the provider **magpie**. Tick or hide a model for an agent in magpie and Mirasim follows within seconds. Mira Bot runs on Claude Code: its Settings › Model lists Claude Code's. |
+| Models | Claude Code in Mirasim lists what magpie gives Claude Code (`magpie models claude`), Codex what it gives Codex, DSH and Pi likewise, under the provider **magpie**. Tick or hide a model for an agent in magpie and Mirasim follows within seconds. Mira Bot runs on Claude Code: its Settings › Model lists Claude Code's. In Mirasim versions where the composer route menu separates **API key** from **Own account** / **Mirasim credit**, select **API key** (`magpie`) in the route dropdown to list and search Magpie models. |
 | Route | A magpie model runs straight at the gateway, never through Mirasim's relay, on either of Mirasim's routes. Mirasim's own models keep going to its relay. |
 | Codex | Codex's own model cache (`~/.codex`, which Mirasim shares) holds magpie's catalog too; on Mirasim's route those rows went to its relay, which refuses them. They are turned off in Mirasim's Codex menu (your own choices kept); the same models come as magpie's. |
 | DSH | magpie's wiring of DSH sets the model DSH starts on, in a file Mirasim's DSH sessions share; Mirasim, taking that start for DSH's own default, left its own route's DSH on magpie's model. The start is recorded as one Mirasim selected, so Mirasim puts DSH on its own model. DSH runs only models DSH itself has, which are those magpie's DSH connection registers: exactly DSH's catalog. |

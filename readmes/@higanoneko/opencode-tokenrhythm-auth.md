@@ -1,8 +1,8 @@
-# @magpie-community/opencode-tokenrhythm-auth
+# @higanoneko/opencode-tokenrhythm-auth
 
 TokenRhythm provider for Magpie / OpenCode.
 
-[中文文档 / Chinese docs](README.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md)
 
 ## Sign-ins
 
@@ -68,6 +68,21 @@ curl https://tokenrhythm.studio/v1/decision \
   -H "Authorization: Bearer $TOKENRHYTHM_KEY" -H "Content-Type: application/json" \
   -d '{"model":"NeoHorse-Jev-4B","criteria":[{"key":"fast","description":"prioritize speed"}],"input":"..."}'
 ```
+
+## Balance card
+
+The wallet shows as a single spendable balance in the currency's own glyph.
+
+- **Live wallet** — refreshed with the account, to two decimals
+- **Money trend line** — because the card reports a balance rather than a
+  percentage window, magpie keeps it in its amount history: the card charts
+  the actual balance over time, and estimates when it runs out at the pace it
+  has been spent
+- **Currency-native display** — `¥` for CNY, `$` for USD, `€` for EUR; other
+  currencies fall back to their code
+
+The balance intentionally shows the total only. Pay-as-you-go is about what is
+left, and a single figure keeps the card readable at a glance.
 
 ## Configuration
 

@@ -110,6 +110,33 @@ Agent 模式的模型**不管有没有 tools 都会自己调工具**，所以纯
 > 早期版本走的是官方 CLI `@comate/zulu`（`zulu run --mode Ask`），每轮 spawn 一个进程，
 > 慢 4~11 秒，还受 Windows 32k 命令行上限和附件语义困扰。2026-11 换成上面的直连实现后这些问题都没有了。
 
+### 上下文窗口（实测）
+
+模型目录里的 `limit.context` 用 Comate 服务端回的真实上限，各模型并不一样（2026-11 实测）：
+
+| 模型 | 上下文窗口 |
+|---|---:|
+| Deepseek V4 Flash | 1,024,000 |
+| Deepseek V4 Pro | 1,024,000 |
+| Deepseek V4.1 Flash | 1,000,000 |
+| ERNIE 5.5 Flash Preview | 1,000,000 |
+| GLM-5.2 / GLM-5.3 / GLM-5.3-Flash | 1,000,000 |
+| MiniMax M3 | 512,000 |
+| GLM-5.1 / Kimi-K2.6 | 256,000 |
+| GLM-4.7 / GLM-5-Turbo / GLM-5v-Turbo / MiniMax M2.5 / MiniMax-M2.7 | 200,000 |
+
+复测一个模型（服务端在响应的 `tokenUsage` 里回 `contextLimit`）：
+
+```bash
+HTTP_HOST=https://comate.baidu.com npx zulu run --mode Ask -m "Deepseek V4.1 Flash" -q "hi" -d event-stream \
+  | grep -o '"tokenUsage":{[^}]*}'
+```
+
+> 早先版本对 15 个模型一律声明 `context: 128000`，等于把 200K~1.024M 的模型统一砍成 128K。
+> 网关按「上下文 + 输出预留」判断能否塞下请求，长会话里会直接把这些模型从候选里剔掉
+> （表现就是「不参与：这个请求超出它 128K 的上下文窗口」）。`limit.output` 仍是 8192，
+> 服务端没有对应回传，未改动。
+
 ## 接口（实测）
 
 ```

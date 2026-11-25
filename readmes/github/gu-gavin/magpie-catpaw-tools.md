@@ -40,7 +40,7 @@ magpie claude catpaw-tools/longcat-2.5
 |---|---|
 | 妙手桌面端登录态（推荐） | 实时读本机的 `auth.json`，每次请求前校验 mtime。在妙手里重新登录后无需重启 magpie |
 | 网页登录 | 走妙手官方授权页，插件用 poll-token 通道取回登录态，不需要桌面端 |
-| 手动粘贴 token | 粘贴 `auth.json` 里的 `auth.accessToken` |
+| 手动粘贴 token | 粘贴 `auth.json` 里的 `auth.accessToken`，或把同一个值放进环境变量 `CATPAW_TOKEN`（优先级最高） |
 
 桌面端登录态在哪个文件，按妙手自己的规则算出来——它是 VS Code 系的应用（产品配置里 `applicationName: catpaw-moon`、`dataFolderName: .meituan-catpaw`），所以数据目录跟着那一族走，而不是放在安装目录里：
 
@@ -55,7 +55,10 @@ magpie claude catpaw-tools/longcat-2.5
 CATPAW_AUTH_PATH=/abs/path/auth.json     # 直接给文件
 CATPAW_DATA_DIR=/abs/path/data           # 给目录，取里面的 auth.json
 MEITUAN_AUTH_PATH=…  MEITUAN_DATA_DIR=…  # 同上，兼容名
+CATPAW_TOKEN=<accessToken>               # 干脆不要文件，直接给 token（优先级最高）
 ```
+
+`CATPAW_TOKEN` 的用处：桌面端没登录、但手上有个 accessToken 时不用伪造 `auth.json`。注意它会**盖过**其它所有登录方式，设了就一直用这个值，直到 token 过期。
 
 **没有续期接口。** token 失效会返回 401；用桌面端登录态的话，在妙手里重新登录即可自动恢复。
 
@@ -74,7 +77,7 @@ magpie provider models catpaw-tools
 
 | id | 模型 | modelType | 官方倍率 | 上下文 |
 |---|---|---|---|---|
-| `longcat-2.5` | LongCat-2.5 | 10002544 | 限时免费 | 1M |
+| `longcat-2.5` | LongCat-2.5 | 107 | 限时免费 | 1M |
 | `longcat-2.0` | LongCat-2.0 | 77 | 免费 | 1M |
 | `glm-5.3` | GLM-5.3 | 89 | 0.59 | 1M |
 | `glm-5.3-flash` | GLM-5.3-Flash | 91 | 0.06 | 1M |
@@ -87,7 +90,7 @@ magpie provider models catpaw-tools
 | `kimi-k3` | Kimi-K3 | 83 | 0.94 | 1M |
 | `auto` | 妙手自动选择 | 0 | — | 1M |
 
-`modelType` 和倍率来自 `POST /api/agent/maas/model-types`（body `{tenant:"CatDesk", scene:"CATX_APP", env:"EXTERNAL"}`，2026-11-05 实取），并逐个跑通对话验证过，不是猜的。上下文长度取自 models.dev 上同一模型家族的公开规格——妙手自己没发布 per-model 窗口，所以这些是模型本身的能力，不是编造的数字。接口里出现、表里没有的新模型会照原样上架（用接口给的 modelType），只是拿不到这几项规格，先按老模型的形状走。
+`modelType` 和倍率来自 `POST /api/agent/maas/model-types`（body `{tenant:"CatDesk", scene:"CATX_APP", env:"EXTERNAL"}`，2026-11-05 实取，2026-11-25 复核），并逐个跑通对话验证过，不是猜的。**妙手会重新编号**：LongCat-2.5 从 `10002544` 改成了 `107`（旧号仍可用）。所以插件优先用接口给的值，表里的只是接口取不到时的兜底。上下文长度取自 models.dev 上同一模型家族的公开规格——妙手自己没发布 per-model 窗口，所以这些是模型本身的能力，不是编造的数字。接口里出现、表里没有的新模型会照原样上架（用接口给的 modelType），只是拿不到这几项规格，先按老模型的形状走。`supportImage` 决定 `configModel` 是否声明 `image` 输入。
 
 ## 限流
 
@@ -104,6 +107,23 @@ magpie provider models catpaw-tools
 `magpie quota` 显示可用积分。接口是 `GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 `X-Auth-Token`。
 
 > ⚠️ 这个接口和对话网关**用的不是同一个鉴权头**。对话用 `Cookie: X-Passport-Token`，余额用 `X-Auth-Token`。把 cookie 发到余额接口会稳定 401（body `code 4010`），而 magpie 会把 usage 的 401 当成"登录失效"，账号会被错误标记为已退出。插件已经处理了这个差异。
+
+## 错误码
+
+所有失败都经同一个映射（`stepError`）出口，无论它发生在 `round`、`turn` 还是流式帧里：
+
+| 上游情况 | 插件返回 |
+|---|---|
+| 妙手说余额不足（不一定是 402，通常只是一句带 markdown 链接的普通错误文本） | `402` + `insufficient_quota`，`error.code = "insufficient_credits"`，并给 `help_url` 和 `upstream_message` |
+| 登录态失效（401，或本地没有 `auth.json`） | `401` + `authentication_error` + 响应头 `X-Magpie-Sign-In: expired`，让宿主停止重试并提示重新登录 |
+| 429 | `429` + `rate_limit_error` + `Retry-After`（见上一节） |
+| 其余 | 上游的 4xx 原样透出，5xx 与网络错误归为 `502` + `api_error` |
+
+首轮的 `round` 会用自己的信封报登录失效（`{"code":401,"msg":"passport auth failed: 请重新登录"}`）。这一条单独识别，不然会被折成 502 让宿主一直重试。
+
+额度门有时不以错误帧出现，而是**以 assistant 正文下发**（帧里不带 `model` 字段，真模型的帧一定带）。插件按"帧无 model + 文本命中余额关键词"识别它，转成 402 而不是把它当成正常回答。
+
+流式时响应头已经发出去了，改不了状态码，所以同样的错误会以 SSE 帧内的 `error`（带 `type`/`code`）给出。
 
 ## 工具调用
 
@@ -151,24 +171,48 @@ magpie provider models catpaw-tools
 调用顺序也有讲究：
 
 - **首轮**：`round` → `event` → `turn`
-- **后续轮**：`round` → `turn`（不再发 `event`）
+- **后续轮**：直接 `turn`（既不 `round` 也不 `event`）
 
-多发一个 `event` 会让 `round` 返回"会话正在执行中"。
+`round` 只在会话的**第一轮**成功。之后服务端一直认为这个会话"正在执行中"，任何后续 `round` 都回 `unifyCode: 1004010010 / "会话正在执行中，无法创建新轮次"`——等 90 秒、发 `turn-end`、换 `messageId` 都不解开。但**单独的 `turn` 照样能跑，消息也照样入库**（实测历史里每条都在）。所以插件只在 `fresh` 时发 `round`，之后直接拉流；`round` 的返回值也不再被忽略（真回 429/402 会如实报错）。
+
+## 图片
+
+请求里带图片（`image_url`，`data:` URI 或 http(s) 链接）时，插件先把图片上传到妙手的 S3，再把链接作为 `image_url` part 挂到**这一轮的 `turn` 消息**上。不需要妙手桌面端，也不需要本地服务。
+
+实测形状（2026-11-25，LongCat-2.5）：
+
+```jsonc
+{ "type": "user", "messageId": "<新 id>", "finished": true,
+  "content": [
+    { "type": "text", "text": "这张图里有什么？" },
+    { "type": "image_url", "imageUrl": { "url": "https://s3plus.meituan.net/..." } }
+  ] }
+```
+
+几个必须踩对的点，错一个模型就说"没有看到图片"：
+
+- **part 类型是 `image_url`，`imageUrl` 是对象 `{url}`**。写成 `{type:"image", imageUrl:{url}}`、`imageUrl` 传字符串、或者把 url 放进 `image.source`，JSON 都能过，但模型收不到图。
+- **URL 必须是 http(s)**。`data:` URI 放在 `imageUrl.url` 里同样会被丢掉，所以先上传（`POST {PASSPORT_BASE}/api/gateway/v1/s3/upload-image`，头 `X-Auth-Token`、`content-type: text/plain`，body 是纯 base64）。
+- **图片挂在 `turn` 上，`round` 只发文本**。图片 part 放进 `round` 会被存进历史，但服务端拼 prompt 时只带文本。
+- **`turn` 的 `messageId` 必须是新的**。沿用 `round` 那个 id 时，服务端按已存的 round 重建消息，图片被抹掉。
+
+多轮追问不用重发图片：服务端历史里已经有了，直接问"中间那条是什么颜色"能答对。图片也可以出现在第 2 轮以后（首轮纯文本、次轮才发图），一条消息里放多张图也没问题。
 
 ## 限制
 
-- **纯文本**。请求里带图片会被明确拒绝（400），而不是静默丢弃。
 - **无 token 用量统计**。妙手协议的 SSE 帧不返回 token 数，所以 `usage` 字段填 0。要计量请用 `magpie quota` 看积分。
 - 依赖妙手桌面端登录态，属于私有协议；客户端升级可能失效。
 - 只服务 `/chat/completions`。其他入口由 magpie 自己转换（实测 `/v1/messages` 也能正常工作）。
+- 模型要支持图片（`configModel` 的 `modalities.input` 会据此声明）。LongCat-2.5、LongCat-2.0、GLM-5.3-Flash/FlashX、DeepSeek-V4.1-Flash、MiniMax-M3、Kimi-K3/K3.1-Pro 实测支持；GLM-5.3、DeepSeek-V4-Pro、MiniMax-M3.1-Flash、Auto 不支持。
+- **后续轮的 `round` 一律失败**（见上文「多轮会话」）。插件已经绕开，但它意味着历史里不会有 round 记录，只有消息本身；依赖 `roundInfoList` 的功能（妙手客户端的轮次视图）看不到这些轮。
 
 ## 测试
 
 ```bash
-bun test        # 35 个单元测试，不触网
+bun test        # 45 个单元测试，不触网
 ```
 
-端到端验证过（真实账号）：纯对话、工具调用、工具结果回传、流式 tool_calls 聚合、多轮记忆、未知模型、图片拒绝、不同模型、Anthropic 协议入口。
+端到端验证过（真实账号，LongCat-2.5）：纯对话、工具调用、工具结果回传、流式 tool_calls 聚合、多轮记忆、未知模型、不同模型、Anthropic 协议入口；图片（云端 turn 通道，流式与非流式、多轮追问、后续轮才发图、一条消息两张图、图片与工具调用同轮）用绿/黄/黑三色竖条图与左红右蓝图验证模型确实读到了图。
 
 ## 许可与免责
 

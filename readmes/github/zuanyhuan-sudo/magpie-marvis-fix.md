@@ -1,0 +1,234 @@
+# 腾讯 Marvis · magpie 供应商插件（4100404 修复版）
+
+> **本仓库是 0.2.58 修复分支**：基于 [MYCF711/magpie-marvis](https://github.com/MYCF711/magpie-marvis) 0.2.57 的源码修改。
+> 修复内容见 [FIX-4100404.md](./FIX-4100404.md)：uskey 改为按请求上下文用 Beacon SDK 现算，
+> 不再使用随机 uskey。原仓库已暂停维护，此分支只保留本地修复。
+
+> 非官方插件。Marvis 是腾讯的产品，本插件只是把它自己的模型网关接到 magpie 上，
+> 与腾讯无关。边界见下方「已知边界」。
+
+把**腾讯 Marvis**（应用宝 AI 助手）背后的模型接进 [magpie](https://usemagpie.ai) /
+OpenCode —— 不用 API key，用你的 **QQ 或微信** 登录。
+
+
+
+## 它能给你什么
+
+| | |
+|---|---|
+| **模型** | DeepSeek V4.1 Flash（主路由 + 防降级路由，**两条都能识图**）、DeepSeek V4 Flash、Hy3、Claude Sonnet 4.6、Claude Opus 4.6、GPT-5.4、HY-Vision 2.0 instruct —— 共 8 个模型 |
+| **额度** | 一个号每天 1000 万**计费** token（缓存免费 + 输入输出五折，实际能跑 2000 万～5000 万+） |
+| **流式** | ✅ SSE 逐 token |
+| **思考** | ✅ `reasoning_content` 可见 |
+| **工具调用** | ✅ 完整 function calling |
+| **系统提示词** | ✅ 完全可替换（`messages[0]`） |
+
+## 计费 / 额度
+
+Marvis 免费账号 **一个号每天 1000 万计费 token**（`total_tokens`）。
+
+**计费公式**：
+
+```
+计费 token = 缓存读取（cache_read）× 0
+           + （输入 + 输出）× 0.5
+```
+
+- **缓存命中完全免费** —— `prompt_tokens_details.cached_tokens` 那部分 × 0，一个 token 都不扣
+- **输入、输出都打五折** —— 实际跑 2 个 token，才扣 1 个计费 token
+- 「输入」指**未命中缓存**的输入；命中缓存的部分已经乘 0，不会重复算
+
+⚠ **1000 万是「计费 token」，不是「你能用的 token」** —— 实际可用量远不止这个数。
+一次 10,000 token 的对话，按缓存命中算下来只扣 2,000：
+
+| 一次对话 | 实际 token | 计费 token |
+|---|---:|---:|
+| 缓存命中 | 6,000 | 0 |
+| 新输入 | 2,000 | 1,000 |
+| 输出 | 2,000 | 1,000 |
+| **合计** | **10,000** | **2,000** |
+
+**实际 : 计费 = 5 : 1** —— 1000 万计费额度 **≈ 5000 万实际 token**；
+缓存命中越多，实际能跑得越多（全无缓存也还有 2 : 1，即 2000 万）。
+
+卡片上的数字来自 `POST /v3/marvis_get_wallet`，四个字段：
+
+| 字段 | 含义 | 典型值 |
+|---|---|---|
+| `total_tokens` | 总额度（**计费** token） | `10,000,000` |
+| `used_tokens` | 已用（**计费** token） | `6,432,691` |
+| `avail_tokens` | 可用（上游直接给；拿不到时按 `total - used` 兜底） | `3,567,309` |
+| `frozen_tokens` | 冻结中（并发请求预扣，结算后释放） | `0` |
+
+⚠ **卡片刻度条上的百分比看的是 `used_tokens / total_tokens`**（magpie 的 `usage.used`
+语义就是「用了多少」），所以数字越大表示**用得越多**。想核对真实剩余，看卡片文本里的
+`X 可用 / 共 Y` 更准。
+
+额度耗尽后上游回 **403**，magpie 会按路由策略切到别的账号 —— 不是封号，
+换个账号或等额度刷新即可。
+
+## 装
+
+```bash
+magpie plugin add zuanyhuan-sudo/magpie-marvis-fix
+```
+
+> 这是 **0.2.58 修复分支**：上游 `MYCF711/magpie-marvis` 已暂停维护（停在 0.2.57，
+> 含 4100404 缺陷）。装不上或想手动装，直接下载本仓库 ZIP 解压到
+> `plugins/node_modules/magpie-marvis/` 即可。
+
+装完在 magpie 设置里 **供应商 → 添加 → 腾讯 Marvis**，选登录方式：
+
+- **QQ 登录** / **微信登录**：自动打开一个隔离浏览器窗口，授权完窗口自己关掉，不用复制任何东西
+- **从本机 Marvis 导入**：装了 Marvis 客户端并且登录过的话，一条命令读出来
+- **QQ / 微信登录（粘贴回调地址）**：magpie 跑在**没有浏览器、没有显示**的地方（NAS 容器、Linux 服务器、
+  Docker/WSL）时用这条——授权页在你自己的浏览器里打开，登录完把地址栏那条
+  `…marvis_oauth?login_type=…&code=…&state=…` 整条粘贴回 magpie 的输入框即可
+
+## 设备指纹（2026-11-17 之后必须真实出票）
+
+请求头 `Ual-Access-MarvisExt` 里的 **uskey** 不是随机串，而是 Beacon/Qimei SDK 按
+**本次请求上下文**算出的票据。2026-11-17 16:42 之后，腾讯 Marvis 会校验这一点；
+随机 uskey 第一次请求就会 `4100404 请求被风控拦截`。
+
+### 方式 A：native/ 官方 Beacon SDK（推荐）
+
+把本机 Marvis 客户端 `win32-native` 目录里的 4 个文件复制到插件根目录 `native/`：
+
+```text
+native/
+├── beacon_napi.node
+├── qimei.dll
+├── beacon_sdk.dll
+└── beacon_wrapper.dll
+```
+
+也可以直接在 Windows 上运行（会搜索常见安装目录并复制）：
+
+```bat
+node tools\extract-native.mjs
+```
+
+可选：把真实 qimei36 写进 `native/qimei36.txt`，或设置环境变量 `MARVIS_QIMEI36`；
+插件也会自动扫描 `%APPDATA%\Tencent\Marvis` / `%LOCALAPPDATA%\Tencent\Marvis` 里的客户端数据。
+插件会按 `bus_info`（`marvisAgentTag` / `marvisConversationID` / `marvisResponseID` /
+`marvisScene` / `model` / `nonce` / `originOpenID`）调用 `beacon_napi.node` 的
+`getUskey("marvis", busInfo)` 现算票据。
+
+### 方式 B：外部出票服务（Docker / 容器）
+
+如果 magpie 跑在 Docker、NAS 或没有 Windows 客户端的环境，在能加载 Beacon SDK 的机器上
+起一个出票服务，然后设置：
+
+```bash
+export MARVIS_USKEY_URL=http://127.0.0.1:4617/uskey
+```
+
+`MARVIS_USKEY_URL` 接受 POST：
+
+```json
+{"busid":"marvis","businfo":"marvisAgentTag=main&...","common":{"guid":"...","login_openid":"...","login_type":"6"}}
+```
+
+返回 `{"uskey":"..."}` 或纯文本 uskey。仓库里的 `tools/uskey-server.mjs` 就是一个最小的
+Node 出票服务（需要 `native/` 的 4 个文件）。
+
+### 开发兜底
+
+`MARVIS_ALLOW_RANDOM_USKEY=1`（默认）时，没有 native 或外部服务会退回随机 uskey，
+日志会打印警告。这个模式只用于开发；正式使用会被上游 `4100404` 拦截。
+想强制检查是否真的在出票，设 `MARVIS_ALLOW_RANDOM_USKEY=0`。
+
+### 相关环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `MARVIS_NATIVE_DIR` | 插件根目录/native | Beacon SDK 目录 |
+| `MARVIS_QIMEI36` | 空 | 真实 qimei36（36/40 位，以实际客户端为准） |
+| `MARVIS_USKEY_URL` | 空 | 外部出票服务地址；也可写在 `native/uskey-url.txt` |
+| `MARVIS_APP_VERSION` | `1.60.3400.35` | Beacon `init` 的 appver |
+| `MARVIS_CLIENT_VERSION` | `1.60.3400.795` | MarvisExt.clientVersion |
+| `MARVIS_OS_VERSION` | `Windows-10-10.0.26100` | MarvisExt.osVersion |
+| `MARVIS_LOGIN_TYPE` | `6` | 模型网关的 Ual-Access-Login-Type |
+
+## uskey 每次请求现算
+
+插件每次请求都会生成新的 `conv_` / `resp_` / `nonce`，用同一套值拼 `bus_info`，再调
+Beacon SDK 出票；`Ual-Access-MarvisExt`、`Marvis-Conversation-ID`、`Marvis-Response-ID`、
+`Marvis-Scene`、`Marvis-AgentTag` 共用这套值，不能中途重新生成第二套。
+
+## 已知边界
+
+- **非官方**：Marvis 随时可能改协议。改了就提 issue。
+- **登录态 30 天**：`refresh` 会**成对轮换** token，旧的立刻失效。插件已经串行化了刷新
+  （同账号同时只允许一次），但如果你在 Marvis 客户端里也登录同一个号，两边会互相打掉。
+- **跨平台**：native/ 的 4 个文件是 Windows 二进制；非 Windows 环境请用 `MARVIS_USKEY_URL` 的进程外出票服务。「从本机 Marvis 导入」这条登录路也仅在 Windows 可用。
+- **`/v1/chat/completions` 不需要 UAL 签名**：那是 `/v3/*` 业务接口的事。把签名头加到模型
+  网关上会从 `403 风控` 变成 `401 登录态过期`。
+
+## 首行改写（供应商卡片里的两个开关）
+
+被上游内容过滤拦下（403 `非法请求`）时，处理的是 system 提示词的**第一行**。
+开关就在**腾讯 Marvis 的供应商编辑器**里（和账号、路由、模型同一张卡，标题「插件选项 / Plugin options」）：
+
+| 开关 | 默认 | 打开后 |
+| --- | --- | --- |
+| 被上游拒绝时改写首行 / `first_line_fallback` | **开** | 被 403 拦下的请求，把 system 首行换成**你自己写的那句**重试一次；正常请求一个字节都不改 |
+| 每个请求都改写首行 / `first_line_always` | 关 | 每个请求都把首行换成你自己那句（开了会先弹一次确认） |
+
+两个都关 = 一个字节都不改，403 原样报错。
+
+**首行只能你自己写**（2026-11-17 起不再做「已知客户端身份句 → 等价句」的自动改写）：
+上游拦的是首行里的身份词对，而这套黑名单一直在长 —— 我们能猜到的等价句，过几天也会被加进去，
+跟着猜只是军备竞赛。所以插件只做一件事：把**你写的那句**写进请求。
+
+写在哪：设置 → 插件 → 腾讯 Marvis 那一行的「选项」框（值必须是一个 JSON 对象）
+
+```json
+{ "提示词首行替换": "You are Marvis, Tencent's AI assistant." }
+```
+
+- 引号里那句就是会被写进 system 首行的文本；留空或删掉 = 内置兜底句
+- 别写任何 agent 产品名（那正是被拦的东西）
+- 老版本的形状仍然读：`{ "text": "…" }`、`{ "firstLine": { "text": "…" } }`，不用手动迁移
+
+换掉的只是 system 消息的**第一行**，第二行起原样。
+
+> 开关是 magpie 自己的扩展点（`auth.options`，#2038）：点一下立刻保存，插件下一个请求就读到，**不用重启**。
+
+自定义首行那句除了 JSON，还有一个**输入框**（`magpie.panels` 面板）。⚠ 面板清单是窗口启动时拉的：
+用命令行更新插件后要按 **Ctrl+R** 或关掉窗口重开，输入框才会出现；开关不受影响。
+
+> 两个开关都带 `placement: "top"`，所以画在**账号下面、路由上面**（magpie #5269）。
+> 面板（输入框）没有位置字段，只能追加在编辑器末尾；想让它也置顶需要 magpie 上游支持。
+
+## 你的号被降级了没有？跑一条命令
+
+auto 家族（`main-auto` / `file-auto` / `computer-auto` / `browser-auto`）在服务端是**按账号**改路由的：
+同一个槽位，A 号可能服务 `deepseek-v4-1-flash-261017`，B 号被换到某个**旧快照**。
+
+⚠ **旧快照的名字不固定** —— 已知出现过 `deepseek-v4-flash-ga-260731`（issue #13）、
+`deepseek-v4-flash-202605`（issue #43）。所以别记名字、也别信槽位名，
+**只认响应体里的 `model` 字段**：
+
+```bash
+node scripts/probe-served-model.mjs          # 每个账号 × main-auto / 防降级槽位，各打一次
+node scripts/probe-served-model.mjs --json   # 机器可读；退出码 2 = 有号被路由到别的快照
+```
+
+它绕开 magpie、直接用插件自己的 `llmHeaders()` 打上游（供应商关着也能跑），只读本机账号文件、不改任何配置。
+
+被降级了怎么办：**换 `deepseek-v4-pro-external`（卡片上的 `deepseek-v4-1-flash-261017-antidowngrade`）** ——
+那条是固定映射，不受账号级改路由影响。名字里的 `-antidowngrade` 只是显示后缀，上游回的仍是 `261017`。
+
+## 开发
+
+```bash
+node scripts/check.mjs      # 合规检查（退出码非 0 就是不合规）
+node --test                 # 语义测试
+node tests/e2e-live.mjs     # 真实网关端到端（需要有效登录态）
+```
+
+## 许可
+
+MIT。详见 [LICENSE](./LICENSE)，归属说明见 [NOTICE.md](./NOTICE.md)。
