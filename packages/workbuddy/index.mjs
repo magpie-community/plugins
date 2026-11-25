@@ -2044,6 +2044,17 @@ function unsaid(res) {
       return null
     }
   }
+  // OpenAI-compatible clients treat a present tool_calls field as the end
+  // of the active reasoning block. WorkBuddy puts an empty list on every
+  // reasoning delta, so remove only the empty list and leave real calls
+  // and every unaffected event byte for byte.
+  const tidy = (ev) => {
+    const v = chunkOf(ev)
+    const delta = v?.choices?.[0]?.delta
+    if (!delta || !Array.isArray(delta.tool_calls) || delta.tool_calls.length) return ev
+    delete delta.tool_calls
+    return `data: ${JSON.stringify(v)}`
+  }
   // without is ev with the filter's text taken out, or "" when nothing
   // else is in it
   const without = (ev) => {
@@ -2056,7 +2067,7 @@ function unsaid(res) {
     return `data: ${JSON.stringify(v)}`
   }
   const event = (ev) => {
-    if (!open) return [ev]
+    if (!open) return [tidy(ev)]
     const c = chunkOf(ev)?.choices?.[0]
     const text = typeof c?.delta?.content === "string" ? c.delta.content : ""
     const finish = c?.finish_reason
@@ -2065,25 +2076,25 @@ function unsaid(res) {
     const calls = c?.delta?.tool_calls
     if ((Array.isArray(calls) ? calls.length > 0 : calls) || (text && !filterSaid(said + text))) {
       open = false
-      const out = [...held, ev]
+      const out = [...held, ev].map(tidy)
       held = []
       return out
     }
     said += text
     if (finish === "content_filter" && said) {
       open = false
-      const out = [...held, ev].map(without).filter(Boolean)
+      const out = [...held, ev].map(tidy).map(without).filter(Boolean)
       held = []
       return out
     }
     if (finish) {
       open = false
-      const out = [...held, ev]
+      const out = [...held, ev].map(tidy)
       held = []
       return out
     }
-    if (!said) return [ev] // reasoning, the role, before any text
-    held.push(ev)
+    if (!said) return [tidy(ev)] // reasoning, the role, before any text
+    held.push(tidy(ev))
     return []
   }
   const body = res.body.pipeThrough(
@@ -2097,7 +2108,7 @@ function unsaid(res) {
       },
       flush(ctl) {
         rest += dec.decode()
-        const out = held.map((e) => e + "\n\n").join("") + rest
+        const out = held.map((e) => e + "\n\n").join("") + tidy(rest)
         held = []
         if (out) ctl.enqueue(enc.encode(out))
       },
