@@ -47,21 +47,6 @@ test("a model the fallback table doesn't have is served with capabilities", asyn
   expect(m.variants).toEqual({})
 })
 
-test("models carry the models.dev price so magpie writes cost_usd", async () => {
-  const ms = await live([
-    { config_name: "deepseek-v4.1-flash", usage: "chat_completion", display_config: { display_name: "DeepSeek V4.1 Flash" } },
-    { config_name: "deepseek-v4.1-flash-max", usage: "chat_completion", display_config: { display_name: "DeepSeek V4.1 Flash Max" },
-      model_detail_list: [{ model_name: "deepseek-v4.1-flash__max" }] },
-    offTable,
-  ])
-  // the models.dev price of deepseek-v4.1-flash, in magpie's cost shape
-  expect(ms["deepseek-v4.1-flash"].cost).toEqual({ input: 0.15, output: 0.6, cache: { read: 0.003, write: 0 } })
-  // its -max twin is the same model at a longer output limit: same price
-  expect(ms["deepseek-v4.1-flash-max"].cost).toEqual(ms["deepseek-v4.1-flash"].cost)
-  // a name with no models.dev entry is left unpriced, not invented
-  expect(ms["deepseek-v4-flash-0731-max"].cost).toEqual({ input: 0, output: 0, cache: { read: 0, write: 0 } })
-})
-
 test("the fallback table stays the authority where it has an entry", async () => {
   // what magpie's host hands the hook for a model of the config: the
   // fallback table's flat fields already spread into capabilities

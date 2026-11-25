@@ -439,42 +439,7 @@ const REREAD_MS = 5 * 60 * 1000
 // a reply limit of 0 is one Trae doesn't say: magpie then takes models.dev's
 // for the model (magpie's catalog), where a made-up 32K told agents a far
 // smaller one than DeepSeek V4.1 Flash's (ARNO on magpie's Discord)
-// PRICES are the models.dev per-million-token prices in USD, under the bare
-// model name (the -max variants are these same models at a longer output
-// limit). magpie writes a request's cost_usd by matching the model it served
-// to models.dev; a Trae name like `deepseek-v4.1-flash-max` isn't a
-// models.dev id, so without a price on the model the cost is left blank (as
-// it was for every Trae row). Put the price of the matching models.dev model
-// on each Trae model's cost, in magpie's {input, output, cache} shape, so a
-// turn gets a dollar cost beside the credits Trae reports. A name with no
-// models.dev entry keeps zero: no price is invented.
-const PRICES = {
-  "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cache_read: 0.003 },
-  "deepseek-v4-flash": { input: 0.3, output: 1.2, cache_read: 0.006, cache_write: 0.1125 },
-  "deepseek-v4-pro": { input: 1.32, output: 3.96, cache_read: 0.044 },
-  "glm-5.3-flash": { input: 0.15, output: 0.5, cache_read: 0.03 },
-  "glm-5.3-flashx": { input: 0.37, output: 1.25, cache_read: 0.075 },
-  "glm-5.3": { input: 0.7, output: 2.2, cache_read: 0.13 },
-  "glm-5.2": { input: 1.05, output: 3.3, cache_read: 0.195 },
-  "glm-5.1": { input: 1.4, output: 4.4, cache_read: 0.26 },
-  "glm-5": { input: 1, output: 3.2, cache_read: 0.2 },
-  "glm-4.7": { input: 0.6, output: 2.2, cache_read: 0.11 },
-  "glm-4.6": { input: 0.6, output: 2.2, cache_read: 0.11 },
-  "kimi-k2.7-code": { input: 0.95, output: 4, cache_read: 0.19 },
-  "kimi-k3.1-pro": { input: 2, output: 10, cache_read: 0.2 },
-  "kimi-k2.6": { input: 0.95, output: 4, cache_read: 0.16 },
-}
-// priceOf finds a models.dev price for a Trae model name: the name itself,
-// its -max twin, or a DeepSeek-V4-Pro-Official style alias. It returns the
-// magpie cost shape, or the zero shape when the name has no listed price.
-function priceOf(id) {
-  const key = String(id ?? "").toLowerCase().replace(/-max$/, "")
-  const alias = key.startsWith("deepseek-v4-pro-official") ? "deepseek-v4-pro" : key.startsWith("deepseek-v4-flash-official") ? "deepseek-v4-flash" : key
-  const p = PRICES[key] ?? PRICES[alias]
-  return { input: p?.input ?? 0, output: p?.output ?? 0, cache: { read: p?.cache_read ?? 0, write: p?.cache_write ?? 0 } }
-}
-const ZERO_COST = { input: 0, output: 0, cache: { read: 0, write: 0 } }
-const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] }, cost: ZERO_COST }
+const MODEL = { attachment: false, tool_call: true, reasoning: true, temperature: true, limit: { context: 128_000, output: 0 }, modalities: { input: ["text"], output: ["text"] } }
 // a site's fallback list names only what differs from MODEL: the defaults go
 // in here, where MODEL is defined (a site table above can't spread it)
 for (const site of Object.values(SITES)) {
@@ -1698,7 +1663,7 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null, requestId = null, sessionId = null) {
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1707,17 +1672,15 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     model: config,
     ...(modelName ? { model_name: modelName } : {}),
     stream: true, // Trae answers in SSE either way
-    request_id: requestId || randomUUID(),
-    // The session names one reply of the agent's, not the conversation: Trae
-    // applies its prompt cache and books the settled charge under the session
-    // a request carries. A reused conversation id makes the commercial record
-    // accumulate every turn of the conversation (a 27M-token "cache read" on
-    // a 220k prompt); a fresh one per reply gives the per-reply split magpie
-    // needs. An enterprise reply Trae cut is asked on in rounds (continued),
-    // each a request of its own with its own request_id but the same
-    // sessionId, so the record covers the whole reply. The full history
-    // travels in messages, so the conversation itself is not lost.
-    session_id: sessionId || requestId || session || randomUUID(),
+    request_id: randomUUID(),
+    // session_id is the conversation's, as the IDE keeps one per conversation
+    // (plugins#58): Trae counts a conversation by the session its requests
+    // name, and one user send that takes several steps (a tool result sent
+    // back, a retry, another function answering) is one conversation, not
+    // several. It is also the session the commercial record of a turn is
+    // booked under, which is why that record is read as a conversation's and
+    // each turn takes its share of it (turnBilling).
+    session_id: session || randomUUID(),
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
   if (effort) body.reasoning_effort = effort
@@ -2120,60 +2083,122 @@ function tokensOf(u) {
   return out
 }
 
-// turnBilling reads the settled charge of one turn from Trae's commercial
-// usage endpoint. token_usage often names no cache (or a 0 read) while Trae
-// still bills the turn at its cache price; the commercial record carries the
-// real cache_read_token beside credits_float. The bill settles a moment after
-// the answer, so an empty record is retried a few times with a short backoff
-// and the first settled reading wins. A rejected or malformed record will not
-// start working during this turn, so it is not retried.
+// A turn's settled charge is the only place Trae names what it really spent:
+// token_usage often names no cache (or a 0 read) while Trae still bills the
+// turn at its cache price, and the credits the turn used are in the same
+// record (credits_by_source, a string with the precision credits_float
+// rounds away). The record is the conversation's, not the turn's: since
+// plugins#58 the session_id a request carries is the conversation's, and
+// Trae books every turn of it under that one session. So a turn's share is
+// the record now, less the record this plugin last read for the same
+// conversation. The first turn of a conversation has no baseline to take,
+// and reports only what Trae's own stream said; the reading it takes is the
+// baseline of the turns after it.
 const BILLING_PATH = "/api/v1/commercial/get_session_usage"
-const BILLING_DELAYS = [150, 300, 600]
+// BILLING_TIMEOUT is the longest one read may take: no answer is held by a
+// connection that hangs. BILLING_WAIT is how long an answer's end waits for
+// the record at all: a stream's is short, because a settled record arrives
+// with the answer and a stream's end must not be held back for it; a body's
+// is the longer one, since nothing closes early there. BILLING_SETTLE is how
+// long a record still being written is asked again, within that wait.
+const BILLING_TIMEOUT = 2000
+const BILLING_WAIT = { stream: 400, body: 2500 }
+const BILLING_SETTLE = [150, 300, 600]
+const BILLING_KEPT = 512 // conversations whose last reading is remembered
 const BILLING_CREDITS = ["credits_float", "creditsFloat", "credits_consumed", "consumed_credits", "credit_cost", "credits_cost", "amount_float", "amountFloat"]
 const numOrNull = (v) => {
   const x = typeof v === "string" ? Number(v.trim()) : Number(v)
   return v != null && Number.isFinite(x) ? x : null
 }
-async function turnBilling(a, site, ids = [], delays = [250, 500, 1000, 2000, 3000], signal = null) {
+
+// readings is each conversation's last settled record, by account and
+// session. Two accounts answering one conversation are two conversations to
+// Trae (#58), so each keeps its own reading.
+const readings = new Map()
+
+// signalWithTimeout is signal, plus one abort of its own after ms.
+function signalWithTimeout(signal, ms) {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), ms)
+  const onAbort = () => ctl.abort()
+  if (signal) {
+    if (signal.aborted) ctl.abort()
+    else signal.addEventListener("abort", onAbort, { once: true })
+  }
+  return {
+    signal: ctl.signal,
+    done() {
+      clearTimeout(timer)
+      signal?.removeEventListener?.("abort", onAbort)
+    },
+  }
+}
+
+// recordOf reads the conversation's record once, within budget ms. null when
+// Trae refuses it, or names nothing settled yet: an empty record is one still
+// being written, not a turn that spent nothing.
+async function recordOf(a, site, session, signal, budget) {
   const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing || site.hosts.api
   const url = String(host).replace(/\/+$/, "") + BILLING_PATH
   const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.token }
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    let payload
-    try {
-      const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ session_id: ids[attempt % ids.length] ?? "" }), signal })
-      if (!res.ok) {
-        if (res.status !== 429 && res.status < 500) return null
-      } else {
-        payload = await res.json()
+  const t = signalWithTimeout(signal, Math.max(50, Math.min(BILLING_TIMEOUT, budget)))
+  try {
+    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ session_id: session }), signal: t.signal })
+    // a 4xx is a record this turn will not get: asking again will not settle
+    // it. A 429 or a 5xx may settle, and is asked again within the wait.
+    if (!res.ok) return res.status === 429 || res.status >= 500 ? null : false
+    const payload = await res.json()
+    const data = payload.data && typeof payload.data === "object" ? payload.data : payload
+    const code = String(data.code ?? payload.code ?? 0)
+    if (code !== "0") return false // a rejected record will not settle during this turn
+    const bill = data.user_usage_group_by_session ?? data.userUsageGroupBySession ?? data
+    const info = bill?.extra_info ?? bill?.extraInfo ?? {}
+    const bySource = bill?.credits_by_source ?? bill?.creditsBySource
+    const fromSource = bySource && typeof bySource === "object" ? Object.values(bySource).map(numOrNull).filter((v) => v != null) : []
+    const number = (keys) => {
+      for (const k of keys) {
+        const v = numOrNull(bill?.[k])
+        if (v != null) return v
       }
-    } catch {
-      payload = null
+      return null
     }
-    if (payload) {
-      const data = payload.data && typeof payload.data === "object" ? payload.data : payload
-      const code = String(data.code ?? payload.code ?? 0)
-      if (code !== "0") return null // a rejected record will not settle during this turn
-      const bill = data.user_usage_group_by_session ?? data.userUsageGroupBySession ?? data
-      const info = bill?.extra_info ?? bill?.extraInfo ?? {}
-      const number = (keys) => {
-        for (const k of keys) {
-          const v = numOrNull(bill?.[k])
-          if (v != null) return v
-        }
-        return null
-      }
-      const credits = number(BILLING_CREDITS)
-      const cacheRead = numOrNull(info.cache_read_token ?? info.cacheReadToken)
-      const input = numOrNull(info.input_token ?? info.inputToken)
-      const output = numOrNull(info.output_token ?? info.outputToken)
-      // an empty envelope (credits_float 0 and no tokens) is an unsettled
-      // record: keep waiting instead of accepting a false zero
-      if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead, input, output }
-    }
-    if (attempt < delays.length) await new Promise((r) => setTimeout(r, delays[attempt]))
+    const credits = fromSource.length ? fromSource.reduce((x, y) => x + y, 0) : number(BILLING_CREDITS)
+    const cacheRead = numOrNull(info.cache_read_token ?? info.cacheReadToken)
+    const input = numOrNull(info.input_token ?? info.inputToken)
+    const output = numOrNull(info.output_token ?? info.outputToken)
+    // an empty envelope is a record still being written: keep waiting
+    if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead }
+    return null
+  } catch {
+    return null
+  } finally {
+    t.done()
   }
-  return null
+}
+
+// turnBilling is one turn's share of the conversation's record. wait bounds
+// how long the answer's end waits for it, so a slow settlement costs the
+// answer a bounded delay at most, never an open connection.
+async function turnBilling(a, site, session, { signal = null, wait = BILLING_WAIT.body } = {}) {
+  if (!session) return null
+  const key = (a.uid || a.accountId || "") + "|" + session
+  const deadline = Date.now() + wait
+  let record = null
+  for (let attempt = 0; ; attempt++) {
+    record = await recordOf(a, site, session, signal, deadline - Date.now())
+    if (record === false) return null // a record Trae refused: asking again will not settle it
+    if (record) break
+    const pause = BILLING_SETTLE[attempt]
+    if (!pause || Date.now() + pause >= deadline) break
+    await new Promise((r) => setTimeout(r, pause))
+  }
+  if (!record) return null
+  const before = readings.get(key)
+  if (!readings.has(key) && readings.size >= BILLING_KEPT) readings.delete(readings.keys().next().value)
+  readings.set(key, record)
+  if (!before) return null // the conversation's first turn: this reading is its baseline
+  const share = (now, then) => (now == null || then == null ? null : Math.max(0, now - then))
+  return { credits: share(record.credits, before.credits), cacheRead: share(record.cacheRead, before.cacheRead) }
 }
 
 let callSeq = 0
@@ -4831,9 +4856,6 @@ const makePlugin = (site) => async ({ client }) => {
       // model in the fallback table would lose the levels its entry names.
       variants: Object.keys(was.variants ?? {}).length ? was.variants : variantsOf(levelsOf(m)),
       ...traeRateOf(m),
-      // models.dev price, so magpie can write a cost_usd for this model's
-      // turns (the -max name alone has no entry in models.dev)
-      cost: priceOf(id),
     }
   }
 
@@ -5001,11 +5023,8 @@ const makePlugin = (site) => async ({ client }) => {
               let refused = false
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
-                // one id names this turn everywhere it is read: the header
-                // the request carries, its own request_id, the per-turn
-                // session Trae books the charge under, and the debug line
+                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
                 const rid = randomUUID()
-                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry, rid)
                 debugSent(host + "/api/agent/v3/llm_utils_chat", rid, sent)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
@@ -5078,11 +5097,8 @@ const makePlugin = (site) => async ({ client }) => {
                     // with THINK_ON after the request's own turns
                     messages: [...(Array.isArray(req.messages) ? req.messages : []), ...(text ? [{ role: "assistant", content: text }, { role: "user", content: GO_ON }] : [{ role: "user", content: THINK_ON }])],
                   }
-                  // a fresh request id for this ask, as Trae's own client
-                  // sends one per request, and the reply's session id: every
-                  // ask of the reply is booked under the one record
+                  const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
                   const id = randomUUID()
-                  const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry, id, sent.session_id)
                   debugSent(host + "/api/agent/v3/llm_utils_chat", id, body)
                   const r = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                     method: "POST",
@@ -5098,9 +5114,10 @@ const makePlugin = (site) => async ({ client }) => {
                   const p = parts(sse(r.body), Array.isArray(req.tools) ? req.tools : [])
                   return traeDebug() ? debugEnd(id, p, body.max_tokens || 0, cut) : p
                 }
-                // the settled charge of this reply, read when the answer ends:
-                // one record, every ask of it
-                const bill = () => turnBilling(a, site, [sent.session_id], BILLING_DELAYS, ac.signal)
+                // this turn's share of the conversation's record, read when the
+                // answer ends: a stream waits only a little for it, a body as
+                // long as the record may settle
+                const bill = () => turnBilling(a, site, sent.session_id, { signal: ac.signal, wait: req.stream ? BILLING_WAIT.stream : BILLING_WAIT.body })
                 const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more, req.model) : got, () => ac.abort(), site, sent.max_tokens || 0, cut, bill)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out

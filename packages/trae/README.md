@@ -120,22 +120,23 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `solo_agent_lite`; `solo_coder`, SOLO's coder roster). If Trae answers
     4001, 4023 or 1005, the plugin tries the others once and remembers which
     one worked.
-  - `session_id` is the reply's own turn id (for one ask, the same as
-    `request_id`), fresh on every reply. Trae applies its prompt cache and
-    books a reply's settled charge under the session a request carries:
-    reading them back with a reused conversation id returns the whole
-    conversation's accumulated total (a 220k-token prompt once showed a
-    27-million-token cache read), not this turn's split. A fresh one per
-    reply gives the per-reply cache read and credits magpie needs. An
-    enterprise reply Trae cut is asked on in rounds (0.2.49): those asks
-    carry their own `request_id` but the reply's one `session_id`, so the
-    record read back is the whole reply's. The conversation is not lost: its
-    full history travels in `messages`. The conversation id magpie (or
-    OpenCode) names the request by, else the chat's first user message with
-    the account, is still derived as a salted hash
-    (`MAGPIE_TRAE_SESSION_SALT` names the salt, made once in
-    `~/.config/magpie/trae-session-salt`) and used as the fallback when a
-    caller supplies no session id.
+  - `session_id` is the conversation's, as the IDE keeps one per conversation:
+    the session magpie (or OpenCode) names the request by, else the chat's
+    first user message, which every later turn repeats, together with the
+    account the request is made as. Trae counts a conversation by it, so a
+    fresh one per request made one user send that takes several steps (a tool
+    result sent back, a retry, another function answering) count as a
+    conversation of its own — several rows in the usage detail, each under no
+    title. One conversation answered by two accounts (magpie failing over, or
+    rotating, inside it) is named twice then, as two conversations, so Trae
+    never reads one account's conversation as another's; that costs the two
+    halves of such a conversation their single row. The id is a salted hash,
+    so it says nothing of the words it was made from; the salt is this
+    machine's own, made once in `~/.config/magpie/trae-session-salt`
+    (`MAGPIE_TRAE_SESSION_SALT` names another file), so a conversation keeps
+    its `session_id` when magpie restarts the plugin (on any update). If that
+    file can't be read or made, each run of the plugin has a salt of its own,
+    as before 0.2.32. `request_id` is the request's own, fresh on every one.
 - **Headers:** TRAE SOLO CN 0.1.69's (`x-ide-version`/`x-app-version`
   0.1.69, version code 20260917; Trae offers a model only to clients new
   enough for it): `Authorization: Cloud-IDE-JWT …`, `X-Cloudide-Token`,
@@ -156,27 +157,26 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     written: Trae answers that while it bills the turn at its cache price
     (0.2.31).
   - After the answer the plugin reads Trae's commercial session usage
-    (`/api/v1/commercial/get_session_usage`) for that turn. Its settled
-    `credits_float` goes on the response as `usage.credit` (and `usage.credits`):
-    magpie's ledger reads the singular `credit`, as kiro reports it
-    (yetone/magpie#4328), and its
+    (`/api/v1/commercial/get_session_usage`). That record is the
+    conversation's, since `session_id` is (above), and it holds all of its
+    turns' charges and cache reads together, so a turn reports its share of
+    it: the record now, less the record last read for that conversation. The
+    conversation's first turn has no baseline to take and reports only what
+    Trae's own stream said; the reading it takes is the baseline of the turns
+    after it. Its `credits_by_source` (a string, where `credits_float` rounds
+    a small charge to 0) goes on the response as `usage.credit` (and
+    `usage.credits`): magpie's ledger reads the singular `credit`, as kiro
+    reports it (yetone/magpie#4328), and its
     `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
     named no cache read (0.2.55). A cache count the stream did name wins;
-    a failed lookup leaves the answer unchanged. A reply Trae cut is asked
-    on in rounds, all of them under the one session id, so the record read
-    back is the whole reply's (0.2.55). The host is
-    `TRAE_USAGE_API_HOST` when set, else the realm's own. An enterprise
-    model asked at its own endpoint (0.2.53) is the tenant's own service,
-    which Trae books nothing for: its usage is that endpoint's own, and no
-    settlement is read.
-    Each model also carries the matching models.dev price as `cost`
-    (`{input, output, cache}` in USD per million tokens, 0.2.55). magpie
-    writes a request's `cost_usd` from that price and the tokens served:
-    a Trae name like `deepseek-v4.1-flash-max` has no models.dev entry of
-    its own, so without it the cost column was blank. The `-max` twin uses
-    its base model's price; a name with no models.dev price stays at zero.
-    Trae still bills in credits (`rate`), which the `credit` reading above
-    reports; the dollar cost is the catalog price, not a conversion of it.
+    a refused or failed lookup leaves the answer unchanged. The host is
+    `TRAE_USAGE_API_HOST` when set, else the realm's own. A read has a
+    timeout of its own (2 s), and an answer's end waits for it only as long
+    as its wait allows: 400 ms for a stream, whose end must not be held back
+    by a record that settles slowly, and 2.5 s for a body, which closes
+    nothing early. An enterprise model asked at its own endpoint (0.2.53) is
+    the tenant's own service, which Trae books nothing for: its usage is that
+    endpoint's own, and no settlement is read.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,
