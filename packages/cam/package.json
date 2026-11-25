@@ -1,0 +1,47 @@
+{
+  "name": "@magpie-community/gateway-cam",
+  "version": "0.1.0",
+  "description": "Context attachment management as a pure Magpie request-hook plugin",
+  "type": "module",
+  "main": "./src/index.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/cam"
+  },
+  "files": [
+    "src/",
+    "vendor/cam/",
+    "panel/app.js",
+    "panel/index.html",
+    "NOTICE.md"
+  ],
+  "engines": {
+    "bun": ">=1.4"
+  },
+  "magpie": {
+    "hooks": "./src/hooks.ts",
+    "page": {
+      "title": "Attachments",
+      "titles": {
+        "zh": "上下文附件",
+        "en": "Attachments"
+      },
+      "file": "./panel/index.html"
+    },
+    "options": {
+      "language": "zh",
+      "auto": true,
+      "allowRemote": false,
+      "gatewayTimeoutMs": 10000,
+      "maxFetchImages": 4,
+      "maxFetchBytes": 12582912
+    }
+  },
+  "scripts": {
+    "test": "bun test tests/*.test.ts",
+    "check": "bun test tests/*.test.ts",
+    "build": "bun build src/index.ts src/hooks.ts --target bun --outdir dist"
+  }
+}
