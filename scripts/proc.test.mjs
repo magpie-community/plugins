@@ -89,7 +89,7 @@ test("non-Linux platforms do not require procfs", () => {
 });
 
 test("runtime proc copies match the canonical implementation", () => {
-  assert.equal(procTargets.length, 17);
+  assert.equal(procTargets.length, 18);
   for (const relative of procTargets) {
     const target = `${root}${relative}`;
     assert.deepEqual(readFileSync(target, "utf8"), canonical, relative);
@@ -112,6 +112,7 @@ test("runtime proc copies match the canonical implementation", () => {
       "respire-memory": ["lock.mjs"],
       search1api: ["src/auth.ts"],
       "window-warmup": ["src/store.ts"],
+      "worktree-compare": ["lib/arena.mjs"],
     };
     for (const importer of importers[name]) {
       assert.match(

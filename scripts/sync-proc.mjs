@@ -23,6 +23,7 @@ export const procTargets = [
   "packages/respire-memory/proc.mjs",
   "packages/search1api/src/proc.mjs",
   "packages/window-warmup/src/proc.mjs",
+  "packages/worktree-compare/lib/proc.mjs",
 ];
 
 const check = process.argv.includes("--check");

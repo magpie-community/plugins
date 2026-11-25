@@ -1,0 +1,22 @@
+{
+  "name": "@magpie-community/page-worktree-compare",
+  "version": "0.1.0",
+  "description": "Run two Magpie models on the same coding task in separate Git worktrees and review their implementations.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib", "bootstrap", "page", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-page", "magpie-plugin", "git-worktree", "codex"],
+  "license": "MIT",
+  "author": "isdou",
+  "repository": {"type":"git","url":"git+https://github.com/magpie-community/plugins.git","directory":"packages/worktree-compare"},
+  "magpie": {
+    "page": {
+      "title": "Worktree Compare",
+      "titles": {"zh":"双模型对比"},
+      "file": "bootstrap/index.html",
+      "service": {"port":3497,"option":"port"}
+    },
+    "options": {"port":3497}
+  },
+  "scripts": {"test":"node --test test/*.test.mjs"}
+}

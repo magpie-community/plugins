@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>双模型对比 · Magpie</title>
+  <link rel="stylesheet" href="./style.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <main>
+    <header class="mast">
+      <div class="brand"><span class="forkmark" aria-hidden="true">⑂</span><h1>双模型对比</h1></div>
+      <nav aria-label="对比导航">
+        <button type="button" id="new-tab" aria-current="page">新建对比</button>
+        <button type="button" id="history-tab">历史记录</button>
+      </nav>
+    </header>
+    <p id="notice" role="status" aria-live="polite" hidden></p>
+    <section id="editor" aria-labelledby="editor-title">
+      <header class="section-title"><h2 id="editor-title">对比两份代码实现</h2>
+        <p>Codex CLI 把同一个任务交给两个模型，各自在独立的 Git worktree 中改代码。你可以分别运行结果、查看改动，选出想继续的版本。</p>
+      </header>
+      <form id="run-form">
+        <div class="field">
+          <label for="repo">Git 项目绝对路径</label>
+          <input id="repo" name="repo" type="text" placeholder="/Users/me/Projects/my-app" required autocomplete="off" spellcheck="false" aria-describedby="base-hint">
+          <p class="hint" id="base-hint">两份工作目录都从当前已提交的 HEAD 开始。本地未提交的改动不会带入。</p>
+        </div>
+        <div class="field">
+          <label for="prompt">任务</label>
+          <textarea id="prompt" name="prompt" rows="4" required placeholder="比如：让搜索框支持方向键选择结果，按 Enter 打开。"></textarea>
+        </div>
+        <div class="model-pair">
+          <div class="field"><label for="model-a"><span class="side-label">A</span> 模型</label><select id="model-a" required disabled><option value="">正在读取模型…</option></select></div>
+          <div class="field"><label for="model-b"><span class="side-label">B</span> 模型</label><select id="model-b" required disabled><option value="">正在读取模型…</option></select></div>
+        </div>
+        <div id="model-help" hidden><span></span> <button type="button" class="inline" id="reload-models">重新读取</button></div>
+        <div class="submit-row">
+          <p class="hint">开始后会同时调用两个模型，分别计入用量。</p>
+          <button type="button" class="primary" id="start" disabled>开始对比 <span aria-hidden="true">↗</span></button>
+        </div>
+      </form>
+    </section>
+    <section id="history" aria-labelledby="history-title" hidden>
+      <header class="section-title compact"><h2 id="history-title">历史记录</h2><p>打开过去的任务，继续查看两份实现。</p></header>
+      <div id="history-list"></div>
+    </section>
+    <section id="detail" aria-labelledby="detail-title" hidden>
+      <header class="section-title compact"><h2 id="detail-title" tabindex="-1">对比结果</h2></header>
+      <div id="run-meta"></div>
+      <div class="candidates" id="candidates"></div>
+      <div id="run-actions" class="run-actions"></div>
+    </section>
+  </main>
+</body>
+</html>
