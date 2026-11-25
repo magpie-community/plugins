@@ -15,6 +15,16 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-agy-state-"))
 const originalAutoUpdate = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
 delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE
 delete process.env.AGY_BRIDGE_MINIMAL_AGENT
+// Every ban-risk warning the bridge prints, from the first import on: none
+// while AGY_BRIDGE_MINIMAL_AGENT is off, one in the process once it is on.
+const minimalWarnings = []
+{
+  const write = process.stderr.write
+  process.stderr.write = function (chunk, ...args) {
+    if (String(chunk).includes('"event":"agy_bridge_warning"') && String(chunk).includes("AGY_BRIDGE_MINIMAL_AGENT")) minimalWarnings.push(String(chunk))
+    return write.call(this, chunk, ...args)
+  }
+}
 process.env.FAKE_AGY_LOG = logPath
 process.env.FAKE_AGY_STATE = stateDir
 const bridgeStateFile = path.join(stateDir, "bridge-sessions.json")
@@ -3118,16 +3128,24 @@ for (const location of ["inline", "system", "developer", "user"]) {
 
 {
   // AGY_BRIDGE_MINIMAL_AGENT=1 drops agy's own prompt components, for a session started after it is set.
+  check("no ban-risk warning while AGY_BRIDGE_MINIMAL_AGENT is off", minimalWarnings.length === 0, minimalWarnings.join(""))
   const before = inits().length
   process.env.AGY_BRIDGE_MINIMAL_AGENT = "1"
   try {
-    const response = await callFetch({ model, messages: [{ role: "user", content: "minimal agent opt-in " + Date.now() }] })
-    await readSSE(response)
+    // two sessions: the warning is still printed once (limengy88811922 on X)
+    for (const n of [1, 2]) {
+      const response = await callFetch({ model, messages: [{ role: "user", content: `minimal agent opt-in ${n} ` + Date.now() }] })
+      await readSSE(response)
+    }
   } finally {
     delete process.env.AGY_BRIDGE_MINIMAL_AGENT
   }
+  const minimal = inits().slice(before).filter(event => event.agentConfig?.includes("excludeDefaultComponents: true"))
   const init = inits().slice(before).at(-1)
   check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
+  check("AGY_BRIDGE_MINIMAL_AGENT=1 prints its ban-risk warning once for two sessions", minimal.length >= 2 && minimalWarnings.length === 1
+    && /no longer look like the official agy client's/.test(minimalWarnings[0]) && /banned/.test(minimalWarnings[0]) && /Not recommended/.test(minimalWarnings[0]),
+    `${minimal.length} minimal sessions; ${minimalWarnings.join("")}`)
 }
 
 {

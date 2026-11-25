@@ -198,7 +198,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_MAX_PROCS` | 16 | agy 进程池上限 |
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
+| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | **⚠️ 有封号风险，不建议开启。** 设为 `1` 去掉 agy 自带的提示组件，发往上游的请求就和官方 agy 客户端的不一样了；有用户反馈开启几个小时后账号被封。见下文「精简 agent」 |
 | `AGY_BRIDGE_TELEMETRY` | 关闭（agy 不上报） | 插件启动 agy 时带上 `--disable-telemetry`（agy 的 `acp --help` 没这个开关就带不上）；设成 `1` 保留 agy 自己的上报 |
 | `AGY_BRIDGE_ALLOW_AGY_TOOLS` | 关闭 | 设为 `1` 让每个 `agy acp` 带 `--dangerously-skip-permissions` 启动，agy 自带的工具（shell、改文件、浏览器）自动放行，不再由 bridge 逐个拒绝 `session/request_permission`。客户端 `ide-tools` 仍在客户端自己的权限下运行。agy 的工具在 magpie 所在的电脑上以你的用户权限运行，凡是到达这个 provider 的请求都能用：另一台机器上的客户端、或持有网关密钥的任何人，都能在这台电脑上执行命令。只有你自己用时才打开 |
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
@@ -219,6 +219,11 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | 英文系统提示行 | 预填片段渲染时的提示行文本（发给模型） |
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
+
+> **⚠️ 有封号风险，不建议开启。** 开启后，发往上游的请求不再带 agy 自己的系统提示词，和官方
+> agy 客户端发出的请求不一样了；而这个插件的意义正在于请求由官方客户端发出、看起来就是官方客户端。
+> 有用户反馈开启后几个小时账号就被封了。这只是一例反馈，不能证明就是它导致的，但请把这个风险当真。
+> 开启时插件会在日志里打印一行同样的警告（每个进程一次）。已经开了的话，去掉这个变量即可恢复默认。
 
 默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词作为
 `<external_system_instructions>` 放在第一条提示词开头。Antigravity 对附加在 agy 系统提示词
@@ -244,7 +249,7 @@ DeepSeek Harness 的第一句 "You are an AI agent powered by DeepSeek Harness."
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
 发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的
-不再是 agy 自己的请求形态，所以默认关闭，由你自行决定是否开启。
+不再是 agy 自己的请求形态，有封号风险（见本节开头），所以默认关闭，不建议开启。
 
 ## 常见排查
 
