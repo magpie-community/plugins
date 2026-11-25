@@ -101,13 +101,16 @@ MCP server. The control port listens on loopback only, with a token per process.
   own tools (shell, file edits, browser) is refused. A request for one of the
   client's tools on the bridge's `ide-tools` server is allowed once, since that
   tool runs in the client under the client's own permissions. Real actions
-  happen on the client side.
+  happen on the client side. Set `AGY_BRIDGE_ALLOW_AGY_TOOLS=1` to instead start
+  agy with `--dangerously-skip-permissions` and let its own tools through.
 - **Assistant prefill**: requests that end with a text-only assistant message
   (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
   instead of rejected; the session ledger stays aligned across turns. See
   "Assistant prefill" below.
-- **Usage visibility**: Magpie shows the agy subscription usage windows. They are
-  informational only; running out of quota does not block requests automatically.
+- **Usage visibility**: Magpie shows the agy subscription usage windows. Each
+  model's window (its pool's most used one) is what Magpie's routing weighs the
+  account by for that model, so a routing group puts it by what it has left,
+  and a model whose pool is used up is passed over for the next member.
 
 ## Assistant prefill
 
@@ -263,6 +266,13 @@ and can't be renewed, or with one agy already failed on, agy is not run: the
 account shows its sign-in has expired until you sign in again. Other failed
 usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 
+On macOS, a Magpie run as a LaunchDaemon is outside your login session and
+can't read your login keychain, and neither can agy there. An account of agy's
+own then runs with the copy of its sign-in the Magpie window kept (see above);
+one with no copy says why: run Magpie with `magpie daemon install` (a service of
+your own) or the Magpie app instead, or sign it in with "Add another Google
+account", which keeps its sign-in in a file.
+
 ## Environment variables
 
 | Name | Default value | What it does |
@@ -273,6 +283,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
 | `AGY_BRIDGE_TELEMETRY` | off (agy reports nothing) | The bridge starts agy with `--disable-telemetry` when agy's `acp --help` lists it; set to `1` to keep agy's own reporting |
+| `AGY_BRIDGE_ALLOW_AGY_TOOLS` | off | Set to `1` to start every `agy acp` with `--dangerously-skip-permissions`, so agy's own tools (shell, file edits, browser) auto-approve instead of the bridge refusing each `session/request_permission`. Client `ide-tools` still run under the client's own permissions. agy's tools run on the computer magpie runs on, with your user's rights, for every request that reaches this provider: a client on another machine, or anyone holding a gateway key, can run commands there. Leave off unless only you use it |
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_SPARE` | on | Keeps one spare agy per account, started but with no session and no request sent, so a new conversation skips agy's start; set to `0` to turn it off |

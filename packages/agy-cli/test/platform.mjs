@@ -2,7 +2,24 @@ import assert from "node:assert/strict"
 import childProcess from "node:child_process"
 import { syncBuiltinESMExports } from "node:module"
 import { test } from "node:test"
-import { agyCandidates, agySpawnSpec, childEnv, spawnAgy, windowsMcpShim } from "../platform.mjs"
+import { agyCandidates, agySpawnSpec, childEnv, holdsHome, spawnAgy, windowsMcpShim } from "../platform.mjs"
+
+// plugins#1405 (Danco): agy loads the home folder's contents as the
+// workspace's customizations and drops the client's biggest tools to fit
+test("the home folder and those above it are never added to agy's workspace", () => {
+  assert.equal(holdsHome("/Users/me", "/Users/me", "darwin"), true)
+  assert.equal(holdsHome("/Users/me/", "/Users/me", "darwin"), true)
+  assert.equal(holdsHome("/Users", "/Users/me", "darwin"), true)
+  assert.equal(holdsHome("/", "/home/me", "linux"), true)
+  assert.equal(holdsHome("/Users/me/project", "/Users/me", "darwin"), false)
+  assert.equal(holdsHome("/Users/meow", "/Users/me", "darwin"), false)
+  assert.equal(holdsHome("/tmp/x", "/Users/me", "darwin"), false)
+  assert.equal(holdsHome("c:\\users\\me", "C:\\Users\\Me", "win32"), true)
+  assert.equal(holdsHome("C:\\", "C:\\Users\\Me", "win32"), true)
+  assert.equal(holdsHome("D:\\", "C:\\Users\\Me", "win32"), false)
+  assert.equal(holdsHome("C:\\Users\\Me\\code", "C:\\Users\\Me", "win32"), false)
+  assert.equal(holdsHome("", "/Users/me", "darwin"), false)
+})
 
 test("Windows discovery considers exe/cmd/bat, Path and LOCALAPPDATA", () => {
   const candidates = agyCandidates({ Path: 'C:\\Program Files\\agy;D:\\tools', LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local' }, 'C:\\Users\\Test', 'win32')

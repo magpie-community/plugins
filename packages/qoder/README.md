@@ -106,6 +106,15 @@ itself.
 
 - It writes the chat completion as Qoder's request:
   - Qoder's own system line comes before yours.
+  - Claude Code's identity line, `You are Claude Code, Anthropic's official
+    CLI for Claude.`, goes as the Claude Agent SDK's, `You are a Claude
+    agent, built on Anthropic's Claude Agent SDK.` (since 0.2.72): Qoder
+    answers a prompt with that line with 400 `Cannot find model`, whatever
+    the model. The rest of the prompt and your messages go as written.
+  - A harness's opener, such as DeepSeek Harness's `You are an AI agent
+    powered by DeepSeek Harness.`, goes with a comma before `powered by`
+    (since 0.2.73, #1517): Qoder CN puts a request whose system prompt
+    holds that line, as written, in a queue that never moves.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.

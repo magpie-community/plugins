@@ -538,6 +538,218 @@ function autoclawModels(providerId = "autoclaw") {
   return providerId === "autoclaw-cn" ? managedModels() : overseasModels();
 }
 
+// The official client (AutoClaw 2.5.3) reads its model list from the managed
+// gateway at start, not from a list built into the app:
+// GET <gateway>/autoclaw-proxy/proxy/autoclaw-model-config answers
+// { models: [ "id" | { id, name, api, reasoning, input, contextWindow,
+// maxTokens, reasoningLevels, metadata: { gates } } ] }, at most 128.
+// The gateway is httpOrigin of the build: autoglm-api.autoglm.ai overseas,
+// autoglm-acceleration-api.zhipuai.cn in CN. Reading it here lets a model
+// upstream adds show without a plugin release; the tables above stay the
+// fallback whenever the list can't be read.
+const CATALOG_PATH = "/autoclaw-proxy/proxy/autoclaw-model-config";
+const CATALOG_MAX = 128;
+const CATALOG_BYTES = 512 * 1024;
+const REASONING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function catalogUrl(providerId) {
+  return (providerId === "autoclaw-cn" ? MANAGED_HOST : GLOBAL_HOST) + CATALOG_PATH;
+}
+
+/** The headers the official client's managed-gateway GETs carry (headersForService). */
+function catalogHeaders(accessToken, providerId) {
+  const cn = providerId === "autoclaw-cn";
+  const headers = new Headers(bizHeaders(bareToken(accessToken)));
+  headers.delete("Content-Type");
+  headers.delete("Origin");
+  headers.delete("Referer");
+  headers.set("Accept", "*/*");
+  headers.set("X-Version", cn ? CN_CLIENT_VERSION : OFFICIAL_CLIENT_VERSION);
+  headers.set("X-Channel", cn ? CN_CHANNEL : OFFICIAL_CHANNEL);
+  headers.set("X-Lang", cn ? "zh-CN" : OFFICIAL_LANG);
+  if (cn) headers.set("User-Agent", `AutoClaw/${CN_CLIENT_VERSION} (${PLATFORM}-${process.arch})`);
+  else headers.delete("User-Agent");
+  return headers;
+}
+
+function catalogText(v, max) {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return !t || t.length > max || /[\u0000-\u001F\u007F]/.test(t) ? null : t;
+}
+function catalogInt(v, max) {
+  return Number.isSafeInteger(v) && v > 0 && v <= max ? v : undefined;
+}
+function versionCmp(a, b) {
+  const pa = String(a).split("-")[0].split(".").map(Number);
+  const pb = String(b).split("-")[0].split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Whether one gate condition holds for this plugin, as the official client judges it. */
+function gateHolds(cond, ctx) {
+  if (!cond || typeof cond !== "object") return true;
+  switch (cond.dimension) {
+    case "clientVersion": {
+      if (cond.gte === undefined && cond.lt === undefined) return true;
+      if (cond.gte !== undefined && versionCmp(ctx.version, cond.gte) < 0) return false;
+      if (cond.lt !== undefined && versionCmp(ctx.version, cond.lt) >= 0) return false;
+      return true;
+    }
+    case "channel":
+      if (Array.isArray(cond.in)) return cond.in.includes(ctx.channel);
+      if (Array.isArray(cond.notIn)) return !cond.notIn.includes(ctx.channel);
+      return true;
+    // The plugin can't tell membership or a Coding Plan from here; the gateway
+    // still answers a request for a model the account may not use.
+    case "entitlement":
+      return false;
+    // No experiment buckets and no UI surface here: a bucket gate doesn't
+    // hold, a notIn one does.
+    case "experiment":
+    case "surface":
+      return !Array.isArray(cond.in) && !Array.isArray(cond.bucket);
+    // Like the official client: a gate it doesn't understand holds.
+    default:
+      return true;
+  }
+}
+
+/** Whether a catalog entry's gates hide or disable it for this plugin. */
+function gatedOut(gates, ctx) {
+  if (!Array.isArray(gates)) return false;
+  return gates.some((g) => {
+    if (!g || typeof g !== "object" || (g.effect !== "hidden" && g.effect !== "disabled")) return false;
+    if (g.when !== undefined) {
+      const all = g.when?.all;
+      return Array.isArray(all) && all.length > 0 && all.every((c) => gateHolds(c, ctx));
+    }
+    return gateHolds(g, ctx);
+  });
+}
+
+/**
+ * One catalog entry, parsed as the official client parses it (TLu), or null
+ * when the client would reject it. A string is a bare id.
+ */
+function catalogEntry(raw) {
+  if (typeof raw === "string") {
+    const id = catalogText(raw, 256);
+    return id ? { id, bare: true } : null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const id = catalogText(raw.id, 256);
+  if (!id) return null;
+  if (raw.api !== undefined && raw.api !== "openai-completions" && raw.api !== "anthropic-messages") return null;
+  const context = catalogInt(raw.contextWindow, 1e7);
+  const contextWindow = context !== undefined && context >= 1000 ? context : undefined;
+  const max = catalogInt(raw.maxTokens, 1e6);
+  const maxTokens = max !== undefined && (contextWindow === undefined || max < contextWindow) ? max : undefined;
+  const input = Array.isArray(raw.input) ? raw.input.filter((x) => x === "text" || x === "image") : [];
+  const levelsRaw = raw.reasoningLevel ?? raw.reasoningLevels;
+  const levels = Array.isArray(levelsRaw)
+    ? [...new Set(levelsRaw.filter((x) => typeof x === "string").map((x) => x.trim()).filter((x) => REASONING_LEVELS.has(x)))]
+    : [];
+  const metadata = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata) ? raw.metadata : {};
+  return {
+    id,
+    name: catalogText(raw.name, 2048) ?? id,
+    api: raw.api,
+    reasoning: raw.reasoning === true,
+    image: input.includes("image"),
+    contextWindow,
+    maxTokens,
+    levels,
+    gates: metadata.gates,
+  };
+}
+
+/** The runtime row magpie's host expects, built on a row it gave (same api url, npm, headers). */
+function catalogRow(entry, providerId, given, template) {
+  const base = given ?? template ?? {};
+  const known = autoclawModels(providerId)[entry.id];
+  const bare = entry.bare === true;
+  const reasoning = bare ? (known?.reasoning ?? false) : entry.reasoning;
+  const image = bare ? (known?.attachment ?? false) : entry.image;
+  const context = entry.contextWindow ?? known?.limit?.context ?? base.limit?.context ?? 0;
+  const output = entry.maxTokens ?? known?.limit?.output ?? (given ? base.limit?.output : undefined) ?? 0;
+  const variants = entry.levels?.length
+    ? Object.fromEntries(entry.levels.map((effort) => [effort, { reasoningEffort: effort }]))
+    : known?.variants ?? (providerId === "autoclaw-cn" && reasoning ? VARIANTS : {});
+  return {
+    ...base,
+    id: entry.id,
+    providerID: base.providerID ?? providerId,
+    name: entry.bare ? (known?.name ?? entry.id) : entry.name,
+    limit: { context, output },
+    reasoning,
+    tool_call: true,
+    attachment: image,
+    modalities: { input: image ? ["text", "image"] : ["text"], output: ["text"] },
+    api: { ...(base.api ?? {}), id: entry.id },
+    capabilities: {
+      ...(base.capabilities ?? {}),
+      reasoning,
+      attachment: image,
+      toolcall: true,
+      input: { ...(base.capabilities?.input ?? {}), text: true, image },
+    },
+    variants,
+  };
+}
+
+/**
+ * The account's model list from the managed gateway, as runtime rows, or
+ * null when it can't be read or doesn't look like the official client's
+ * catalog (the caller keeps the static table then).
+ */
+async function catalogModels(providerId, accessToken, given = {}, signal) {
+  const token = bareToken(accessToken);
+  if (!token) return null;
+  let res;
+  try {
+    res = await fetch(catalogUrl(providerId), {
+      method: "GET",
+      headers: catalogHeaders(token, providerId),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      redirect: "error",
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  let body;
+  try {
+    const text = await res.text();
+    if (text.length > CATALOG_BYTES) return null;
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const list = body && typeof body === "object" && !Array.isArray(body) ? body.models : undefined;
+  if (!Array.isArray(list) || list.length === 0 || list.length > CATALOG_MAX) return null;
+  const ctx = providerId === "autoclaw-cn"
+    ? { version: CN_CLIENT_VERSION, channel: "domestic" }
+    : { version: OFFICIAL_CLIENT_VERSION, channel: "overseas" };
+  const template = Object.values(given ?? {})[0];
+  const rows = {};
+  for (const raw of list) {
+    const entry = catalogEntry(raw);
+    // The client drops the whole list when one entry is malformed.
+    if (!entry) return null;
+    if (rows[entry.id]) continue;
+    // Requests go out on OpenAI's chat completions; an Anthropic-wire model can't.
+    if (entry.api === "anthropic-messages") continue;
+    if (gatedOut(entry.gates, ctx)) continue;
+    rows[entry.id] = catalogRow(entry, providerId, given?.[entry.id], template);
+  }
+  return Object.keys(rows).length > 0 ? rows : null;
+}
+
 // ---------------------------------------------------------------------------
 // 基础工具
 // ---------------------------------------------------------------------------
@@ -1795,8 +2007,13 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
 
     provider: {
       id: providerId,
-      async models(provider) {
-        return provider.models;
+      async models(provider, { auth, signal } = {}) {
+        // Read live; on any failure (no sign-in, network, a 401 or a list the
+        // official client would reject too) the static table stands. A 401 here
+        // is never a sign-out: chat, usage and refresh judge the sign-in.
+        if (auth?.type !== "oauth" || !auth.access) return provider.models;
+        const live = await catalogModels(providerId, auth.access, provider.models, signal);
+        return live ?? provider.models;
       },
     },
   });
@@ -2267,6 +2484,7 @@ export const _internal = {
   quotaRefusal, accountRefusal, fingerprintRefusal, bannedSaid,
   signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
+  catalogModels, catalogEntry, catalogHeaders, catalogUrl, gatedOut, autoclawModels,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
   refreshShared, rememberRotated, magpieCfgDir,

@@ -728,7 +728,7 @@ const legacyModel = "agy-cli/gemini-test-low"
   const pw = usage.windows?.find(w => !w.model)
   check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
   check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
+  check("auth.usage sets the pools' windows aside, its models' not, and keeps bridge auth", usage.windows?.every(w => (w.aside === true) === !w.model) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
@@ -1092,14 +1092,19 @@ async function launchedModel(body) {
   check("UTF-8 split inside a code point preserves text", textOf(events).includes("中文😀"), textOf(events))
 }
 
+// a project folder of its own: os.tmpdir() holds HOME where HOME is a
+// mktemp folder (CI's), and a folder above home is never added (plugins#1405)
+const project = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smoke-project-"))
 for (const [name, system, headers, expectedDir, named] of [
-  ["local prompt", `Working directory: ${os.tmpdir()}`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["local prompt", `Working directory: ${project}`, {}, path.resolve(project), project],
   ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
-  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(os.tmpdir()) }, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(project) }, path.resolve(project), project],
   ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
+  // plugins#1405 (Danco): the home folder is told, never added
+  ["home folder prompt", `Working directory: ${os.homedir()}`, {}, null, os.homedir()],
   // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
   // sentence after the closing quote
-  ["quoted prompt ending a sentence", `Current working directory: "${os.tmpdir()}".`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["quoted prompt ending a sentence", `Current working directory: "${project}".`, {}, path.resolve(project), project],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events
@@ -2174,7 +2179,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const convId = inits().at(-1).convId
   const before = inits().length
   const second = continuation(first, events, [
-    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANAAAA" } },
   ])
   second.messages.at(-1).content.push(
     { type: "text", text: "[Image: original 3423x1834, displayed at 2000x1072. Multiply coordinates by 1.71 to map to original image.]" },
@@ -2194,7 +2199,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     !content.some(part => part.type === "image") &&
     content.some(part => part.text === IMAGE_FOLLOWS) &&
     steer.convId === convId &&
-    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANAAAA") &&
     steer.text.includes("Multiply coordinates by 1.71") &&
     steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
 
@@ -2205,7 +2210,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const readBefore = inits().length
   const readSecond = continuation(readFirst, readEvents, [
     { type: "text", text: "Image read successfully" },
-    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4AAQSkZJRgABcmVhZGltYWdl" } },
   ])
   const readResponse = await callFetch(readSecond)
   const readFinal = (await readSSE(readResponse)).events
@@ -2215,7 +2220,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
     JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
     readSteer.convId === readConv && readSteer.images === 1 &&
-    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    readSteer.content.some(part => part.type === "image" && part.data === "/9j/4AAQSkZJRgABcmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
     !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
   // Claude Code's Read of a PDF: the tool_result holds the file as a base64
@@ -2357,7 +2362,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
         role: "user",
         content: [
           { type: "text", text: "Hello token counter 中文" },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(4000) } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAAN" + "A".repeat(3984) } },
         ],
       }],
     }),
@@ -2693,7 +2698,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
       { type: "text", text: "look at this" },
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "cmVwbGF5aW1hZ2U=" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2705,7 +2710,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       imgReplay.text.includes("look at this") &&
       !imgReplay.text.includes("MIXED_IMAGE_RESULT") && mcpResultText(imgOld).includes("MIXED_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "cmVwbGF5aW1hZ2U="),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U="),
       `status=${imgRes.status}`)
   }
 
@@ -2718,7 +2723,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgSecond = continuation(imgFirst, imgEvents, "ONLY_IMAGE_RESULT")
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "b25seWltYWdl" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANb25seWltYWdl" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2729,7 +2734,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       !imgReplay.text.includes("ONLY_IMAGE_RESULT") && mcpResultText(imgOld).includes("ONLY_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "b25seWltYWdl"),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANb25seWltYWdl"),
       `status=${imgRes.status}`)
   }
 
@@ -2871,12 +2876,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
 {
   const first = { model, messages: [{ role: 'user', content: 'ESCCALL replay tool image regression' }], tools: [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
-  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cmVwbGF5aW1hZ2U=' } }])
+  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=' } }])
   second.messages.at(-1).content.push({ type: 'text', text: 'The user sent a new message while you were working:\nInspect that returned image' })
   const response = await callFetch(second)
   if (response.status === 200) await readSSE(response)
   else await response.text()
-  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'cmVwbGF5aW1hZ2U='))
+  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U='))
   if (response.status !== 200) await drive(first, events, 'cleanup replay image')
 }
 
@@ -3133,6 +3138,7 @@ else process.env.AGY_CLI_DISABLE_AUTO_UPDATE = originalAutoUpdate
 
 try { fs.rmSync(here, { recursive: true, force: true }) } catch {}
 try { fs.rmSync(stateDir, { recursive: true, force: true }) } catch {}
+try { fs.rmSync(project, { recursive: true, force: true }) } catch {}
 
 console.log(failures === 0 ? `\nALL OK (${checks} checks)` : `\n${failures} FAILURES (${checks} checks)`)
 process.exit(failures === 0 ? 0 : 1)

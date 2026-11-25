@@ -88,7 +88,24 @@ test("a live report names on each window the ids the listed catalog serves", () 
   assert.deepEqual(pools.map(w => w.used), [0, 0, 66.394961, 0, 0])
   // agy names a family in the description even though it lists no bare id.
   assert.ok(pools[2].models.includes("gpt-oss-120b"))
-  assert.ok(result.windows.every(w => w.aside === true))
+  // the pools' windows are set aside: they hold their models at a cap
+  assert.ok(pools.every(w => w.aside === true))
+  storeCatalogRows(null)
+})
+
+// will930128 on X: an Opus 5.5 routing group showed the agy-cli account's
+// share as not known, last behind every account known, while its card
+// showed Claude & GPT's 5 hours and 7 days. Every window was aside, so
+// magpie's routing had none to weigh it by.
+test("a model's own window is not set aside, so routing weighs the account by it", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  const own = result.windows.filter(w => w.model)
+  assert.equal(own.length, 6)
+  assert.ok(own.every(w => !w.aside && w.used !== undefined && w.models.length > 0))
+  const opus = own.find(w => w.model === "claude-opus-5-5")
+  assert.deepEqual([opus.pool, opus.used, opus.aside], ["Claude & GPT", 66.394961, undefined])
+  assert.ok(opus.models.includes("claude-opus-5-5-high"))
   storeCatalogRows(null)
 })
 
@@ -1107,6 +1124,28 @@ test("a stored sign-in with time left is read directly first, so a slow agy -p d
   assert.equal(result.windows.length, 2)
   assert.equal(asked, 1)
   assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+  await f.assertClean()
+})
+
+// plugins#1522: a direct read that can't connect hung until the deadline,
+// and agy -p, run after it with a second left, timed the card out.
+test("a direct read that hangs leaves agy -p the time it needs", async t => {
+  const f = await fixture(t)
+  const deadlines = []
+  const quota = async o => {
+    deadlines.push(o.deadline - Date.now())
+    await new Promise(r => setTimeout(r, Math.max(0, o.deadline - Date.now())))
+    throw new Error("The operation timed out.")
+  }
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 9000, quota, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.windows.length, 1)
+  assert.equal(deadlines.length, 1)
+  assert.ok(deadlines[0] <= 5000, `the direct read had ${deadlines[0]}ms`)
+  const p = (await f.logs()).find(l => l.args[0] === "-p")
+  assert.ok(Number(p.args.at(-1).replace(/s$/, "")) >= 3, `agy -p had ${p.args.at(-1)}`)
   await f.assertClean()
 })
 

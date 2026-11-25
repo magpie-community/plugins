@@ -9,6 +9,9 @@ import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./sig
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
 const MAX_OUTPUT_BYTES = 1024 * 1024
+// The direct read made before agy -p (fetchUsage's first) takes about 1.5
+// seconds; agy -p, 5 to 10. The first gets this long, agy -p the rest.
+const FIRST_READ_MS = 5_000
 
 // kind: "auth" (agy says it needs a sign-in), "timeout" (output: what agy
 // had printed by then, never shown), "cancel", or none.
@@ -183,6 +186,13 @@ function vendorOf(id, name) {
 // digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
 // card shows the pools, and "Every model" lists the models, as it did for
 // the antigravity plugin.
+//
+// A model's own window is not set aside: it is what routing weighs the
+// account by for that model, as the antigravity plugin's were, so a
+// routing group of Opus 5.5 reads the account's Claude & GPT share, not
+// "not known yet" behind every account known (will930128 on X). The
+// pool's own windows stay aside and hold their models at a cap the user
+// sets on the pool (magpie's PoolWindow), as the antigravity plugin's did.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
@@ -214,7 +224,7 @@ export function parseUsageReport(value) {
       const w = {
         name: period.name,
         pool,
-        // This feature displays quota only; it must not change model routing.
+        // the pool's own: its models' windows stop them (below)
         aside: true,
         ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
@@ -234,7 +244,6 @@ export function parseUsageReport(value) {
         model: f.id,
         family: vendorOf(f.id, f.name),
         pool,
-        aside: true,
         models: f.ids,
         used: tightest.used,
         ...(tightest.span ? { span: tightest.span } : {}),
@@ -555,10 +564,15 @@ export async function fetchUsage(agy, {
     // seconds. When they can't answer (a sign-in that can't be read, a
     // refusal, a reply with no quota), agy -p is asked as before, in the
     // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    //
+    // It gets FIRST_READ_MS of the deadline, not all of it: a read that
+    // can't connect (a proxy down, a network that drops Google) hung until
+    // the deadline and left agy -p a second, so the card said "timed out"
+    // when agy -p alone would have answered (plugins#1522).
     let firstFailed = ""
     if (first) {
       try {
-        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        const data = await quota({ env, version: version.stdout.trim(), deadline: Math.min(deadline, Date.now() + FIRST_READ_MS), signal })
         return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
       } catch (error) {
         if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
@@ -660,6 +674,8 @@ export function createUsageReader(resolveAgy, options = {}) {
     let stored
     try { stored = await signIn() } catch { stored = { state: "unknown" } }
     const why = cannotSignIn(stored)
+    // out of this process's reach, signing in again here mends nothing
+    if (why && stored?.state === "unreachable") return { windows: [], error: `${why}.`, signIn: "expired" }
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"

@@ -24,6 +24,7 @@ for (const [name, mocks] of [
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
   ["tool-summary.mjs", false],
+  ["call-mcp-tool.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
@@ -37,6 +38,9 @@ for (const [name, mocks] of [
   ["slash-commands.mjs", false],
   ["concurrent-convs.mjs", false],
   ["masking-drift.mjs", false],
+  ["spilled-output.mjs", false],
+  ["tool-result-prefill.mjs", false],
+  ["image-bytes.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
@@ -50,6 +54,12 @@ for (const [name, mocks] of [
 
 test("test/re2-pattern-unit.mjs", () => {
   const { code, output } = run([path.join(dir, "re2-pattern-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)
+
+test("test/image-signature-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "image-signature-unit.mjs")], 60_000)
   expect(output).toMatch(/ALL OK/)
   expect(code).toBe(0)
 }, 70_000)

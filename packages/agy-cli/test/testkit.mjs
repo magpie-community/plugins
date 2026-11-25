@@ -606,6 +606,11 @@ export async function createBridgeKit(options = {}) {
   const execFile = (file, args = [], opts, callback) => {
     if (typeof opts === "function") callback = opts
     kit.execFiles.push({ file, args })
+    // the keychains `security` searches (options.keychains, its output)
+    if (args[0] === "list-keychains" && options.keychains !== undefined) {
+      setImmediate(() => callback(null, options.keychains, ""))
+      return
+    }
     const stored = options.storedSignIn
     setImmediate(() => stored === "missing" || stored === undefined
       ? callback(Object.assign(new Error("not found (test)"), { code: 44 }), "", "")
