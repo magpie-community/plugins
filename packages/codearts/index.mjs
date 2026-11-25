@@ -1373,9 +1373,25 @@ function isBodyTooLarge(text) {
   return /body too large/i.test(String(text ?? ""))
 }
 
-function bodyTooLargeResponse(bytes, code = "") {
+function bodyTooLargeResponse(bytes, code = "", limit = 12) {
   const mb = (bytes / (1024 * 1024)).toFixed(1)
-  return errorResponse(413, code, `CodeArts 网关只接受 12 MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话，或去掉较大的图片后再试`)
+  return errorResponse(413, code, `CodeArts 网关只接受 ${limit} MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话、压缩上下文，或去掉较大的图片后再试`)
+}
+
+/**
+ * Past APIG, InferHub takes a chat of about 10 MB at most. A larger one is
+ * answered `InferHub.001001005.400` "The request param is invalid", the
+ * same code a bad parameter gets, on every account and every try (Discord,
+ * 2026-11-25: a 449-message session with 23 images, 9.36 MB answered and
+ * 10.03 MB refused, sent straight to the gateway). That code on a body this
+ * large is the size, so it is said as the size: a 413, never a retry, a
+ * renewal or a fault of the account. A smaller body's 001001005 is left as
+ * the gateway's own words.
+ */
+const INFERHUB_BODY_LIMIT = 10 * 1000 * 1000
+
+function isOverInferHubLimit(bytes, codeOrText) {
+  return bytes > INFERHUB_BODY_LIMIT && /InferHub\.001001005\b/.test(String(codeOrText ?? ""))
 }
 
 /** A 401/400 that only means the temporary AK/SK/security-token went stale. */
@@ -1965,6 +1981,7 @@ async function signedFetch(cred, input, init, context) {
       }
 
       if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, code)
+      if (isOverInferHubLimit(body.length, code || text)) return bodyTooLargeResponse(body.length, code, 10)
       if (res.status === 401 || isStaleCredential(text)) {
         if (!renewed && context.renewCredential) {
           renewed = true
