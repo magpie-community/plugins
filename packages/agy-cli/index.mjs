@@ -989,6 +989,38 @@ function saveCatalog(agyPath, change) {
   } catch {}
 }
 
+// Whether another account of this agy lists model, by the lists models.json
+// keeps for each (offered, when a session said, else listed). A family
+// alias for a model this account lacks swapped it for another model with a
+// 200, claude-sonnet-5-5 served as claude-sonnet-4-6, while the account
+// that has it was never asked (plugins#1542).
+function anotherAccountLists(agyPath, model) {
+  if (!agyPath || !model) return false
+  const base = model.replace(/-\d{8}$/, "")
+  const bare = base.replace(/-(?:minimal|low|medium|high|xhigh|max)$/i, "")
+  try {
+    const data = JSON.parse(fs.readFileSync(modelCatalogFile(), "utf8"))
+    if (data?.version !== 1 || !data.byAgy || typeof data.byAgy !== "object") return false
+    const mine = catalogKey(agyPath)
+    for (const [key, entry] of Object.entries(data.byAgy)) {
+      if (key === mine || (key !== agyPath && !key.startsWith(agyPath + "#"))) continue
+      // an account removed since leaves its entry behind, not its home
+      const id = key === agyPath ? "" : key.slice(agyPath.length + 1)
+      if (id && !fs.existsSync(path.join(accountsDir(), id))) continue
+      if (!Number.isFinite(entry?.at) || Date.now() - entry.at > SAVED_CATALOG_MAX_AGE_MS) continue
+      const rows = Array.isArray(entry.offered) && entry.offered.length ? entry.offered : entry.list
+      if (!Array.isArray(rows)) continue
+      for (const row of rows) {
+        const rowId = typeof row?.id === "string" ? row.id : ""
+        if (!rowId) continue
+        const family = row.effort && rowId.endsWith("-" + row.effort) ? rowId.slice(0, -row.effort.length - 1) : rowId
+        if (rowId === base || family === base || family === bare) return true
+      }
+    }
+  } catch {}
+  return false
+}
+
 function startingModelCatalog(agyPath) {
   const saved = readSavedCatalog(agyPath)
   if (!saved) return fallbackModelCatalog(agyPath, { replace: true })
@@ -8063,7 +8095,14 @@ export const AntigravityBridgePlugin = async () => {
             body = { ...foldSplitCalls(canonicalBody(body)), model: requestedModel }
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const saidEffort = requestHeader(fetchInput, init, "x-magpie-effort")
-            const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body, saidEffort)
+            const listed = await loadModelCatalog(agy)
+            const model = resolveAgyModel(listed, requestedModel, body, saidEffort)
+            // a family alias stands in for a model only no account has
+            const aliasOf = resolveCatalogAlias(listed.routing ?? listed, requestedModel).id
+            if (aliasOf !== requestedModel && !requestedModel.startsWith(aliasOf + "-") &&
+              anotherAccountLists(agy, requestedModel)) {
+              return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
+            }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
             const sessionScope = requestSessionScope(fetchInput, init)
             // an account's conversations are its own: its agy has them
