@@ -1565,6 +1565,58 @@ test("agy's high-traffic ending fails the turn as an overloaded 503, not a rate 
   }
 })
 
+// plugins#1541: before that ending agy retries the 503 for minutes, saying
+// so only in its log. The first retry line ends the turn, so magpie can ask
+// another account at once.
+const CAPACITY_RETRY = "I1125 13:34:23.878000 6120 run.go:88] Run: attempt 1 failed (transport error (Unavailable, HTTP 503): No capacity available for model gemini-4-hydrogen-low on the server), retrying in 4s\n"
+
+test("agy's silent no-capacity retry ends the turn as an overloaded 503 before anything is streamed", async () => {
+  for (const stream of [false, true]) {
+    await withKit({}, async (kit) => {
+      // how agy's turn ended: cancelled by the bridge, or by its own give-up
+      let ended = null
+      kit.defaultPrompt = async (agent) => {
+        fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+        ended = await Promise.race([agent.waitCancel().then(() => "cancelled"),
+          new Promise((resolve) => setTimeout(() => resolve("gave up"), 20000).unref())])
+        return { stopReason: "end_turn" }
+      }
+      const started = Date.now()
+      const response = await kit.request(baseBody({ metadata: { user_id: `capacity-${stream}` },
+        messages: [{ role: "user", content: "hello" }], stream }))
+      if (stream) {
+        const error = sseError(await response.text())
+        assert.equal(error.type, "overloaded_error")
+        assert.notEqual(error.noRetry, true)
+        assert.match(error.message, /no capacity for this model now: .*No capacity available for model gemini-4-hydrogen-low/)
+      } else {
+        const body = await response.json()
+        assert.equal(response.status, 503)
+        assert.equal(body.error.type, "overloaded_error")
+      }
+      assert.ok(Date.now() - started < 10000, `ended after ${Date.now() - started}ms, not at agy's next retry`)
+      assert.notEqual(ended, "gave up", "the reply didn't wait for agy to give up")
+    })
+  }
+})
+
+test("a no-capacity retry after the reply began leaves the turn to agy", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("Working on it. ")
+      fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await agent.text("Done.")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "capacity-late" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(replyText(body), "Working on it. Done.")
+  })
+})
+
 test("agy's high-traffic ending fails a non-stream request as an HTTP 503", async () => {
   await withKit({}, async (kit) => {
     markerAgent(kit, ["Let me look", BUSY.slice(0, 30), BUSY.slice(30)])

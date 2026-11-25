@@ -161,6 +161,15 @@ const DISABLED_CORE = AGENT_ERROR_CORES[6]
 // again. It is a 503 overloaded_error: the model's, not the account's, so
 // the account is not rested as a 429 would rest it.
 const BUSY_CORE = "⚠ Our servers are experiencing high traffic right now"
+// Before that ending, agy retries the 503 inside the turn for minutes, with
+// nothing streamed: only its log says "Run: attempt 1 failed (transport error
+// (Unavailable, HTTP 503): No capacity available for model … on the server
+// …), retrying in 4s". A 1 to 2 minute wait before the first token, past a
+// client's patience (Hermes cancels at 30s), and nothing behind magpie tried
+// another account (plugins#1541). The first such line, before anything was
+// streamed, ends the turn as the same overloaded 503.
+const noCapacity = (detail) => /\bNo capacity available for model\b/i.test(detail || "")
+const CAPACITY_POLL_MS = Math.max(50, Number(process.env.AGY_BRIDGE_CAPACITY_POLL_MS) || 500)
 const BUSY_MARKER = "\n" + BUSY_CORE
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
@@ -2842,6 +2851,7 @@ class Proc {
         this.sessionPrompts++
         if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
+        const capacityWatch = this.#watchCapacity(turn)
         try {
           result = await this.conn.request("session/prompt", {
             sessionId: this.sessionId,
@@ -2849,6 +2859,7 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
+          clearInterval(capacityWatch)
         }
         if (promptNumber === 1) {
           // how long agy took to answer, beside the session row's start-up steps
@@ -3000,6 +3011,36 @@ class Proc {
   // A try Antigravity answered with the bare 429 ends the turn now, with the
   // same error as agy's own 429 ending, instead of after agy's retries: the
   // process goes, as on a timeout, since agy is still retrying in it.
+  // Reads agy's log while nothing has reached the client, for the retry of
+  // a "no capacity" 503 (noCapacity).
+  #watchCapacity(turn) {
+    let reading = false
+    const quiet = () => !turn.done && turn.firstOutputAt == null && !turn.calls.length
+    const timer = setInterval(async () => {
+      if (reading || !quiet()) return
+      reading = true
+      try {
+        const detail = await lastAgentError(this.logPath, turn.logOffset)
+        if (noCapacity(detail) && quiet()) this.capacityTurn(turn, detail)
+      } finally {
+        reading = false
+      }
+    }, CAPACITY_POLL_MS)
+    timer.unref?.()
+    return timer
+  }
+
+  capacityTurn(turn, detail) {
+    if (this.turn !== turn || turn.done) return
+    logSessionEvent(this, this.sessionReason ?? null, {
+      waited_ms: turn.promptSentAt != null ? Date.now() - turn.promptSentAt : null,
+      detail,
+    }, "no_capacity")
+    turn.fail(new AgentTurnError(`agy bridge: Antigravity has no capacity for this model now: ${detail}`, "overloaded_error"))
+    dropFromPool(this)
+    this.stop().catch(() => {})
+  }
+
   refuseTurn(turn, detail) {
     if (this.turn !== turn || turn.done) return
     turn.fail(this.#formatAgentError(detail))
