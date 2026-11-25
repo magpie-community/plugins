@@ -213,6 +213,7 @@ async function readIDE() {
     return null
   }
   if (!t?.accessToken) return null
+  const authMethod = String(t.authMethod ?? t.provider ?? "").toLowerCase().replace(/[^a-z]/g, "")
   const c = { access: t.accessToken, refresh: t.refreshToken ?? "", expires: time(t.expiresAt), region: t.region || "us-east-1",
     profile: arnOf(t.profileArn), method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
   if (t.clientIdHash) {
@@ -221,7 +222,9 @@ async function readIDE() {
       ;[c.clientId, c.clientSecret] = [reg.clientId ?? "", reg.clientSecret ?? ""]
     } catch {}
   }
-  if (String(t.authMethod).toLowerCase() === "social" || !c.clientId) c.method = "social"
+  if (authMethod === "externalidp") c.method = "external-idp"
+  else if (authMethod === "machinetoken") c.method = "machine-token"
+  else if (authMethod === "social" || !c.clientId) c.method = "social"
   return c
 }
 
@@ -347,7 +350,10 @@ function authHeaders(a) {
   if (a.tokenType) h.tokentype = a.tokenType
   return h
 }
-const tokenType = (c) => (c.method === "apikey" ? "API_KEY" : c.method === "external-idp" ? "EXTERNAL_IDP" : "")
+const tokenType = (c) => c.method === "apikey" ? "API_KEY"
+  : c.method === "external-idp" ? "EXTERNAL_IDP"
+    : c.method === "machine-token" ? "KIRO_MACHINE_TOKEN"
+      : ""
 
 // region is where the account's API is: the region its profile is in, else
 // the nearer of Kiro's two to where it signed in. It goes into the API's host
