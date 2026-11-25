@@ -270,6 +270,32 @@ test("prepareChatBody reshapes a chat into what the gateway accepts and meters",
   assert.equal(x.prepareChatBody(null), null)
 })
 
+// GLM holds a tool call's arguments back until the call is written, and the
+// gateway's 60 s idle timeout cuts a long one off; `tool_stream` streams them.
+test("a GLM chat with tools asks for its tool arguments streamed", () => {
+  const tools = [{ type: "function", function: { name: "write_file", parameters: { type: "object", properties: {} } } }]
+  for (const model of ["glm-5.3-flash", "codearts/glm-5.3", "GLM-5.2", "glm-5.2-sft-harmony"]) {
+    const out = x.prepareChatBody({ model, messages: [], tools })
+    assert.equal(out.body.tool_stream, true, model)
+    assert.equal(out.toolStream, true, model)
+  }
+  // nothing to stream: no tools, or an empty list
+  assert.equal("tool_stream" in x.prepareChatBody({ model: "glm-5.3-flash", messages: [] }).body, false)
+  assert.equal("tool_stream" in x.prepareChatBody({ model: "glm-5.3-flash", messages: [], tools: [] }).body, false)
+  // not a GLM: its arguments already stream
+  const ds = x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], tools })
+  assert.equal("tool_stream" in ds.body, false)
+  assert.equal(ds.toolStream, false)
+  // the caller's own word stands
+  const said = x.prepareChatBody({ model: "glm-5.3-flash", messages: [], tools, tool_stream: false })
+  assert.equal(said.body.tool_stream, false)
+  assert.equal(said.toolStream, false)
+  // the caller's body is never changed
+  const parsed = { model: "glm-5.3-flash", messages: [], tools }
+  x.prepareChatBody(parsed)
+  assert.equal("tool_stream" in parsed, false)
+})
+
 // The caller's level is the gateway's own (measured 2026-11-03: none, low,
 // medium, high, xhigh and max are accepted, every other value is a 400), and a
 // level that was named is passed on as it is: `thinking: enabled` would

@@ -235,6 +235,9 @@ const DISABLE_THINKING = { type: "disabled" }
 // (or `disabled`) means the same thing.
 const NO_THINKING = new Set(["none", "off", "disabled"])
 
+/** GLM models: the ones whose tool-call arguments stream only when `tool_stream` is asked for. */
+const GLM_MODEL = /^glm-/i
+
 // The reasoning levels each model takes, measured 2026-11-04 against the
 // gateway (the account of the report that opened this): a level the model does
 // not take is a 400
@@ -1100,13 +1103,25 @@ function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {})
   }
   const injected = thinking && spoken === "" && body.thinking === undefined
   if (injected) body.thinking = ENABLE_THINKING
+  // GLM holds a tool call's arguments back until the whole call is written
+  // and then sends them in one chunk: nothing reaches the gateway meanwhile,
+  // and its 60 s idle timeout cuts the reply off ("connection lost mid-reply",
+  // ECONNRESET) once a call takes longer than that to write. Measured
+  // 2026-11-25 on glm-5.3-flash with one write_file tool: 300 lines went
+  // silent 25 s and came as 2 frames; 600 lines were cut at the 60 s mark.
+  // GLM's own `tool_stream` streams the arguments as they are written
+  // (300 lines: 2247 frames, first at 5.8 s; 600 lines with 57 tools and a
+  // 60k-character system prompt: 71 s, 4893 frames, finish tool_calls).
+  const toolStream = GLM_MODEL.test(String(body.model ?? "")) &&
+    Array.isArray(body.tools) && body.tools.length > 0 && body.tool_stream === undefined
+  if (toolStream) body.tool_stream = true
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
   normalizeStop(body, station)
   const fold = body.stream !== true
   body.stream = true
-  return { body, fold, injected, names }
+  return { body, fold, injected, names, toolStream }
 }
 
 /**
@@ -1983,6 +1998,14 @@ async function signedFetch(cred, input, init, context) {
       if (res.status === 400 && chat.injected && /thinking/i.test(text)) {
         chat.injected = false
         delete chat.body.thinking
+        body = utf8(JSON.stringify(chat.body))
+        continue
+      }
+      // `tool_stream` is the plugin's own too: a model that refuses it gets
+      // the request without it (its arguments then come in one piece).
+      if (res.status === 400 && chat.toolStream && /tool_stream/i.test(text)) {
+        chat.toolStream = false
+        delete chat.body.tool_stream
         body = utf8(JSON.stringify(chat.body))
         continue
       }
