@@ -1,0 +1,57 @@
+body {
+  margin: 0;
+  padding: 28px 32px 48px;
+}
+
+main {
+  max-width: 680px;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.lead {
+  margin: 0 0 22px;
+  color: var(--magpie-fg-muted, #6b7280);
+  line-height: 1.7;
+}
+
+.card {
+  border: 1px solid var(--magpie-border, rgba(127, 127, 127, 0.25));
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.official-link {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid var(--magpie-border, rgba(127, 127, 127, 0.3));
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 12px 0 0;
+  color: var(--magpie-fg-muted, #6b7280);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--magpie-code-bg, rgba(127, 127, 127, 0.15));
+}
+
+#status.ok { color: #16a34a; }
+#status.missing { color: #dc2626; }
