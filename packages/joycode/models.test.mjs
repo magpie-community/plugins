@@ -13,7 +13,7 @@ const billingRate = { excludeTenants: ['JD'], billingRates: [
   { chatApiModel: 'GLM-5.3-agent', billingRate: '0.6x' },
   { chatApiModel: 'unavailable-model', billingRate: '0.2x' },
 ] }
-async function load(t, { tenant = 'personal', failRates = false, failList = false, list = catalogue } = {}) {
+async function load(t, { tenant = 'personal', failRates = false, failList = false, list = catalogue, models: said } = {}) {
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     const fn = new URL(url).searchParams.get('functionId')
     assert.equal(init.headers.tenant, tenant)
@@ -30,7 +30,7 @@ async function load(t, { tenant = 'personal', failRates = false, failList = fals
   const hooks = await plugin.server({})
   const cfg = {}
   await hooks.config(cfg)
-  const provider = cfg.provider.joycode
+  const provider = said ? { ...cfg.provider.joycode, models: said } : cfg.provider.joycode
   assert.equal(typeof hooks.provider?.models, 'function')
   return { provider, models: await hooks.provider.models(provider, { auth: { type: 'api', key: 'fake', metadata: { tenant } } }) }
 }
@@ -75,9 +75,19 @@ test('publishes only the reasoning choices declared for each model', async t => 
   assert.deepEqual(Object.keys(models['DeepSeek-V4.1-Flash'].variants), ['none', 'high', 'max'])
   assert.deepEqual(Object.keys(models['Fixed-Thinking'].variants), ['high'])
   for (const id of ['No-Declared-Effort', 'Claude-Opus-5-hq']) {
-    assert.equal(models[id].capabilities.reasoning, false)
-    assert.deepEqual(models[id].variants, {})
+    assert.equal(models[id].capabilities.reasoning, undefined)
+    assert.equal(models[id].variants, undefined)
   }
+})
+
+test('a model the catalogue gives no levels keeps the reasoning and levels said of it before', async t => {
+  const { models } = await load(t, {
+    list: [{ chatApiModel: 'GLM-5.3-agent', extJson: {} }],
+    // the host's entry for it, as magpie hands it over
+    models: { 'GLM-5.3-agent': { capabilities: { reasoning: true }, variants: { high: { reasoningEffort: 'high' } } } },
+  })
+  assert.equal(models['GLM-5.3-agent'].capabilities.reasoning, true)
+  assert.deepEqual(models['GLM-5.3-agent'].variants, { high: { reasoningEffort: 'high' } })
 })
 test('raises context only for exact input-verified models and preserves output limits', async t => {
   const { models } = await load(t, { list: [

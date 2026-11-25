@@ -949,11 +949,13 @@ async function accountModels(provider, { auth } = {}, loadCatalogue) {
       },
       capabilities: {
         ...base.capabilities,
-        reasoning: Object.keys(variants).length > 0,
+        // the catalogue's levels say it reasons; a model it gives none for
+        // keeps what was said of it before (MODELS, the user's config)
+        ...(Object.keys(variants).length ? { reasoning: true } : {}),
         toolcall: features.includes('function_call'),
         input: { ...base.capabilities?.input, text: true, image },
       },
-      variants,
+      ...(Object.keys(variants).length ? { variants } : {}),
       modalities: { input: image ? ['text', 'image'] : ['text'] },
       ...(rate !== undefined ? { rate, free: rate === 0 } : {}),
     }
