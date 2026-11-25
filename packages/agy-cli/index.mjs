@@ -31,19 +31,24 @@ const PROVIDER_NAME = "Antigravity (local agy CLI)"
 // 1.5.0. An older agy is refused with a clear message; a version agy doesn't
 // report is not known to be older, so the session goes ahead.
 export const MIN_AGY_VERSION = "1.4.12"
-export function agyTooOld(version) {
-  const parse = value => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
-    return match ? match.slice(1).map(Number) : null
-  }
-  const have = parse(version)
+function parseAgyVersion(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
+  return match ? match.slice(1).map(Number) : null
+}
+// true or false when `version` is known, null when agy did not report one
+function agyAtLeast(version, min) {
+  const have = parseAgyVersion(version)
   if (!have) return null
-  const need = parse(MIN_AGY_VERSION)
+  const need = parseAgyVersion(min)
   for (let i = 0; i < 3; i++) {
-    if (have[i] > need[i]) return null
-    if (have[i] < need[i]) return `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+    if (have[i] !== need[i]) return have[i] > need[i]
   }
-  return null
+  return true
+}
+export function agyTooOld(version) {
+  return agyAtLeast(version, MIN_AGY_VERSION) === false
+    ? `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+    : null
 }
 // agy is told who is connecting: this plugin, by its own package name.
 const CLIENT_INFO = (() => {
@@ -2177,6 +2182,7 @@ class Proc {
     // it, including a recorded 0. Distinct from a calibrated miss.
     this.lastCacheRatio = undefined
     this.omittedHistoryTokens = 0
+    this.historyArchive = null
     this.stepUsageTrusted = true
     this.configOptions = []
     this.configMethodUnsupported = false
@@ -2546,11 +2552,22 @@ class Proc {
     // the largest first, past it; fitTools shortens their descriptions
     // instead, so every tool stays (plugins#1140). The trimmed list is kept
     // per catalog: agy asks again on every tools/list_changed.
-    if (this.fittedFor !== this.toolsSignature) {
-      this.fitted = fitTools(this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
-      this.fittedFor = this.toolsSignature
+    if (this.fittedFor !== this.toolsSignature + this.historyToolListed()) {
+      const tools = this.historyToolListed() ? [...this.tools, HISTORY_TOOL] : this.tools
+      this.fitted = fitTools(tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
+      this.fittedFor = this.toolsSignature + this.historyToolListed()
     }
     return this.fitted
+  }
+
+  // A client tool of the same name wins; the bridge then offers no history tool.
+  historyToolListed() {
+    return this.historyArchive !== null && !this.tools.some((tool) => tool.name === HISTORY_TOOL.name)
+  }
+
+  async offerHistory(lines) {
+    this.historyArchive = lines
+    if (this.historyToolListed()) await this.#announceTools()
   }
 
   addWatcher(socket) {
@@ -2604,7 +2621,7 @@ class Proc {
       // Anything that would run inside agy itself (shell, file edits,
       // questions, browser) is denied.
       const tool = ideToolOf(params?.toolCall)
-      if (tool && this.tools.some((t) => t.name === tool)) {
+      if (tool && (this.tools.some((t) => t.name === tool) || (tool === HISTORY_TOOL.name && this.historyToolListed()))) {
         const allow = (params?.options || []).find((option) => option?.kind === "allow_once")
         if (allow) return { outcome: { outcome: "selected", optionId: allow.optionId } }
       }
@@ -2998,6 +3015,10 @@ class Proc {
   }
 
   acceptMcpCall(message, socket) {
+    if (message.name === HISTORY_TOOL.name && this.historyToolListed()) {
+      socket.end(JSON.stringify({ result: readHistoryArchive(this.historyArchive, message.arguments) }) + "\n")
+      return null
+    }
     const turn = this.turn
     if (!turn || turn.done || turn.finalized) {
       throw new Error("agy bridge: no active turn for MCP call")
@@ -5936,11 +5957,14 @@ function renderTurnMessagesParts(messages) {
   return toPromptParts(out)
 }
 
-// agy's ACP server cuts a prompt at 128 KiB and appends "<truncated N bytes>",
-// which would drop </conversation_history> and the whole <current_turn> of a
-// long replay. Keep the initial prompt's text under this budget instead.
-function maxInitialPromptBytes() {
-  return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES, 112 * 1024)
+// agy's ACP server cuts a prompt and appends "<truncated N bytes>", which
+// would drop </conversation_history> and the whole <current_turn> of a long
+// replay. Keep the initial prompt's text under this budget instead. The cut
+// was 128 KiB on earlier agy; agy 1.5.10 cuts at 192,000 bytes (measured with
+// marker lines at 160, 256, 384 and 512 KiB), so it gets 184,000 bytes.
+function maxInitialPromptBytes(agentVersion = null) {
+  return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES,
+    agyAtLeast(agentVersion, "1.5.10") ? 184_000 : 112 * 1024)
 }
 const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
@@ -5955,7 +5979,78 @@ const REPLAY_HEAD_SHARE = 1 / 4
 const REPLAY_TURN_SHARE = 1 / 2
 const NUDGE_MAX_BYTES = 280
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
-const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]\n"
+const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit the ACP prompt budget ...]\n"
+// A replay that does not fit is trimmed; the whole history stays readable
+// through this tool, which the bridge answers itself and never forwards to
+// the client (agy runs with tools: [], so it has no file reader of its own).
+const HISTORY_TOOL = {
+  name: "read_conversation_history",
+  description: "Read the full transcript of this conversation's earlier history. The <conversation_history> in the prompt omits or clips parts of it; use this to recover them. Returns numbered lines. Pass `search` to list only the lines containing that text (case-insensitive), then read around a hit with offset.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      offset: { type: "integer", minimum: 1, description: "First line to return, 1-based (default 1)" },
+      limit: { type: "integer", minimum: 1, description: "Maximum number of lines (default 400)" },
+      search: { type: "string", description: "Text to look for; returns the matching lines instead of a page" },
+    },
+    additionalProperties: false,
+  },
+}
+const HISTORY_LINE_CHARS = 2000
+const HISTORY_READ_BYTES = 48 * 1024
+
+// The whole history as the replay renders it, unclipped, in lines of at most
+// HISTORY_LINE_CHARS characters so one page stays bounded.
+function historyArchiveLines(history) {
+  const text = history.map((message) => renderHistoryEntry(message)
+    .map((part) => part.type === "text" ? part.text : `[${part.type}]`).join("")).join("")
+  return text.split("\n").flatMap((line) => {
+    if (line.length <= HISTORY_LINE_CHARS) return [line]
+    const pieces = []
+    for (let at = 0; at < line.length; at += HISTORY_LINE_CHARS) pieces.push(line.slice(at, at + HISTORY_LINE_CHARS))
+    return pieces
+  })
+}
+
+function historyArchiveNote(lines) {
+  return `[This replay omits or clips parts of the history below. The full transcript (${lines.length} lines) is readable with the ${HISTORY_TOOL.name} tool.]\n`
+}
+
+function readHistoryArchive(lines, args) {
+  if (typeof args?.search === "string" && args.search.trim()) return searchHistoryArchive(lines, args.search.trim())
+  const offset = Math.max(1, Math.floor(Number(args?.offset) || 1))
+  const limit = Math.max(1, Math.floor(Number(args?.limit) || 400))
+  const out = []
+  let bytes = 0
+  let line = offset
+  for (; line <= lines.length && line < offset + limit; line++) {
+    const row = `${line}: ${lines[line - 1]}\n`
+    if (out.length && bytes + utf8Bytes(row) > HISTORY_READ_BYTES) break
+    out.push(row)
+    bytes += utf8Bytes(row)
+  }
+  const head = offset > lines.length
+    ? `Offset ${offset} is past the end (${lines.length} lines).\n`
+    : `Lines ${offset}-${line - 1} of ${lines.length}.${line <= lines.length ? ` Continue with offset ${line}.` : ""}\n`
+  return { content: [{ type: "text", text: head + out.join("") }], isError: offset > lines.length }
+}
+
+function searchHistoryArchive(lines, search) {
+  const needle = search.toLowerCase()
+  const out = []
+  let bytes = 0
+  let hits = 0
+  lines.forEach((text, index) => {
+    if (!text.toLowerCase().includes(needle)) return
+    hits++
+    const row = `${index + 1}: ${text}\n`
+    if (bytes + utf8Bytes(row) > HISTORY_READ_BYTES) return
+    out.push(row)
+    bytes += utf8Bytes(row)
+  })
+  const head = `${hits} of ${lines.length} lines contain "${search}"${out.length < hits ? `; the first ${out.length} are shown` : ""}.\n`
+  return { content: [{ type: "text", text: head + out.join("") }], isError: false }
+}
 const HISTORY_OPENING_DONE_NOTE = "The opening message above, and any resume note in it, belongs to an earlier turn that is already done.\n"
 const utf8 = new TextEncoder()
 
@@ -6237,8 +6332,10 @@ function fillHistoryTail(entries, floor, left, noteBytes) {
 }
 
 // `reserveBytes` is text the caller appends after </current_turn>.
-function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
-  return renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes).parts
+// A trimmed replay comes back with `historyArchive` on its parts, the lines
+// the bridge serves through HISTORY_TOOL.
+function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0, agentVersion = null) {
+  return renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes, agentVersion).parts
 }
 
 // The newest user tasks a replay reports on, newest first.
@@ -6267,9 +6364,9 @@ function replayStats(history, raw, kept, keptIndices) {
   }
 }
 
-function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
+function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0, agentVersion = null) {
   const { history, messages: current } = trailingMessages(body)
-  const budget = Math.max(0, maxInitialPromptBytes() - reserveBytes)
+  const budget = Math.max(0, maxInitialPromptBytes(agentVersion) - reserveBytes)
   const head = []
   if (!instructionsInSession) {
     const system = systemText(body)
@@ -6322,7 +6419,12 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
   // blocks clipped first (#1055).
   let entries = raw
   let keptIndices = entries.map((_, i) => i)
+  let archive = null
+  let archiveNote = ""
   if (overRoom(entries)) {
+    archive = historyArchiveLines(history)
+    archiveNote = historyArchiveNote(archive)
+    room = Math.max(0, room - utf8Bytes(archiveNote))
     entries = history.map((message) => render(clipHistoryMessage(message, Math.max(HISTORY_BLOCK_CLIP_BYTES, Math.floor(room / 3)))))
   }
   let kept = entries
@@ -6458,6 +6560,7 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
   appendPrompt(out, headParts)
   if (history.length) {
     appendPrompt(out, historyOpen)
+    if (archiveNote) appendPrompt(out, archiveNote)
     for (const entry of kept) appendPrompt(out, entry ? entry.parts : HISTORY_OMITTED_NOTE)
     if (showOpeningDone) appendPrompt(out, HISTORY_OPENING_DONE_NOTE)
     appendPrompt(out, historyClose)
@@ -6472,7 +6575,9 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
     turn_bytes: promptTextBytes(turn),
     turn_clipped: promptTextBytes(turn) < promptTextBytes(currentParts),
   }
-  return { parts: promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget), stats }
+  const parts = promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget)
+  if (archive) parts.historyArchive = archive
+  return { parts, stats }
 }
 
 function renderContinuedTurnParts(messages) {
@@ -7645,13 +7750,15 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       : withoutAnswered(body.messages.slice(history.length), answered))
   } else {
     const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
-      reminder.length ? promptTextBytes(reminder) + 2 : 0)
+      reminder.length ? promptTextBytes(reminder) + 2 : 0, proc.agentVersion)
     baseParts = initial.parts
     // what a replay into a new session kept, in counts (plugins#1401)
     if (initial.stats.messages_before) {
       logSessionEvent(proc, proc.sessionReason ?? null, { ...initial.stats, prompt_bytes: promptTextBytes(baseParts) }, "replay")
     }
   }
+  // agy checks a call against the tools it listed before the prompt began (#942).
+  if (baseParts.historyArchive) await proc.offerHistory(baseParts.historyArchive)
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
     if (isFirstTurn) {
@@ -7666,7 +7773,7 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       ? estimateInputTokens({ system: body.system, messages: [] })
       : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts))
-    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
+    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes(proc.agentVersion))
     const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
       rawEstimate > sentEstimate + 64
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0

@@ -508,10 +508,102 @@ test("A16: a replay of more than 128 KiB of history stays within 112 KiB and kee
     assert.ok(prompt.endsWith("</current_turn>"))
     assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
     assert.ok(prompt.includes("NEWEST assistant reply"), "the newest history is kept")
-    assert.ok(prompt.includes("[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"))
+    assert.ok(prompt.includes("[... earlier conversation history omitted to fit the ACP prompt budget ...]"))
     assert.ok(!prompt.includes("belongs to an earlier turn that is already done"), "non-loop replay adds no loop handoff note")
     assert.ok(prompt.includes("bytes of this history block omitted"), "oversized history blocks keep only head and tail")
     assert.ok(prompt.includes('Never output "[tool call ...]" text'))
+  })
+})
+
+function bigBlockHistory(blocks) {
+  const big = (label) => `${label} head ` + "history filler line with some words. ".repeat(500) + ` ${label} tail`
+  const messages = [{ role: "user", content: "ANCHOR opening request" }]
+  for (let index = 0; index < blocks; index++) {
+    messages.push({ role: "assistant", content: [{ type: "text", text: big(`assistant-${index}`) }] })
+    messages.push({ role: "user", content: `user follow-up ${index}` })
+  }
+  messages.push({ role: "assistant", content: [{ type: "text", text: "NEWEST assistant reply" }] })
+  messages.push({ role: "user", content: "LATEST INSTRUCTION: summarize everything" })
+  return messages
+}
+
+test("A16: agy 1.5.10 replays up to 184,000 bytes, under its 192,000-byte cut", async () => {
+  await withKit({ agentVersion: "1.5.10" }, async (kit) => {
+    scriptedAgent(kit)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-1510" }, messages: bigBlockHistory(30) })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) > 112 * 1024 && bytes(prompt) <= 184_000, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.endsWith("</current_turn>"))
+  })
+})
+
+test("A16: a trimmed replay lets agy read the omitted history back, without a round trip to the client", async () => {
+  await withKit({}, async (kit) => {
+    let page = null
+    kit.prompts.push(async (agent) => {
+      ;[page] = await agent.tools([["read_conversation_history", { offset: 1, limit: 100000 }]])
+      await agent.text("recovered")
+      return { stopReason: "end_turn" }
+    })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-archive" }, messages: bigBlockHistory(20) })))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.ok(!parsed.content.some((block) => block.type === "tool_use"), "the client never sees the history read")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(prompt.includes("read_conversation_history tool"), "the replay names the tool")
+    assert.ok(!prompt.includes("assistant-5 head"), "the fixture really drops a middle message")
+    assert.ok(kit.listings.at(-1).tools.includes("read_conversation_history"), "agy lists the tool before the prompt")
+    const text = page.result.content[0].text
+    assert.match(text, /^Lines 1-\d+ of \d+\. Continue with offset \d+\./, "one page stays within its byte cap")
+    assert.ok(text.includes("1: Human: ANCHOR opening request"))
+  })
+})
+
+test("A16: paging the history archive reaches a message the replay dropped", async () => {
+  await withKit({}, async (kit) => {
+    const pages = []
+    kit.prompts.push(async (agent) => {
+      for (let offset = 1; ;) {
+        const [page] = await agent.tools([["read_conversation_history", { offset }]])
+        const text = page.result.content[0].text
+        pages.push(text)
+        const next = /Continue with offset (\d+)/.exec(text)
+        if (!next) break
+        offset = Number(next[1])
+      }
+      await agent.text("read all")
+      return { stopReason: "end_turn" }
+    })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-archive-pages" }, messages: bigBlockHistory(20) })))
+    const all = pages.join("")
+    assert.ok(all.includes("assistant-5 head") && all.includes("assistant-5 tail"), "the dropped message is whole in the archive")
+    assert.ok(all.includes("NEWEST assistant reply"))
+  })
+})
+
+test("A16: searching the history archive finds a message the replay dropped in one call", async () => {
+  await withKit({}, async (kit) => {
+    let page = null
+    kit.prompts.push(async (agent) => {
+      ;[page] = await agent.tools([["read_conversation_history", { search: "ASSISTANT-5 HEAD" }]])
+      await agent.text("found")
+      return { stopReason: "end_turn" }
+    })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-archive-search" }, messages: bigBlockHistory(20) })))
+    const text = page.result.content[0].text
+    assert.match(text, /^1 of \d+ lines contain "ASSISTANT-5 HEAD"\.\n\d+: Assistant: assistant-5 head /)
+  })
+})
+
+test("A16: a replay that fits offers no history tool", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-no-archive" }, messages: [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "second" },
+    ] })))
+    assert.ok(kit.listings.every((listing) => !listing.tools.includes("read_conversation_history")))
   })
 })
 
@@ -574,7 +666,7 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
     assert.ok(prompt.includes("Human: TASK START: rename parseConfig to loadConfig everywhere"), "the loop's prompt is kept")
     assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
-    const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
+    const note = "[... earlier conversation history omitted to fit the ACP prompt budget ...]"
     // the turn before the loop (ANCHOR reply) takes room the steps left, so
     // the one gap is between the loop's prompt and its newest steps (plugins#1401)
     assert.ok(prompt.includes("ANCHOR reply"), "the turn before the loop is kept")
