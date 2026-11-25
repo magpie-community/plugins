@@ -7,19 +7,21 @@ test("a thinking model offers xhigh as its own level", () => {
   const m = { id: "claude-opus-5.5", name: "Claude Opus 5.5", context: 200000 }
   for (const got of [_internal.configModel(m), _internal.runtimeModel(m)]) {
     expect(Object.keys(got.variants)).toEqual(["low", "medium", "high", "xhigh", "max"])
-    expect(got.variants.xhigh).toEqual({ thinking: { type: "enabled", budgetTokens: 50000 } })
+    expect(got.variants.xhigh).toEqual({ thinking: { type: "enabled", budgetTokens: 12288 } })
   }
-  expect(_internal.thinking({ thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } }, "claude-opus-5.5")).toBe(50000)
+  expect(_internal.thinking({ thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } }, "claude-opus-5.5")).toBe(12288)
   // a model that doesn't think offers none
   expect(_internal.configModel({ id: "deepseek-3.2", name: "DeepSeek" }).variants).toBeUndefined()
 })
 
 // #538 (zengxiaosong): Claude Code sends adaptive thinking with its level
-// in output_config.effort, and xhigh and max both became one 50000
-// <max_thinking_length>. A model whose Kiro list says it takes the effort
-// as a field (additionalModelRequestFieldsSchema, read as Kiro IDE reads
-// it) is sent each level there instead, and no budget; any other model is
-// sent the budget as before.
+// in output_config.effort. Above low, the budget is one 12288
+// <max_thinking_length>: Kiro's single turn is about 16k output tokens, and
+// the old 20k–50k budgets spent it in thinking (plugins#1365). A model
+// whose Kiro list says it takes the effort as a field
+// (additionalModelRequestFieldsSchema, read as Kiro IDE reads it) is sent
+// each level there instead, and no budget; any other model is sent the
+// budget as before.
 const OPUS_SCHEMA = {
   type: "object",
   properties: {
@@ -67,11 +69,11 @@ test("a model Kiro lists with effort fields is sent xhigh and max as two levels,
     bodies[effort] = JSON.stringify(body)
   }
   expect(bodies.xhigh).not.toBe(bodies.max)
-  // a level the model doesn't list keeps the budget
+  // a level the model doesn't list keeps the medium budget, fitted to the turn
   const req = { thinking: { type: "adaptive" }, output_config: { effort: "ultra" }, messages: [{ role: "user", content: "q" }] }
   const odd = JSON.parse(_internal.buildKiro(req, "claude-opus-5.5", "", _internal.thinking(req, "claude-opus-5.5")))
   expect(odd.additionalModelRequestFields).toBeUndefined()
-  expect(said(odd)).toContain("<max_thinking_length>20000</max_thinking_length>")
+  expect(said(odd)).toContain("<max_thinking_length>12288</max_thinking_length>")
   // thinking not asked for: no fields
   const off = { output_config: { effort: "low" }, messages: [{ role: "user", content: "q" }] }
   expect(JSON.parse(_internal.buildKiro(off, "claude-opus-5.5", "", _internal.thinking(off, "claude-opus-5.5"))).additionalModelRequestFields).toBeUndefined()
@@ -83,7 +85,7 @@ test("a model Kiro lists without effort fields keeps its budget", async () => {
   for (const effort of ["xhigh", "max"]) {
     const body = repro("claude-sonnet-4.5", effort)
     expect(body.additionalModelRequestFields).toBeUndefined()
-    expect(said(body)).toContain("<thinking_mode>enabled</thinking_mode><max_thinking_length>50000</max_thinking_length>")
+    expect(said(body)).toContain("<thinking_mode>enabled</thinking_mode><max_thinking_length>12288</max_thinking_length>")
   }
   // a schema with effort levels but no adaptive thinking isn't taken as one
   const noAdaptive = { properties: { output_config: OPUS_SCHEMA.properties.output_config } }
@@ -115,7 +117,7 @@ test("an effort without thinking asked for is sent no thinking, at every level",
 // with thinking asked for, every level, low included, reaches Kiro as itself
 // when the model lists it, and as the budget otherwise
 test("each level with thinking on is the field Kiro lists, or its budget", async () => {
-  const budgets = { low: 10000, medium: 20000, high: 30000, xhigh: 50000, max: 50000 }
+  const budgets = { low: 10000, medium: 12288, high: 12288, xhigh: 12288, max: 12288 }
   for (const th of [{ type: "adaptive" }, { type: "enabled", budget_tokens: 12345 }])
     for (const [effort, b] of Object.entries(budgets)) {
       const req = { thinking: th, output_config: { effort }, messages: [{ role: "user", content: "q" }] }
