@@ -81,6 +81,11 @@ Pass as the plugin's `options` (Plugins → installed → options, or
 | `secretDir` | `""` | desktop credentials dir (empty = auto-detect) |
 | `lang` | `zh` | UI language (`zh` \| `en`) |
 | `debug` | `false` | verbose `console.error` logging — field **names** only, never values |
+| `maxInputBytes` | `0` (off) | opt-in guard: UTF-8 byte cap on the outgoing request JSON (after shaping, including instructions, history, tools and images). Larger requests get a local `400 context_length_exceeded` — no truncation, no upstream call, no lane probe. A conservative local safeguard against upstream silent context loss ([#11](https://github.com/aqiu817/magpie-deepaicode/issues/11)); bytes are not tokens and this does not repair the upstream or compact conversations. |
+
+For example, `magpie plugin options deepaicode '{"maxInputBytes":100000}'` enables a
+conservative local guard. Oversized inputs may be silently compressed upstream (head and
+tail survive, middle lost); this guard turns that into an explicit local failure instead.
 
 ## Troubleshooting
 

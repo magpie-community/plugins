@@ -13,9 +13,9 @@
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
+- **流式输出修好了**（`0.4.6`）。带工具的请求之前一律整段缓冲，纯文本回复也要等全部生成完才吐字（issue #9 的「首字 15-25 秒」、#14 的「看不到工作过程」）。现在先收一小段判断形态：是工具 JSON 就继续缓冲，是正文就边收边转发。顺带修了 `tool_calls` 组装后没发出去的 bug。
 - **客户端断开时不再空跑**（`0.4.5`）。`/responses` 链路（Codex 走这条）之前没有取消处理，用户中断后上游还会把回复生成完，白花额度。
 - **「从客户端读取」修好了**（`0.4.4`）。这个登录方式之前完全失效：SQLite 内部页的子页号读错导致解析出 0 行、profile 路径认不出客户端的 `aha/users/<hash>/profile_explorer` 布局、v10 Cookie 的 host 摘要算错导致值变成垃圾串。三处都修了，感谢 [@kunxiang1](https://github.com/kunxiang1) 在 [#16](https://github.com/miaocell/magpie-doubao-work-auth/issues/16) 定位到行。
-- **模型菜单按账号类型走**（`0.4.1`）。有订阅的账号能出到 12 个模型（多出 Qwen 4 Max、Qwen 3.8 Max、Qwen 3.8 Flash），飞书登录的账号仍是 9 个——菜单来自网页 SSR，和基线取并集，只增不减。
 
 ## 拿到的模型
 

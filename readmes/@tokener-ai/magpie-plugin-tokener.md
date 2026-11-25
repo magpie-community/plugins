@@ -54,6 +54,8 @@ For a local installation, replace the GitHub spec with the same absolute directo
 
 ## Development and verification
 
+See [RELEASING.md](RELEASING.md) for version, changelog, and publication steps.
+
 Use Bun 1.3.14 or later:
 
 ```sh

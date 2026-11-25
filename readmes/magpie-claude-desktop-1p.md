@@ -1,6 +1,12 @@
+<div align="center">
+
+<img src="assets/icon.svg" width="112" alt="Magpie Claude Desktop 1P">
+
 # Magpie Claude Desktop 1P
 
 English | [简体中文](README.zh-CN.md)
+
+</div>
 
 Use the models you configured in [magpie](https://github.com/yetone/magpie) inside Claude Desktop, while keeping your native Claude sign-in.
 

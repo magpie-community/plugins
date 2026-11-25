@@ -4,7 +4,7 @@
 
 <p align="center">[English](README.md) | [简体中文](README.zh-CN.md) · **GitHub**: [DaBinBinah/cloudbase-bridge](https://github.com/DaBinBinah/cloudbase-bridge)</p>
 
-Bring the AI quota of Tencent CloudBase's "小程序成长计划" (mini-program growth plan) into [Magpie](https://usemagpie.ai) as an ordinary OpenAI-compatible provider, through an `aiProxy` cloud function you deploy yourself. Once set up, it's just another provider on your account that any agent can use.
+Use Tencent CloudBase models in [Magpie](https://usemagpie.ai) as an OpenAI-compatible provider, through an `aiProxy` cloud function you deploy yourself.
 
 > Community project: not affiliated with Magpie or Tencent Cloud, and not reviewed or curated by Magpie.
 
@@ -12,7 +12,7 @@ Bring the AI quota of Tencent CloudBase's "小程序成长计划" (mini-program 
 
 ## Why a cloud function in the middle?
 
-The gift quota only pays out on CloudBase SDK channels — calling the `/v1/ai/*` model endpoints directly is rejected (`403 AI_CHANNEL_NOT_ALLOWED`). So the plugin never talks to those endpoints. It calls your `aiProxy` cloud function through the official function-invocation endpoint, and the function calls the model with `@cloudbase/node-sdk`, which is allowed:
+The plugin does not call the `/v1/ai/*` model endpoints directly. It invokes `aiProxy` in your environment, which calls the model with `@cloudbase/node-sdk`. Using the SDK does not change the original caller's eligibility for gift quota.
 
 ```
 Agent ─► magpie gateway ─► plugin ── POST /v1/functions/aiProxy ──► aiProxy (your env) ── SDK ──► model
@@ -33,11 +33,21 @@ The function returns one complete result; the plugin reshapes it into OpenAI Cha
 
 Image input follows the [official model list](https://docs.cloudbase.net/ai/available-models) and needs aiProxy 1.3.0 or later. Images go in user messages as OpenAI `image_url` parts (an `http(s)` link or a `data:image/...;base64` URL) and count toward the 6 MiB request size.
 
-No console opt-in needed; usage is deducted from the gift pack automatically. Availability can vary per environment — if CloudBase answers `AI_MODEL_NOT_SUPPORTED`, go by what your environment actually supports. The image-generation model `hy-image-v3.5-preview` is out of scope for this plugin: the bridge carries chat only (text and image in, text out).
+Availability and billing depend on the environment. Under the [official source restrictions](https://docs.cloudbase.net/ai/ai-inspire-plan-usage-governance), third-party calls from Magpie, including calls via cloud functions, are not eligible for the growth-plan text or image gift quota. They may use a paid plan or fail.
+
+**DSH image generation (off by default, plugin 0.2.9+):** Chat-only users, including those on 0.2.4, don't need to change anything.
+
+1. For image generation only, create a separate event function named `generateImage` in the same environment (Node.js 20, entry point `index.main`, recommended timeout 600 seconds), then upload the [ZIP with dependencies](https://github.com/DaBinBinah/cloudbase-bridge/releases/download/v0.2.10/generateImage-with-deps.zip) and deploy directly. Do **not** overwrite `aiProxy` or change the login's function name.
+2. Enable **Image generation** in the Magpie plugin options. In DSH select `cloudbase/hy-image-v3.5-preview` and send a text prompt.
+3. From 0.2.10, new DSH web replies show the image inline with an **打开原图** (open original) link. If you still get a bare URL, enable **Always show image previews** in Magpie and save. This requests Markdown for all image clients using that configuration, even without a DSH identifier. It doesn't change chat or previous replies. Leave it off for non-DSH clients expecting a bare HTTPS URL.
+
+**Optional image labeling:** Set `IMAGE_FOOTNOTE_MODE` on `generateImage`: `empty` (default) sends an empty string, `space` sends one space, and `omit` leaves out the field as in 0.2.9. After saving, test with `{"action":"check"}` to read `footnoteMode` without calling the model. In live tests, new originals had a visible AI label with `empty`, but not with `space`. [CloudBase documents custom labels](https://docs.cloudbase.net/ai/image-model/custom-watermark), not a guaranteed opt-out. Follow the [content-labeling terms](https://cloud.tencent.com/document/product/301/97822) when distributing images. No function redeployment is needed for inline previews alone.
+
+Download the image before the link expires. Each prompt requests a new image; history, reference images and tools are not sent. Avoid automatic routing, background tasks and model tests here: each invocation can incur charges.
 
 ## What you need
 
-1. A CloudBase environment with the growth plan (or an active Token Credits pack);
+1. A CloudBase environment with access to the model and quota eligible for your call source;
 2. the `aiProxy` function deployed in that environment (next section);
 3. a server-side API Key, created in the console under Environment settings → API Key.
 

@@ -10,7 +10,7 @@ In Magpie, open **Settings → Plugins → Discover → Unofficial** and install
 magpie plugin add github:li-yifei/magpie-cliproxy-usage
 ```
 
-In Magpie v0.1.4734, open **Settings → Plugins → Installed**, find the plugin, and choose **Options** to edit its JSON. Saving retires the current plugin host. Magpie starts a replacement when it next needs the plugin. If the previous host still holds the port, the replacement retries until the port becomes free.
+Open the **CLIProxyAPI Usage** (`CLIProxyAPI 用量接口`) page in Magpie's sidebar for a visual settings form, or open **Settings → Plugins → Installed**, find the plugin, and choose **Options** to edit its JSON directly. Saving retires the current plugin host and applies the new settings. If the previous host still holds the port, the replacement retries until the port becomes free.
 
 ```json
 {

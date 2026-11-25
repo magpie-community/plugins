@@ -40,11 +40,11 @@ magpie plugin add github:PigeonAI-Yang/yangmao-magpie-image-slim
 
 也可以在 Magpie 的「插件 → 发现 → 非官方」搜索 **Yangmao · Image Slim**。如果目录还没刷新，直接用上面的 GitHub 安装命令。Windows 独立版没把命令加到 PATH 时，用下载的 Magpie 可执行文件运行同样的子命令。
 
-安装后打开插件选项，将 `"gatewayTimeoutMs": 15000` 保存到 JSON 配置中，给大批图片留出处理时间。初始适用范围是 Magpie 中的 `codex/*` 模型路由。
+安装后打开插件选项，将 `"gatewayTimeoutMs": 15000` 保存到 JSON 配置中，给大批图片留出处理时间。默认适用范围是 Codex 发出的 `codex/*` 路由，以及模型名以 `gpt-` 或 `chatgpt-` 开头的路由。模型名前面可以带服务商前缀，也可以不带。旧配置如果手动保存过 `"models": ["codex/*"]`，请改成 `"models": ["codex/*", "gpt-*", "chatgpt-*"]`，让 `gpt-6.2-sol` 这类原生模型也走图片瘦身。
 
 ## 使用
 
-装好后，在原来的 Codex 对话里继续工作即可。默认整轮预算为 **70 MB**，请求达到 **12 MiB** 时开始处理图片。极端情况下，如果文字和当前轮图片经精简仍超过预算，插件会提示缩小当前上传批次或压缩上下文。
+装好后，在原来的 Codex 对话里继续工作即可。默认整轮预算为 **70 MB**，请求达到 **12 MiB** 时开始处理图片。原生 Codex 路由和跨会话派单会以 **30 MB** 为处理目标，给 Magpie 的插件通信留出余量。如果文字和当前轮图片经精简仍然过大，可以缩小当前上传批次或压缩上下文。
 
 在 Magpie 的插件选项里可以修改：
 

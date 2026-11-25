@@ -25,6 +25,7 @@ The provider id is **`portkey-bedrock`**. Its models are available to every agen
 - Input, output, cache-read and cache-write token accounting with catalog prices.
 - Cancellation, request timeouts, payload inspection and response hooks.
 - HTTP status and retry headers forwarded to magpie for its routing and failover logic.
+- When Portkey refuses a request, the error says why in its own words (a budget exhausted, a key without the scope, an AWS principal missing an IAM action) and carries Portkey's trace id for the request.
 
 ## Install in magpie
 
@@ -63,18 +64,38 @@ magpie installs Bun, the plugin's runtime dependencies and its pi runtime when n
 
 There is nothing to configure: every account's gateway and route come from its sign-in, and the package ships no config file.
 
-Gateways that need settings shared by every account can put them in an optional `~/.config/magpie/portkey-bedrock/config.json`. It lives outside the installed plugin, so updates leave it alone. A `config.local.json` beside `index.ts` from earlier versions is still read while the new file does not exist; move it over, since plugin updates may remove it:
+### The switches
+
+Three settings apply to every account, each set in two places: a value set in magpie's **Options** wins over the config file, which wins over the default. `log` and `cacheTtl1h` are off by default; `retry` is `2`. Why each is what it is, with the Portkey behaviour behind it, is in [docs/portkey-reference.md](docs/portkey-reference.md).
+
+**In magpie: Plugins → the Portkey Bedrock row → Options.** A JSON box opens with the three switches; edit and save, and magpie restarts the plugin. There is nothing to open and no path to find.
+
+**In the config file**, for plain pi or by hand: `~/.config/magpie/portkey-bedrock/config.json`. It lives outside the installed plugin, so updates leave it alone. A `config.local.json` beside `index.ts` from earlier versions is still read while the new file does not exist; move it over, since plugin updates may remove it:
 
 ```json
 {
   "configId": "pc-your-config",
+  "log": false,
+  "retry": 2,
+  "cacheTtl1h": false,
   "headers": { "x-portkey-trace-id": "magpie" }
 }
 ```
 
+- `log`: whether Portkey may store the content of requests and responses in its logs. **Off by default.** Off, every request carries `x-portkey-debug: false` (Portkey's "DO NOT TRACK"): the gateway keeps tokens, cost and latency, but neither your prompts nor the responses. On, Portkey stores full request and response content. A `x-portkey-debug` header of your own in `headers` takes precedence over the switch.
+
+  > [!NOTE]
+  > Portkey documents this header for its `/v1/chat/completions` route, and this provider sends it the same way on `/model/{id}/converse-stream`. Whether the managed gateway honours it there is not documented: check a request in Portkey's Logs page after enabling the provider, and turn `log` on only if you are fine with full content being stored. The switch never removes usage records (tokens, cost, latency), only the request and response content.
+- `retry`: how many more times **Portkey's gateway** asks the same account when Bedrock answers `429` or a `5xx`, from `0` to `5`. **`2` by default.** The retry stays on the account, so its prompt cache is kept; when magpie fails over to another account instead, that account starts with no cache and pays to write it again. It costs up to 3 seconds of waiting on a request that keeps failing (Portkey waits 1s, then 2s), and less when Bedrock says how long to wait: Portkey follows Bedrock's `Retry-After`, and gives up at once rather than wait a minute or more. Set `0` to hand every failure to magpie at once. Only `429` and `5xx` are retried; anything else (`400`, `403`, `412`) goes straight back. It is sent as an inline `x-portkey-config`, so it gives way when a `configId` is set or the header is in `headers`: put `retry` in that saved config instead.
+- `cacheTtl1h`: keep Claude prompt-cache checkpoints for **one hour** instead of Bedrock's five-minute default, so a conversation you come back to still reads its cache. Off by default; Claude only (Nova caches on its own, for five minutes). Portkey documents the one-hour TTL for Claude Opus 4.5, Sonnet 4.5 and Haiku 4.5; whether your Bedrock models accept it is for you to confirm, as the catalog also lists later ones Portkey's table does not. A caller's own `cacheRetention` still stands: `none` sends no checkpoint and `long` asks for the hour whatever the switch says.
+
+The rest of the file:
+
 - `configId`: an `x-portkey-config` configuration id sent with every account's requests.
 - `headers`: additional non-secret gateway headers sent with every account's requests.
 - `models`: extra models that the gateway's `/models` list hides but that can be called by id (e.g. `["us.anthropic.claude-fable-5-2"]`). Same entry format as `models.json`; they are always registered, and an entry overrides a catalog model with the same id.
+
+A switch misspelt in magpie's Options (`logs` for `log`) is refused rather than ignored, and the reason goes to magpie's log; otherwise a switch you believe off would stay as it was. A name that is not a switch is fine in the config file, which holds more than switches.
 
 `baseUrl` and `provider` from earlier versions' files are ignored — they route nothing now. Credentials belong in magpie's sign-in, never in this file: the reader rejects API keys and secret headers (`apiKey`, `virtualKey`, `authorization`, `*-api-key`, `token`, `secret`, `cookie`). Restart the plugin after changing it.
 
@@ -87,6 +108,13 @@ Requests are sent uncompressed. Portkey's deployed gateway reads the body as pla
 `models.json` is an editable catalog. Entries may be model ID strings or objects with `id`, `name`, `reasoning`, `thinkingLevelMap`, `input`, `contextWindow`, `maxTokens` and `cost`. Prices are USD per million tokens, with separate `input`, `output`, `cacheRead` and `cacheWrite` values. Fields an entry leaves out take per-family defaults: Anthropic and Nova Pro / Premier ids get reasoning, image input, a 1M context and 64K output; other families get text only, no reasoning, 200K context and 8K output. Prices default to 0.
 
 The included catalog covers the current Bedrock line-up plus common Amazon / DeepSeek / Meta / Mistral models. Availability, limits and prices depend on your AWS account and Portkey route; update the catalog to match them. When an account is signed in, magpie refreshes the list through the provider's `refreshModels`: the gateway's `/models` response is merged with the catalog — catalog entries keep their metadata, unknown ids are added with conservative defaults. The catalog's `name` is what magpie's model picker displays (e.g. `Claude Opus 5.5` instead of the raw Bedrock id); the id remains what requests use.
+
+When the gateway will not list its models, the catalog stays and the reason goes to magpie's log rather than failing the refresh:
+
+- Portkey's own refusal (for example `403` with `Error Code: 033`): the API key may not have the scope to list models (`completions.write`), or the provider slug may belong to another workspace.
+- An AWS refusal naming an IAM action (for example `bedrock:ListFoundationModels`): the AWS principal behind the route is not allowed that action. Chat is unaffected; either allow the action in AWS or list the models by hand in `config.json` (see `models` above).
+
+Any other failure (a `5xx`, a body that is no error the gateway owns) is reported with its status and what the gateway said, and nothing more: there is nothing in it you could act on.
 
 | Name | Model id | Context | Max output |
 | --- | --- | ---: | ---: |
