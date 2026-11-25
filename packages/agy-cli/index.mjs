@@ -4989,6 +4989,7 @@ function findLiveContinuedProc(opts) {
   let tied = false
   for (const proc of pool.values()) {
     if (proc.dead || proc.retiring || proc.turn) continue
+    if (!sameAccount(proc)) continue
     if ((proc.userId || "") !== userId) continue
     if ((proc.sessionScope || "") !== sessionScope) continue
     if (proc.workDir !== opts.workDir) continue
@@ -5603,8 +5604,17 @@ function agentSummaryAsk(body) {
   return ask.startsWith("Describe your ") && ask.includes(" in 3-5 words")
 }
 
+// An agy runs under one account's sign-in (Proc.home), so a request of
+// another account never goes on in it, not even when its opening or tool
+// ids match: it would be answered with that account's credentials and
+// quota, and its 429 would rest this account too (Archivemylife on X:
+// two Google accounts used up and reset together).
+function sameAccount(proc) {
+  return !!proc && (proc.home ?? null) === (currentHome() ?? null)
+}
+
 function sameSessionScope(proc, sessionScope = "") {
-  return (proc?.sessionScope || "") === sessionScope
+  return sameAccount(proc) && (proc?.sessionScope || "") === sessionScope
 }
 
 function sameCallIds(matches, callIds) {

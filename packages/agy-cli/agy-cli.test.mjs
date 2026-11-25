@@ -33,6 +33,7 @@ for (const [name, mocks] of [
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
   ["spare.mjs", false],
+  ["account-scope.mjs", false],
   ["stateless-reuse.mjs", false],
   ["tools-listed.mjs", false],
   ["concurrent-convs.mjs", false],
