@@ -6,7 +6,7 @@ import { resolveOptions } from "./options.ts";
 import { getSession, imageForPanel, listSessions, sessionDetail } from "./store.ts";
 
 const PANEL_DIR = join(import.meta.dirname, "..", "panel");
-const PANEL_HTML = join(PANEL_DIR, "index.html");
+const PANEL_HTML = join(PANEL_DIR, "attachments.html");
 const localServices = new Map<number, (options: Record<string, unknown>) => void>();
 
 function loopbackHost(value: string | undefined): boolean {

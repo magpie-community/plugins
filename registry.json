@@ -8,6 +8,7 @@
     { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "https://atomgit.com/favicon.ico", "providers": ["atomcode"], "community": true,
       "summary": { "en": "Unofficial AtomGit CodingPlan access for magpie and OpenCode: browser OAuth or local AtomCode CLI sign-in, signed OpenAI-compatible requests, live models, quota windows, and a read-only diagnostics page.", "zh": "非官方接入 AtomGit CodingPlan：支持浏览器 OAuth 或复用本机 AtomCode CLI 登录，发送签名请求，显示实时模型与额度窗口，并提供只读诊断页。" } },
     { "package": "@magpie-community/gateway-cam", "name": "CAM · Context Attachments", "kind": "middleware", "community": true,
+      "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/cam/panel/icon.svg",
       "summary": { "en": "Keep new images in context, replace eligible older images with placeholders, and fetch originals on demand. Includes a session attachment panel and stores originals locally.", "zh": "保留新图片，将符合条件的历史图片替换成占位符，按需取回原图。提供会话附件面板，原图存储在本机。" } },
     { "package": "@magpie-community/gateway-powercontext", "name": "PowerContext", "kind": "middleware", "community": true,
       "icon": "https://raw.githubusercontent.com/oceanbase/powercontext/master/src/powercontext/server/dashboard/static/brand/favicon-color.svg",

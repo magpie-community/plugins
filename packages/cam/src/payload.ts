@@ -16,6 +16,7 @@ type Payload = { version: 1; content: PayloadContent[] };
 type ImageReference = { type: "image_ref"; id: string; contentId: string };
 export type ReferenceContent = TextContent | ImageReference;
 type FindRequestOriginal = (contentId: string) => string | undefined;
+type ResolvedPayload = { content: PayloadContent[]; incomplete: boolean };
 
 const text = (value: unknown): value is TextContent => !!value && typeof value === "object" && (value as PayloadContent).type === "text" && typeof (value as TextContent).text === "string" && (value as TextContent).text.length <= MAX_TEXT_CHARS;
 
@@ -34,7 +35,7 @@ function reference(value: unknown): value is ImageReference {
     && typeof part.contentId === "string" && /^[0-9a-f]{64}$/.test(part.contentId);
 }
 
-function resolveReferences(value: string, platform: string, session: string, root: string, findOriginal?: FindRequestOriginal): PayloadContent[] | null {
+function resolveReferences(value: string, platform: string, session: string, root: string, findOriginal?: FindRequestOriginal): ResolvedPayload | null {
   if (value.length > MAX_REFERENCE_CHARS) return null;
   try {
     const parsed = JSON.parse(value.slice(REFERENCE_PREFIX.length));
@@ -43,6 +44,7 @@ function resolveReferences(value: string, platform: string, session: string, roo
     if (!Array.isArray(content) || content.length > 8 || !content.every((part) => text(part) || reference(part))) return null;
     const index = openRequestIndex(platform, session, root);
     const result: PayloadContent[] = [];
+    let incomplete = false;
     let remaining = MAX_FETCH_CHARS;
     for (const part of content) {
       if (part.type === "text") {
@@ -59,6 +61,7 @@ function resolveReferences(value: string, platform: string, session: string, roo
         ? verify(readImageContent(root, platform, part.contentId)) ?? verify(findOriginal?.(part.contentId))
         : null;
       if (!image || !seen) {
+        incomplete = true;
         result.push({ type: "text", text: parsed.language === "en" ? `${part.id}: original unavailable; upload it again.` : `${part.id}：原图不可用，请重新上传。` });
         continue;
       }
@@ -68,7 +71,7 @@ function resolveReferences(value: string, platform: string, session: string, roo
         image,
       );
     }
-    return result;
+    return { content: result, incomplete };
   } catch { return null; }
 }
 
@@ -97,11 +100,12 @@ function trusted(payload: Payload, platform: string, session: string, root: stri
   } catch { return null; }
 }
 
-function materialized(value: unknown, platform: string, session: string | null, root: string, findOriginal?: FindRequestOriginal): PayloadContent[] | null {
+function materialized(value: unknown, platform: string, session: string | null, root: string, findOriginal?: FindRequestOriginal): ResolvedPayload | null {
   if (typeof value !== "string" || !session) return null;
   if (value.startsWith(REFERENCE_PREFIX)) return resolveReferences(value, platform, session, root, findOriginal);
   const payload = decode(value);
-  return payload ? trusted(payload, platform, session, root)?.content ?? null : null;
+  const verified = payload && trusted(payload, platform, session, root);
+  return verified ? { content: verified.content, incomplete: false } : null;
 }
 
 function responsesParts(content: PayloadContent[]) {
@@ -139,25 +143,50 @@ export function redactPayloadsEverywhere(value: unknown): { value: any; count: n
   return { value: visit(value), count };
 }
 
-export type MaterializeResult = { body: Record<string, any>; count: number };
+export type MaterializeResult = { body: Record<string, any>; count: number; restored: number; failedResults: number; restoredReferences: number };
+
+function execReference(output: unknown): string | undefined {
+  const headerPattern = /^Script completed\r?\nWall time:? [\d.]+ seconds\r?\nOutput:[ \t]*\r?\n/;
+  if (typeof output === "string") {
+    const header = headerPattern.exec(output);
+    const result = header ? output.slice(header[0].length).trim() : "";
+    return result.startsWith(REFERENCE_PREFIX) ? result : undefined;
+  }
+  if (!Array.isArray(output) || output.length !== 2) return;
+  const [header, result] = output;
+  if (!["input_text", "output_text", "text"].includes(header?.type) || typeof header.text !== "string"
+      || headerPattern.exec(header.text)?.[0] !== header.text) return;
+  if (["input_text", "output_text", "text"].includes(result?.type) && typeof result.text === "string" && result.text.startsWith(REFERENCE_PREFIX)) return result.text;
+}
 
 // Only tool-output positions are inspected. A user message containing the same
 // prefix can never manufacture an image or enter the fetched-copy path.
 export function materializeToolPayloads(original: Record<string, any>, protocol: string, platform: string, session: string | null, root: string, findOriginal?: FindRequestOriginal): MaterializeResult {
   let count = 0;
+  let restored = 0;
+  let failedResults = 0;
+  let restoredReferences = 0;
   const body = structuredClone(original);
   const convert = (holder: Record<string, any>, key: string, parts: (content: PayloadContent[]) => unknown) => {
     const original = holder[key];
-    const raw = typeof original === "string" ? original : Array.isArray(original) && original.length === 1 && ["text", "input_text", "output_text"].includes(original[0]?.type) && typeof original[0]?.text === "string" ? original[0].text : null;
+    const plain = typeof original === "string" ? original : Array.isArray(original) && original.length === 1 && ["text", "input_text", "output_text"].includes(original[0]?.type) && typeof original[0]?.text === "string" ? original[0].text : undefined;
+    const raw = (platform === "codex" && protocol === "responses" ? execReference(plain ?? original) : undefined) ?? plain;
     if (!raw || !isPayload(raw)) {
-      const split = Array.isArray(original) && original.some((part) => typeof part?.text === "string" && isPayload(part.text));
+      const containsPayload = (value: unknown) => typeof value === "string" && /(?:^|\r?\n)[ \t]*MAGPIE_CAM_IMAGE_PAYLOAD_V[12]:/.test(value);
+      const split = containsPayload(plain) || (Array.isArray(original) && original.some((part) => containsPayload(part?.text)));
       if (split) {
         holder[key] = parts([{ type: "text", text: "[Magpie CAM: split or mixed image payload removed]" }]);
         count++;
+        failedResults++;
       }
       return;
     }
-    const content = materialized(raw, platform, session, root, findOriginal) ?? [{ type: "text" as const, text: "[Magpie CAM: unavailable or untrusted image payload removed]" }];
+    const resolved = materialized(raw, platform, session, root, findOriginal);
+    const content = resolved?.content ?? [{ type: "text" as const, text: "[Magpie CAM: unavailable or untrusted image payload removed]" }];
+    const images = content.filter((part) => part.type === "image").length;
+    restored += images;
+    if (raw.startsWith(REFERENCE_PREFIX)) restoredReferences += images;
+    if (!images || resolved?.incomplete) failedResults++;
     // Never forward an encoded payload as prompt text, even when validation
     // fails or the client supplied no stable session identity.
     holder[key] = parts(content);
@@ -176,5 +205,5 @@ export function materializeToolPayloads(original: Record<string, any>, protocol:
       for (const block of message.content) if (block?.type === "tool_result") convert(block, "content", anthropicParts);
     }
   }
-  return { body, count };
+  return { body, count, restored, failedResults, restoredReferences };
 }

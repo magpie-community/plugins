@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -7,8 +7,10 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { createContext, runInContext } from "node:vm";
 import { onRequest } from "../src/hooks.ts";
+import { fetchImages } from "../src/tool.ts";
 import { createPanelServer, PageService } from "../src/panel-service.ts";
 import { writeLiveData } from "../src/live-data.ts";
+import { measureStorage } from "../src/storage-usage.ts";
 import { getPolicyWithOptions, keyFor, recordSession } from "../src/store.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -36,10 +38,122 @@ const panelKey = keyFor("codex", "panel-thread");
 const nativePolicies: Record<string, { auto: boolean; updatedAt?: string }> = {};
 
 describe("panel service", () => {
+  test("counts stored bytes separately and does not follow symlinks", () => {
+    const cache = join(root, "usage-fixture");
+    const panel = join(cache, "panel");
+    const originals = join(cache, "platforms", "codex", "images");
+    const indexes = join(cache, "platforms", "codex", "sessions");
+    for (const dir of [originals, indexes, join(panel, "images")]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(originals, "original"), "12345");
+    writeFileSync(join(indexes, "index.json"), "123");
+    writeFileSync(join(panel, "images", "preview.png"), "12");
+    writeFileSync(join(panel, "live.js"), "1234");
+    symlinkSync(originals, join(panel, "images", "external"));
+    expect(measureStorage(cache, panel)).toEqual({ originals: 5, indexes: 3, panel: 6 });
+  });
+
+  test("background snapshots preserve selection, skip unchanged detail, and pause on settings", async () => {
+    const source = readFileSync(new URL("../panel/app.js", import.meta.url), "utf8");
+    const nodes: Record<string, any> = { settings: { hidden: true } };
+    const environment = createContext({
+      location: { hash: "#selected" },
+      document: { getElementById: (id: string) => (nodes[id] ??= {}) },
+      magpie: { ready: new Promise(() => {}) },
+    });
+    const result = await runInContext(source + `
+      (async () => {
+        const selected = { key: "selected", title: "Selected" };
+        const detail = { session: selected, images: [], legacyPolicy: {} };
+        current = detail;
+        const reads = [];
+        const rendered = [];
+        loadLive = async () => { live = { sessions: [{ key: "newest" }, selected], details: { selected: detail } }; };
+        renderSessions = (key) => rendered.push(key);
+        loadDetail = async (key) => reads.push(key);
+        await loadSessions(true);
+        detail.images = [{ id: "IMG-001" }];
+        current = { ...detail, images: [] };
+        await loadSessions(true);
+        $("settings").hidden = false;
+        await loadSessions(true);
+        return { reads, rendered, hash: location.hash };
+      })()
+    `, environment);
+    expect(result).toEqual({ reads: ["selected"], rendered: ["selected"], hash: "#selected" });
+  });
+
+  test("selecting a session from settings returns to the session view", async () => {
+    const source = readFileSync(new URL("../panel/app.js", import.meta.url), "utf8");
+    const nodes: Record<string, any> = {};
+    const environment = createContext({
+      location: {},
+      document: { getElementById: (id: string) => (nodes[id] ??= { setAttribute() {} }) },
+      magpie: { ready: new Promise(() => {}) },
+    });
+    const selected = await runInContext(source + `
+      showSettings = (visible) => {
+        $("settings").hidden = !visible;
+        $("attachments").hidden = visible;
+      };
+      loadDetail = async (key) => key;
+      showSettings(true);
+      openSession("selected");
+    `, environment);
+    expect(selected).toBe("selected");
+    expect(nodes.settings.hidden).toBeTrue();
+    expect(nodes.attachments.hidden).toBeFalse();
+  });
+
+  test("settings save Agent overrides without overwriting unrelated host options", async () => {
+    const source = readFileSync(new URL("../panel/app.js", import.meta.url), "utf8");
+    const nodes: Record<string, any> = {
+      "settings-form": { reportValidity: () => true },
+      "settings-language": { value: "en" },
+      "settings-codex-mode": { value: "compatible" },
+      "settings-image-limit": { valueAsNumber: 2 },
+      "settings-size-limit": { valueAsNumber: 2048 },
+    };
+    const original = { dataDir: root, sessionPolicies: { other: { auto: false } }, agentAuto: { other: false } };
+    const writes: Record<string, unknown>[] = [];
+    const environment = createContext({
+      document: {
+        getElementById: (id: string) => (nodes[id] ??= {}),
+        querySelectorAll: () => [{ dataset: { agent: "opencode" }, checked: false }],
+      },
+      magpie: {
+        ready: new Promise(() => {}),
+        options: { get: async () => original, set: async (value: Record<string, unknown>) => { writes.push(value); return value; } },
+      },
+      setTimeout, clearTimeout,
+    });
+    await runInContext(source + "\nsaveSettings({ preventDefault() {} })", environment);
+    expect(writes).toEqual([{ ...original, agentAuto: { other: false, opencode: false }, codexMode: "compatible", language: "en", maxFetchImages: 2, maxFetchBytes: 2048 }]);
+    const user = (text: string, data?: string) => ({ type: "message", role: "user", content: [
+      { type: "input_text", text },
+      ...(data ? [{ type: "input_image", image_url: `data:image/png;base64,${data}` }] : []),
+    ] });
+    const request = { tools: [{ name: "cam_view_image" }], input: [user("first", PNG), user("second")] };
+    const context = { path: "/responses", protocol: "responses", origin: "local", session: "panel-thread", options: writes[0] };
+    expect(await onRequest(request, { ...context, agent: "opencode" })).toBeUndefined();
+    expect(JSON.stringify(await onRequest(request, { ...context, agent: "codex" }))).toContain("omitted");
+    const oversized = { ...request, input: [user("first", PNG.padEnd(2049, "A")), user("second")] };
+    expect(await onRequest(oversized, { ...context, agent: "codex" })).toBeUndefined();
+    const toolContext = { agent: "codex", abort: new AbortController().signal };
+    const response = await fetchImages({ session: panelKey, ids: ["IMG-001", "IMG-002", "IMG-003"] }, toolContext, writes[0]);
+    expect(response).toBe("Fetch at most 2 images at once.");
+  });
+
   test("shows attachments but prevents policy edits if the host cannot supply options", async () => {
     const source = readFileSync(new URL("../panel/app.js", import.meta.url), "utf8");
     const nodes: Record<string, any> = {};
-    const element = () => ({ dataset: {}, append() {}, replaceChildren() {}, setAttribute() {}, textContent: "" });
+    const element = () => ({
+      dataset: {}, children: [] as unknown[], append() {}, setAttribute() {}, textContent: "",
+      replaceChildren() { this.children.length = 0; },
+      insertBefore(node: unknown, before: unknown) {
+        const index = this.children.indexOf(before);
+        this.children.splice(index < 0 ? this.children.length : index, 0, node);
+      },
+    });
     const buttons: any[] = [];
     let hostAvailable = false;
     let writes = 0;
@@ -84,6 +198,13 @@ describe("panel service", () => {
     await runInContext("loadDetail(panelKey)", environment);
     expect(nodes.auto.disabled).toBeFalse();
     expect(nodes.auto.checked).toBeFalse();
+    const firstCard = nodes.grid.children[0];
+    await runInContext(`
+      current.images = [...current.images, { id: "IMG-002", contentId: "b".repeat(64), stored: true }];
+      renderDetail();
+    `, environment);
+    expect(nodes.grid.children).toHaveLength(2);
+    expect(nodes.grid.children[0]).toBe(firstCard);
   });
 
   test("native and web page scripts save through the same host options", async () => {

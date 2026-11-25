@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-cam",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Context attachment management as a pure Magpie request-hook plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -12,15 +12,18 @@
   },
   "files": [
     "src/",
+    "scripts/configure-agents.js",
     "vendor/cam/",
     "panel/app.js",
-    "panel/index.html",
+    "panel/attachments.html",
+    "panel/icon.svg",
     "NOTICE.md"
   ],
   "engines": {
     "bun": ">=1.4"
   },
   "magpie": {
+    "icon": "https://raw.githubusercontent.com/zhaobomin/CAM-magpie/main/panel/icon.svg",
     "hooks": "./src/hooks.ts",
     "page": {
       "title": "Attachments",
@@ -28,10 +31,12 @@
         "zh": "上下文附件",
         "en": "Attachments"
       },
-      "file": "./panel/index.html"
+      "file": "./panel/attachments.html",
+      "icon": "panel/icon.svg"
     },
     "options": {
       "language": "zh",
+      "codexMode": "savings",
       "auto": true,
       "allowRemote": false,
       "gatewayTimeoutMs": 10000,
@@ -40,6 +45,7 @@
     }
   },
   "scripts": {
+    "configure:agents": "bun scripts/configure-agents.js",
     "test": "bun test tests/*.test.ts",
     "check": "bun test tests/*.test.ts",
     "build": "bun build src/index.ts src/hooks.ts --target bun --outdir dist"

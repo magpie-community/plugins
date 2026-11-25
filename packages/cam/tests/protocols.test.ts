@@ -71,7 +71,15 @@ describe("tool payload protocol adapters", () => {
 });
 
 describe("other history protocols", () => {
-  test.each(["responses", "chat", "anthropic"])("%s: an omitted original survives the tool round trip at the budget limit", async (protocol) => {
+  test.each([
+    ["responses", "codex"],
+    ["chat", "codex"],
+    ["anthropic", "codex"],
+    ["anthropic", "claude"],
+    ["chat", "opencode"],
+    ["anthropic", "cline"],
+    ["responses", "cursor"],
+  ])("%s / %s: an omitted original survives the tool round trip at the budget limit", async (protocol, agent) => {
     const original = PNG.padEnd(1024, "A");
     const dataUrl = `data:image/png;base64,${original}`;
     const image = protocol === "responses" ? { type: "input_image", image_url: dataUrl }
@@ -86,19 +94,19 @@ describe("other history protocols", () => {
     const request = (items: object[]) => ({ tools: [{ name: "cam_view_image" }], [protocol === "responses" ? "input" : "messages"]: items });
     const path = protocol === "responses" ? "/responses" : protocol === "chat" ? "/v1/chat/completions" : "/v1/messages";
     const options = { dataDir: root, maxFetchBytes: 1024 };
-    const context = { protocol, path, options, origin: "local", agent: "codex", session: protocol };
+    const context = { protocol, path, options, origin: "local", agent, session: protocol };
     const omitted = await onRequest(request(history), context);
     const marker = /\[Magpie CAM session: ([0-9a-f]+)\]/.exec(JSON.stringify(omitted));
     expect(marker).not.toBeNull();
     expect(JSON.stringify(omitted)).not.toContain(original);
-    const output = await fetchImages({ session: marker![1], ids: ["IMG-001"] }, { agent: "codex", abort: new AbortController().signal }, options);
+    const output = await fetchImages({ session: marker![1], ids: ["IMG-001"] }, { agent, abort: new AbortController().signal }, options);
     const result = protocol === "responses" ? { type: "function_call_output", call_id: "call-1", output }
       : protocol === "chat" ? { role: "tool", tool_call_id: "call-1", content: output }
       : { role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: output }] };
     const restored = await onRequest(request([...history, result]), context);
     expect(JSON.stringify(restored)).toContain(original);
     expect(JSON.stringify(restored)).not.toContain(REFERENCE_PREFIX);
-    unlinkSync(join(root, "platforms", "codex", "images", createHash("sha256").update(original).digest("hex")));
+    unlinkSync(join(root, "platforms", agent, "images", createHash("sha256").update(original).digest("hex")));
     const recovered = JSON.stringify(await onRequest(request([...history, result]), context));
     expect(recovered.split(original)).toHaveLength(2);
     expect(recovered).not.toContain("original unavailable");

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { formatOf, requestOriginals, rewritePlatformRequest } from "../vendor/cam/adapters/protocols/any.ts";
 import { hasUnsafeInteger } from "../vendor/cam/core/engine/transport.ts";
 import { setPixelCache } from "../vendor/cam/core/pixels.ts";
-import { readImageContent } from "../vendor/cam/core/request-index.ts";
+import { openRequestIndex, readImageContent } from "../vendor/cam/core/request-index.ts";
 import { writeLiveData } from "./live-data.ts";
 import { resolveOptions, type CamOptions } from "./options.ts";
 import { annotateFetchText, materializeToolPayloads, redactPayloadsEverywhere } from "./payload.ts";
@@ -45,6 +45,20 @@ export function fetchToolName(body: Json): string | null {
   return names.find(isFetchToolName) ?? null;
 }
 
+function hasCodexExec(body: Json): boolean {
+  const input = Array.isArray(body.input) ? body.input : [];
+  return input.some((item) => item?.type === "additional_tools" && Array.isArray(item.tools)
+    && item.tools.some((namespace: any) => namespace?.type === "namespace" && namespace.name === "functions"
+      && Array.isArray(namespace.tools) && namespace.tools.some((tool: any) => tool?.type === "custom" && tool.name === "exec")));
+}
+
+function codexFetchHint(session: string, canOmit: boolean): Json {
+  const status = canOmit ? "CAM may omit eligible old images. To retrieve them, discover the CAM tool through functions.exec." : "CAM has indexed this conversation's images. Originals are retained until a CAM result is returned.";
+  return { type: "message", role: "developer", content: [{ type: "input_text", text:
+    `${status} [Magpie CAM session: ${session}] If the user asks to use CAM, or an image is omitted, discover cam_view_image with functions.exec. Pass this session and the requested image ids (the first is IMG-001). Emit only the tool's V2 text in the exec output using text(result.content.find(part => part.type === "text").text); do not paste that text into your reply.`
+  }] };
+}
+
 export function platformOf(ctx: HookContext): string {
   const raw = String(ctx.caller?.agent || ctx.agent || "other").toLowerCase();
   const cleaned = raw.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -82,7 +96,8 @@ export async function onRequest(body: Json, ctx: HookContext): Promise<Json | un
   if (hasUnsafeInteger(originalText)) return skip("invalid");
   const named = namedSession(body, ctx);
   const session = named ? keyFor(platform, named) : null;
-  const toolName = ctx.protocol === "gemini" ? null : fetchToolName(body);
+  const declaredTool = ctx.protocol === "gemini" ? null : fetchToolName(body);
+  const codexExec = platform === "codex" && ctx.protocol === "responses" && hasCodexExec(body);
   let safeBody = body;
   let materializedCount = 0;
   try {
@@ -91,7 +106,14 @@ export async function onRequest(body: Json, ctx: HookContext): Promise<Json | un
       (contentId) => (originals ??= requestOriginals(path, body)).get(contentId));
     safeBody = materialized.body;
     materializedCount = materialized.count;
+    const execUsable = codexExec && !materialized.failedResults && (materialized.restoredReferences > 0 || options.codexMode === "savings");
+    const toolName = declaredTool ?? (execUsable ? "cam_view_image" : null);
     const policy = session ? getPolicyWithOptions(options.dataDir, session, options.auto, ctx.options) : { auto: options.auto, pinnedContentIds: [] };
+    const reasons = new Set<string>();
+    if (!policy.auto) reasons.add("session-paused");
+    if (options.disabledAgents.has(platform)) reasons.add("agent-paused");
+    if (!toolName && (!codexExec || !materialized.failedResults)) reasons.add(codexExec ? "tool-unconfirmed" : "tool-unavailable");
+    if (materialized.failedResults) reasons.add("restore-unavailable");
     setPixelCache(join(options.dataDir, "cache", "pixels"));
     const rewritten = rewritePlatformRequest(
       platform,
@@ -103,17 +125,33 @@ export async function onRequest(body: Json, ctx: HookContext): Promise<Json | un
       options.language,
       // Omission requires both a stable session handle and a usable fetch tool.
       {
-        auto: policy.auto && !!toolName && !!named,
+        auto: policy.auto && !options.disabledAgents.has(platform) && !!toolName && !!named && !materialized.failedResults,
         pinnedContentIds: new Set(policy.pinnedContentIds),
         canFetch: (index, contentId, data) => {
+          if (data.length > options.maxFetchBytes) {
+            reasons.add("over-budget");
+            return false;
+          }
           const seen = index.images.get(contentId);
-          return !!seen && retrievableImage(index, { type: "image", id: seen.id, data, mimeType: seen.mime ?? "image/png" }, options.maxFetchBytes, contentId)
+          const available = !!seen && retrievableImage(index, { type: "image", id: seen.id, data, mimeType: seen.mime ?? "image/png" }, options.maxFetchBytes, contentId)
             && readImageContent(options.dataDir, platform, contentId) === data;
+          if (!available) reasons.add("cache-unavailable");
+          return available;
         },
         formatGeneratedText: session && toolName ? (text) => annotateFetchText(text, session, toolName) : undefined,
       },
     );
     const replaced = Array.isArray(rewritten.report.replaced) ? rewritten.report.replaced.length : 0;
+    const copies = Array.isArray(rewritten.report.copies) ? rewritten.report.copies.length : 0;
+    if (rewritten.report.skipped) reasons.add("rewrite-skipped");
+    const nextText = rewritten.body.toString("utf8");
+    const offerExec = codexExec && !declaredTool && session && policy.auto && !options.disabledAgents.has(platform)
+      && rewritten.session === session && !rewritten.report.skipped
+      && openRequestIndex(platform, session, options.dataDir).images.size > 0;
+    const next = offerExec || materializedCount || nextText !== originalText ? JSON.parse(nextText) : undefined;
+    if (offerExec) next.input.unshift(codexFetchHint(session, !!toolName));
+    const originalBytes = Buffer.byteLength(originalText);
+    const rewrittenBytes = offerExec ? Buffer.byteLength(JSON.stringify(next)) : Buffer.byteLength(nextText);
     if (rewritten.session && named) {
       try {
         recordSession(options.dataDir, {
@@ -122,6 +160,7 @@ export async function onRequest(body: Json, ctx: HookContext): Promise<Json | un
           named,
           protocol: ctx.protocol ?? "",
           model: ctx.model ?? String(body.model ?? ""),
+          lastRequest: { omitted: replaced, copiesOmitted: copies, pinned: rewritten.report.pinned ?? 0, restored: materialized.restored, failedResults: materialized.failedResults, reasons: [...reasons], originalBytes, rewrittenBytes },
           ...sessionTitle(platform, named, ctx.query),
         });
       } catch (error) {
@@ -129,12 +168,9 @@ export async function onRequest(body: Json, ctx: HookContext): Promise<Json | un
       }
       try { writeLiveData(options.dataDir); } catch { /* static panel data is best-effort too */ }
     }
-    const copies = Array.isArray(rewritten.report.copies) ? rewritten.report.copies.length : 0;
     ctx.state && (ctx.state.cam = { session: rewritten.session, replaced, copies, materialized: materialized.count });
     ctx.report?.(replaced || copies || materialized.count ? "ready" : "skipped", replaced + copies + materialized.count);
-    const nextText = rewritten.body.toString("utf8");
-    if (!materializedCount && nextText === originalText) return undefined;
-    return JSON.parse(nextText);
+    return next;
   } catch {
     // Ordinary requests fail open. A temporary image payload is the exception:
     // it must never fall back to base64 prompt text after a later failure.

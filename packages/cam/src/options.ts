@@ -6,7 +6,9 @@ import { MAX_FETCH_CHARS } from "./retrieval.ts";
 export type CamOptions = {
   dataDir: string;
   language: Lang;
+  codexMode: "savings" | "compatible";
   auto: boolean;
+  disabledAgents: ReadonlySet<string>;
   allowRemote: boolean;
   gatewayTimeoutMs: number;
   maxFetchImages: number;
@@ -26,7 +28,11 @@ export function resolveOptions(raw: Record<string, unknown> = {}, env: NodeJS.Pr
   return {
     dataDir: resolve(dataDir),
     language: raw.language === "en" ? "en" : "zh",
+    codexMode: raw.codexMode === "compatible" ? "compatible" : "savings",
     auto: raw.auto !== false,
+    disabledAgents: new Set(raw.agentAuto && typeof raw.agentAuto === "object" && !Array.isArray(raw.agentAuto)
+      ? Object.entries(raw.agentAuto).filter(([, enabled]) => enabled === false).map(([agent]) => agent)
+      : []),
     allowRemote: raw.allowRemote === true,
     gatewayTimeoutMs: integer(raw.gatewayTimeoutMs, 10_000, 100, 30_000),
     maxFetchImages: integer(raw.maxFetchImages, 4, 1, 8),

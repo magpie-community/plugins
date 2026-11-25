@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { imageForPanel, listSessions, sessionDetail } from "./store.ts";
+import { measureStorage } from "./storage-usage.ts";
 
 const PANEL_DIR = process.env.MAGPIE_CAM_PANEL_DIR ? resolve(process.env.MAGPIE_CAM_PANEL_DIR) : join(import.meta.dirname, "..", "panel");
 const LIVE_FILE = join(PANEL_DIR, "live.js");
 let lastWrite = 0;
 let pendingWrite: ReturnType<typeof setTimeout> | undefined;
+let usage: { root: string; at: number; totals: ReturnType<typeof measureStorage> } | undefined;
 
 function atomic(file: string, data: Buffer | string): void {
   mkdirSync(dirname(file), { recursive: true });
@@ -55,5 +57,8 @@ export function writeLiveData(root: string, force = false): void {
     });
     details[session.key] = { session: detail.session, legacyPolicy: detail.legacyPolicy, images };
   }
-  atomic(LIVE_FILE, `globalThis.__MAGPIE_CAM_LIVE__=${JSON.stringify({ at: new Date().toISOString(), sessions, details })};\n`);
+  if (!usage || usage.root !== root || now - usage.at >= 30_000) {
+    usage = { root, at: now, totals: measureStorage(root, PANEL_DIR) };
+  }
+  atomic(LIVE_FILE, `globalThis.__MAGPIE_CAM_LIVE__=${JSON.stringify({ at: new Date().toISOString(), sessions, details, storage: usage.totals })};\n`);
 }

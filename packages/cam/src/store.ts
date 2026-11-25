@@ -16,6 +16,13 @@ export type SessionInfo = {
   title?: string;
   firstSeen: string;
   lastSeen: string;
+  lastRequest?: RequestStats;
+  recentRequests?: (RequestStats & { at: string })[];
+};
+
+type RequestStats = {
+  omitted: number; copiesOmitted: number; pinned: number; restored: number; failedResults: number; reasons: string[];
+  originalBytes?: number; rewrittenBytes?: number;
 };
 
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -80,7 +87,9 @@ export function recordSession(root: string, value: Omit<SessionInfo, "firstSeen"
   const now = value.at ?? new Date().toISOString();
   const { at: _at, titleSource, ...info } = value;
   const title = titleSource === "index" ? value.title : earlier.title ?? value.title;
-  atomicJson(file, { ...info, ...(title ? { title } : {}), firstSeen: earlier.firstSeen ?? now, lastSeen: now });
+  const history = earlier.recentRequests ?? (earlier.lastRequest && earlier.lastSeen ? [{ ...earlier.lastRequest, at: earlier.lastSeen }] : []);
+  const recentRequests = (value.lastRequest ? [{ ...value.lastRequest, at: now }, ...history] : history).slice(0, 3);
+  atomicJson(file, { ...info, lastRequest: value.lastRequest ?? earlier.lastRequest, recentRequests, ...(title ? { title } : {}), firstSeen: earlier.firstSeen ?? now, lastSeen: now });
 }
 
 export function listSessions(root: string): SessionInfo[] {

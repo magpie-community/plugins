@@ -161,8 +161,8 @@ export function rewritePlatformRequest(platform: string, path: string, original:
   }
   try { saveRequestIndex(index, root); } catch { return asIs({ skipped: "request index could not be saved" }, session); }
   if (read.conversation) { try { markLatest(platform, session, root); } catch { /* a fetch then finds the session before */ } }
-  const copies = new Map(read.images.filter((image) => image.fetchedOf && image.turn < current).map((image) => [image.key, image.fetchedOf!]));
   const automatic = policy.auto !== false;
+  const copies = new Map(read.images.filter((image) => automatic && image.fetchedOf && image.turn < current).map((image) => [image.key, image.fetchedOf!]));
   const pinned = policy.pinnedContentIds ?? new Set<string>();
   const leaveOut = new Set(read.images.filter((image) => automatic && image.replaceable && !image.fetchedOf
     && image.turn < current && image.data !== null && ids.has(image.key) && !pinned.has(image.contentId)
@@ -170,6 +170,7 @@ export function rewritePlatformRequest(platform: string, path: string, original:
   const out = read.rewrite((image) => ids.get(image.key), leaveOut, (image) => (image.data === null ? null : pixelHashOfData(image, image.data)), { lang, copies, auto: { currentTurn: current }, fetched: (image) => !!image.fetchedOf, formatGeneratedText: policy.formatGeneratedText });
   const { report } = out;
   const summary: Json = { format, auto: automatic, images: report.images, replaced: report.replaced.map(({ key: _key, ...rest }) => rest), sentImageHashes: report.sentContentIds.map((id) => id.slice(0, 16)), ...(report.copies.length ? { copies: report.copies } : {}) };
+  summary.pinned = report.sentContentIds.filter((id) => pinned.has(id)).length;
   if (!report.replaced.length && !report.copies.length) return asIs(summary, session);
   const next = Buffer.from(JSON.stringify(out.body), "utf8");
   const body = encodeBody(next, encoding);
