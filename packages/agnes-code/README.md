@@ -1,12 +1,14 @@
 # @magpie-community/opencode-agnes-code-auth
 
-把 **Agnes Code 桌面端** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态（会话文件解密），直连云端 OpenAI 兼容网关，agent 以 `agnes-code/<model>` 使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。
+把 **Agnes Code** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：直连云端 OpenAI 兼容网关，agent 以 `agnes-code/<model>`（国内站 `agnes-code-cn/<model>`）使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。
+
+双端：国际站 `.agnes-ai.com`（供应商 id `agnes-code`）与国内站 `.agnes-ai.cn`（供应商 id `agnes-code-cn`）各一个 id。两站账号体系与后端都不互通，国内站 token 打国际站一律 401，所以不做「按账号猜域名」。
 
 ## 与 `agnes`（Agnes AI 国际版）的区别
 
 Agnes 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：
 
-| | 本包（`agnes-code`） | [agnes](../agnes)（`agnes`） |
+| | 本包（`agnes-code`） | [agnes](packages/agnes)（`agnes`） |
 | --- | --- | --- |
 | 登录 | 读 Agnes **Code 桌面端**已保存的会话（Windows，DPAPI + safeStorage），或粘贴 `accessToken` | 在 Chrome 里登录 Agnes AI 国际版网页（agnes-ai.com），不需要桌面端 |
 | 服务 | Agnes Code 编码产品：`api-agnes-code.agnes-ai.com/v1`（chat completions，编码模型目录） | Agnes AI 国际版的文本模型、Token/Agent Plan 用量与美元余额 |
@@ -21,20 +23,46 @@ gateway; the `agnes` entry signs in to Agnes AI international in Chrome and
 meters that product's plans and USD balance. Same account system, different
 products: neither entry replaces the other.
 
+## 双端：两个供应商 id
+
+| | `agnes-code`（国际站） | `agnes-code-cn`（国内站） |
+| --- | --- | --- |
+| 登录页 | `app.agnes-ai.com/login`（Google / Apple） | `app.agnes-ai.cn/login`（微信扫码等） |
+| BFF / 模型 | `api-agnes-code.agnes-ai.com` | `api-agnes-code.agnes-ai.cn` |
+| 积分 | `api-agnes-code.agnes-ai.com/api/v2/subscription/credits-balance` | `api-agnes-code.agnes-ai.cn/api/v2/subscription/credits-balance` |
+
+安装两个包各登录一次即可并存；agent 里按 `<id>/<model>` 选。两端账号不互通，一个端的 token 拿到另一端会明确报 `401`，插件不会把凭据发去错的域名。
+
 ## 登录什么
 
-两种方式（登录时二选一）：
+三种方式（登录时三选一）：
 
-1. **读取 Agnes Code 桌面端登录态（推荐，仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
-   - 会话目录：`%APPDATA%\AgnesCode\`。macOS/Linux 下桌面端解密不可用，会明确提示改用粘贴方式。
+1. **浏览器登录（推荐，三平台）**——点一下就打开该站的登录页，本地 `127.0.0.1:<随机端口>` 起一个回调监听，登录成功后自动换票完成，不需要桌面端、不需要密码，因此也没有「错密码反复重试被锁号」的风险。协议细节见下节。窗口没自动弹出时把上面给的链接手动打开即可。
+   注意：如果那个浏览器**已经登录着该站**，登录页会直接跳进网页版首页、不回传授权码（表现为一直转圈）。把链接粘到无痕/隐私窗口再打开一次即可。桌面端已登录的用户直接用下一条更省事。
+2. **读取 Agnes Code 桌面端登录态（仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
+   - 会话目录：`%APPDATA%\AgnesCode\`，文件名按端区分：`code-auth-session.v1`（国际站）、`code-auth-session.cn.v1`（国内站，实测 657 字节）。只认这一族文件，别的文件不碰。macOS/Linux 下桌面端解密不可用，会明确提示改用浏览器登录或粘贴。
+   - 会话里的 `bffPublicBaseUrl` 会被读出来并钉死到 `https://*.agnes-ai.cn` / `.com`：它决定这份凭据属于哪一端。会话属于另一端时会直接报错让用户换对应端的登录入口，而不是拿着 token 去打错的域名。
    - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。
-2. **粘贴 accessToken**——从桌面端会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
+3. **粘贴 accessToken**——从会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
+
+## 浏览器登录协议
+
+```
+打开  {loginUrl}?client=agnes-code&redirect_uri=http://127.0.0.1:<port>/auth/callback&state=<uuid>
+页面  POST {code,state} 回本地（跨域：OPTIONS 预检必须回 Access-Control-Allow-Origin；GET query 兜底）
+换票  POST {bffBase}/api/v1/code/auth/exchange-code
+      headers: origin=<登录页 origin>、x-platform: 1、content-type: json
+      body:    {code, redirect_uri, state, client_id:"agnes-code"}
+      成功 = body.code 为 "000000" 或 "0"，token 在 data.access_token
+```
+
+`origin` 头与 `x-platform` 缺一不可（BFF 会校验）；`state` 必须比对，`code` 为空直接拒。回调监听在登录结束后关闭，超时 3 分钟。
 
 每个账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。
 
 ## 模型
 
-供应商 id `agnes-code`。目录**按账号实时拉取**（`GET /v1/models`，读取不计费）。2026-11 实测目录：
+供应商 id `agnes-code`（国际站）/ `agnes-code-cn`（国内站）。目录**按账号实时拉取**（`GET {bffBase}/v1/models`，读取不计费，两端各拉自己那份）。2026-11 实测国际站目录：
 
 | modelId | context | 备注 |
 | --- | --- | --- |
@@ -62,9 +90,9 @@ products: neither entry replaces the other.
 
 ## 协议与上游
 
-- 模型调用：`POST https://api-agnes-code.agnes-ai.com/v1/chat/completions`（OpenAI chat 协议，`Authorization: Bearer <accessToken>`，思考在 `reasoning_content`）。
-- 模型目录：`GET https://api-agnes-code.agnes-ai.com/v1/models`。
-- 积分：`GET https://api.agnes-ai.com/api/v2/subscription/credits-balance`。
+- 模型调用：`POST https://api-agnes-code.agnes-ai.com/v1/chat/completions`（OpenAI chat 协议，`Authorization: Bearer <accessToken>`，思考在 `reasoning_content`）；国内站换成 `api-agnes-code.agnes-ai.cn`。
+- 模型目录：`GET https://api-agnes-code.agnes-ai.com/v1/models`；国内站 `.cn`。
+- 积分：`GET https://api-agnes-code.agnes-ai.com/api/v2/subscription/credits-balance`；国内站 `.cn`（实测两端 bff 域都直接答 401 而不是 404，所以主路径用 bff 域，`api.agnes-ai.*` 只作兜底）。
 
 ## 风险提示
 
@@ -74,8 +102,15 @@ products: neither entry replaces the other.
 
 ```
 magpie plugin add @magpie-community/opencode-agnes-code-auth
-magpie plugin login agnes-code              # 选「读取 Agnes Code 桌面端登录态」或「粘贴 accessToken」
+magpie plugin login agnes-code              # 国际站：浏览器登录 / 读桌面端 / 粘贴 token
+magpie plugin login agnes-code-cn           # 国内站：浏览器登录（微信扫码等）/ 粘贴 token
 magpie provider test agnes-code agnes-3.0-flash
+```
+
+本地改包后先在自己的副本里试装（不覆盖市场版）：
+
+```
+magpie plugin add ./packages/agnes-code
 ```
 
 测试（零依赖，Node ≥18 或 Bun）：
