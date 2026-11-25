@@ -1850,20 +1850,23 @@ function storeKey(account) {
   return ""
 }
 
-// osKey is the credential store's key, or null without one. Failures rest
-// five minutes, so the store is asked at most that often.
-let osKeyState = { at: 0, key: null }
-function osKey() {
-  if (osKeyState.key || Date.now() - osKeyState.at < 300_000) return osKeyState.key
+// osKey is the credential store's key whose hash the envelope names, or
+// null without one. Each envelope hash rests five minutes after a miss, so
+// a moved data folder with its own entry is still checked.
+const osKeyState = new Map()
+function osKey(hash) {
+  const was = osKeyState.get(hash)
+  if (was && (was.key || Date.now() - was.at < 300_000)) return was.key
   let key = null
   for (const account of credAccounts()) {
     const p = storeKey(account)
-    if (p) {
-      key = Buffer.from(p, "base64url")
-      break
-    }
+    if (!p) continue
+    const candidate = Buffer.from(p, "base64url")
+    if (createHash("sha256").update(candidate).digest("hex").slice(0, 24) !== hash) continue
+    key = candidate
+    break
   }
-  osKeyState = { at: Date.now(), key }
+  osKeyState.set(hash, { at: Date.now(), key })
   return key
 }
 
@@ -1900,7 +1903,7 @@ function decryptV2(v) {
   const [, source, hash, payload] = m
   let key
   try {
-    key = source === "os" ? osKey() : envKey()
+    key = source === "os" ? osKey(hash) : envKey()
   } catch {
     return null
   }
@@ -1958,7 +1961,12 @@ function ownStoreUnreadable() {
   }
   if (!v2) return false
   try {
-    return !osKey() && !envKey()
+    for (const value of Object.values(store)) {
+      const match = typeof value === "string" ? V2.exec(value) : null
+      if (!match) continue
+      if (!(match[1] === "os" ? osKey(match[2]) : envKey())) return true
+    }
+    return false
   } catch {
     return true
   }
