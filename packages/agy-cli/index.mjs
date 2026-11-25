@@ -4370,7 +4370,8 @@ function renderServerAssistantBlock(block) {
 }
 
 const MAGPIE_PLACEHOLDER_NOTICE = "Values written like {{NAME_ab12cd34}} are placeholders for real values. Use them exactly as written, in replies and in tool calls alike: they are filled in with the real values before anything runs. Don't ask to verify them, and don't replace them with examples."
-const MAGPIE_PLACEHOLDER_NOTICE_RE = /(?:^|\n\n)Values written like \{\{NAME_ab12cd34\}\} are placeholders for real values\. Use them exactly as written, in replies and in tool calls alike: they are filled in with the real values before anything runs\. Don't ask to verify them, and don't replace them with examples\.(?=\s|$)/g
+const MAGPIE_PLACEHOLDER_NOTICE_BODY = "Values written like \\{\\{NAME_ab12cd34\\}\\} are placeholders for real values\\. Use them exactly as written, in replies and in tool calls alike: they are filled in with the real values before anything runs\\. Don't ask to verify them, and don't replace them with examples\\."
+const MAGPIE_PLACEHOLDER_NOTICE_RE = new RegExp(`(?:^|\\n\\n)(?:<system-reminder>\\s*${MAGPIE_PLACEHOLDER_NOTICE_BODY}\\s*<\\/system-reminder>|${MAGPIE_PLACEHOLDER_NOTICE_BODY})(?=\\s|$)`, "g")
 
 function stripMagpiePlaceholderNotice(text) {
   if (typeof text !== "string" || !text.includes("{{NAME_ab12cd34}}")) return text
@@ -4514,7 +4515,7 @@ function stripAgentClockLines(text) {
 // System prompt and session instructions: billing headers plus known agent
 // clock lines. User text is never passed through this helper.
 function stripVolatileSystem(text) {
-  return stripAgentClockLines(stripBillingHeader(text))
+  return stripMagpiePlaceholderNotice(stripAgentClockLines(stripBillingHeader(text)))
 }
 
 function instructionsIdentity(text) {
@@ -6690,12 +6691,12 @@ function inspectToolTurn(results, body) {
           rawText = dsh.rest
         }
       }
-      if (!seenResult && message.role === "user" && rawText.trim()) {
+      const text = stripMagpiePlaceholderNotice(rawText)
+      if (!seenResult && message.role === "user" && text.trim()) {
         // A user can steer a pending tool turn from either side of a tool_result.
         // Replay the instruction as a user prompt, never as an MCP tool response.
         userSteered = true
       }
-      const text = stripMagpiePlaceholderNotice(rawText)
       if (text !== rawText && !notices.includes(MAGPIE_PLACEHOLDER_NOTICE)) {
         notices.push(MAGPIE_PLACEHOLDER_NOTICE)
       }
