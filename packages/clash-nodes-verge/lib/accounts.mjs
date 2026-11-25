@@ -142,9 +142,26 @@ export function listAccounts(opts = {}) {
   return out.filter((a) => ids.has(a.providerId) || a.source === 'stored');
 }
 
+/**
+ * Account list the page should render. The file path (logins.json +
+ * providers.json) is a pure read — no spawn, no network — so the host always
+ * calls it fresh and the list reflects an account the moment magpie writes
+ * it. The on-disk cache below is only a fallback for when that read throws,
+ * and is still useful to the standalone CLI that does pass `useCli`.
+ */
+export function currentAccounts(opts = {}) {
+  try {
+    const list = listAccounts(opts);
+    writeAccountCache(list);
+    return list;
+  } catch {
+    return readAccountCache() || [];
+  }
+}
+
 /** Cache of the CLI's account list, for a host that shouldn't spawn magpie. */
 export function accountCachePath() { return path.join(magpieDir(), 'clash-nodes', 'accounts.json'); }
-export function readAccountCache(maxAgeMs = 60 * 60 * 1000) {
+export function readAccountCache(maxAgeMs = 5 * 60 * 1000) {
   try {
     const f = accountCachePath();
     const s = fs.statSync(f);

@@ -252,8 +252,10 @@ async function collect(c, error) {
   try { providers = magpie.describe(magpie.readProviders(), r.mapping || {}); } catch { /* magpie absent */ }
   let accounts = [];
   try {
-    const list = accountsLib.readAccountCache() || accountsLib.listAccounts();
-    accounts = accountsLib.describeAccounts(list, r.mapping || {});
+    // currentAccounts reads logins.json + providers.json fresh every render, so
+    // an account added/removed in magpie shows up on the next paint; the cache
+    // is only a fallback when that read throws.
+    accounts = accountsLib.describeAccounts(accountsLib.currentAccounts(), r.mapping || {});
   } catch { /* no accounts */ }
   return {
     generatedAt: now(),
@@ -459,7 +461,7 @@ async function execute(cmd, c) {
 
     case 'assignAccounts': {
       const rr = await ensureRouter(c);
-      const list = accountsLib.readAccountCache() || accountsLib.listAccounts();
+      const list = accountsLib.currentAccounts();
       const delays = readDelays();
       const plan = accountsLib.buildAccountPlan({
         accounts: list, mapping: rr.mapping, delays,
