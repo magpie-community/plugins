@@ -2,7 +2,8 @@
 // answer (internal/provider/kiro_test.go TestKiroLimits).
 import { test, expect, afterAll, beforeAll, afterEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { realpathSync } from "node:fs"
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 
 let plugin, _internal
 beforeAll(async () => {
@@ -56,6 +57,31 @@ test("a free account's credits and trial", async () => {
   expect(u.pathname).toEndWith("/Get-Usage-Limits")
   expect(Object.fromEntries(u.searchParams)).toEqual({ origin: "KIRO_CLI", profileArn: PROFILE, resourceType: "CREDIT", isEmailRequired: "true" })
   expect(calls[0].init.headers.Authorization).toBe("Bearer test-access")
+})
+
+test("an external IdP IDE sign-in sends the control-plane TokenType", async () => {
+  const oldHome = process.env.HOME
+  const dir = mkdtempSync(join(tmpdir(), "kiro-external-idp-"))
+  const cache = join(dir, ".aws", "sso", "cache")
+  mkdirSync(cache, { recursive: true })
+  writeFileSync(join(cache, "kiro-auth-token.json"), JSON.stringify({
+    accessToken: "external-access",
+    refreshToken: "external-refresh",
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    authMethod: "external_idp",
+    clientId: "client",
+    profileArn: PROFILE,
+    region: "us-east-1",
+  }))
+  process.env.HOME = dir
+  try {
+    const calls = answer(200, FREE)
+    await usage({ type: "oauth", source: "kiro-ide", access: "", refresh: "", expires: 0 })
+    expect(calls[0].init.headers.tokentype).toBe("EXTERNAL_IDP")
+  } finally {
+    process.env.HOME = oldHome
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test("names, resets and counts as Go says them", () => {
