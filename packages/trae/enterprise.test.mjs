@@ -545,3 +545,19 @@ test("a seat kept with no host before 0.2.54 is read as its console's, a persona
   expect((await chat(client, signedIn())).status).toBe(200)
   expect(chats()).toEqual(["/api/agent/v3/llm_utils_chat", "/api/agent/v3/llm_utils_chat"])
 })
+
+test("a seat whose token holds its claims under data is read as its console's too", async () => {
+  // the reporter's second seat token (plugins#1516, 0.2.54): every claim
+  // under data, none at the top
+  const nested = (data) => ["x", Buffer.from(JSON.stringify({ data, exp: Math.floor(Date.now() / 1000) + 7200, iat: Math.floor(Date.now() / 1000) })).toString("base64url"), "sig"].join(".")
+  const { client } = consoleApart()
+  f.route("POST /console/api/agent/v3/llm_utils_chat", ok)
+  f.route("POST /api/agent/v3/llm_utils_chat", ok)
+  const seat = { ...signedIn({ access: nested({ email: "s@example.com", scope: "saas", tenant_id: "tob_online", tob_tenant_id: "t-9", type: "user" }) }), account: { IsSetTenant: true, IsAllowLogin: true, LastLoginType: 2 } }
+  expect((await chat(client, seat)).status).toBe(200)
+  expect(chats()).toEqual(["/console/api/agent/v3/llm_utils_chat"])
+  // the same shape with a personal scope stays on the gateway
+  f.seen.length = 0
+  expect((await chat(client, signedIn({ access: nested({ scope: "personal", type: "user" }) }))).status).toBe(200)
+  expect(chats()).toEqual(["/api/agent/v3/llm_utils_chat"])
+})

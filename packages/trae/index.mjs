@@ -386,11 +386,14 @@ function namedHost(h) {
 }
 
 // saasToken: the access token is an enterprise (SaaS) seat's, as its JWT's
-// scope says ({"scope":"saas","tenant_id":"tob_online",…}, plugins#1516)
+// scope says ({"scope":"saas","tenant_id":"tob_online",…}, plugins#1516).
+// A tenant's token may hold its claims under data ({"data":{"scope":"saas",
+// …},"exp":…}), and the scope is read there too
 function saasToken(token) {
   try {
     const p = JSON.parse(Buffer.from(String(token).split(".")[1], "base64url").toString())
-    return String(p?.scope ?? "").toLowerCase() === "saas"
+    const scope = typeof p?.scope === "string" ? p.scope : p?.data?.scope
+    return String(scope ?? "").toLowerCase() === "saas"
   } catch {
     return false
   }
