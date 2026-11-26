@@ -690,6 +690,7 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
     const rotated2 = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, v: 3 })
     let failWallet403 = true
     let failProfile = false
+    let activeWalletToken = rotated
     let profileAttempts = 0
     const walletTokens = []
 
@@ -714,7 +715,7 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
             utimesSync(join(dirObj.root, "hub-config.json"), t, t)
             return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 })
           }
-          if (tok === rotated || tok === rotated2) {
+          if (tok === activeWalletToken) {
             return new Response(JSON.stringify({ wallets: [{ source: 1, plan_name: "Plus", total_credit: "321" }] }), { status: 200 })
           }
           return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 })
@@ -740,7 +741,8 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       assert.deepEqual(walletTokens, [dirObj.token, rotated])
       assert.equal(profileAttempts, 1)
 
-      // 2. New rotated token hits transient profile outage -> negative-cached for 30s
+      // 2. Server supersedes rotated with rotated2, and profile hits transient outage -> negative-cached for 30s
+      activeWalletToken = rotated2
       failProfile = true
       writeFileSync(
         join(dirObj.root, "hub-config.json"),
@@ -765,6 +767,98 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       assert.equal(profileAttempts, 3)
       assert.equal(recovered2.signIn, "renewed")
       assert.deepEqual(recovered2.windows, [{ name: "积分", balance: 321, unit: "积分" }])
+    } finally {
+      rmSync(dirObj.root, { recursive: true, force: true })
+    }
+  })
+
+  test("retains verified rotated token across desktop account switch, recomputes hasGroupId after refresh, and keeps sign-in on non-auth cloud 403s", async () => {
+    let fakeNow = Date.now()
+    const origA = makeJwt({ exp: Math.floor(fakeNow / 1000) + 300, user: { id: "owner-A" }, v: 1 })
+    const rotatedA = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-A" }, v: 2 })
+    const tokenB = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-B" }, v: 1 })
+    const dirObj = makeTempDesktopDir({ userID: "10001", groupId: null, token: origA, lkgObj: SAMPLE_REMOTE_CONFIG })
+    const sentTokens = []
+
+    let walletAttempt = 0
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: async (url, init = {}) => {
+        const u = String(url)
+        const tok = new Headers(init.headers).get("token")
+        if (u.endsWith("/api/v1/account/profile")) {
+          const uid = tok === tokenB ? "20002" : "10001"
+          return new Response(JSON.stringify({ uid, user_name: `User ${uid}` }), { status: 200 })
+        }
+        if (u.endsWith("/api/v1/config")) {
+          return new Response(JSON.stringify({ error: { code: "client_upgrade_required", message: "upgrade client" } }), { status: 403 })
+        }
+        if (u.endsWith("/api/v1/credit/wallet")) {
+          walletAttempt++
+          if (walletAttempt === 1) {
+            // Disk rotates A's token AND switches from personal (no groupId) to team-7
+            writeFileSync(
+              join(dirObj.root, "hub-config.json"),
+              JSON.stringify({
+                ...dirObj.cfg,
+                selectedGroupIds: { "10001": "team-7" },
+                tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(rotatedA, dirObj.keyBuf) },
+              }),
+            )
+            const t = new Date(fakeNow + 2000)
+            utimesSync(join(dirObj.root, "hub-config.json"), t, t)
+            return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 401 })
+          }
+          // Non-auth 403 on wallet (e.g. team scope restriction) falls through to /credit/balance
+          return new Response(JSON.stringify({ error: { message: "team wallet unavailable" } }), { status: 403 })
+        }
+        if (u.endsWith("/api/v1/credit/balance")) {
+          return new Response(JSON.stringify({ total_credit: "500", team_credit: "0" }), { status: 200 })
+        }
+        sentTokens.push(tok)
+        return new Response("{}", { status: 200 })
+      },
+      env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+      versionCode: TEST_VERSION,
+      nowMsImpl: () => fakeNow,
+    })
+
+    try {
+      const authA = {
+        type: "api",
+        key: origA,
+        metadata: { userId: "10001", tokenOwnerId: "owner-A", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+
+      // 1. Usage starts in personal scope -> wallet 401 refreshes to rotatedA + team-7 -> wallet non-auth 403
+      //    falls through to /credit/balance -> MUST recompute hasGroupId=true and report team_credit=0 (not 500!)
+      const usage = await hooks.auth.usage(async () => authA)
+      assert.equal(usage.signIn, "renewed")
+      assert.deepEqual(usage.windows[0], { name: "团队积分", balance: 0, unit: "积分" })
+
+      // 2. Desktop switches to Account B; Account A MUST retain verified rotatedA (not revert to origA)
+      writeFileSync(
+        join(dirObj.root, "hub-config.json"),
+        JSON.stringify({
+          ...dirObj.cfg,
+          user: { userID: "20002", userName: "Bob" },
+          selectedGroupIds: { "20002": "team-bob" },
+          tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(tokenB, dirObj.keyBuf) },
+        }),
+      )
+      const t2 = new Date(fakeNow + 6000)
+      utimesSync(join(dirObj.root, "hub-config.json"), t2, t2)
+      const loadedA = await hooks.auth.loader(async () => authA)
+      await loadedA.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(sentTokens[0], rotatedA)
+
+      // 3. Non-auth 403 (client_upgrade_required) on /api/v1/config does NOT throw signIn:expired; falls back to LKG/bootstrap
+      const cfg = { provider: {} }
+      await hooks.config(cfg)
+      const models = await hooks.provider.models(
+        { id: "minimax-design", models: cfg.provider["minimax-design"].models },
+        { auth: authA },
+      )
+      assert.ok(models["MiniMax-M3.1-Flash"])
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
     }

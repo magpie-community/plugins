@@ -820,17 +820,40 @@ async function fetchAccountProfile(site, cred, versionCode, fetchImpl) {
     { headers: buildApiHeaders(cred, versionCode), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     { fetchImpl, what: `${site.name} profile` },
   )
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401) {
     throw Object.assign(
       new Error(
         msg(
           site.lang,
-          `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`,
-          `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+          `${site.name} 拒绝了该凭据（HTTP 401），请重新登录`,
+          `${site.name} rejected the credential (HTTP 401); please sign in again`,
         ),
       ),
-      { signIn: "expired", status: res.status },
+      { signIn: "expired", status: 401 },
     )
+  }
+  if (res.status === 403) {
+    const text = await res.text().catch(() => "")
+    if (isAuthError403(403, text)) {
+      throw Object.assign(
+        new Error(
+          msg(
+            site.lang,
+            `${site.name} 拒绝了该凭据（HTTP 403），请重新登录`,
+            `${site.name} rejected the credential (HTTP 403); please sign in again`,
+          ),
+        ),
+        { signIn: "expired", status: 403 },
+      )
+    }
+    const { errCode, errMsg } = parseErrorBody(text)
+    if (errCode === "client_upgrade_required") {
+      throw Object.assign(
+        new Error(`${site.name} profile: ${errMsg} (set MINIMAX_DESIGN_VERSION_CODE to override)`),
+        { status: 403, code: errCode },
+      )
+    }
+    throw Object.assign(new Error(`${site.name} profile: HTTP 403${errMsg ? ` (${errMsg})` : ""}`), { status: 403 })
   }
   if (!res.ok) throw new Error(`${site.name} profile: HTTP ${res.status}`)
   const body = await res.json().catch(() => null)
@@ -849,16 +872,36 @@ async function fetchRemoteConfig(site, cred, versionCode, fetchImpl) {
     { headers: buildApiHeaders(cred, versionCode), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     { fetchImpl, what: `${site.name} config` },
   )
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401) {
     throw Object.assign(
       new Error(
         msg(
           site.lang,
-          `${site.name} 登录态已失效（HTTP ${res.status}），请重新登录`,
-          `${site.name} sign-in expired (HTTP ${res.status}); please sign in again`,
+          `${site.name} 登录态已失效（HTTP 401），请重新登录`,
+          `${site.name} sign-in expired (HTTP 401); please sign in again`,
         ),
       ),
-      { signIn: "expired", status: res.status },
+      { signIn: "expired", status: 401 },
+    )
+  }
+  if (res.status === 403) {
+    const text = await res.text().catch(() => "")
+    if (isAuthError403(403, text)) {
+      throw Object.assign(
+        new Error(
+          msg(
+            site.lang,
+            `${site.name} 登录态已失效（HTTP 403），请重新登录`,
+            `${site.name} sign-in expired (HTTP 403); please sign in again`,
+          ),
+        ),
+        { signIn: "expired", status: 403 },
+      )
+    }
+    const { errCode, errMsg } = parseErrorBody(text)
+    throw Object.assign(
+      new Error(`${site.name} config: HTTP 403${errMsg ? ` (${errMsg})` : ""}`),
+      { status: 403, ...(errCode ? { code: errCode } : {}) },
     )
   }
   if (!res.ok) throw new Error(`${site.name} config: HTTP ${res.status}`)
@@ -1089,14 +1132,19 @@ function createPlugin(
   const modelCache = new Map() // cacheKey -> { at, specs }
   const diskCache = new Map() // cacheKey -> { mtimeMs, cred }
   const verifiedTokenOwners = new Map() // token -> { uid, expiresAt }
+  const retainedDesktopCreds = new Map() // expectedUserId -> { token, groupId, deviceId, lkgConfig }
+
+  function setBounded(map, key, value, maxSize = OWNER_CACHE_MAX) {
+    if (map.has(key)) map.delete(key)
+    map.set(key, value)
+    while (map.size > maxSize) {
+      const oldest = map.keys().next().value
+      map.delete(oldest)
+    }
+  }
 
   function setOwnerCache(token, uid, expiresAt) {
-    if (verifiedTokenOwners.has(token)) verifiedTokenOwners.delete(token)
-    verifiedTokenOwners.set(token, { uid, expiresAt })
-    while (verifiedTokenOwners.size > OWNER_CACHE_MAX) {
-      const oldest = verifiedTokenOwners.keys().next().value
-      verifiedTokenOwners.delete(oldest)
-    }
+    setBounded(verifiedTokenOwners, token, { uid, expiresAt })
   }
 
   function readLiveDesktopForAuth(auth, { force = false } = {}) {
@@ -1185,7 +1233,7 @@ function createPlugin(
         accepted = await verifyRotatedDesktopToken(live, meta, expectedUserId)
       }
       if (accepted) {
-        return {
+        const resolved = {
           token: live.key,
           userId: live.userId,
           // Authoritative live workspace selection: if deselected on disk, send no X-Group-Id.
@@ -1193,6 +1241,28 @@ function createPlugin(
           deviceId: live.deviceId ?? trimStr(meta.deviceId),
           lkgConfig: live.lkgConfig,
           renewedFromSaved: rotated,
+        }
+        if (rotated && expectedUserId) {
+          setBounded(retainedDesktopCreds, expectedUserId, {
+            token: resolved.token,
+            groupId: resolved.groupId,
+            deviceId: resolved.deviceId,
+            lkgConfig: resolved.lkgConfig,
+          })
+        }
+        return resolved
+      }
+    }
+    if (meta.method === "desktop" && expectedUserId) {
+      const retained = retainedDesktopCreds.get(expectedUserId)
+      if (retained && !isExpiredJwt(retained.token, nowMsImpl())) {
+        return {
+          token: retained.token,
+          userId: expectedUserId,
+          groupId: retained.groupId,
+          deviceId: retained.deviceId,
+          lkgConfig: retained.lkgConfig,
+          renewedFromSaved: retained.token !== auth.key.trim(),
         }
       }
     }
@@ -1408,7 +1478,6 @@ function createPlugin(
         let cred = await resolveCredential(auth)
         if (!cred) return {}
         let renewed = cred.renewedFromSaved
-        const hasGroupId = Boolean(cred.groupId)
 
         const fetchWallet = (c) =>
           siteFetch(
@@ -1420,16 +1489,28 @@ function createPlugin(
 
         try {
           let res = await fetchWallet(cred)
-          if ((res.status === 401 || res.status === 403) && auth?.metadata?.method === "desktop") {
+          let errText = null
+          let isAuthFailure = res.status === 401
+          if (!isAuthFailure && res.status === 403) {
+            errText = await res.text().catch(() => "")
+            isAuthFailure = isAuthError403(403, errText)
+          }
+          if (isAuthFailure && auth?.metadata?.method === "desktop") {
             const fresh = await resolveCredential(auth, { forceRefresh: true })
             if (fresh && fresh.token !== cred.token) {
-              await res.body?.cancel?.().catch(() => {})
+              if (errText === null) await res.body?.cancel?.().catch(() => {})
+              errText = null
               cred = fresh
               renewed = true
               res = await fetchWallet(cred)
+              isAuthFailure = res.status === 401
+              if (!isAuthFailure && res.status === 403) {
+                errText = await res.text().catch(() => "")
+                isAuthFailure = isAuthError403(403, errText)
+              }
             }
           }
-          if (res.status === 401 || res.status === 403) {
+          if (isAuthFailure) {
             return {
               error: msg(
                 site.lang,
@@ -1440,7 +1521,17 @@ function createPlugin(
               windows: [],
             }
           }
-          if (res.ok) {
+          if (res.status === 403) {
+            const { errCode, errMsg } = parseErrorBody(errText ?? "")
+            if (errCode === "client_upgrade_required") {
+              return {
+                error: `${site.name}: ${errMsg} (set MINIMAX_DESIGN_VERSION_CODE to override)`,
+                signIn: "kept",
+                windows: [],
+              }
+            }
+            // Non-auth 403 on wallet (e.g. team scope restriction): fall through to /credit/balance
+          } else if (res.ok) {
             const body = await res.json().catch(() => null)
             const parsed = usageFromWallet(site, body, nowMsImpl(), { renewed })
             if (parsed) return parsed
@@ -1457,14 +1548,35 @@ function createPlugin(
             { headers: buildApiHeaders(cred, resolvedVersion), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
             { fetchImpl, what: `${site.name} balance` },
           )
-          if (res.status === 401 || res.status === 403) {
+          if (res.status === 401) {
             return {
               error: msg(
                 site.lang,
-                `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`,
-                `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+                `${site.name} 拒绝了该凭据（HTTP 401），请重新登录`,
+                `${site.name} rejected the credential (HTTP 401); please sign in again`,
               ),
               signIn: "expired",
+              windows: [],
+            }
+          }
+          if (res.status === 403) {
+            const text = await res.text().catch(() => "")
+            if (isAuthError403(403, text)) {
+              return {
+                error: msg(
+                  site.lang,
+                  `${site.name} 拒绝了该凭据（HTTP 403），请重新登录`,
+                  `${site.name} rejected the credential (HTTP 403); please sign in again`,
+                ),
+                signIn: "expired",
+                windows: [],
+              }
+            }
+            const { errCode, errMsg } = parseErrorBody(text)
+            const suffix = errCode === "client_upgrade_required" ? " (set MINIMAX_DESIGN_VERSION_CODE to override)" : ""
+            return {
+              error: `${site.name} balance: HTTP 403${errMsg ? ` (${errMsg})` : ""}${suffix}`,
+              signIn: "kept",
               windows: [],
             }
           }
@@ -1472,7 +1584,8 @@ function createPlugin(
             return { error: `${site.name} balance: HTTP ${res.status}`, signIn: "kept", windows: [] }
           }
           const body = await res.json().catch(() => null)
-          const parsed = usageFromBalance(site, body, { hasGroupId, renewed })
+          // Derive workspace scope from the final credential after any desktop refresh.
+          const parsed = usageFromBalance(site, body, { hasGroupId: Boolean(cred.groupId), renewed })
           if (parsed) return parsed
           return {
             error: msg(site.lang, "积分余额格式异常", "Unexpected credit balance payload"),
