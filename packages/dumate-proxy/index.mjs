@@ -3,6 +3,7 @@ import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 import { buildCookieHeader, extractCsrfToken, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
 import { normalizeReasoningBody } from "./src/gateway.mjs"
+import { generateImage } from "./src/media.mjs"
 import {
   buildImageUpstreamBody,
   chatMessagesToPrompt,
@@ -164,6 +165,25 @@ async function gatewayFetch(body, cookies, fetchImpl, signal) {
   return response
 }
 
+async function describeReferenceImages(images, userPrompt, cookies, fetchImpl) {
+  const usable = (Array.isArray(images) ? images : []).filter((url) => typeof url === "string" && (url.startsWith("data:") || /^https?:\/\//i.test(url))).slice(0, 4)
+  if (!usable.length) return { prompt: String(userPrompt ?? ""), imageUrls: [] }
+  const parts = [
+    { type: "text", text: "请详细描述这些参考图的主体、构图、服装、环境、光线和画风，输出可直接用于文生图的中文提示词。" },
+    ...usable.map((url) => ({ type: "image_url", image_url: { url } })),
+  ]
+  try {
+    const response = await gatewayFetch(JSON.stringify({ model: "glm-53-flash", messages: [{ role: "user", content: parts }] }), cookies, fetchImpl)
+    const payload = await response.json()
+    const description = String(payload?.choices?.[0]?.message?.content ?? "").trim().slice(0, 3000)
+    return {
+      prompt: description ? `${String(userPrompt ?? "").trim()}\n\n参考图描述：${description}`.trim().slice(0, 8000) : String(userPrompt ?? ""),
+      imageUrls: usable.filter((url) => /^https?:\/\//i.test(url) && url.length < 8192),
+    }
+  } catch {
+    return { prompt: String(userPrompt ?? ""), imageUrls: usable.filter((url) => /^https?:\/\//i.test(url) && url.length < 8192) }
+  }
+}
 async function gatewayJson(body, cookies, fetchImpl, signal) {
   const response = await gatewayFetch(body, cookies, fetchImpl, signal)
   const text = await response.text()
@@ -184,12 +204,17 @@ function toMagpieModels(catalog) {
       ...(key === "deepseek-v41-flash" && !image ? { variants: { none: {}, low: {}, high: {}, max: {} } } : {}),
     }
   }
+  const firstImage = Object.values(models).find((model) => model.modalities?.output?.includes("image"))
+  if (firstImage && !models["group/image"]) models["group/image"] = { ...firstImage, name: "DuMate Image" }
   return models
 }
 
 function resolveCatalogModel(catalog, requested) {
   if (!requested) return undefined
   if (catalog?.models?.[requested]) return catalog.models[requested]
+  if (requested === "group/image") {
+    return Object.values(catalog?.models ?? {}).find((model) => model.kind === "image")
+  }
   return Object.values(catalog?.models ?? {}).find((model) => model.upstreamId === requested || model.id === requested)
 }
 
@@ -461,12 +486,15 @@ export const DuMateProxyPlugin = async (input = {}) => {
               const requested = body.model || catalog.defaultChatModel
               const model = resolveCatalogModel(catalog, requested)
               if (model?.kind === "image" || isImageModel(catalog, requested)) {
-                const upstreamBody = buildImageUpstreamBody(
-                  { ...body, prompt: body.prompt ?? chatMessagesToPrompt(body.messages) },
-                  model ?? resolveImageModel(catalog, config, requested),
-                )
-                const payload = await gatewayJson(JSON.stringify(upstreamBody), cookies, fetchImpl)
-                const completion = toChatCompletion(payload, requested, { ...body, model: requested })
+                const token = await gatewayToken(cookieHeaderOf(cookies), fetchImpl)
+                const generated = await generateImage({
+                  prompt: body.prompt ?? chatMessagesToPrompt(body.messages),
+                  model: requested,
+                  n: body.n,
+                  size: body.size,
+                  responseFormat: "url",
+                }, token, fetchImpl)
+                const completion = toChatCompletion({ data: generated.data }, requested, { ...body, model: requested })
                 if (body.stream) return new Response(toChatSSE(completion, requested), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } })
                 return json(200, completion)
               }
@@ -478,39 +506,68 @@ export const DuMateProxyPlugin = async (input = {}) => {
               let text = init.body
               if (text === undefined && request) text = await request.clone().text()
               const body = typeof text === "string" ? JSON.parse(text) : {}
-              const model = resolveImageModel(catalog, config, body.model)
-              const payload = await gatewayJson(JSON.stringify(buildImageUpstreamBody(body, model)), cookies, fetchImpl)
-              const result = await toOpenAIImages(payload, { model: body.model || model.id, responseFormat: body.response_format || "url" }, config, fetchImpl)
-              return json(result.status, result.body)
+              const refs = [body.image, ...(Array.isArray(body.images) ? body.images : [])]
+              const described = await describeReferenceImages(refs, body.prompt, cookies, fetchImpl)
+              const token = await gatewayToken(cookieHeaderOf(cookies), fetchImpl)
+              const generated = await generateImage({
+                prompt: described.prompt,
+                model: body.model,
+                n: body.n,
+                size: body.size,
+                quality: body.quality,
+                responseFormat: body.response_format || "url",
+                imageUrls: described.imageUrls,
+              }, token, fetchImpl)
+              return json(200, { created: generated.created, data: generated.data, model: generated.model })
             }
 
             if (path === `${gatewayPath}/images/edits` || path.endsWith("/images/edits")) {
-              const form = request ? await request.clone().formData() : (init.body instanceof FormData ? init.body : undefined)
-              if (!form) return json(400, { error: { message: "缺少 multipart 表单", type: "invalid_request_error" } })
-              const prompt = String(form.get("prompt") ?? "").trim()
-              if (!prompt) return json(400, { error: { message: "缺少 prompt", type: "invalid_request_error" } })
-              const images = []
-              for (const key of ["image", "image[]", "images", "image_url"]) {
-                for (const value of form.getAll(key)) {
-                  if (typeof value === "string") images.push(value)
-                  else if (typeof value?.arrayBuffer === "function") {
-                    const buffer = Buffer.from(await value.arrayBuffer())
-                    images.push(`data:${value.type || "application/octet-stream"};base64,${buffer.toString("base64")}`)
+              let text = init.body
+              if (text === undefined && request) text = await request.clone().text()
+              let prompt = ""
+              let images = []
+              let requestedModel
+              let n, size, responseFormat
+              if (typeof text === "string" && text.trim().startsWith("{")) {
+                const body = JSON.parse(text)
+                prompt = String(body.prompt ?? "").trim()
+                requestedModel = body.model
+                n = body.n
+                size = body.size
+                responseFormat = body.response_format || "url"
+                if (typeof body.image === "string") images.push(body.image)
+                if (Array.isArray(body.images)) images.push(...body.images.filter((value) => typeof value === "string"))
+                if (typeof body.image_url === "string") images.push(body.image_url)
+              } else {
+                const form = request ? await request.clone().formData() : (typeof FormData !== "undefined" && init.body instanceof FormData ? init.body : undefined)
+                if (!form) return json(400, { error: { message: "缺少 multipart 表单或 JSON body", type: "invalid_request_error" } })
+                prompt = String(form.get("prompt") ?? "").trim()
+                requestedModel = form.get("model") || undefined
+                n = form.get("n")
+                size = form.get("size")
+                responseFormat = form.get("response_format") || "url"
+                for (const key of ["image", "image[]", "images", "image_url"]) {
+                  for (const value of form.getAll(key)) {
+                    if (typeof value === "string") images.push(value)
+                    else if (typeof value?.arrayBuffer === "function") {
+                      const buffer = Buffer.from(await value.arrayBuffer())
+                      images.push(`data:${value.type || "application/octet-stream"};base64,${buffer.toString("base64")}`)
+                    }
                   }
                 }
               }
-              const model = resolveImageModel(catalog, config, form.get("model") || undefined)
-              const upstreamBody = buildImageUpstreamBody({
-                prompt,
-                n: form.get("n") || 1,
-                size: form.get("size") || undefined,
-                response_format: form.get("response_format") || "url",
-                ...(images.length === 1 ? { image: images[0] } : {}),
-                ...(images.length > 1 ? { images } : {}),
-              }, model)
-              const payload = await gatewayJson(JSON.stringify(upstreamBody), cookies, fetchImpl)
-              const result = await toOpenAIImages(payload, { model: form.get("model") || model.id, responseFormat: form.get("response_format") || "url" }, config, fetchImpl)
-              return json(result.status, result.body)
+              if (!prompt) return json(400, { error: { message: "缺少 prompt", type: "invalid_request_error" } })
+              const described = await describeReferenceImages(images, prompt, cookies, fetchImpl)
+              const token = await gatewayToken(cookieHeaderOf(cookies), fetchImpl)
+              const generated = await generateImage({
+                prompt: described.prompt,
+                model: requestedModel,
+                n,
+                size,
+                responseFormat,
+                imageUrls: described.imageUrls,
+              }, token, fetchImpl)
+              return json(200, { created: generated.created, data: generated.data, model: generated.model })
             }
 
             return json(404, { error: { message: `unknown endpoint ${path}`, type: "invalid_request_error" } })

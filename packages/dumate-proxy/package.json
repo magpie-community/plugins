@@ -1,6 +1,6 @@
 {
   "name": "magpie-dumate-proxy",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DuMate local reverse proxy provider for Magpie/OpenCode: OpenAI-compatible LLM chat and image-generation models with live model discovery and background keep-alive",
   "type": "module",
   "main": "./opencode.mjs",
@@ -20,7 +20,8 @@
     "icon.svg",
     "src/auth.mjs",
     "src/gateway.mjs",
-    "src/image.mjs"
+    "src/image.mjs",
+    "src/media.mjs"
   ],
   "keywords": [
     "magpie",
