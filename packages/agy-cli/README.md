@@ -153,6 +153,14 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。
 
+## 生图与改图
+
+`agy-cli/gemini-3.1-flash-image` 是一个只出图的模型，在 Magpie 的 设置 → 图片 → 图片生成 里可选。
+它接 OpenAI 兼容的 `/images/generations`（文生图）和 `/images/edits`（改图，`multipart/form-data`
+或 JSON data URL 均可，最多 3 张参考图，不支持 mask），`n` 大于 1 时并行生成。每次请求起一个隔离的
+`agy acp` 会话，只放行工作目录内的读文件、`image-generator` 子代理和 `generate_image`，其余工具一律拒绝；
+结束后删掉临时目录和会话产物。像素尺寸和比例会折算成 agy 支持的宽高比。
+
 ## 并发
 
 - 插件自己的进程池上限由 `AGY_BRIDGE_MAX_PROCS` 决定，默认 16 个 agy 进程。

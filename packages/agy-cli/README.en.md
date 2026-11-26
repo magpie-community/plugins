@@ -219,6 +219,17 @@ After installing, sign in from Magpie; no terminal needed.
    and each request is mapped back to the matching agy ID.
 3. Pick the model in your client as usual.
 
+## Image generation and editing
+
+`agy-cli/gemini-3.1-flash-image` is an image-only model, offered in Magpie's
+Settings → Images → Image generation. It answers OpenAI-compatible
+`/images/generations` and `/images/edits` (`multipart/form-data` or JSON data
+URLs, up to 3 reference images, no mask); `n` above 1 runs in parallel. Each
+request runs an isolated `agy acp` session that may only read files in its own
+working folder, call the `image-generator` subagent and `generate_image`;
+every other tool is refused. The folder and the session's files are removed
+afterwards. Pixel sizes and ratios are mapped to the aspect ratios agy takes.
+
 ## Concurrency
 
 - The plugin's own pool is capped by `AGY_BRIDGE_MAX_PROCS`, which defaults to 16
