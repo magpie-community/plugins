@@ -39,6 +39,7 @@ for (const [name, mocks] of [
   ["concurrent-convs.mjs", false],
   ["masking-drift.mjs", false],
   ["spilled-output.mjs", false],
+  ["web-search.mjs", false],
   ["tool-result-prefill.mjs", false],
   ["tool-step-retry.mjs", false],
   ["image-bytes.mjs", false],

@@ -833,6 +833,244 @@ function probeOfferedOnce(agyPath) {
   return probe
 }
 
+// Web search, as agy itself searches (Kayphoon, magpie#7632): a session of
+// an agent whose one tool is agy's own search_web, asked for the query.
+// agy runs the search on its account's side (Google Search grounding) and
+// keeps what it found in the session's step output; the pages are read
+// from there and the turn is cancelled, so the model writes no answer of
+// its own. Nothing goes to Google but through agy (the retired antigravity
+// plugin's direct calls are what got accounts turned away).
+const SEARCH_AGENT = "magpie-web-search"
+const SEARCH_TIMEOUT_MS = 60_000
+
+function searchAgentDefinition() {
+  return [
+    "---",
+    `name: ${SEARCH_AGENT}`,
+    "description: Searches the web",
+    "mainAgent: true",
+    "subagent: false",
+    "tools: [search_web]",
+    "inheritMcp: false",
+    "inheritCustomizations: false",
+    "---",
+    "Call search_web once with the user's query, as it is. Then stop.",
+    "",
+  ].join("\n")
+}
+
+class SearchStatusError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.status = status
+  }
+}
+
+// pagesOfSearchWeb are the pages a search_web step output names: a summary
+// citing its sources as [n], then "Sources:" and a "[n] [title](url)" line
+// each. A page's text is what the summary says citing it, as plain text:
+// the lines that cite it fewest others first, up to PAGE_TEXT_CHARS, in the
+// summary's order (a long answer cites one source on most of its lines, so
+// every line would make every page the same). Code blocks are left out.
+// When no line cites any page, the first page has the summary.
+const PAGE_TEXT_CHARS = 600
+
+function plainLine(line) {
+  const cells = /^\s*\|.*\|\s*$/.test(line)
+    ? line.trim().slice(1, -1).split("|").map((c) => c.trim()).filter(Boolean)
+    : null
+  if (cells && cells.every((c) => /^:?-+:?$/.test(c))) return ""
+  return (cells ? cells.join(" · ") : line)
+    .replace(/\[\d+\]/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/(^|\s)\*(\S[^*]*\S|\S)\*(?=\s|[.,;:!?)]|$)/g, "$1$2")
+    .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s*)/, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .trim()
+}
+
+export function pagesOfSearchWeb(output, count) {
+  const s = String(output ?? "").replace(/\r\n?/g, "\n")
+  const at = s.lastIndexOf("\nSources:\n")
+  if (at < 0) return []
+  const head = s.slice(0, at)
+  const said = head.match(/returned the following summary:\n/)
+  const summary = (said ? head.slice(said.index + said[0].length) : head).trim()
+  const pages = []
+  const byN = new Map()
+  for (const line of s.slice(at + "\nSources:\n".length).split("\n")) {
+    const m = line.trim().match(/^\[(\d+)\]\s*\[(.*)\]\((\S+)\)$/)
+    if (!m || byN.has(m[1])) continue
+    const page = { title: m[2].trim() || m[3], url: m[3], lines: [] }
+    byN.set(m[1], page)
+    pages.push(page)
+  }
+  const lines = []
+  let code = false
+  for (const raw of summary.split("\n")) {
+    if (/^\s*(```|~~~)/.test(raw)) { code = !code; continue }
+    if (code) continue
+    const text = plainLine(raw)
+    if (!text) continue
+    const ns = new Set([...raw.matchAll(/\[(\d+)\]/g)].map((m) => m[1]).filter((n) => byN.has(n)))
+    lines.push({ at: lines.length, text, ns })
+    for (const n of ns) byN.get(n).lines.push(lines.at(-1))
+  }
+  const cited = lines.some((l) => l.ns.size)
+  const limit = Number.isInteger(Number(count)) && Number(count) > 0 ? Number(count) : pages.length
+  const out = pages.slice(0, limit).map(({ title, url, lines: own }) => {
+    const kept = []
+    let used = 0
+    for (const l of [...own].sort((a, b) => a.ns.size - b.ns.size || a.at - b.at)) {
+      if (kept.length && used + l.text.length > PAGE_TEXT_CHARS) continue
+      if (kept.some((k) => k.text === l.text)) continue
+      kept.push(l)
+      used += l.text.length + 1
+    }
+    return { title, url, text: kept.sort((a, b) => a.at - b.at).map((l) => l.text).join("\n") }
+  })
+  if (!cited && out.length) out[0].text = lines.map((l) => l.text).join("\n").slice(0, PAGE_TEXT_CHARS * 2)
+  return out
+}
+
+// searchWebOutput is the step output of the search_web call a session made,
+// under <agy dir>/brain/<session>/.system_generated/steps (spilledOutput's
+// folder), "" until agy has written it.
+async function searchWebOutput(agyDir, sessionId) {
+  const steps = path.join(agyDir, "brain", sessionId, ".system_generated", "steps")
+  let names = []
+  try { names = await fs.promises.readdir(steps) } catch { return "" }
+  for (const name of names.sort((a, b) => Number(b) - Number(a))) {
+    let text = ""
+    try { text = await fs.promises.readFile(path.join(steps, name, "output.txt"), "utf8") } catch { continue }
+    if (/^The search for .* returned /m.test(text) && text.includes("\nSources:\n")) return text
+  }
+  return ""
+}
+
+// searchModel is the model a search session plans with: the lightest Flash
+// agy offers, else whatever the session has (the search itself runs on
+// agy's own search model).
+function searchModel(models) {
+  const ids = (Array.isArray(models?.availableModels) ? models.availableModels : [])
+    .map((m) => m?.modelId).filter((id) => typeof id === "string")
+  const flash = ids.filter((id) => /flash/i.test(id))
+  return flash.find((id) => /-(?:minimal|low)$/.test(id)) ?? flash[0] ?? null
+}
+
+async function agySearch({ query, count } = {}, ctx = {}) {
+  const q = typeof query === "string" ? query.trim() : ""
+  if (!q) throw new Error("query is required")
+  const { home: savedHome, email } = await accountOfAuth(ctx.getAuth)
+  const home = savedHome ?? ownHome(email,
+    inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null))
+  return inAccount(home, () => searchAsAccount(q, count, email, ctx.abort))
+}
+
+async function searchAsAccount(query, count, email, abort) {
+  const agy = findAgy()
+  if (!agy) throw new SearchStatusError(503, "agy CLI not found on this machine")
+  const stored = storedSignInNow()
+  const notSignedIn = cannotSignIn(stored)
+  if (notSignedIn) throw new SearchStatusError(401, notSignedIn)
+  if (heldByAnother(stored, email)) throw new SearchStatusError(401, notHeldError(email))
+  const own = await geminiDirArgs(agy)
+  const agyDir = own.dir ? path.join(own.dir, "antigravity-cli")
+    : path.join(currentHome() || os.homedir(), ".gemini", "antigravity-cli")
+  let workspace = null
+  let child = null
+  let conn = null
+  let timer
+  let stop = () => {}
+  try {
+    workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-search-"))
+    const agentDir = path.join(workspace, ".agents", "agents", SEARCH_AGENT)
+    await fs.promises.mkdir(agentDir, { recursive: true })
+    await fs.promises.writeFile(path.join(agentDir, "agent.md"), searchAgentDefinition(), { mode: 0o600 })
+    const args = ["acp", "--agent", SEARCH_AGENT, ...await noDefaultCustomizationsArgs(agy), ...await telemetryArgs(agy), ...own.args]
+    child = spawnAgy(agy, args, { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+    let stderr = ""
+    child.on("error", (error) => conn?.close(error))
+    child.on("close", () => conn?.close(new Error(`agy acp exited${stderr.trim() ? ": " + stderr.trim().slice(-500) : ""}`)))
+    child.stdin?.on("error", () => {})
+    child.stderr?.setEncoding?.("utf8")
+    child.stderr?.on?.("data", (d) => { stderr = (stderr + d).slice(-2000) })
+    let sessionId = null
+    let searched = null
+    const found = new Promise((resolve) => { searched = resolve })
+    conn = new AcpConnection(child, {
+      onNotification: (method, params) => {
+        const u = params?.update
+        if (method !== "session/update" || params?.sessionId !== sessionId || !u) return
+        if (u.sessionUpdate !== "tool_call" && u.sessionUpdate !== "tool_call_update") return
+        if (u.name === "search_web" && (u.status === "completed" || u.status === "failed")) searched(u.status)
+      },
+      // search_web asks no permission; anything else agy would run is refused
+      onRequest: async (method, params) => {
+        if (method !== "session/request_permission") throw Object.assign(new Error(`not served: ${method}`), { code: -32601 })
+        const options = Array.isArray(params?.options) ? params.options : []
+        const reject = options.find((o) => o?.kind === "reject_once") || options.find((o) => o?.kind === "reject_always")
+        return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } }
+      },
+      onProtocolError: (error) => conn.close(error),
+    })
+    const ended = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("agy's web search didn't answer in time")), SEARCH_TIMEOUT_MS)
+      timer.unref?.()
+      stop = () => reject(new Error("search cancelled"))
+      if (abort?.aborted) stop()
+      else abort?.addEventListener?.("abort", stop, { once: true })
+    })
+    ended.catch(() => {})
+    return await Promise.race([ended, (async () => {
+      const init = await conn.request("initialize", {
+        protocolVersion: 1,
+        clientInfo: CLIENT_INFO,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      })
+      const tooOld = agyTooOld(init?.agentInfo?.version ?? null)
+      if (tooOld) throw new SearchStatusError(503, tooOld)
+      let session
+      try {
+        session = await conn.request("session/new", { cwd: workspace, mcpServers: [] })
+      } catch (error) {
+        const said = error?.acpError?.message ?? error.message
+        if (/auth/i.test(said)) throw new SearchStatusError(401, `agy: ${said}`)
+        throw error
+      }
+      sessionId = session?.sessionId
+      if (!sessionId) throw new Error("agy session/new returned no sessionId")
+      const model = searchModel(session?.models)
+      if (model && model !== session?.models?.currentModelId) {
+        await conn.request("session/set_model", { sessionId, modelId: model }, 30_000).catch(() => {})
+      }
+      const turn = conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: `search_web: ${query}` }] })
+      turn.catch(() => {})
+      const how = await Promise.race([found, turn.then(() => "ended", () => "ended")])
+      // agy writes the step's output as the step ends: a moment's room
+      let output = ""
+      for (let i = 0; i < 20 && !output; i++) {
+        output = await searchWebOutput(agyDir, sessionId)
+        if (!output) await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      if (how !== "ended") conn.notify("session/cancel", { sessionId })
+      if (!output) {
+        const why = how === "failed" ? "agy's search_web failed" : "agy didn't search the web"
+        throw new Error(stderr.trim() ? `${why}: ${stderr.trim().slice(-300)}` : why)
+      }
+      return pagesOfSearchWeb(output, count)
+    })()])
+  } finally {
+    clearTimeout(timer)
+    abort?.removeEventListener?.("abort", stop)
+    conn?.close(new Error("search done"))
+    if (child) killQuietly(child)
+    if (workspace) fs.promises.rm(workspace, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 function catalogOf(entry) {
   if (entry.offeredKey !== ms().acpOfferedKey || !entry.catalog) {
     entry.catalog = buildModelCatalog(offeredFilter(entry.list))
@@ -8503,6 +8741,11 @@ function readUsageOf(home, email = "") {
 export const AntigravityBridgePlugin = async () => {
   keepAgyCurrent(findAgy)
   return {
+    // magpie's web search (Settings › Models › Web search), as the signed-in
+    // account, through agy's own search_web; OpenCode ignores it
+    search: {
+      agy: { name: "Antigravity (agy)", auth: PROVIDER_ID, execute: agySearch },
+    },
     auth: {
       provider: PROVIDER_ID,
       // Magpie's hook for the CLI a plugin runs through: a sign-in on a
