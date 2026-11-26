@@ -6227,6 +6227,21 @@ function agentSummaryAsk(body) {
   return ask.startsWith("Describe your ") && ask.includes(" in 3-5 words")
 }
 
+// Claude Code appends this template to the main history after a turn. It
+// shares the main conversation key, but the client leaves the suggestion
+// exchange out of its next request. Sending it to ACP records that exchange
+// in expectedMessages and forces a history replay on the next real turn.
+// The template explicitly allows no suggestion ("Or nothing").
+function promptSuggestionAsk(body) {
+  const last = body.messages.at(-1)
+  if (last?.role !== "user") return false
+  const text = typeof last.content === "string" ? last.content
+    : Array.isArray(last.content) ? last.content.findLast((part) => part?.type === "text")?.text : null
+  if (typeof text !== "string") return false
+  const ask = text.trim()
+  return ask.startsWith("[SUGGESTION MODE:") && ask.includes("Reply with ONLY the suggestion")
+}
+
 // An agy runs under one account's sign-in (Proc.home), so a request of
 // another account never goes on in it, not even when its opening or tool
 // ids match: it would be answered with that account's credentials and
@@ -8957,19 +8972,18 @@ function streamResponse(proc, turn, body, signal, toolResultStep = null) {
   })
 }
 
-function replayToolStepResponse(last, body) {
+function bufferedAnthropicResponse(body, { msgId, model, content, stopReason }) {
   const encoder = new TextEncoder()
-  const content = structuredClone(last.content)
   const stream = new ReadableStream({
     start(controller) {
       const send = (event, data) => controller.enqueue(encoder.encode(sseEvent(event, data)))
       send("message_start", {
         type: "message_start",
         message: {
-          id: last.msgId,
+          id: msgId,
           type: "message",
           role: "assistant",
-          model: last.wireModel,
+          model,
           content: [],
           stop_reason: null,
           stop_sequence: null,
@@ -9032,14 +9046,14 @@ function replayToolStepResponse(last, body) {
       }
       send("message_delta", {
         type: "message_delta",
-        delta: { stop_reason: "tool_use", stop_sequence: null },
+        delta: { stop_reason: stopReason, stop_sequence: null },
         usage: { input_tokens: 0, output_tokens: 0 },
       })
       send("message_stop", { type: "message_stop" })
       controller.close()
     },
   })
-  if (body.stream === false) return jsonResponseFromStream(stream, last.wireModel, last.msgId)
+  if (body.stream === false) return jsonResponseFromStream(stream, model, msgId)
   return new Response(stream, { status: 200, headers: SSE_HEADERS })
 }
 
@@ -9472,11 +9486,24 @@ export const AntigravityBridgePlugin = async () => {
 
             const rawModel = body.model || ""
             const requestedModel = (rawModel.includes("/") ? rawModel.split("/").pop() : rawModel).replace(/\[1m\]$/i, "")
+            const skipSuggestion = promptSuggestionAsk(body)
             // One canonical form for both opening-system layouts, before anything
             // derives a key, instructions or history from the body.
             const layout = requestLayout(body)
             body = { ...foldSplitCalls(canonicalBody(body)), model: requestedModel }
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
+            const sessionScope = requestSessionScope(fetchInput, init) +
+              (requestHeader(fetchInput, init, "x-magpie-subagent") && agentSummaryAsk(body) ? AGENT_SUMMARY_SCOPE : "")
+            // an account's conversations are its own: its agy has them
+            const callerWorkDir = namedWorkDirectory(body, init)
+            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "")
+            if (skipSuggestion) {
+              logSessionEvent({ convKey }, "prompt_suggestion", {}, "suggestion_skipped")
+              return bufferedAnthropicResponse(body, {
+                msgId: "msg_" + randomUUID().replace(/-/g, "").slice(0, 24),
+                model: rawModel, content: [], stopReason: "end_turn",
+              })
+            }
             const saidEffort = requestHeader(fetchInput, init, "x-magpie-effort")
             const listed = await loadModelCatalog(agy)
             const model = resolveAgyModel(listed, requestedModel, body, saidEffort)
@@ -9487,11 +9514,6 @@ export const AntigravityBridgePlugin = async () => {
               return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
             }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
-            const sessionScope = requestSessionScope(fetchInput, init) +
-              (requestHeader(fetchInput, init, "x-magpie-subagent") && agentSummaryAsk(body) ? AGENT_SUMMARY_SCOPE : "")
-            // an account's conversations are its own: its agy has them
-            const callerWorkDir = namedWorkDirectory(body, init)
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "")
             // the key before the model line left it (0.1.142 and older)
             const legacyConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "", true)
             const trailing = trailingMessages(body)
@@ -9614,7 +9636,9 @@ export const AntigravityBridgePlugin = async () => {
                       turn.arm()
                       proc.lastUsed = Date.now()
                       logBridgeEvent(proc, turn, "replay_tool_step", "idempotent_retry", acquireOpts, { calls: replay.emittedCalls.length })
-                      return replayToolStepResponse(replay, body)
+                      return bufferedAnthropicResponse(body, {
+                        msgId: replay.msgId, model: replay.wireModel, content: replay.content, stopReason: "tool_use",
+                      })
                     }
                   }
                   // A steer keeps the live session, so agy's prompt cache holds: the
