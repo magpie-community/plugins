@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
+import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, planOf, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -1016,6 +1016,9 @@ test("an account agy refuses for its region has its quota read the way agy reads
     ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
     ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
   ])
+  // the account the sign-in names; LOAD names no tier, so no plan
+  assert.equal(result.user, "secret@example.com")
+  assert.equal(result.plan, undefined)
   // the two requests agy makes, as it makes them
   assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
     ["POST", "/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
@@ -1048,7 +1051,7 @@ test("an access token about to end is renewed in memory for the direct read, nev
   const ending = structuredClone(STORED)
   ending.token.expiry = new Date(Date.now() + 30_000).toISOString()
   const data = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ending, fetch: fetchFn })
-  assert.deepEqual(data, SUMMARY)
+  assert.deepEqual(data, { quota: SUMMARY, plan: "", user: "secret@example.com" })
   assert.equal(renewals.length, 1)
   assert.equal(renewals[0].grant_type, "refresh_token")
   assert.equal(renewals[0].refresh_token, "1//refresh")
@@ -1100,6 +1103,69 @@ test("an account with no project and Google's reason for it says that reason", a
   await assert.rejects(readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.10", deadline: Date.now() + 5000, stored: async () => STORED }),
     e => e.message.includes(why) && /no project/.test(e.message))
   assert.equal(api.calls.length, 1)
+})
+
+// /usage names no plan or account; the direct read has both at hand: the
+// tiers loadCodeAssist names, read as the retired antigravity plugin read
+// them, and the email agy's stored sign-in names.
+test("the direct read names the plan loadCodeAssist gives and the account the sign-in names", async t => {
+  const free = { id: "free-tier", name: "Antigravity" }
+  for (const [tiers, plan] of [
+    [{ paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: free }, "Google AI Pro"],
+    [{ paidTier: { id: "g1-pro-tier" }, currentTier: { id: "g1-ultra-tier", name: "Google AI Ultra" } }, "Google AI Ultra"],
+    [{ paidTier: { id: "g1-pro-tier", name: "" }, currentTier: free }, "Antigravity"],
+    [{ currentTier: free }, "Antigravity"],
+    [{ currentTier: { id: "g1-pro-tier" } }, "g1-pro-tier"],
+    [{}, ""],
+  ]) {
+    const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, ...tiers }] })
+    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => STORED })
+    assert.deepEqual(read, { quota: SUMMARY, plan, user: "secret@example.com" }, JSON.stringify(tiers))
+  }
+  for (const [email, user] of [[" pro@example.com\n", "pro@example.com"], [undefined, ""], ["", ""], ["  ", ""], [42, ""]]) {
+    const api = await codeAssist(t)
+    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ({ ...STORED, id_token_email: email }) })
+    assert.equal(read.user, user, String(email))
+  }
+})
+
+test("planOf: a paid tier with no name stands when there is no current tier; no tier, no plan", () => {
+  assert.equal(planOf({ paidTier: { id: "g1-pro-tier" } }), "g1-pro-tier")
+  assert.equal(planOf({ paidTier: { id: "g1-pro-tier", name: 7 }, currentTier: { id: "free-tier", name: "Antigravity" } }), "Antigravity")
+  assert.equal(planOf({ currentTier: {} }), "")
+  assert.equal(planOf(null), "")
+})
+
+test("a usage read made directly shows the account's plan and email beside its windows", async t => {
+  const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: { id: "free-tier", name: "Antigravity" } }] })
+  const quota = o => readQuotaDirect({ ...o, stored: async () => ({ ...STORED, id_token_email: "pro@example.com" }) })
+  // read first with time left, and read instead of agy -p with an ended token
+  for (const stored of [
+    { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false },
+    { state: "present", fp: "ended", canRenew: true, expiresAt: 1, expired: true },
+  ]) {
+    const f = await fixture(t, { TEST_MODE: "hang", CLOUD_CODE_URL: api.url })
+    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota, signIn: async () => stored })()
+    assert.equal(result.error, undefined)
+    assert.equal(result.signIn, "kept")
+    assert.equal(result.plan, "Google AI Pro")
+    assert.equal(result.user, "pro@example.com")
+    assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used]), [["Gemini", "7 days", 25], ["Gemini", "5 hours", 50]])
+    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+    await f.assertClean()
+  }
+})
+
+test("a quota read that gives the summary alone names no plan or account, whatever else it carries", async t => {
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  for (const summary of [SUMMARY, { ...SUMMARY, plan: "Google AI Pro", user: "pro@example.com" }]) {
+    const f = await fixture(t, { TEST_MODE: "hang" })
+    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota: async () => summary, signIn: async () => stored })()
+    assert.equal(result.error, undefined)
+    assert.equal(result.windows.length, 2)
+    assert.equal(result.plan, undefined)
+    assert.equal(result.user, undefined)
+  }
 })
 
 // plugins#1234 (qiankun229): agy run for usage with an ended access token
