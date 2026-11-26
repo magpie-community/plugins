@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createCipheriv, randomBytes } from "node:crypto"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, posix, win32 } from "node:path"
 import { describe, test } from "node:test"
@@ -10,6 +10,7 @@ import { _internal } from "./index.mjs"
 
 const {
   SITES,
+  MODELS_TTL_MS,
   OtherSite,
   createPlugin,
   decryptV2Token,
@@ -25,8 +26,11 @@ const {
   normalizeVersionCode,
   parseDateIso,
   isExpiredJwt,
+  jwtOwnerId,
   siteFetch,
 } = _internal
+
+const TEST_VERSION = "4.0.18"
 
 function makeJwt(claims) {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
@@ -43,7 +47,7 @@ function encryptV2(plain, keyBuf) {
 }
 
 function makeTempDesktopDir({
-  token = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+  token = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600, user: { id: "owner-10001" } }),
   userID = "10001",
   userName = "Tester",
   groupId = "20002",
@@ -53,6 +57,7 @@ function makeTempDesktopDir({
   rawAccessOverride = null,
   skipKey = false,
   symlinkKey = false,
+  configFile = "hub-config.json",
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mm-design-test-"))
   const keyBuf = randomBytes(32)
@@ -72,12 +77,12 @@ function makeTempDesktopDir({
       ...(adUrl ? { adAttribution: { v: 1, url: adUrl } } : {}),
     },
     user: { userID, userName },
-    selectedGroupIds: groupId ? { [userID]: groupId } : {},
+    selectedGroupIds: groupId && userID !== undefined ? { [String(userID)]: groupId } : {},
     deviceId,
     ...(lkgObj ? { lkgProviderConfig: encryptV2(JSON.stringify(lkgObj), keyBuf) } : {}),
   }
-  writeFileSync(join(root, "hub-config.json"), JSON.stringify(cfg))
-  return { root, keyBuf, token, cfg }
+  writeFileSync(join(root, configFile), JSON.stringify(cfg))
+  return { root, keyBuf, token, cfg, configFile }
 }
 
 const SAMPLE_REMOTE_CONFIG = {
@@ -151,29 +156,77 @@ const SAMPLE_REMOTE_CONFIG = {
 }
 
 describe("crypto & desktop credential reading", () => {
-  test("decryptV2Token decrypts valid AES-256-GCM payloads and rejects malformed/legacy values", () => {
+  test("decryptV2Token decrypts valid AES-256-GCM, rejects short tags/legacy/malformed, and localizes errors", () => {
     const key = randomBytes(32)
     const enc = encryptV2("secret-jwt-value", key)
-    assert.equal(decryptV2Token(enc, key), "secret-jwt-value")
-    assert.equal(decryptV2Token("plaintext-token", key), "plaintext-token")
-    assert.throws(() => decryptV2Token("encrypted:abc", key), /safeStorage/)
-    assert.throws(() => decryptV2Token("v2enc:onlytwo:parts", key), /格式异常/)
-    assert.throws(() => decryptV2Token(enc, randomBytes(32)))
+    assert.equal(decryptV2Token(enc, key, "zh"), "secret-jwt-value")
+    assert.equal(decryptV2Token("plaintext-token", key, "en"), "plaintext-token")
+    assert.throws(() => decryptV2Token("encrypted:abc", key, "zh"), /safeStorage/)
+    assert.throws(() => decryptV2Token("encrypted:abc", key, "en"), /legacy safeStorage/)
+    assert.throws(() => decryptV2Token("v2enc:onlytwo:parts", key, "en"), /Malformed v2enc/)
+    assert.throws(() => decryptV2Token(enc, randomBytes(32), "en"))
+
+    // Regression: truncated GCM AuthTag (< 16 bytes) MUST be rejected even if OpenSSL accepts short tags
+    const iv = randomBytes(16)
+    const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: 12 })
+    const ct = Buffer.concat([cipher.update("short-tag-secret", "utf8"), cipher.final()])
+    const shortTag = cipher.getAuthTag()
+    assert.equal(shortTag.length, 12)
+    const shortEnc = `v2enc:${iv.toString("base64")}:${shortTag.toString("base64")}:${ct.toString("base64")}`
+    assert.throws(() => decryptV2Token(shortEnc, key, "en"), /16-byte AuthTag/)
   })
 
-  test("readDesktopCredentialFromDir reads token, groupId, deviceId, and decrypted LKG", () => {
-    const { root, token } = makeTempDesktopDir({ lkgObj: SAMPLE_REMOTE_CONFIG })
+  test("readDesktopCredentialFromDir reads token, numeric userID, groupId, deviceId, LKG, and Global hub-config-global.json", () => {
+    const cn = makeTempDesktopDir({ lkgObj: SAMPLE_REMOTE_CONFIG, userID: 10001, groupId: 20002 })
+    const gl = makeTempDesktopDir({
+      configFile: "hub-config-global.json",
+      adUrl: null,
+      userID: "777",
+      groupId: "888",
+    })
     try {
-      const cred = readDesktopCredentialFromDir(root, SITES["minimax-design"])
-      assert.equal(cred.key, token)
+      const cred = readDesktopCredentialFromDir(cn.root, SITES["minimax-design"])
+      assert.equal(cred.key, cn.token)
       assert.equal(cred.userId, "10001")
-      assert.equal(cred.userName, "Tester")
       assert.equal(cred.groupId, "20002")
-      assert.equal(cred.deviceId, "dev-uuid-1")
+      assert.equal(cred.tokenOwnerId, "owner-10001")
+      assert.equal(cred.configFile, "hub-config.json")
       assert.equal(cred.region, "domestic")
       assert.ok(cred.lkgConfig?.provider?.minimaxHub)
+
+      // Global client uses hub-config-global.json and infers overseas region
+      const gCred = readDesktopCredentialFromDir(gl.root, SITES["minimax-design-global"])
+      assert.equal(gCred.key, gl.token)
+      assert.equal(gCred.userId, "777")
+      assert.equal(gCred.groupId, "888")
+      assert.equal(gCred.configFile, "hub-config-global.json")
+      assert.equal(gCred.region, "overseas")
+      assert.equal(gCred.regionConfirmed, true)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(cn.root, { recursive: true, force: true })
+      rmSync(gl.root, { recursive: true, force: true })
+    }
+  })
+
+  test("classifies missing .token-key alongside v2enc token as unreadable (not missing) and localizes English errors", () => {
+    const noKey = makeTempDesktopDir({ skipKey: true, adUrl: null })
+    try {
+      assert.throws(
+        () =>
+          readDesktopCredential(SITES["minimax-design"], {
+            env: { MINIMAX_DESIGN_DATA_DIR: noKey.root },
+          }),
+        (err) => err.code === "unreadable" && /\.token-key/.test(err.message),
+      )
+      assert.throws(
+        () =>
+          readDesktopCredential(SITES["minimax-design-global"], {
+            env: { MINIMAX_DESIGN_DATA_DIR: noKey.root },
+          }),
+        (err) => err.code === "unreadable" && /Missing \.token-key/.test(err.message) && !/[\u4e00-\u9fff]/.test(err.message),
+      )
+    } finally {
+      rmSync(noKey.root, { recursive: true, force: true })
     }
   })
 
@@ -183,6 +236,7 @@ describe("crypto & desktop credential reading", () => {
     const globalCfg = makeTempDesktopDir({ adUrl: "https://design.minimax.io/landing" })
     try {
       assert.throws(() => readDesktopCredentialFromDir(sym.root, SITES["minimax-design"]), /常规文件/)
+      assert.throws(() => readDesktopCredentialFromDir(sym.root, SITES["minimax-design-global"]), /regular file/)
       assert.throws(() => readDesktopCredentialFromDir(exp.root, SITES["minimax-design"]), (err) => err.code === "expired")
       assert.throws(
         () => readDesktopCredentialFromDir(globalCfg.root, SITES["minimax-design"]),
@@ -206,7 +260,6 @@ describe("crypto & desktop credential reading", () => {
       env: { APPDATA: "C:\\Users\\alice\\AppData\\Roaming" },
     })
     assert.equal(winDirs[0], win32.join("C:\\Users\\alice\\AppData\\Roaming", "MiniMax Hub Global"))
-    // Explicit override returns ONLY the override path and never falls through to defaults
     const envDirs = candidateDataDirs(SITES["minimax-design"], {
       homedir: "/home/alice",
       platform: "linux",
@@ -215,7 +268,7 @@ describe("crypto & desktop credential reading", () => {
     assert.deepEqual(envDirs, ["/custom/hilo"])
   })
 
-  test("readDesktopCredential respects MINIMAX_DESIGN_DATA_DIR and classifies missing vs unreadable", () => {
+  test("readDesktopCredential classifies missing vs unreadable", () => {
     const emptyRoot = mkdtempSync(join(tmpdir(), "mm-empty-"))
     try {
       assert.throws(
@@ -245,7 +298,7 @@ describe("crypto & desktop credential reading", () => {
 })
 
 describe("model catalog & usage parsing", () => {
-  test("parseRemoteConfig extracts multi-SDK models, preserves aliases vs apiId, clamps context, and handles empty catalogs", () => {
+  test("parseRemoteConfig extracts multi-SDK models, preserves aliases, sanitizes untrusted baseURL, and handles empty catalogs", () => {
     const specs = parseRemoteConfig(SITES["minimax-design"], SAMPLE_REMOTE_CONFIG)
     assert.ok(Array.isArray(specs))
     const byId = Object.fromEntries(specs.map((s) => [s.id, s]))
@@ -257,13 +310,13 @@ describe("model catalog & usage parsing", () => {
     assert.equal(byId.gamma_high.options.store, false)
     assert.equal(byId["omega-3.1-pro"], undefined)
 
-    // Catalog aliases sharing an upstream id remain distinct entries
-    const aliased = parseRemoteConfig(SITES["minimax-design"], {
+    // Non-allowlisted baseURL in remote config falls back to site.defaultLlmBase
+    const untrusted = parseRemoteConfig(SITES["minimax-design"], {
       enabled_providers: ["alpha"],
       provider: {
         alpha: {
           npm: "@ai-sdk/anthropic",
-          options: { baseURL: "https://design.minimax.cn/api/v1" },
+          options: { baseURL: "https://evil.example.com/api/v1" },
           models: {
             "alias-fast": { id: "shared-upstream", name: "Fast" },
             "alias-deep": { id: "shared-upstream", name: "Deep" },
@@ -271,19 +324,17 @@ describe("model catalog & usage parsing", () => {
         },
       },
     })
-    assert.equal(aliased.length, 2)
-    assert.equal(aliased[0].id, "alias-fast")
-    assert.equal(aliased[0].apiId, "shared-upstream")
-    assert.equal(aliased[0].url, "https://design.minimax.cn/api/v1")
-    assert.equal(aliased[1].id, "alias-deep")
-    assert.equal(aliased[1].apiId, "shared-upstream")
+    assert.equal(untrusted.length, 2)
+    assert.equal(untrusted[0].url, SITES["minimax-design"].defaultLlmBase)
+    assert.equal(untrusted[0].id, "alias-fast")
+    assert.equal(untrusted[0].apiId, "shared-upstream")
+    assert.equal(untrusted[1].id, "alias-deep")
 
-    // Authoritative empty catalog returns [] (not null), malformed returns null
     assert.deepEqual(parseRemoteConfig(SITES["minimax-design"], { enabled_providers: [], provider: {} }), [])
     assert.equal(parseRemoteConfig(SITES["minimax-design"], null), null)
   })
 
-  test("usageFromWallet and usageFromBalance omit fake used%, sum same-instant expiries, and handle team scope", () => {
+  test("usageFromWallet puts credits in top-level balance, never fabricates 0 or Free, and sums same-instant expiries", () => {
     const now = Date.UTC(2026, 10, 26)
     const exp1 = Date.UTC(2026, 11, 25)
     const exp2 = Date.UTC(2027, 7, 10)
@@ -314,48 +365,58 @@ describe("model catalog & usage parsing", () => {
     const u = usageFromWallet(SITES["minimax-design"], wallet, now)
     assert.equal(u.plan, "Design Plus 年会员")
     assert.equal(u.until, "2027-09-29T00:00:00.000Z")
-    assert.equal(u.balance, undefined)
+    assert.equal(u.balance, "87145 积分")
     assert.equal(u.signIn, undefined)
-    assert.equal(u.windows.length, 3)
+    // Only aside sub-credit breakdowns; no 0% primary progress bar window
+    assert.equal(u.windows.length, 2)
+    assert.equal(u.windows[0].name, "会员积分")
+    assert.equal(u.windows[0].aside, true)
     assert.equal(u.windows[0].used, undefined)
-    assert.equal(u.windows[0].aside, undefined)
-    assert.equal(u.windows[0].balance, 87145)
-    assert.equal(u.windows[0].resetsAt, "2026-12-24T00:00:00.000Z")
-    assert.equal(u.windows[1].name, "会员积分")
-    assert.equal(u.windows[1].runsOutAt, new Date(exp1).toISOString())
-    // Summed across both records sharing earliest expiry timestamp
-    assert.equal(u.windows[1].runsOut, 30000)
+    assert.equal(u.windows[0].balance, undefined)
+    assert.equal(u.windows[0].runsOutAt, new Date(exp1).toISOString())
+    assert.equal(u.windows[0].runsOut, 30000)
+    assert.equal(u.windows[1].name, "充值积分")
     assert.equal(u.windows[1].aside, true)
+
+    // Missing total_credit returns null (never 0 / Free); missing plan_name omits plan
+    assert.equal(usageFromWallet(SITES["minimax-design"], { wallets: [{ source: 1 }] }, now), null)
+    const noPlan = usageFromWallet(SITES["minimax-design"], { wallets: [{ source: 1, total_credit: "50" }] }, now)
+    assert.equal(noPlan.plan, undefined)
+    assert.equal(noPlan.balance, "50 积分")
+    assert.deepEqual(noPlan.windows, [])
 
     const renewed = usageFromWallet(SITES["minimax-design"], wallet, now, { renewed: true })
     assert.equal(renewed.signIn, "renewed")
 
-    // Team-scoped balance fallback prioritizes team_credit without aside/used
+    // Team-scoped balance fallback puts team_credit in top-level balance and total_credit in aside window
     const teamBal = usageFromBalance(SITES["minimax-design"], { total_credit: "500", team_credit: "200" }, { hasGroupId: true })
-    assert.equal(teamBal.windows[0].name, "团队积分")
-    assert.equal(teamBal.windows[0].balance, 200)
-    assert.equal(teamBal.windows[0].aside, undefined)
+    assert.equal(teamBal.balance, "200 积分")
+    assert.equal(teamBal.windows.length, 1)
+    assert.equal(teamBal.windows[0].name, "总积分")
+    assert.equal(teamBal.windows[0].aside, true)
     assert.equal(teamBal.windows[0].used, undefined)
-    assert.equal(teamBal.windows[1].name, "总积分")
-    assert.equal(teamBal.windows[1].aside, true)
   })
 
-  test("helper functions parse dates, versions, regions, and JWT expiration", () => {
+  test("helper functions parse dates, versions, regions, JWT owner, and expiration", () => {
     assert.equal(normalizeVersionCode("v4.0.18-beta.1"), "4.0.18")
     assert.equal(parseDateIso("09/29/2027"), "2027-09-29T00:00:00.000Z")
     assert.equal(parseDateIso("0"), undefined)
     assert.equal(isExpiredJwt(makeJwt({ exp: 1000 }), 2_000_000), true)
     assert.equal(isExpiredJwt(makeJwt({ exp: 9_999_999_999 }), 2_000_000), false)
-    assert.equal(inferRegionFromConfig({ tokens: { adAttribution: { url: "https://design.minimax.io/" } } }, null, ""), "overseas")
+    assert.equal(jwtOwnerId(makeJwt({ user: { id: "u-xyz" } })), "u-xyz")
+    assert.equal(inferRegionFromConfig({ tokens: { adAttribution: { url: "https://design.minimax.io/" } } }, null, "", "hub-config.json"), "overseas")
+    assert.equal(inferRegionFromConfig({}, null, "", "hub-config-global.json"), "overseas")
   })
 })
 
-describe("plugin runtime: auth, loader, models, usage, security guards", () => {
-  test("desktop login, live models, loader omits baseURL, enforces store:false even when store:true, and retries 401 on disk rotation", async () => {
+describe("plugin runtime: auth, loader, models, usage, security & race guards", () => {
+  test("desktop login, 5m model cache, loader store:false, and auth-403 disk-rotation retry with ownership verification", async () => {
     const dirObj = makeTempDesktopDir({ lkgObj: SAMPLE_REMOTE_CONFIG })
     const calls = []
     let failFirstLlm = true
-    const rotatedToken = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, rot: 2 })
+    let configCalls = 0
+    let fakeNow = Date.now()
+    const rotatedToken = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, rot: 2 })
 
     const fakeFetch = async (url, init = {}) => {
       const u = String(url)
@@ -366,6 +427,7 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
         return new Response(JSON.stringify({ uid: "10001", user_name: "Alice", account: "alice" }), { status: 200 })
       }
       if (u.endsWith("/api/v1/config")) {
+        configCalls++
         return new Response(JSON.stringify(SAMPLE_REMOTE_CONFIG), { status: 200 })
       }
       if (u.endsWith("/api/v1/credit/wallet")) {
@@ -379,7 +441,10 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
             tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(rotatedToken, dirObj.keyBuf) },
           }
           writeFileSync(join(dirObj.root, "hub-config.json"), JSON.stringify(updatedCfg))
-          return new Response(JSON.stringify({ error: { message: "invalid token" } }), { status: 401 })
+          const t = new Date(fakeNow + 2000)
+          utimesSync(join(dirObj.root, "hub-config.json"), t, t)
+          // Auth-related 403 must also trigger desktop disk refresh + retry
+          return new Response(JSON.stringify({ error: { message: "invalid access token" } }), { status: 403 })
         }
         return new Response(JSON.stringify({ id: "resp_1", status: "completed" }), { status: 200 })
       }
@@ -390,7 +455,8 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
       const hooks = createPlugin(SITES["minimax-design"], {
         fetchImpl: fakeFetch,
         env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
-        versionCode: "4.0.18",
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
       })
 
       const authStart = await hooks.auth.methods[0].authorize()
@@ -400,22 +466,26 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
       assert.equal(signed.accountId, "10001")
       assert.equal(signed.metadata.name, "Alice")
       assert.equal(signed.metadata.groupId, "20002")
+      assert.equal(signed.metadata.configFile, "hub-config.json")
 
       const storedAuth = { type: "api", key: signed.key, metadata: signed.metadata }
 
+      // Model catalog: 5-minute TTL cache hit then expiry re-fetch
       const cfg = { provider: {} }
       await hooks.config(cfg)
-      const models = await hooks.provider.models({ id: "minimax-design", models: cfg.provider["minimax-design"].models }, { auth: storedAuth })
-      assert.ok(models["MiniMax-M3.1-Flash"])
-      assert.ok(models.gamma_high)
-      assert.equal(models.gamma_high.api.npm, "@ai-sdk/openai")
-      assert.equal(models["omega-3.1-pro"], undefined)
+      const prov = { id: "minimax-design", models: cfg.provider["minimax-design"].models }
+      const models1 = await hooks.provider.models(prov, { auth: storedAuth })
+      const models2 = await hooks.provider.models(prov, { auth: storedAuth })
+      assert.equal(configCalls, 1)
+      assert.ok(models1["MiniMax-M3.1-Flash"] && models2.gamma_high)
+      fakeNow += MODELS_TTL_MS + 1000
+      await hooks.provider.models(prov, { auth: storedAuth })
+      assert.equal(configCalls, 2)
 
-      // Loader preserves per-model URLs by omitting baseURL override
+      // Loader omits baseURL, enforces store:false even when store:true, retries auth-403 on disk rotation
       const loaded = await hooks.auth.loader(async () => storedAuth)
       assert.equal(loaded.baseURL, undefined)
 
-      // Explicitly passing store:true is normalized to store:false
       const res = await loaded.fetch("https://hub.minimaxi.com/api/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -426,66 +496,197 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
       const respCalls = calls.filter((c) => c.url.endsWith("/responses"))
       assert.equal(respCalls.length, 2)
       assert.equal(respCalls[0].token, dirObj.token)
-      assert.equal(respCalls[0].version, "4.0.18")
+      assert.equal(respCalls[0].version, TEST_VERSION)
       assert.equal(respCalls[0].groupId, "20002")
       assert.equal(JSON.parse(respCalls[0].body).store, false)
       assert.equal(respCalls[1].token, rotatedToken)
 
-      // Usage reads wallet and reports renewed since live token differs from saved key
       const usage = await hooks.auth.usage(async () => storedAuth)
       assert.equal(usage.plan, "Design Plus")
-      assert.equal(usage.windows[0].balance, 1234)
+      assert.equal(usage.balance, "1234 积分")
       assert.equal(usage.signIn, "renewed")
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
     }
   })
 
-  test("cached desktop token never leaks across accounts and clearing groupId on disk clears X-Group-Id", async () => {
-    const dirObj = makeTempDesktopDir({ userID: "20002", groupId: "team-99" })
-    const userAToken = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, who: "userA" })
+  test("offline provider.models falls back to local decrypted lkgProviderConfig", async () => {
+    const customLkg = {
+      enabled_providers: ["minimaxHub"],
+      provider: {
+        minimaxHub: {
+          npm: "@ai-sdk/anthropic",
+          options: { baseURL: "https://hub.minimaxi.com/api/v1" },
+          models: {
+            "LKG-Only-Model": { name: "LKG Model", limit: { context: 128000, output: 16384 } },
+          },
+        },
+      },
+    }
+    const dirObj = makeTempDesktopDir({ lkgObj: customLkg })
+    try {
+      const hooks = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async () => {
+          throw new Error("network down")
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+      })
+      const cfg = { provider: {} }
+      await hooks.config(cfg)
+      const storedAuth = {
+        type: "api",
+        key: dirObj.token,
+        metadata: { userId: "10001", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+      const models = await hooks.provider.models(
+        { id: "minimax-design", models: cfg.provider["minimax-design"].models },
+        { auth: storedAuth },
+      )
+      assert.ok(models["LKG-Only-Model"])
+      assert.equal(models["MiniMax-M3.1-Flash"], undefined)
+    } finally {
+      rmSync(dirObj.root, { recursive: true, force: true })
+    }
+  })
+
+  test("prevents cross-account charging on cache hit, fresh mtime re-read, missing userId, and persistAuthTokens mid-switch race", async () => {
+    const dirObj = makeTempDesktopDir({
+      userID: "20002",
+      groupId: "team-99",
+      token: makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, user: { id: "owner-20002" } }),
+    })
+    const userAToken = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, user: { id: "owner-10001" } })
+    const userCToken = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, user: { id: "owner-30003" } })
     const seen = []
+    let profileCalls = 0
 
     const hooks = createPlugin(SITES["minimax-design"], {
-      fetchImpl: async (_url, init) => {
+      fetchImpl: async (url, init) => {
+        const u = String(url)
         const h = new Headers(init.headers)
-        seen.push({ token: h.get("token"), groupId: h.get("X-Group-Id") })
+        const tok = h.get("token")
+        if (u.endsWith("/api/v1/account/profile")) {
+          profileCalls++
+          const uid = tok === userCToken ? "30003" : tok === dirObj.token ? "20002" : "10001"
+          return new Response(JSON.stringify({ uid, user_name: `User ${uid}` }), { status: 200 })
+        }
+        seen.push({ token: tok, groupId: h.get("X-Group-Id") })
         return new Response("{}", { status: 200 })
       },
       env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+      versionCode: TEST_VERSION,
     })
 
-    try {
-      const authB = { type: "api", key: dirObj.token, metadata: { userId: "20002", groupId: "team-99", dataDir: dirObj.root, method: "desktop" } }
-      const authA = { type: "api", key: userAToken, metadata: { userId: "10001", groupId: "team-11", dataDir: dirObj.root, method: "desktop" } }
+    const bumpWrite = (nextCfg, offsetMs) => {
+      writeFileSync(join(dirObj.root, "hub-config.json"), JSON.stringify(nextCfg))
+      const t = new Date(Date.now() + offsetMs)
+      utimesSync(join(dirObj.root, "hub-config.json"), t, t)
+    }
 
-      // 1. Account B populates diskCache with user 20002's token
+    try {
+      const authB = {
+        type: "api",
+        key: dirObj.token,
+        metadata: { userId: "20002", tokenOwnerId: "owner-20002", groupId: "team-99", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+      const authA = {
+        type: "api",
+        key: userAToken,
+        metadata: { userId: "10001", tokenOwnerId: "owner-10001", groupId: "team-11", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+
+      // 1. Account B populates diskCache
       const loadedB = await hooks.auth.loader(async () => authB)
       await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
       assert.equal(seen[0].token, dirObj.token)
       assert.equal(seen[0].groupId, "team-99")
 
-      // 2. Account A hits same dataDir while diskCache is warm -> MUST NOT get B's token!
+      // 2. Account A hits warm diskCache -> MUST keep A's saved token
       const loadedA = await hooks.auth.loader(async () => authA)
       await loadedA.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
       assert.equal(seen[1].token, userAToken)
-      assert.equal(seen[1].groupId, "team-11")
 
-      // 3. Account B clears selectedGroupIds on disk -> X-Group-Id MUST be cleared (not fall back to team-99)
-      writeFileSync(
-        join(dirObj.root, "hub-config.json"),
-        JSON.stringify({ ...dirObj.cfg, selectedGroupIds: {} }),
+      // 3. Saved auth without expected userId MUST NOT reuse desktop token (even if desktop userID is also missing)
+      const anonDir = makeTempDesktopDir({
+        userID: null,
+        token: makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, anon: 1 }),
+      })
+      try {
+        const authNoUser = {
+          type: "api",
+          key: userAToken,
+          metadata: { dataDir: anonDir.root, configFile: "hub-config.json", method: "desktop" },
+        }
+        const loadedNoUser = await hooks.auth.loader(async () => authNoUser)
+        await loadedNoUser.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+        assert.equal(seen[2].token, userAToken)
+        assert.equal(profileCalls, 0)
+      } finally {
+        rmSync(anonDir.root, { recursive: true, force: true })
+      }
+
+      // 4. Desktop switches to user C (mtime changes -> fresh disk read) -> rejected locally via fresh.userId check
+      //    without trusting C's groupId or even probing profile
+      bumpWrite(
+        {
+          ...dirObj.cfg,
+          user: { userID: "30003", userName: "Carol" },
+          selectedGroupIds: { "30003": "team-carol" },
+          tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(dirObj.token, dirObj.keyBuf) },
+        },
+        4000,
       )
-      // Bump mtime explicitly via a second write or force cache miss by changing mtime
-      const updatedTime = new Date(Date.now() + 5000)
-      const { utimesSync } = await import("node:fs")
-      utimesSync(join(dirObj.root, "hub-config.json"), updatedTime, updatedTime)
-
       await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
-      assert.equal(seen[2].token, dirObj.token)
-      assert.equal(seen[2].groupId, null)
+      assert.equal(seen[3].token, dirObj.token)
+      assert.equal(seen[3].groupId, "team-99")
+      assert.equal(profileCalls, 0)
+
+      // 5. Mid-switch race: tokens updated to C (with same JWT owner omitted so profile check must fire)
+      //    while user.userID is STILL 20002 -> rejected by owner verification!
+      const raceTokenNoJwtUser = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, race: 1 })
+      bumpWrite(
+        { ...dirObj.cfg, user: { userID: "20002", userName: "Bob" }, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(raceTokenNoJwtUser, dirObj.keyBuf) } },
+        8000,
+      )
+      await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(seen[4].token, dirObj.token)
+      assert.equal(profileCalls, 1)
+
+      // 6. Account B returns with same token and clears selectedGroupIds -> X-Group-Id MUST clear
+      bumpWrite({ ...dirObj.cfg, selectedGroupIds: {} }, 12000)
+      await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(seen[5].token, dirObj.token)
+      assert.equal(seen[5].groupId, null)
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
+    }
+  })
+
+  test("initial desktop login rejects contradictory profile uid and unverified region on network failure", async () => {
+    const raceDir = makeTempDesktopDir({ userID: "10001", adUrl: null })
+    try {
+      // Contradictory profile uid (persistAuthTokens race) -> rejects
+      const hooksRace = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async () => new Response(JSON.stringify({ uid: "99999", user_name: "Other" }), { status: 200 }),
+        env: { MINIMAX_DESIGN_DATA_DIR: raceDir.root },
+        versionCode: TEST_VERSION,
+      })
+      const start1 = await hooksRace.auth.methods[0].authorize()
+      await assert.rejects(() => start1.callback(), /切换账号/)
+
+      // Unknown region (no LKG, no adAttribution, hub-config.json) + profile failure -> rejects
+      const hooksGlobal = createPlugin(SITES["minimax-design-global"], {
+        fetchImpl: async () => {
+          throw new Error("timeout")
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: raceDir.root },
+        versionCode: TEST_VERSION,
+      })
+      const start2 = await hooksGlobal.auth.methods[0].authorize()
+      await assert.rejects(() => start2.callback(), /verify the desktop sign-in region/)
+    } finally {
+      rmSync(raceDir.root, { recursive: true, force: true })
     }
   })
 
@@ -493,6 +694,7 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
     const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
     const hooks = createPlugin(SITES["minimax-design"], {
       fetchImpl: async () => new Response(JSON.stringify({ enabled_providers: [], provider: {} }), { status: 200 }),
+      versionCode: TEST_VERSION,
     })
     const cfg = { provider: {} }
     await hooks.config(cfg)
@@ -503,7 +705,7 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
     assert.deepEqual(models, {})
   })
 
-  test("waitForDesktopCredential handles polling until ready and abort cancellation", async () => {
+  test("waitForDesktopCredential handles polling, abort (with bounded advancing clock), and immediate region_mismatch stop", async () => {
     let tries = 0
     const ready = await waitForDesktopCredential({
       read: () => (++tries < 3 ? { error: { code: "missing" } } : { cred: { key: "tok" } }),
@@ -513,19 +715,37 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
     assert.equal(ready.status, "ready")
     assert.equal(ready.cred.key, "tok")
 
+    // Advancing clock ensures a broken abort check fails fast instead of hanging
     const ac = new AbortController()
     ac.abort()
+    let tick = 0
     const aborted = await waitForDesktopCredential({
       read: () => ({ error: { code: "missing" } }),
-      sleep: async () => {},
-      now: () => 0,
+      sleep: async () => {
+        tick += 500
+      },
+      now: () => (tick += 100),
+      waitMs: 1000,
       signal: ac.signal,
     })
     assert.equal(aborted.status, "aborted")
+
+    // region_mismatch stops polling on the very first read
+    let mismatchReads = 0
+    const mismatch = await waitForDesktopCredential({
+      read: () => {
+        mismatchReads++
+        return { error: Object.assign(new Error("wrong region"), { code: "region_mismatch" }) }
+      },
+      sleep: async () => {},
+      now: () => mismatchReads * 1000,
+      waitMs: 60_000,
+    })
+    assert.equal(mismatch.status, "failed")
+    assert.equal(mismatchReads, 1)
   })
 
-  test("siteFetch blocks untrusted destinations, HTTPS downgrades, and cross-host redirects", async () => {
-    // Untrusted external host blocked before fetch is called
+  test("siteFetch blocks untrusted hosts/downgrades/redirects and normalizeUpstreamResponse classifies 401/402/403/429 accurately", async () => {
     let called = false
     await assert.rejects(
       () =>
@@ -544,13 +764,11 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
     )
     assert.equal(called, false)
 
-    // Plain HTTP rejected
     await assert.rejects(
       () => siteFetch(SITES["minimax-design"], "http://hub.minimaxi.com/api/v1/messages", {}, { fetchImpl: async () => new Response("ok") }),
       /untrusted destination/,
     )
 
-    // Same-host HTTPS -> HTTP downgrade rejected
     await assert.rejects(
       () =>
         siteFetch(
@@ -564,7 +782,6 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
       /insecure redirect/,
     )
 
-    // Cross-host redirect throws OtherSite
     await assert.rejects(
       () =>
         siteFetch(
@@ -579,6 +796,7 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
       (err) => err instanceof OtherSite && err.to === "design.minimax.cn",
     )
 
+    // Explicit credit exhaustion 403 -> 429 insufficient_credits + kept
     const quota = await normalizeUpstreamResponse(
       SITES["minimax-design"],
       new Response(JSON.stringify({ error: { message: "积分余额不足" } }), { status: 403 }),
@@ -587,6 +805,39 @@ describe("plugin runtime: auth, loader, models, usage, security guards", () => {
     assert.equal(quota.status, 429)
     assert.equal(quota.headers.get("X-Magpie-Sign-In"), "kept")
 
+    // Upstream 429 RPM rate limit passes through untouched (NOT rewritten to insufficient_credits)
+    const rateLimit = await normalizeUpstreamResponse(
+      SITES["minimax-design"],
+      new Response(JSON.stringify({ error: { message: "requests per minute quota exceeded" } }), {
+        status: 429,
+        headers: { "retry-after": "30" },
+      }),
+      false,
+    )
+    assert.equal(rateLimit.status, 429)
+    assert.equal(rateLimit.headers.get("retry-after"), "30")
+    assert.equal(rateLimit.headers.get("X-Magpie-Sign-In"), "kept")
+    assert.doesNotMatch(await rateLimit.text(), /insufficient_credits/)
+
+    // Non-credit 403 permission refusal stays 403 + kept (not misclassified as out-of-credits)
+    const perm = await normalizeUpstreamResponse(
+      SITES["minimax-design"],
+      new Response(JSON.stringify({ error: { message: "insufficient permission for this model" } }), { status: 403 }),
+      false,
+    )
+    assert.equal(perm.status, 403)
+    assert.equal(perm.headers.get("X-Magpie-Sign-In"), "kept")
+
+    // Auth-related 403 turns into 401 + expired
+    const auth403 = await normalizeUpstreamResponse(
+      SITES["minimax-design"],
+      new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 }),
+      false,
+    )
+    assert.equal(auth403.status, 401)
+    assert.equal(auth403.headers.get("X-Magpie-Sign-In"), "expired")
+
+    // client_upgrade_required stays 403 + kept
     const upgrade = await normalizeUpstreamResponse(
       SITES["minimax-design"],
       new Response(JSON.stringify({ error: { code: "client_upgrade_required", message: "upgrade required" } }), { status: 403 }),

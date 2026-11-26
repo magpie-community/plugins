@@ -3,8 +3,9 @@
 //   - minimax-design-global: Global site (design.minimax.io / hub.minimax.io)
 //
 // MiniMax Design (Electron app id `@hilo/desktop`, bundle id `com.minimax.hub`)
-// stores its local session in `<userData>/hub-config.json` with sensitive values
-// encrypted using AES-256-GCM and a 32-byte key in `<userData>/.token-key`:
+// stores its local session in `<userData>/hub-config.json` (China) or
+// `<userData>/hub-config-global.json` (Global) with sensitive values encrypted
+// using AES-256-GCM and a 32-byte key in `<userData>/.token-key`:
 //   v2enc:<iv_base64>:<tag_base64>:<ciphertext_base64>
 //
 // Upstream APIs (verified against MiniMax Design 4.0.18):
@@ -34,8 +35,17 @@ const REQUEST_TIMEOUT_MS = 15_000
 const MODALITIES = ["text", "image", "audio", "video", "pdf"]
 const SUPPORTED_NPMS = new Set(["@ai-sdk/anthropic", "@ai-sdk/openai", "@ai-sdk/openai-compatible"])
 const REDIRECTS = new Set([301, 302, 303, 307, 308])
-const QUOTA_PATTERN = /insufficient|balance|credit|quota|exhaust|余额|积分|额度|不足|用完/i
-const AUTH_ERROR_PATTERN = /invalid.*token|token.*expired|unauthoriz|not.*login|login.*expired|未登录|登录已过期|无效.*token/i
+const CREDIT_EXHAUSTED_CODES = new Set([
+  "insufficient_credits",
+  "insufficient_credit",
+  "insufficient_balance",
+  "credit_insufficient",
+  "balance_insufficient",
+])
+const CREDIT_EXHAUSTED_PATTERN =
+  /insufficient[_\s-]*(?:credit|credits|balance)|(?:credit|credits|balance)\s+(?:is\s+)?(?:insufficient|exhausted|depleted)|out\s+of\s+credits?|余额不足|积分不足|积分已用完|积分用完/i
+const AUTH_ERROR_PATTERN =
+  /invalid[\s_-]*(?:access[\s_-]*)?token|token[\s_-]*(?:is[\s_-]*)?(?:expired|invalid|empty|missing)|unauthoriz|not[\s_-]*log(?:ged)?[\s_-]*in|login[\s_-]*expired|未登录|登录已过期|登录态已失效|token\s*为空|无效.*token/i
 
 const SITES = {
   "minimax-design": {
@@ -47,6 +57,7 @@ const SITES = {
     defaultLlmBase: "https://hub.minimaxi.com/api/v1",
     officialSite: "https://design.minimax.cn/",
     allowedHosts: ["design.minimax.cn", "hub.minimaxi.com", "design.minimaxi.com"],
+    configFiles: ["hub-config.json"],
   },
   "minimax-design-global": {
     id: "minimax-design-global",
@@ -57,6 +68,7 @@ const SITES = {
     defaultLlmBase: "https://hub.minimax.io/api/v1",
     officialSite: "https://design.minimax.io/",
     allowedHosts: ["design.minimax.io", "hub.minimax.io"],
+    configFiles: ["hub-config-global.json", "hub-config.json"],
   },
 }
 
@@ -178,6 +190,11 @@ const CREDIT_TYPE_LABELS = {
 
 const isRecord = (v) => Boolean(v && typeof v === "object" && !Array.isArray(v))
 const trimStr = (v) => (typeof v === "string" && v.trim() ? v.trim() : undefined)
+const idStr = (v) => {
+  if (typeof v === "string") return v.trim() || undefined
+  if (typeof v === "number" && Number.isFinite(v)) return String(v)
+  return undefined
+}
 const posInt = (v) => {
   const n = Math.trunc(Number(v))
   return Number.isFinite(n) && n > 0 ? n : 0
@@ -187,6 +204,8 @@ const num = (v) => {
   if (typeof v === "string" && v.trim() && Number.isFinite(Number(v.trim()))) return Number(v.trim())
   return undefined
 }
+
+const msg = (lang, zh, en) => (lang === "zh" ? zh : en)
 
 function normalizeVersionCode(raw) {
   const s = trimStr(raw)
@@ -219,6 +238,15 @@ function decodeJwtClaims(token) {
   } catch {
     return null
   }
+}
+
+function jwtOwnerId(token) {
+  const claims = decodeJwtClaims(token)
+  if (!claims) return undefined
+  if (isRecord(claims.user)) {
+    return idStr(claims.user.id) ?? idStr(claims.user.userID) ?? idStr(claims.user.uid)
+  }
+  return idStr(claims.sub) ?? idStr(claims.uid) ?? idStr(claims.user_id)
 }
 
 function isExpiredJwt(token, nowMs = Date.now()) {
@@ -260,7 +288,7 @@ function formatCredits(n, lang = "zh") {
   return lang === "zh" ? `${formatted} 积分` : `${formatted} credits`
 }
 
-// ---- site-scoped HTTP fetch (cross-region redirect guard) --------------------
+// ---- site-scoped HTTP fetch (cross-region redirect & HTTPS guard) ------------
 
 class OtherSite extends Error {
   constructor(site, what, from, to, status) {
@@ -318,27 +346,40 @@ async function siteFetch(site, url, init = {}, { fetchImpl = globalThis.fetch, w
 
 // ---- desktop credential decryption (read-only) -------------------------------
 
-function decryptV2Token(value, keyBuf) {
+function decryptV2Token(value, keyBuf, lang = "zh") {
   if (typeof value !== "string" || !value) return ""
   if (value.startsWith(LEGACY_ENCRYPTED_PREFIX)) {
-    throw Object.assign(new Error("检测到旧版 safeStorage 加密格式，请升级或重新登录 MiniMax Design 桌面端，或改用「粘贴 accessToken」"), {
-      code: "unreadable",
-    })
+    throw Object.assign(
+      new Error(
+        msg(
+          lang,
+          "检测到旧版 safeStorage 加密格式，请升级或重新登录 MiniMax Design 桌面端，或改用「粘贴 accessToken」",
+          "Detected legacy safeStorage encryption format; update or sign in to MiniMax Design again, or use Paste accessToken",
+        ),
+      ),
+      { code: "unreadable" },
+    )
   }
   if (!value.startsWith(ENCRYPTED_V2_PREFIX)) return value
   if (!Buffer.isBuffer(keyBuf) || keyBuf.length !== 32) {
-    throw Object.assign(new Error(".token-key 长度异常（应为 32 字节）"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, ".token-key 长度异常（应为 32 字节）", ".token-key has an invalid length (expected 32 bytes)")),
+      { code: "unreadable" },
+    )
   }
   const parts = value.slice(ENCRYPTED_V2_PREFIX.length).split(":")
   if (parts.length !== 3) {
-    throw Object.assign(new Error("v2enc 密文格式异常"), { code: "unreadable" })
+    throw Object.assign(new Error(msg(lang, "v2enc 密文格式异常", "Malformed v2enc ciphertext format")), { code: "unreadable" })
   }
   const [ivB64, tagB64, ctB64] = parts
   const iv = Buffer.from(ivB64, "base64")
   const tag = Buffer.from(tagB64, "base64")
   const ct = Buffer.from(ctB64, "base64")
   if (iv.length === 0 || tag.length !== 16) {
-    throw Object.assign(new Error("v2enc IV 或 AuthTag 长度异常"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, "v2enc IV 或 AuthTag 长度异常", "Invalid v2enc IV or 16-byte AuthTag length")),
+      { code: "unreadable" },
+    )
   }
   const decipher = createDecipheriv("aes-256-gcm", keyBuf, iv)
   decipher.setAuthTag(tag)
@@ -372,7 +413,7 @@ function candidateDataDirs(site, { homedir = osHomedir(), platform = process.pla
   return dirs
 }
 
-function inferRegionFromConfig(cfg, lkgConfig, dataDir) {
+function inferRegionFromConfig(cfg, lkgConfig, dataDir, configFile) {
   if (isRecord(lkgConfig?.provider)) {
     for (const p of Object.values(lkgConfig.provider)) {
       const base = trimStr(p?.options?.baseURL) || trimStr(p?.api)
@@ -386,62 +427,129 @@ function inferRegionFromConfig(cfg, lkgConfig, dataDir) {
     if (/minimaxi\.com|minimax\.cn/i.test(adUrl)) return "domestic"
     if (/minimax\.io/i.test(adUrl)) return "overseas"
   }
+  if (typeof configFile === "string" && /-global\.json$/i.test(configFile)) return "overseas"
   if (typeof dataDir === "string" && /\bGlobal$/i.test(dataDir)) return "overseas"
   return undefined
 }
 
-function readTokenKey(dir, { readFileImpl, lstatImpl } = {}) {
+function readTokenKey(dir, { readFileImpl, lstatImpl, lang = "zh" } = {}) {
   const keyPath = join(dir, ".token-key")
   const lstat = lstatImpl ?? ((p) => lstatSync(p))
   const readFile = readFileImpl ?? ((p) => readFileSync(p))
-  const st = lstat(keyPath)
-  if (!st.isFile()) {
-    throw Object.assign(new Error(".token-key 不是常规文件"), { code: "unreadable" })
+  let st
+  try {
+    st = lstat(keyPath)
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw Object.assign(
+        new Error(msg(lang, "缺少 .token-key 文件，无法解密登录态", "Missing .token-key file; cannot decrypt desktop sign-in")),
+        { code: "unreadable" },
+      )
+    }
+    throw Object.assign(new Error(error?.message ?? msg(lang, "无法读取 .token-key", "Could not stat .token-key")), { code: "unreadable" })
   }
-  const buf = readFile(keyPath)
+  if (!st.isFile()) {
+    throw Object.assign(
+      new Error(msg(lang, ".token-key 不是常规文件", ".token-key is not a regular file")),
+      { code: "unreadable" },
+    )
+  }
+  let buf
+  try {
+    buf = readFile(keyPath)
+  } catch (error) {
+    throw Object.assign(new Error(error?.message ?? msg(lang, "无法读取 .token-key", "Could not read .token-key")), { code: "unreadable" })
+  }
   const keyBuf = Buffer.isBuffer(buf) ? buf : Buffer.from(buf)
   if (keyBuf.length !== 32) {
-    throw Object.assign(new Error(".token-key 长度异常（应为 32 字节）"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, ".token-key 长度异常（应为 32 字节）", ".token-key has an invalid length (expected 32 bytes)")),
+      { code: "unreadable" },
+    )
   }
   return keyBuf
 }
 
-function readDesktopCredentialFromDir(dir, site, { readFileImpl, lstatImpl, nowMs = Date.now() } = {}) {
+function readDesktopCredentialFromDir(dir, site, { readFileImpl, lstatImpl, nowMs = Date.now(), configFile } = {}) {
   const readFile = readFileImpl ?? ((p) => readFileSync(p))
-  const configPath = join(dir, "hub-config.json")
-  const rawBuf = readFile(configPath)
+  const lang = site.lang
+  const candidates = configFile ? [configFile] : site.configFiles ?? ["hub-config.json"]
+
+  let chosenFile = null
+  let rawBuf = null
+  let lastNotFound = null
+  for (const filename of candidates) {
+    try {
+      rawBuf = readFile(join(dir, filename))
+      chosenFile = filename
+      break
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        lastNotFound = error
+        continue
+      }
+      throw error
+    }
+  }
+  if (!chosenFile) {
+    throw lastNotFound ?? Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+  }
+
+  const configPath = join(dir, chosenFile)
   const rawText = Buffer.isBuffer(rawBuf) ? rawBuf.toString("utf8") : String(rawBuf)
   let cfg
   try {
     cfg = JSON.parse(rawText)
   } catch {
-    throw Object.assign(new Error("hub-config.json 不是有效 JSON"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, `${chosenFile} 不是有效 JSON`, `${chosenFile} is not valid JSON`)),
+      { code: "unreadable" },
+    )
   }
   if (!isRecord(cfg)) {
-    throw Object.assign(new Error("hub-config.json 格式异常"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, `${chosenFile} 格式异常`, `${chosenFile} has an unexpected format`)),
+      { code: "unreadable" },
+    )
   }
 
   const rawAccess = cfg?.tokens?.accessToken
   if (typeof rawAccess !== "string" || !rawAccess.trim()) {
-    throw Object.assign(new Error("hub-config.json 中没有 accessToken（尚未登录 MiniMax Design）"), { code: "missing" })
+    throw Object.assign(
+      new Error(
+        msg(
+          lang,
+          `${chosenFile} 中没有 accessToken（尚未登录 MiniMax Design）`,
+          `${chosenFile} has no accessToken (not signed in to MiniMax Design)`,
+        ),
+      ),
+      { code: "missing" },
+    )
   }
 
   let keyBuf = null
-  const needsKey = rawAccess.startsWith(ENCRYPTED_V2_PREFIX) || (typeof cfg.lkgProviderConfig === "string" && cfg.lkgProviderConfig.startsWith(ENCRYPTED_V2_PREFIX))
+  const needsKey =
+    rawAccess.startsWith(ENCRYPTED_V2_PREFIX) ||
+    (typeof cfg.lkgProviderConfig === "string" && cfg.lkgProviderConfig.startsWith(ENCRYPTED_V2_PREFIX))
   if (needsKey) {
-    keyBuf = readTokenKey(dir, { readFileImpl, lstatImpl })
+    keyBuf = readTokenKey(dir, { readFileImpl, lstatImpl, lang })
   }
 
-  const token = decryptV2Token(rawAccess, keyBuf).trim()
+  const token = decryptV2Token(rawAccess, keyBuf, lang).trim()
   if (!token) {
-    throw Object.assign(new Error("解密后的 accessToken 为空"), { code: "unreadable" })
+    throw Object.assign(
+      new Error(msg(lang, "解密后的 accessToken 为空", "Decrypted accessToken is empty")),
+      { code: "unreadable" },
+    )
   }
   if (isExpiredJwt(token, nowMs)) {
     throw Object.assign(
       new Error(
-        site.lang === "zh"
-          ? "MiniMax Design 登录已过期，请打开 MiniMax Design 重新登录后重试"
-          : "MiniMax Design desktop sign-in has expired; reopen MiniMax Design and sign in again",
+        msg(
+          lang,
+          "MiniMax Design 登录已过期，请打开 MiniMax Design 重新登录后重试",
+          "MiniMax Design desktop sign-in has expired; reopen MiniMax Design and sign in again",
+        ),
       ),
       { code: "expired" },
     )
@@ -450,7 +558,7 @@ function readDesktopCredentialFromDir(dir, site, { readFileImpl, lstatImpl, nowM
   let lkgConfig = null
   if (typeof cfg.lkgProviderConfig === "string" && cfg.lkgProviderConfig.trim()) {
     try {
-      const lkgText = decryptV2Token(cfg.lkgProviderConfig, keyBuf)
+      const lkgText = decryptV2Token(cfg.lkgProviderConfig, keyBuf, lang)
       const parsedLkg = JSON.parse(lkgText)
       if (isRecord(parsedLkg)) lkgConfig = parsedLkg
     } catch {
@@ -458,38 +566,47 @@ function readDesktopCredentialFromDir(dir, site, { readFileImpl, lstatImpl, nowM
     }
   }
 
-  const detectedRegion = inferRegionFromConfig(cfg, lkgConfig, dir)
+  const detectedRegion = inferRegionFromConfig(cfg, lkgConfig, dir, chosenFile)
   if (detectedRegion && detectedRegion !== site.region) {
     const otherId = detectedRegion === "overseas" ? "minimax-design-global" : "minimax-design"
     throw Object.assign(
       new Error(
-        site.lang === "zh"
-          ? `本机 MiniMax Design 登录的是${detectedRegion === "overseas" ? "国际版" : "中国区"}账号，请改用 ${otherId}`
-          : `Local MiniMax Design is signed into the ${detectedRegion === "overseas" ? "Global" : "China"} region; use ${otherId} instead`,
+        msg(
+          lang,
+          `本机 MiniMax Design 登录的是${detectedRegion === "overseas" ? "国际版" : "中国区"}账号，请改用 ${otherId}`,
+          `Local MiniMax Design is signed into the ${detectedRegion === "overseas" ? "Global" : "China"} region; use ${otherId} instead`,
+        ),
       ),
       { code: "region_mismatch", detectedRegion },
     )
   }
 
-  const userId = trimStr(cfg?.user?.userID)
+  const userId = idStr(cfg?.user?.userID)
   const userName = trimStr(cfg?.user?.userName)
-  const groupId = userId && isRecord(cfg?.selectedGroupIds) ? trimStr(cfg.selectedGroupIds[userId]) : undefined
+  const groupId = userId && isRecord(cfg?.selectedGroupIds) ? idStr(cfg.selectedGroupIds[userId]) : undefined
   const deviceId = trimStr(cfg?.deviceId)
+  const tokenOwnerId = jwtOwnerId(token)
 
   return {
     key: token,
     userId,
+    tokenOwnerId,
     userName,
     groupId,
     deviceId,
     lkgConfig,
     region: detectedRegion ?? site.region,
+    regionConfirmed: Boolean(detectedRegion),
     source: configPath,
+    configFile: chosenFile,
     dataDir: dir,
   }
 }
 
-function readDesktopCredential(site, { homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, lstatImpl, nowMs = Date.now() } = {}) {
+function readDesktopCredential(
+  site,
+  { homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, lstatImpl, nowMs = Date.now() } = {},
+) {
   const dirs = candidateDataDirs(site, { homedir, platform, env })
   const problems = []
   let regionMismatch = null
@@ -508,14 +625,15 @@ function readDesktopCredential(site, { homedir = osHomedir(), platform = process
         regionMismatch = error
         continue
       }
-      problems.push(`${dir}（${error?.message ?? "读取失败"}）`)
+      if (error?.code === "missing") continue
+      problems.push(`${dir} (${error?.message ?? msg(site.lang, "读取失败", "read failed")})`)
     }
   }
 
   if (expiredError) throw expiredError
   if (regionMismatch && !problems.length) throw regionMismatch
 
-  const detail = problems.length ? `：${problems.join("；")}` : ""
+  const detail = problems.length ? (site.lang === "zh" ? `：${problems.join("；")}` : `: ${problems.join("; ")}`) : ""
   const message =
     site.lang === "zh"
       ? problems.length
@@ -550,7 +668,7 @@ async function waitForDesktopCredential({ read, sleep, now, signal, waitMs = DES
 
 function reasonOf(site, error) {
   if (["unreadable", "expired", "region_mismatch"].includes(error?.code) && error?.message) return error.message
-  return site.lang === "zh" ? "本机没有读到 MiniMax Design 桌面端登录态" : "No local MiniMax Design desktop sign-in found"
+  return msg(site.lang, "本机没有读到 MiniMax Design 桌面端登录态", "No local MiniMax Design desktop sign-in found")
 }
 
 // ---- model catalog -----------------------------------------------------------
@@ -703,9 +821,11 @@ async function fetchAccountProfile(site, cred, versionCode, fetchImpl) {
   if (res.status === 401 || res.status === 403) {
     throw Object.assign(
       new Error(
-        site.lang === "zh"
-          ? `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`
-          : `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+        msg(
+          site.lang,
+          `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`,
+          `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+        ),
       ),
       { signIn: "expired", status: res.status },
     )
@@ -714,7 +834,7 @@ async function fetchAccountProfile(site, cred, versionCode, fetchImpl) {
   const body = await res.json().catch(() => null)
   if (!isRecord(body)) throw new Error(`${site.name} profile: invalid JSON`)
   return {
-    uid: trimStr(body.uid),
+    uid: idStr(body.uid),
     userName: trimStr(body.user_name),
     account: trimStr(body.account),
   }
@@ -730,9 +850,11 @@ async function fetchRemoteConfig(site, cred, versionCode, fetchImpl) {
   if (res.status === 401 || res.status === 403) {
     throw Object.assign(
       new Error(
-        site.lang === "zh"
-          ? `${site.name} 登录态已失效（HTTP ${res.status}），请重新登录`
-          : `${site.name} sign-in expired (HTTP ${res.status}); please sign in again`,
+        msg(
+          site.lang,
+          `${site.name} 登录态已失效（HTTP ${res.status}），请重新登录`,
+          `${site.name} sign-in expired (HTTP ${res.status}); please sign in again`,
+        ),
       ),
       { signIn: "expired", status: res.status },
     )
@@ -744,25 +866,21 @@ async function fetchRemoteConfig(site, cred, versionCode, fetchImpl) {
   return specs
 }
 
+// Prepaid credit wallets report remaining credits rather than a consumed
+// percentage of an allowance, so report the total in top-level `balance` (as
+// packages/minimax does) and put optional sub-credit breakdowns in `aside`
+// windows with expiry batches — never fabricate a 0% primary progress bar.
 function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false } = {}) {
   const wallets = Array.isArray(walletBody?.wallets) ? walletBody.wallets.filter(isRecord) : []
   if (!wallets.length) return null
   const primary = wallets.find((w) => w.source === 1) ?? wallets[0]
-  const total = num(primary.total_credit) ?? 0
-  const plan = trimStr(primary.plan_name) || "Free"
+  const total = num(primary.total_credit)
+  if (total === undefined) return null
+  const plan = trimStr(primary.plan_name)
   const until = parseDateIso(primary.end_time)
-  const nextRefresh = parseDateIso(primary.next_credit_refresh_time)
   const labels = CREDIT_TYPE_LABELS[site.lang] ?? CREDIT_TYPE_LABELS.en
 
-  const windows = [
-    {
-      name: site.lang === "zh" ? "可用积分" : "Credits",
-      balance: total,
-      display: formatCredits(total, site.lang),
-      ...(nextRefresh ? { resetsAt: nextRefresh } : {}),
-    },
-  ]
-
+  const windows = []
   const subs = Array.isArray(primary.sub_credits) ? primary.sub_credits.filter(isRecord) : []
   for (const sub of subs) {
     const amount = num(sub.credit)
@@ -788,7 +906,6 @@ function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false
     }
     windows.push({
       name,
-      balance: amount,
       display: formatCredits(amount, site.lang),
       aside: true,
       ...(soonest ? { runsOutAt: new Date(soonest.endMs).toISOString(), runsOut: soonest.amount } : {}),
@@ -796,8 +913,9 @@ function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false
   }
 
   return {
-    plan,
+    ...(plan ? { plan } : {}),
     ...(until ? { until } : {}),
+    balance: formatCredits(total, site.lang),
     windows,
     ...(renewed ? { signIn: "renewed" } : {}),
   }
@@ -810,29 +928,22 @@ function usageFromBalance(site, balanceBody, { hasGroupId = false, renewed = fal
   const primary = hasGroupId && team !== undefined ? team : total
   if (primary === undefined) return null
 
-  const windows = [
-    {
-      name: hasGroupId && team !== undefined ? (site.lang === "zh" ? "团队积分" : "Team Credits") : site.lang === "zh" ? "可用积分" : "Credits",
-      balance: primary,
-      display: formatCredits(primary, site.lang),
-    },
-  ]
+  const windows = []
   if (hasGroupId && team !== undefined && total !== undefined && total !== team) {
     windows.push({
       name: site.lang === "zh" ? "总积分" : "Total Credits",
-      balance: total,
       display: formatCredits(total, site.lang),
       aside: true,
     })
   } else if (!hasGroupId && team !== undefined && team > 0 && team !== primary) {
     windows.push({
       name: site.lang === "zh" ? "团队积分" : "Team Credits",
-      balance: team,
       display: formatCredits(team, site.lang),
       aside: true,
     })
   }
   return {
+    balance: formatCredits(primary, site.lang),
     windows,
     ...(renewed ? { signIn: "renewed" } : {}),
   }
@@ -847,7 +958,31 @@ function jsonErrorResponse(status, message, fields = {}, extraHeaders = {}) {
   })
 }
 
-async function normalizeUpstreamResponse(site, res, renewed) {
+function parseErrorBody(text) {
+  let parsed = null
+  try {
+    parsed = JSON.parse(text)
+  } catch {}
+  const errCode = (trimStr(parsed?.error?.code) || trimStr(parsed?.code) || "").toLowerCase()
+  const errMsg = trimStr(parsed?.error?.message) || trimStr(parsed?.message) || text.slice(0, 400)
+  return { errCode, errMsg }
+}
+
+function isAuthError403(status, text) {
+  if (status !== 403) return false
+  const { errCode, errMsg } = parseErrorBody(text)
+  if (errCode === "client_upgrade_required") return false
+  return AUTH_ERROR_PATTERN.test(errMsg) || AUTH_ERROR_PATTERN.test(errCode)
+}
+
+function isCreditExhausted(status, errCode, errMsg) {
+  if (status === 402) return true
+  if (status !== 403) return false
+  if (CREDIT_EXHAUSTED_CODES.has(errCode)) return true
+  return CREDIT_EXHAUSTED_PATTERN.test(errMsg)
+}
+
+async function normalizeUpstreamResponse(site, res, renewed, preReadText = null) {
   const headers = new Headers(res.headers)
   if (res.ok) {
     headers.set("X-Magpie-Sign-In", renewed ? "renewed" : "kept")
@@ -855,20 +990,17 @@ async function normalizeUpstreamResponse(site, res, renewed) {
   }
   if (res.status === 401) {
     headers.set("X-Magpie-Sign-In", "expired")
-    return new Response(res.body, { status: 401, statusText: res.statusText, headers })
+    return new Response(preReadText !== null ? preReadText : res.body, { status: 401, statusText: res.statusText, headers })
   }
-  if (res.status !== 402 && res.status !== 403 && res.status !== 429) {
+  // Pass through rate limits (429) and non-402/403 statuses untouched so
+  // upstream Retry-After and rate-limit error types are preserved intact.
+  if (res.status !== 402 && res.status !== 403) {
     headers.set("X-Magpie-Sign-In", "kept")
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+    return new Response(preReadText !== null ? preReadText : res.body, { status: res.status, statusText: res.statusText, headers })
   }
 
-  const text = await res.text()
-  let parsed = null
-  try {
-    parsed = JSON.parse(text)
-  } catch {}
-  const errCode = trimStr(parsed?.error?.code) || trimStr(parsed?.code) || ""
-  const errMsg = trimStr(parsed?.error?.message) || trimStr(parsed?.message) || text.slice(0, 400)
+  const text = preReadText !== null ? preReadText : await res.text()
+  const { errCode, errMsg } = parseErrorBody(text)
 
   if (errCode === "client_upgrade_required") {
     return jsonErrorResponse(
@@ -879,12 +1011,12 @@ async function normalizeUpstreamResponse(site, res, renewed) {
     )
   }
 
-  if (res.status === 403 && AUTH_ERROR_PATTERN.test(errMsg)) {
+  if (isAuthError403(res.status, text)) {
     headers.set("X-Magpie-Sign-In", "expired")
     return new Response(text, { status: 401, statusText: "Unauthorized", headers })
   }
 
-  if (res.status === 402 || QUOTA_PATTERN.test(errMsg)) {
+  if (isCreditExhausted(res.status, errCode, errMsg)) {
     return jsonErrorResponse(
       429,
       errMsg || `${site.name}: insufficient credits`,
@@ -900,7 +1032,9 @@ async function normalizeUpstreamResponse(site, res, renewed) {
 // ---- plugin factory ----------------------------------------------------------
 
 function authResult(cred, profile) {
-  const userId = cred.userId || profile?.uid
+  // Prefer authoritative profile uid when available; callers already reject
+  // contradictory cred.userId vs profile.uid before building authResult.
+  const userId = profile?.uid || cred.userId
   const name = profile?.userName || cred.userName || profile?.account || userId
   return {
     type: "success",
@@ -909,10 +1043,12 @@ function authResult(cred, profile) {
     metadata: {
       name,
       userId,
+      tokenOwnerId: cred.tokenOwnerId ?? jwtOwnerId(cred.key),
       groupId: cred.groupId,
       deviceId: cred.deviceId,
       region: cred.region,
       source: cred.source,
+      configFile: cred.configFile,
       dataDir: cred.dataDir,
       method: cred.method ?? "desktop",
     },
@@ -937,12 +1073,13 @@ function createPlugin(
   const sleep = sleepImpl ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
   const resolvedVersion = normalizeVersionCode(versionCode ?? detectInstalledVersion({ env, platform, readFileImpl }))
   const modelCache = new Map() // cacheKey -> { at, specs }
-  const diskCache = new Map() // dataDir -> { mtimeMs, cred }
+  const diskCache = new Map() // cacheKey -> { mtimeMs, cred }
+  const verifiedTokenOwners = new Map() // token -> uid (null if rejected/unverifiable)
 
   function readLiveDesktopForAuth(auth, { force = false } = {}) {
     const meta = isRecord(auth?.metadata) ? auth.metadata : {}
     if (meta.method !== "desktop") return null
-    const expectedUserId = trimStr(meta.userId)
+    const expectedUserId = idStr(meta.userId)
     // Require a verified saved userId before reusing a live desktop session;
     // otherwise keep the saved credential so accounts can never cross-charge.
     if (!expectedUserId) return null
@@ -950,46 +1087,93 @@ function createPlugin(
     const stat = statImpl ?? ((p) => statSync(p))
     if (!dataDir) return null
 
-    const configPath = join(dataDir, "hub-config.json")
+    const configFile = trimStr(meta.configFile) || (site.configFiles?.[0] ?? "hub-config.json")
+    const configPath = join(dataDir, configFile)
+    const cacheKey = `${dataDir}\0${configFile}`
     let mtimeMs = 0
     try {
       mtimeMs = stat(configPath).mtimeMs
     } catch {
-      diskCache.delete(dataDir)
+      diskCache.delete(cacheKey)
       return null
     }
-    const cached = !force ? diskCache.get(dataDir) : null
+    const cached = !force ? diskCache.get(cacheKey) : null
     if (cached && cached.mtimeMs === mtimeMs && !isExpiredJwt(cached.cred.key, nowMsImpl())) {
       return cached.cred.userId === expectedUserId ? cached.cred : null
     }
     try {
-      const fresh = readDesktopCredentialFromDir(dataDir, site, { readFileImpl, lstatImpl, nowMs: nowMsImpl() })
-      diskCache.set(dataDir, { mtimeMs, cred: fresh })
+      const fresh = readDesktopCredentialFromDir(dataDir, site, {
+        readFileImpl,
+        lstatImpl,
+        nowMs: nowMsImpl(),
+        configFile,
+      })
+      diskCache.set(cacheKey, { mtimeMs, cred: fresh })
       return fresh.userId === expectedUserId ? fresh : null
     } catch {
       return null
     }
   }
 
-  function resolveCredential(auth, { forceRefresh = false } = {}) {
+  // Verify newly rotated desktop tokens against both JWT owner claims and
+  // /api/v1/account/profile to prevent the persistAuthTokens account-switch
+  // race where tokens are written to disk before user.userID is updated.
+  async function verifyRotatedDesktopToken(live, meta, expectedUserId) {
+    const savedOwner = trimStr(meta.tokenOwnerId)
+    const liveOwner = live.tokenOwnerId ?? jwtOwnerId(live.key)
+    if (savedOwner && liveOwner && savedOwner !== liveOwner) {
+      return false
+    }
+    if (verifiedTokenOwners.has(live.key)) {
+      return verifiedTokenOwners.get(live.key) === expectedUserId
+    }
+    try {
+      const profile = await fetchAccountProfile(
+        site,
+        { token: live.key, groupId: live.groupId, deviceId: live.deviceId },
+        resolvedVersion,
+        fetchImpl,
+      )
+      if (!profile.uid) {
+        verifiedTokenOwners.set(live.key, null)
+        return false
+      }
+      verifiedTokenOwners.set(live.key, profile.uid)
+      return profile.uid === expectedUserId
+    } catch {
+      // Do not accept an unverified rotated token; fall back to saved credential
+      // and do not poison cache on transient network errors unless auth failed.
+      return false
+    }
+  }
+
+  async function resolveCredential(auth, { forceRefresh = false } = {}) {
     if (!auth || auth.type !== "api" || !trimStr(auth.key)) return null
     const meta = isRecord(auth.metadata) ? auth.metadata : {}
+    const expectedUserId = idStr(meta.userId)
     const live = readLiveDesktopForAuth(auth, { force: forceRefresh })
     if (live) {
-      return {
-        token: live.key,
-        userId: live.userId,
-        // Authoritative live workspace selection: if deselected on disk, send no X-Group-Id.
-        groupId: live.groupId,
-        deviceId: live.deviceId ?? trimStr(meta.deviceId),
-        lkgConfig: live.lkgConfig,
-        renewedFromSaved: live.key !== auth.key,
+      const rotated = live.key !== auth.key.trim()
+      let accepted = true
+      if (rotated) {
+        accepted = await verifyRotatedDesktopToken(live, meta, expectedUserId)
+      }
+      if (accepted) {
+        return {
+          token: live.key,
+          userId: live.userId,
+          // Authoritative live workspace selection: if deselected on disk, send no X-Group-Id.
+          groupId: live.groupId,
+          deviceId: live.deviceId ?? trimStr(meta.deviceId),
+          lkgConfig: live.lkgConfig,
+          renewedFromSaved: rotated,
+        }
       }
     }
     return {
       token: auth.key.trim(),
-      userId: trimStr(meta.userId),
-      groupId: trimStr(meta.groupId) ?? trimStr(env.MINIMAX_DESIGN_GROUP_ID),
+      userId: expectedUserId,
+      groupId: idStr(meta.groupId) ?? trimStr(env.MINIMAX_DESIGN_GROUP_ID),
       deviceId: trimStr(meta.deviceId),
       lkgConfig: null,
       renewedFromSaved: false,
@@ -999,17 +1183,43 @@ function createPlugin(
   async function finalizeDesktopCred(cred) {
     let profile = null
     try {
-      profile = await fetchAccountProfile(site, { token: cred.key, groupId: cred.groupId, deviceId: cred.deviceId }, resolvedVersion, fetchImpl)
+      profile = await fetchAccountProfile(
+        site,
+        { token: cred.key, groupId: cred.groupId, deviceId: cred.deviceId },
+        resolvedVersion,
+        fetchImpl,
+      )
     } catch (error) {
       if (error?.signIn === "expired" || error instanceof OtherSite) throw error
-      // Transient profile outage should not block a valid desktop sign-in
+      // If region could not be inferred from local metadata (no LKG / adAttribution /
+      // Global store name), require profile verification so cross-region tokens
+      // cannot silently sign into the wrong site.
+      if (!cred.regionConfirmed) {
+        throw new Error(
+          msg(
+            site.lang,
+            `无法确认本机登录态所属区域（${error?.message ?? "网络异常"}），请稍后重试或确认站点`,
+            `Could not verify the desktop sign-in region (${error?.message ?? "network error"}); retry or check the selected site`,
+          ),
+        )
+      }
     }
+    if (profile?.uid && cred.userId && profile.uid !== cred.userId) {
+      throw new Error(
+        msg(
+          site.lang,
+          "检测到 MiniMax Design 正在切换账号（token 与本地用户信息不一致），请稍后重试",
+          "MiniMax Design appears to be switching accounts (token owner disagrees with stored user); please retry",
+        ),
+      )
+    }
+    if (profile?.uid) verifiedTokenOwners.set(cred.key, profile.uid)
     return authResult({ ...cred, method: "desktop" }, profile)
   }
 
   async function sendLlmRequest(getAuth, input, init = {}) {
     const auth = await getAuth()
-    let cred = resolveCredential(auth)
+    let cred = await resolveCredential(auth)
     if (!cred) {
       return jsonErrorResponse(401, `${site.name}: not signed in`, { type: "authentication_error" }, { "X-Magpie-Sign-In": "expired" })
     }
@@ -1043,15 +1253,23 @@ function createPlugin(
     }
 
     let res
+    let preReadText = null
     let renewed = cred.renewedFromSaved
     try {
       res = await sendOnce(cred)
-      // If upstream returned 401 and this is a desktop sign-in, force one fresh disk read
-      // in case MiniMax Design rotated the token on disk.
-      if (res.status === 401 && auth?.metadata?.method === "desktop") {
-        const fresh = resolveCredential(auth, { forceRefresh: true })
+      let shouldRetryAuth = res.status === 401
+      if (!shouldRetryAuth && res.status === 403) {
+        preReadText = await res.text()
+        shouldRetryAuth = isAuthError403(403, preReadText)
+      }
+      // If upstream rejected the token (401 or auth-related 403) and this is a
+      // desktop sign-in, force one fresh disk read + ownership check in case
+      // MiniMax Design rotated the token on disk.
+      if (shouldRetryAuth && auth?.metadata?.method === "desktop") {
+        const fresh = await resolveCredential(auth, { forceRefresh: true })
         if (fresh && fresh.token !== cred.token) {
-          await res.body?.cancel?.().catch(() => {})
+          if (preReadText === null) await res.body?.cancel?.().catch(() => {})
+          preReadText = null
           cred = fresh
           renewed = true
           res = await sendOnce(cred)
@@ -1064,7 +1282,7 @@ function createPlugin(
       throw error
     }
 
-    return normalizeUpstreamResponse(site, res, renewed)
+    return normalizeUpstreamResponse(site, res, renewed, preReadText)
   }
 
   const isZh = site.lang === "zh"
@@ -1150,7 +1368,7 @@ function createPlugin(
 
       async loader(getAuth) {
         const auth = await getAuth()
-        if (!resolveCredential(auth)) return {}
+        if (!auth || auth.type !== "api" || !trimStr(auth.key)) return {}
         // Omit baseURL so per-model gateway URLs from /api/v1/config are preserved;
         // bootstrap models already declare site.defaultLlmBase via provider.api.
         return {
@@ -1161,7 +1379,7 @@ function createPlugin(
 
       async usage(getAuth) {
         const auth = await getAuth()
-        let cred = resolveCredential(auth)
+        let cred = await resolveCredential(auth)
         if (!cred) return {}
         let renewed = cred.renewedFromSaved
         const hasGroupId = Boolean(cred.groupId)
@@ -1176,8 +1394,8 @@ function createPlugin(
 
         try {
           let res = await fetchWallet(cred)
-          if (res.status === 401 && auth?.metadata?.method === "desktop") {
-            const fresh = resolveCredential(auth, { forceRefresh: true })
+          if ((res.status === 401 || res.status === 403) && auth?.metadata?.method === "desktop") {
+            const fresh = await resolveCredential(auth, { forceRefresh: true })
             if (fresh && fresh.token !== cred.token) {
               await res.body?.cancel?.().catch(() => {})
               cred = fresh
@@ -1187,9 +1405,11 @@ function createPlugin(
           }
           if (res.status === 401 || res.status === 403) {
             return {
-              error: isZh
-                ? `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`
-                : `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+              error: msg(
+                site.lang,
+                `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`,
+                `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+              ),
               signIn: "expired",
               windows: [],
             }
@@ -1213,9 +1433,11 @@ function createPlugin(
           )
           if (res.status === 401 || res.status === 403) {
             return {
-              error: isZh
-                ? `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`
-                : `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+              error: msg(
+                site.lang,
+                `${site.name} 拒绝了该凭据（HTTP ${res.status}），请重新登录`,
+                `${site.name} rejected the credential (HTTP ${res.status}); please sign in again`,
+              ),
               signIn: "expired",
               windows: [],
             }
@@ -1226,7 +1448,11 @@ function createPlugin(
           const body = await res.json().catch(() => null)
           const parsed = usageFromBalance(site, body, { hasGroupId, renewed })
           if (parsed) return parsed
-          return { error: isZh ? "积分余额格式异常" : "Unexpected credit balance payload", signIn: "kept", windows: [] }
+          return {
+            error: msg(site.lang, "积分余额格式异常", "Unexpected credit balance payload"),
+            signIn: "kept",
+            windows: [],
+          }
         } catch (error) {
           return { error: error?.message ?? String(error), signIn: "kept", windows: [] }
         }
@@ -1236,7 +1462,7 @@ function createPlugin(
     provider: {
       id: site.id,
       async models(provider, { auth } = {}) {
-        let cred = resolveCredential(auth)
+        let cred = await resolveCredential(auth)
         if (!cred) return provider.models
 
         const cacheKey = `${cred.userId ?? ""}:${cred.groupId ?? ""}:${cred.token.slice(-16)}`
@@ -1250,7 +1476,7 @@ function createPlugin(
           specs = await fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl)
         } catch (error) {
           if (error?.signIn === "expired" && auth?.metadata?.method === "desktop") {
-            const fresh = resolveCredential(auth, { forceRefresh: true })
+            const fresh = await resolveCredential(auth, { forceRefresh: true })
             if (fresh && fresh.token !== cred.token) {
               cred = fresh
               specs = await fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl)
@@ -1286,6 +1512,7 @@ export const _internal = {
   CREDIT_TYPE_LABELS,
   PLACEHOLDER_KEY,
   DEFAULT_VERSION_CODE,
+  MODELS_TTL_MS,
   OtherSite,
   createPlugin,
   decryptV2Token,
@@ -1306,5 +1533,7 @@ export const _internal = {
   parseDateIso,
   formatCredits,
   isExpiredJwt,
+  jwtOwnerId,
+  isAuthError403,
   siteFetch,
 }
