@@ -233,7 +233,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |
-| `AGY_BRIDGE_STATELESS_REUSE` | 开启 | 不流式、不带工具、只有一条消息的请求（识图、起标题），在已答完一个这类请求的空闲 agy 里新开会话，省掉 agy 首次建会话的几秒；那条旧对话再有下一轮时重放历史。设为 `0` 关闭 |
+| `AGY_BRIDGE_STATELESS_REUSE` | 开启 | 不流式、不带工具、只有一条消息的请求（识图、起标题），在已答完一个这类请求的空闲 agy 里新开会话，省掉 agy 首次建会话的几秒；那条旧对话再有下一轮时重放历史。同一个不带工具的开头再次发来（流式或不流式），在它自己空闲的 agy 里新开会话。设为 `0` 关闭 |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | 工具运行超过该时间仍未结束时，先返回 "still running" |

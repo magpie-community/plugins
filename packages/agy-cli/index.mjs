@@ -4380,7 +4380,7 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // the new key (sorted, to avoid deadlock), then pick again inside those
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
-  const launch = !forceNew && isFreshConversation && statelessRequest(opts)
+  const launch = !forceNew && isFreshConversation && freshToolless(opts)
     ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
@@ -4494,16 +4494,22 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       if (existing.toolsListed()) return { proc: existing, history: matchedHistory }
       why = "tools_unlisted"
     } else {
+      // a new conversation that opens as this one did, with no turn
+      // before it, never went on from the session's history: no diff
+      const newOpening = isFreshConversation && existing.hasSentFirstTurn && !continuedFresh &&
+        Array.isArray(matchedHistory) && !matchedHistory.length
       why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
         existing.workDir !== opts.workDir ? "work_dir" :
         !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
+        newOpening ? "fresh_after_first" :
         !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
       // where the history first differs from the session's, with no text,
       // as drop_live logs it (yetone/magpie#7223)
       if (why === "history") historyDiff = firstHistoryDiff(existing.expectedMessages, matchedHistory)
     }
-    if (!forceNew && launch && statelessRequest(opts) &&
-      statelessDonor(existing, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)) {
+    if (!forceNew && launch && (statelessRequest(opts)
+      ? statelessDonor(existing, launch, opts.userId || "", opts.sessionScope || "", opts.workDir)
+      : why === "fresh_after_first" && sameOpeningDonor(existing, launch, opts))) {
       // the same stateless request again: its agy answers it in a new session
       return await reuseStateless(existing, key, opts, why)
     }
@@ -4511,7 +4517,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
-  if (!forceNew && isFreshConversation && launch) {
+  if (!forceNew && isFreshConversation && launch && statelessRequest(opts)) {
     const donor = findStatelessDonor(opts, launch)
     if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
@@ -5575,8 +5581,30 @@ function findRemaskedProc(convKey, opts) {
 // no tools, no tool results and no earlier turns (an image described, a
 // title written). Any agy of the same launch can open a session for it.
 function statelessRequest(opts) {
-  return !!opts && opts.nonstream === true && !opts.tools?.length && !opts.hasToolResults &&
+  return !!opts && opts.nonstream === true && freshToolless(opts)
+}
+
+// No tools, no tool results and no earlier turns, streamed or not. magpie
+// streams every request it translates (a Chat or Responses client's
+// included), so a client's stream:false reaches the bridge as a stream.
+function freshToolless(opts) {
+  return !!opts && !opts.tools?.length && !opts.hasToolResults &&
     Array.isArray(opts.history) && !opts.history.length
+}
+
+// The idle agy of a conversation that opened as this fresh, tool-less
+// request does, for the request to open a session of its own in
+// (Proc.reuse): the same opening sent again is a new conversation, not
+// a history the live session lost (plugins#1592). That session is
+// closed, as it was stopped with its agy before; an agy that can't close
+// one is taken only when its session holds a single turn.
+function sameOpeningDonor(proc, launch, opts) {
+  return !!proc && !proc.dead && !proc.stopping && !proc.retiring && !proc.turn &&
+    (proc.closable || proc.sessionPrompts === 1) &&
+    !proc.resumed && proc.hasSentFirstTurn && !!proc.sessionId && !proc.tools?.length &&
+    proc.launchKey === launch && (proc.userId || "") === (opts.userId || "") &&
+    (proc.sessionScope || "") === (opts.sessionScope || "") && proc.workDir === opts.workDir &&
+    process.env.AGY_BRIDGE_STATELESS_REUSE !== "0"
 }
 
 // An idle agy whose only turn answered a stateless request, for another

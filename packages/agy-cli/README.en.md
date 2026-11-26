@@ -328,7 +328,7 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_SPARE` | on | Keeps one spare agy per account, started but with no session and no request sent, so a new conversation skips agy's start; set to `0` to turn it off |
-| `AGY_BRIDGE_STATELESS_REUSE` | on | A request that is not streamed, has no tools and only one message (describing an image, writing a title) opens its session in an idle agy that answered one such request, skipping the seconds agy's first session takes; that earlier conversation replays its history if it goes on. Set to `0` to turn it off |
+| `AGY_BRIDGE_STATELESS_REUSE` | on | A request that is not streamed, has no tools and only one message (describing an image, writing a title) opens its session in an idle agy that answered one such request, skipping the seconds agy's first session takes; that earlier conversation replays its history if it goes on. The same tool-less opening sent again, streamed or not, opens a new session in its own idle agy. Set to `0` to turn it off |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | How long a reclaimed session stays resumable (6 hours) |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | Where resumable session records are kept |
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | After this long, a still-running client tool gets a "still running" reply |
