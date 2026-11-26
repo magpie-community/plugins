@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
+    {"package":"magpie-accio","name":"Accio (阿里)","providers":["accio"],"community":true,"icon":"https://raw.githubusercontent.com/Evander-8/magpie-accio/main/icons/accio-128.png","summary":{"en":"Accio (Alibaba Accio Work, China) on magpie without the Accio desktop app: sign in on the web page (PKCE + loopback callback), then serve the account's live model catalog with credit multipliers, tool calls, reasoning split out, token refresh, a quota card, and an optional local OpenAI-compatible reverse proxy.","zh":"不需要 Accio 桌面客户端：在网页登录（PKCE + 本机回环回调）后，把阿里 Accio Work（中国版）的模型接进 magpie —— 实时目录带积分倍率、工具调用、思维链分离、自动续期、额度卡片，并可选在本机开一个 OpenAI 兼容反代端口。"}},
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
