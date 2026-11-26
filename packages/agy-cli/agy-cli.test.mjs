@@ -48,6 +48,7 @@ for (const [name, mocks] of [
   ["duplicate-result-notice.mjs", false],
   ["image-slim.mjs", false],
   ["transient-history.mjs", false],
+  ["prompt-suggestion.mjs", false],
   ["seed-replay.mjs", false],
   ["session-continuity.mjs", false],
 ]) {
