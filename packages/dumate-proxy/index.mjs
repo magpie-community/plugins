@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 
@@ -7,10 +8,13 @@ const KEEPALIVE_TTL_MS = 55 * 60 * 1000
 const REFRESH_LEAD_MS = 10 * 60 * 1000
 const KEEPALIVE_REFRESH = "dumate-proxy-keepalive"
 
-const ICON = "data:image/svg+xml;base64," + Buffer.from(
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1b6ef3"/><path d="M18 42c8-18 20-26 30-28-2 12-10 24-22 30l-8 4z" fill="#fff"/><circle cx="41" cy="25" r="5" fill="#ffd166"/></svg>`,
-  "utf8",
-).toString("base64")
+const ICON = (() => {
+  try {
+    return `data:image/png;base64,${readFileSync(new URL("./icon.png", import.meta.url)).toString("base64")}`
+  } catch {
+    return ""
+  }
+})()
 
 const ALLOWED_PATHS = [
   "/models",
