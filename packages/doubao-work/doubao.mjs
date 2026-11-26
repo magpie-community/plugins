@@ -602,6 +602,74 @@ export const usageOf = (raw) => {
   }
 }
 
+// A spent allowance is no error on Doubao's page. In place of running the
+// task, Doubao answers with a reply of its own, as ordinary text (aaron0x10
+// on X, 2026-11):
+//
+//   本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。
+//
+//   升级正式订阅
+//
+// Given to the agent as the model's answer, it ended the agent's work. It is
+// a 429 instead (doubao_quota), with Doubao's own words, so magpie rests the
+// account and asks the next one. Only a reply that is that notice whole is
+// one: its head (本月, or a shorter window's 本周, 今日, 今天), maybe when it
+// is back, then nothing but lines offering an upgrade. An answer that only
+// mentions 额度 is an answer.
+const SPENT_HEADS = ["本月", "本周", "今日", "今天"].map((s) => s + "额度已用完")
+const SPENT = /^(本月|本周|今日|今天)额度已用完(?:[，,]\s*(下个月|下月|下周|明天|明日)恢复为你服务)?[。！!.]?/
+// the longest a notice is: a reply longer than this is an answer
+const SPENT_MAX = 160
+
+// spentNotice reads a whole reply as Doubao's notice that the allowance is
+// spent: { words, when } (when: 下个月, 明天..., "" when it doesn't say), or
+// null when the reply is anything else.
+export function spentNotice(text) {
+  const t = String(text ?? "").trim()
+  if (!t || t.length > SPENT_MAX) return null
+  const m = t.match(SPENT)
+  if (!m) return null
+  // what may follow the head: the upgrade offer, sentence by sentence or
+  // line by line, each beginning 升级
+  const rest = t.slice(m[0].length).split(/[。！!\n]+/).map((s) => s.trim()).filter(Boolean)
+  if (!rest.every((s) => s.startsWith("升级") && s.length <= 30)) return null
+  return { words: t.replace(/\s*\n\s*/g, " "), when: m[2] ?? "" }
+}
+
+// maySpend says whether a reply still growing could be that notice: empty
+// yet, part of a head, or a head and short enough. A stream holds such a
+// reply back, so a notice is a 429 and never an answer begun.
+export function maySpend(text) {
+  const t = String(text ?? "").trimStart()
+  if (!t) return true
+  if (SPENT_HEADS.some((h) => h.startsWith(t))) return true
+  return SPENT_HEADS.some((h) => t.startsWith(h)) && t.length <= SPENT_MAX
+}
+
+// BEIJING is the clock Doubao's allowance runs on: Doubao is ByteDance's
+// China service, so a month (or a day, or a week) is Beijing's, UTC+8 with
+// no summer time.
+const BEIJING = 8 * HOUR
+
+// backAt is when a notice's "下个月 恢复为你服务" says the allowance is
+// back, in ms: the start of next month, tomorrow or next Monday on Beijing's
+// clock. 0 when it doesn't say.
+export function backAt(when, now = Date.now()) {
+  const d = new Date(now + BEIJING) // read in UTC, its fields are Beijing's
+  const y = d.getUTCFullYear(), m = d.getUTCMonth(), day = d.getUTCDate()
+  if (when === "下个月" || when === "下月") return Date.UTC(y, m + 1, 1) - BEIJING
+  if (when === "明天" || when === "明日") return Date.UTC(y, m, day + 1) - BEIJING
+  if (when === "下周") return Date.UTC(y, m, day + 7 - ((d.getUTCDay() + 6) % 7)) - BEIJING
+  return 0
+}
+
+// spentError is the doubao_quota error for a notice: a 429 with Doubao's
+// words and, when it says, the time it is back (resetsAt, ms).
+export function spentError(notice, now = Date.now()) {
+  const at = backAt(notice.when, now)
+  return new DoubaoError("豆包工作：" + notice.words, "doubao_quota", { status: 429, ...(at > now ? { resetsAt: at } : {}) })
+}
+
 // CACHE is the models.json format: 2 since the list comes from brief_list.
 const CACHE = 2
 
@@ -891,6 +959,8 @@ export class Doubao {
       }
       last = r
       if (r.finished) {
+        const spent = spentNotice(r.text)
+        if (spent) throw spentError(spent)
         if (!r.text && !r.reasoning && (r.error || !/^succeed/i.test(r.reason || "succeed")))
           throw new DoubaoError(`豆包没有回复（${r.status || r.reason || r.error || "unknown"}）`, "doubao_failed", { status: 502 })
         return r

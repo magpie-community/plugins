@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies, portIn } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, spentNotice, maySpend, backAt, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -1000,4 +1000,114 @@ test("ask sends with the send button, and with Enter only when there is none", a
   const p2 = fakePage([ok])
   await new Doubao({ app: fakeApp, openPage: async () => p2, poll: 1 }).ask("x")
   expect(p2.keys).toEqual(["Enter"])
+})
+
+// ---- a spent allowance ----
+
+// SPENT is Doubao's reply when the month's allowance is spent, as aaron0x10
+// on X quoted it (2026-11)
+const SPENT = "本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。\n\n升级正式订阅"
+
+test("spentNotice reads Doubao's spent-allowance notice, and only a reply that is that notice whole", () => {
+  expect(spentNotice(SPENT)).toEqual({ words: "本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。 升级正式订阅", when: "下个月" })
+  expect(spentNotice("\n" + SPENT + "\n")?.when).toBe("下个月")
+  expect(spentNotice("本月额度已用完，下个月恢复为你服务。")?.when).toBe("下个月")
+  expect(spentNotice("本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。")?.when).toBe("下个月")
+  expect(spentNotice("今日额度已用完，明天恢复为你服务。升级到标准套餐畅享更多额度。\n\n升级正式订阅")?.when).toBe("明天")
+  expect(spentNotice("本周额度已用完，下周恢复为你服务。\n\n升级正式订阅")?.when).toBe("下周")
+  expect(spentNotice("本月额度已用完。\n\n升级正式订阅")).toEqual({ words: "本月额度已用完。 升级正式订阅", when: "" })
+  for (const answer of [
+    "",
+    "ok",
+    "豆包工作的额度每月 1 日恢复，本月额度已用完时可以升级到标准套餐。",
+    "你的本月额度已用完，下个月恢复为你服务。",
+    "本月额度已用完的话，可以升级到标准套餐。",
+    SPENT + "\n\n下面是你要的代码：\n```js\nconsole.log(1)\n```",
+    "本月额度已用完，下个月恢复为你服务。<tool_call>{\"name\":\"Read\",\"arguments\":{}}</tool_call>",
+    "本月额度已用完，下个月恢复为你服务。" + "升级".repeat(80),
+  ])
+    expect(spentNotice(answer)).toBeNull()
+})
+
+test("maySpend holds a reply that could still grow into the notice, and lets an answer go", () => {
+  for (const part of ["", "本", "本月额", "本月额度已用完", "本月额度已用完，下个月恢", SPENT.slice(0, 30), SPENT, "今日额度"]) expect(maySpend(part)).toBe(true)
+  for (const answer of ["好", "我来", "额度", "本月的额度", "本月额度还剩 20%", "本月额度已用完" + "。".repeat(200)]) expect(maySpend(answer)).toBe(false)
+})
+
+test("backAt is the start of next month, tomorrow or next Monday on Beijing's clock", () => {
+  const at = (s) => Date.parse(s)
+  // 2026-11-26 18:00 in Beijing
+  expect(backAt("下个月", at("2026-11-26T10:00:00Z"))).toBe(at("2026-12-01T00:00:00+08:00"))
+  expect(backAt("下月", at("2026-11-26T10:00:00Z"))).toBe(at("2026-12-01T00:00:00+08:00"))
+  // already 12-01 01:00 in Beijing, while UTC still says 11-30
+  expect(backAt("下个月", at("2026-11-30T17:00:00Z"))).toBe(at("2027-01-01T00:00:00+08:00"))
+  expect(backAt("下个月", at("2026-12-15T00:00:00Z"))).toBe(at("2027-01-01T00:00:00+08:00"))
+  expect(backAt("明天", at("2026-11-26T17:00:00Z"))).toBe(at("2026-11-28T00:00:00+08:00"))
+  // a Thursday: next Monday; a Monday: the Monday after
+  expect(backAt("下周", at("2026-11-26T10:00:00Z"))).toBe(at("2026-11-30T00:00:00+08:00"))
+  expect(backAt("下周", at("2026-11-30T01:00:00Z"))).toBe(at("2026-12-07T00:00:00+08:00"))
+  expect(backAt("", at("2026-11-26T10:00:00Z"))).toBe(0)
+})
+
+// spentReads is the notice as the page renders it, a read at a time
+const spentReads = (reasoning = "") => [
+  { sends: 1, reply: true, text: "", reasoning, finished: false },
+  { sends: 1, reply: true, text: "本月额度", reasoning, finished: false },
+  { sends: 1, reply: true, text: "本月额度已用完，下个月恢复为你服务。", reasoning, finished: false },
+  { sends: 1, reply: true, text: "本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。\n\n", reasoning, finished: false },
+  { sends: 1, reply: true, text: SPENT, reasoning, finished: true, status: "Success", reason: "succeed" },
+]
+
+test("ask fails Doubao's spent-allowance reply as a 429 that says when it is back", async () => {
+  const before = backAt("下个月")
+  const d = new Doubao({ app: fakeApp, openPage: async () => fakePage(spentReads()), poll: 1 })
+  const e = await d.ask("hi").catch((e) => e)
+  expect(e).toMatchObject({ code: "doubao_quota", status: 429 })
+  expect(e.message).toBe("豆包工作：本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。 升级正式订阅")
+  expect([before, backAt("下个月")]).toContain(e.resetsAt)
+  // an answer about 额度 is an answer
+  const text = "本月额度已用完时，可以升级到标准套餐。"
+  const ok = new Doubao({ app: fakeApp, openPage: async () => fakePage([{ sends: 1, reply: true, text, reasoning: "", finished: true, reason: "succeed" }]), poll: 1 })
+  expect((await ok.ask("hi")).text).toBe(text)
+})
+
+test("the plugin answers a spent allowance with 429, resets_at and Retry-After, whole and streamed, never a 200", async () => {
+  const plugin = () => I.createPlugin({ doubao: new Doubao({ app: fakeApp, openPage: async () => fakePage(spentReads()), poll: 1 }), newId: ids })
+  for (const stream of [false, true]) {
+    const loader = await plugin().auth.loader(async () => ({}))
+    const r = await loader.fetch(req({ model: "auto", stream, messages: [{ role: "user", content: "hello" }] }))
+    expect(r.status).toBe(429)
+    const e = (await r.json()).error
+    expect(e).toMatchObject({ type: "doubao_quota", status: 429 })
+    expect(e.message).toContain("本月额度已用完，下个月恢复为你服务")
+    expect([backAt("下个月") / 1000]).toContain(e.resets_at)
+    const after = Number(r.headers.get("retry-after"))
+    expect(Math.abs(Date.now() / 1000 + after - e.resets_at)).toBeLessThan(5)
+  }
+})
+
+test("a stream holds a reply that starts like the notice until it is an answer", async () => {
+  const answer = "本月额度已用完的话，可以升级到标准套餐，也可以换一个账号。"
+  const page = fakePage([
+    { sends: 1, reply: true, text: "本月额度", reasoning: "", finished: false },
+    { sends: 1, reply: true, text: "本月额度已用完的话，", reasoning: "", finished: false },
+    { sends: 1, reply: true, text: answer, reasoning: "", finished: true, reason: "succeed" },
+  ])
+  const loader = await I.createPlugin({ doubao: new Doubao({ app: fakeApp, openPage: async () => page, poll: 1 }), newId: ids }).auth.loader(async () => ({}))
+  const r = await loader.fetch(req({ model: "auto", stream: true, messages: [{ role: "user", content: "hello" }] }))
+  expect(r.status).toBe(200)
+  const ev = await events(r)
+  expect(ev.filter((e) => e.choices?.[0]?.delta?.content).map((e) => e.choices[0].delta.content).join("")).toBe(answer)
+  expect(ev.some((e) => e.error)).toBe(false)
+})
+
+test("a notice after a stream began with thinking ends it with a 429 frame, and none of its words as content", async () => {
+  const loader = await I.createPlugin({ doubao: new Doubao({ app: fakeApp, openPage: async () => fakePage(spentReads("想一想")), poll: 1 }), newId: ids }).auth.loader(async () => ({}))
+  const r = await loader.fetch(req({ model: "auto", stream: true, messages: [{ role: "user", content: "hello" }] }))
+  expect(r.status).toBe(200)
+  const ev = await events(r)
+  expect(ev.filter((e) => e.choices?.[0]?.delta?.content).length).toBe(0)
+  expect(ev.filter((e) => e.choices?.[0]?.delta?.reasoning_content).map((e) => e.choices[0].delta.reasoning_content).join("")).toBe("想一想")
+  const e = ev.find((x) => x.error).error
+  expect(e).toMatchObject({ type: "doubao_quota", status: 429, resets_at: backAt("下个月") / 1000 })
 })
