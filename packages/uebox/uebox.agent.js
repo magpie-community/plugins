@@ -13,7 +13,13 @@ export const agent = {
   format: "json",
   dir: "$APPDATA/unreal-box",
   ua: ["uebox", "unreal-box"],
-  notice: "UEBox reads its model settings when it starts: restart UEBox, or open Settings → Models, then pick a magpie model under Default models.",
+  library: {
+    instructions: "~/.config/magpie/uebox-library/instructions.md",
+    mcp: "~/.config/magpie/uebox-library/mcp.json",
+    mcpFormat: "claude",
+    skills: "~/.config/magpie/uebox-library/skills",
+  },
+  notice: "UEBox reads its model settings when it starts: restart UEBox, or open Settings → Models, then pick a magpie model under Default models. Library instructions (up to 4000 characters), MCP servers (IDs matching ^[a-zA-Z0-9_-]{1,32}$), and skills are synced into UEBox's data folder automatically.",
 }
 
 export function connect({ gateway, models }) {

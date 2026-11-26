@@ -6,10 +6,10 @@ import { randomUUID } from "node:crypto"
 export const PROVIDER_ID = "magpie"
 export const PROVIDER_NAME = "magpie"
 
-export function uebox_dir(env = process.env) {
+export function uebox_dir(env = process.env, platform = process.platform) {
   if (env.UEBOX_USER_DATA) return env.UEBOX_USER_DATA
-  if (process.platform === "win32") return join(env.APPDATA || join(homedir(), "AppData", "Roaming"), "unreal-box")
-  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", "unreal-box")
+  if (platform === "win32") return join(env.APPDATA || join(homedir(), "AppData", "Roaming"), "unreal-box")
+  if (platform === "darwin") return join(homedir(), "Library", "Application Support", "unreal-box")
   return join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "unreal-box")
 }
 
