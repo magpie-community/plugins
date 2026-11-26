@@ -1198,10 +1198,12 @@ function desktopSignIn() {
 // Raccoon's own desktop client names every chat request by its conversation and
 // its turn: X-RACCOON-Session-ID stays the same across a conversation, and
 // X-RACCOON-Turn-ID is new for each message the user sends. Without them the
-// upstream cannot tie a conversation's requests together. The session comes
-// from the host through the chat.headers hook (magpie and OpenCode 1.x) or a
-// session header magpie already sends; when neither names one, it is derived
-// from the conversation's first user message, which later turns repeat.
+// upstream counts every send as a new conversation and rate-limits the account
+// as many new sessions at once (plugins#512). The session comes from the host
+// through the chat.headers hook (magpie and OpenCode 1.x) or a session header
+// magpie already sends; when neither names a stable one, it is derived from the
+// account, the agent the host reports and the conversation's first user message,
+// which later turns repeat.
 
 const RACCOON_SESSION_HEADER = "x-magpie-raccoon-session"
 const INBOUND_SESSION_HEADERS = [
