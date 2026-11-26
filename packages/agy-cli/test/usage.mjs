@@ -6,8 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, planOf, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
-import http from "node:http"
+import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
@@ -293,7 +292,7 @@ async function timedOut(f, { version = false, onTaskkill } = {}) {
         return child
       }
       syncBuiltinESMExports()
-      await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs }), /timed out/)
+      await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs }), /didn't (?:say its version|finish) in \d/)
     } finally {
       childProcess.spawn = originalSpawn
       syncBuiltinESMExports()
@@ -366,7 +365,7 @@ else if (version) {
   child.unref()
   console.log(process.env.TEST_REPORT)
 } else {
-  if (mode === "delay") await new Promise(resolve => setTimeout(resolve, 150))
+  if (mode === "delay") await new Promise(resolve => setTimeout(resolve, Number(process.env.TEST_REPORT_DELAY_MS) || 150))
   console.log(process.env.TEST_REPORT)
 }
 `)
@@ -379,9 +378,8 @@ else if (version) {
   return {
     executable, env,
     // agy's stored sign-in can't be read here (signin.mjs is tested on its
-    // own), and a direct read never reaches Google: a test that has one
-    // gives its own quota
-    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }), quota: async () => { throw new Error("no network in tests") } },
+    // own)
+    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }) },
     async logs() { return (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line)) },
     // Every pid to see gone after a kill: the spawned children, and the agy
     // each one ran that got as far as logging (on Windows a grandchild under
@@ -898,12 +896,12 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
 // and the quota read was given up at 3 seconds, before it could start.
 test("a slow agy --version can finish within the usage deadline, and is asked once", async t => {
   const f = await fixture(t, { TEST_START_DELAY_MS: "4000" })
-  const result = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
-  assert.equal(result.windows.length, 2)
-  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]])
-  const again = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
-  assert.equal(again.windows.length, 2)
-  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]], "the same binary isn't asked its version again")
+  const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 15_000 })
+  assert.equal(result.windows.length, 1)
+  assert.deepEqual((await f.logs()).map(call => call.args[0]), ["--version", "-p"])
+  const again = await fetchUsage(f.executable, { ...f.options, timeoutMs: 15_000 })
+  assert.equal(again.windows.length, 1)
+  assert.deepEqual((await f.logs()).map(call => call.args[0]), ["--version", "-p", "-p"], "the same binary isn't asked its version again")
   await f.assertClean()
 })
 
@@ -957,11 +955,17 @@ test("missing executables and filesystem failures do not leak local paths", asyn
   assert.doesNotMatch(result.error, /agy-usage-test-/)
 })
 
-// ---- an account agy refuses for its region (01dadada on X) -----------------
+// ---- the quota is read through agy alone ---------------------------------
 //
+// Google made T3 Code take out code that read agy's stored sign-in and
+// asked Google's quota endpoint itself (T3 Code PR #43026). The plugin did
+// the same (readQuotaDirect: loadCodeAssist and retrieveUserQuotaSummary
+// with agy's token, renewed with agy's OAuth client); now every request for
+// the quota is agy's own /usage.
+
 // agy 1.5.9's own answer when loadCodeAssist names an ineligible tier
 // (UNSUPPORTED_LOCATION) and no current one, captured 2026-11-16 through
-// CLOUD_CODE_URL; its own retrieveUserQuotaSummary had answered 200.
+// CLOUD_CODE_URL.
 const REFUSED = JSON.stringify({
   conversation_id: "", status: "ERROR", response: "",
   error: "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.",
@@ -969,352 +973,128 @@ const REFUSED = JSON.stringify({
   usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, thinking_tokens: 0 },
   finished_reason: "error",
 })
-// Its loadCodeAssist and retrieveUserQuotaSummary replies (trimmed).
-const LOAD = {
-  allowedTiers: [{ id: "free-tier", name: "Antigravity", isDefault: true }],
-  ineligibleTiers: [{ reasonCode: "UNSUPPORTED_LOCATION", reasonMessage: "Your current account is not eligible for Antigravity, because it is not currently available in your location." }],
-  cloudaicompanionProject: "aicode-consumers",
-}
-const SUMMARY = {
-  groups: [{
-    displayName: "Gemini Models",
-    description: "Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash",
-    buckets: [
-      { bucketId: "gemini-weekly", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T11:19:33Z", remainingFraction: 0.75 },
-      { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", resetTime: "2026-11-16T16:19:33Z", remainingFraction: 0.5 },
-    ],
-  }],
-}
-const STORED = { token: { access_token: "ya29.live", refresh_token: "1//refresh", expiry: "0001-01-01T00:00:00Z", token_type: "Bearer" }, auth_method: "consumer", id_token_email: "secret@example.com" }
 
-async function codeAssist(t, answer = {}) {
-  const calls = []
-  const server = http.createServer((req, res) => {
-    let body = ""
-    req.on("data", c => { body += c })
-    req.on("end", () => {
-      calls.push({ method: req.method, url: req.url, headers: req.headers, body: JSON.parse(body || "null") })
-      const name = req.url.replace(/^\/v1internal:/, "")
-      const [status, reply] = answer[name] ?? [200, name === "loadCodeAssist" ? LOAD : SUMMARY]
-      res.writeHead(status, { "Content-Type": "application/json" })
-      res.end(JSON.stringify(reply))
-    })
-  })
-  await new Promise(r => server.listen(0, "127.0.0.1", r))
-  t.after(() => new Promise(r => server.close(r)))
-  return { url: `http://127.0.0.1:${server.address().port}`, calls }
+// every fetch the plugin makes while t runs, answered with an error
+function noFetch(t) {
+  const asked = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => { asked.push(String(url)); throw new Error("no network in tests") }
+  t.after(() => { globalThis.fetch = original })
+  return asked
 }
 
-test("an account agy refuses for its region has its quota read the way agy reads it", async t => {
-  const api = await codeAssist(t)
-  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9", CLOUD_CODE_URL: api.url })
-  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
-  const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
-  assert.equal(result.error, undefined)
-  assert.equal(result.signIn, "kept")
-  assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used, w.resetsAt]), [
-    ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
-    ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
-  ])
-  // the account the sign-in names; LOAD names no tier, so no plan
-  assert.equal(result.user, "secret@example.com")
-  assert.equal(result.plan, undefined)
-  // the two requests agy makes, as it makes them
-  assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
-    ["POST", "/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
-    ["POST", "/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
-  ])
-  for (const c of api.calls) {
-    assert.equal(c.headers.authorization, "Bearer ya29.live")
-    assert.equal(c.headers["content-type"], "application/json")
-    assert.equal(c.headers["user-agent"], quotaUserAgent("1.5.9", "consumer"))
+test("usage.mjs asks Google nothing itself: no endpoint, no OAuth client, no stored token", () => {
+  const source = readFileSync(new URL("../usage.mjs", import.meta.url), "utf8")
+  for (const banned of [/googleapis\.com/, /oauth2/i, /v1internal/, /retrieveUserQuotaSummary/, /loadCodeAssist\b[^\n]*fetch|fetch[^\n]*loadCodeAssist/, /storedToken/, /client_secret|GOCSPX/i, /\bfetch\(/]) {
+    assert.doesNotMatch(source, banned)
   }
+})
+
+test("a quota read and a refusal alike go through agy -p, never a request of the plugin's own", async t => {
+  const asked = noFetch(t)
+  const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
+  const f = await fixture(t, { TEST_VERSION: "1.5.9" })
+  const ok = await createUsageReader(() => f.executable, { ...f.options, signIn: async () => live })()
+  assert.equal(ok.error, undefined)
+  assert.equal(ok.windows.length, 1)
+  // a region refusal stands as agy says it: unknown, never zero or full
+  const refused = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9" })
+  const no = await createUsageReader(() => refused.executable, { ...refused.options, signIn: async () => live })()
+  assert.deepEqual(no.windows, [])
+  assert.match(no.error, /not eligible/)
+  assert.equal(no.signIn, "kept")
+  assert.deepEqual((await refused.logs()).map(l => l.args[0]), ["--version", "-p"])
+  assert.deepEqual(asked, [])
   await f.assertClean()
-})
-
-test("the direct read's User-Agent is agy's", () => {
-  assert.equal(quotaUserAgent("1.5.9", "consumer", "darwin", "arm64"),
-    "antigravity/cli/1.5.9 (aidev_client; os_type=darwin; arch=arm64; cl=1021519450; auth_method=consumer)")
-  assert.match(quotaUserAgent("1.6.0", "", "win32", "x64"), /^antigravity\/cli\/1\.6\.0 \(aidev_client; os_type=windows; arch=amd64; cl=\d+; auth_method=consumer\)$/)
-})
-
-test("an access token about to end is renewed in memory for the direct read, never stored", async t => {
-  const api = await codeAssist(t)
-  const renewals = []
-  const fetchFn = async (url, init) => {
-    if (String(url).startsWith("https://oauth2.googleapis.com/token")) {
-      renewals.push(Object.fromEntries(new URLSearchParams(init.body)))
-      return new Response(JSON.stringify({ access_token: "ya29.fresh", expires_in: 3599 }), { status: 200 })
-    }
-    return fetch(url, init)
-  }
-  const ending = structuredClone(STORED)
-  ending.token.expiry = new Date(Date.now() + 30_000).toISOString()
-  const data = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ending, fetch: fetchFn })
-  assert.deepEqual(data, { quota: SUMMARY, plan: "", user: "secret@example.com" })
-  assert.equal(renewals.length, 1)
-  assert.equal(renewals[0].grant_type, "refresh_token")
-  assert.equal(renewals[0].refresh_token, "1//refresh")
-  assert.ok(api.calls.every(c => c.headers.authorization === "Bearer ya29.fresh"))
-  assert.equal(ending.token.access_token, "ya29.live")
-})
-
-test("a direct read that fails leaves the region refusal standing: unknown, never zero or full", async t => {
-  for (const [answer, stored] of [
-    [{ retrieveUserQuotaSummary: [403, { error: { code: 403, message: "secret@example.com" } }] }, STORED],
-    // a Workspace or Cloud account with no project of its own
-    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined, gcpManaged: true }] }, STORED],
-    [{ retrieveUserQuotaSummary: [200, { groups: [] }] }, STORED],
-    [{}, null],
-  ]) {
-    const api = await codeAssist(t, answer)
-    const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9", CLOUD_CODE_URL: api.url })
-    const quota = o => readQuotaDirect({ ...o, stored: async () => stored })
-    const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
-    assert.deepEqual(result.windows, [])
-    assert.equal(result.signIn, "kept")
-    assert.match(result.error, /not eligible/)
-    // and why the direct read failed
-    assert.match(result.error, /Reading the quota directly failed too: \S/)
-    assert.doesNotMatch(result.error, /secret/)
-  }
-})
-
-// IcyLiqu1d on X (11-18): agy refused /usage as "not eligible" while the
-// account's requests went on working: agy's ACP sessions run no
-// eligibility check. When Google's loadCodeAssist names no project, agy
-// asks retrieveUserQuotaSummary with {} and gets 403 #3501 (agy 1.5.10,
-// recorded through CLOUD_CODE_URL with loadCodeAssist answered like this;
-// the 403 and the 200 below were Google's own for a consumer account).
-test("a consumer account Google names no project for has its quota read under the consumer project", async t => {
-  const api = await codeAssist(t, { loadCodeAssist: [200, { allowedTiers: [], gcpManaged: false, upgradeSubscriptionUri: "https://codeassist.google.com/upgrade", ineligibleTiers: [] }] })
-  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.10", CLOUD_CODE_URL: api.url })
-  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
-  const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
-  assert.equal(result.error, undefined)
-  assert.ok(result.windows.some(w => w.used === 25) && result.windows.some(w => w.used === 50), JSON.stringify(result.windows))
-  assert.deepEqual(api.calls.map(c => c.body), [{ metadata: { ideType: "ANTIGRAVITY" } }, { project: CONSUMER_PROJECT }])
-  await f.assertClean()
-})
-
-test("an account with no project and Google's reason for it says that reason", async t => {
-  const why = "Your current account is not eligible for Antigravity, because it is not currently available in your location."
-  const api = await codeAssist(t, { loadCodeAssist: [200, { gcpManaged: true, ineligibleTiers: [{ reasonCode: "UNSUPPORTED_LOCATION", reasonMessage: why }] }] })
-  await assert.rejects(readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.10", deadline: Date.now() + 5000, stored: async () => STORED }),
-    e => e.message.includes(why) && /no project/.test(e.message))
-  assert.equal(api.calls.length, 1)
-})
-
-// /usage names no plan or account; the direct read has both at hand: the
-// tiers loadCodeAssist names, read as the retired antigravity plugin read
-// them, and the email agy's stored sign-in names.
-test("the direct read names the plan loadCodeAssist gives and the account the sign-in names", async t => {
-  const free = { id: "free-tier", name: "Antigravity" }
-  for (const [tiers, plan] of [
-    [{ paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: free }, "Google AI Pro"],
-    [{ paidTier: { id: "g1-pro-tier" }, currentTier: { id: "g1-ultra-tier", name: "Google AI Ultra" } }, "Google AI Ultra"],
-    [{ paidTier: { id: "g1-pro-tier", name: "" }, currentTier: free }, "Antigravity"],
-    [{ currentTier: free }, "Antigravity"],
-    [{ currentTier: { id: "g1-pro-tier" } }, "g1-pro-tier"],
-    [{}, ""],
-  ]) {
-    const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, ...tiers }] })
-    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => STORED })
-    assert.deepEqual(read, { quota: SUMMARY, plan, user: "secret@example.com" }, JSON.stringify(tiers))
-  }
-  for (const [email, user] of [[" pro@example.com\n", "pro@example.com"], [undefined, ""], ["", ""], ["  ", ""], [42, ""]]) {
-    const api = await codeAssist(t)
-    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ({ ...STORED, id_token_email: email }) })
-    assert.equal(read.user, user, String(email))
-  }
-})
-
-test("planOf: a paid tier with no name stands when there is no current tier; no tier, no plan", () => {
-  assert.equal(planOf({ paidTier: { id: "g1-pro-tier" } }), "g1-pro-tier")
-  assert.equal(planOf({ paidTier: { id: "g1-pro-tier", name: 7 }, currentTier: { id: "free-tier", name: "Antigravity" } }), "Antigravity")
-  assert.equal(planOf({ currentTier: {} }), "")
-  assert.equal(planOf(null), "")
-})
-
-test("a usage read made directly shows the account's plan and email beside its windows", async t => {
-  const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: { id: "free-tier", name: "Antigravity" } }] })
-  const quota = o => readQuotaDirect({ ...o, stored: async () => ({ ...STORED, id_token_email: "pro@example.com" }) })
-  // read first with time left, and read instead of agy -p with an ended token
-  for (const stored of [
-    { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false },
-    { state: "present", fp: "ended", canRenew: true, expiresAt: 1, expired: true },
-  ]) {
-    const f = await fixture(t, { TEST_MODE: "hang", CLOUD_CODE_URL: api.url })
-    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota, signIn: async () => stored })()
-    assert.equal(result.error, undefined)
-    assert.equal(result.signIn, "kept")
-    assert.equal(result.plan, "Google AI Pro")
-    assert.equal(result.user, "pro@example.com")
-    assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used]), [["Gemini", "7 days", 25], ["Gemini", "5 hours", 50]])
-    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
-    await f.assertClean()
-  }
-})
-
-test("a quota read that gives the summary alone names no plan or account, whatever else it carries", async t => {
-  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
-  for (const summary of [SUMMARY, { ...SUMMARY, plan: "Google AI Pro", user: "pro@example.com" }]) {
-    const f = await fixture(t, { TEST_MODE: "hang" })
-    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota: async () => summary, signIn: async () => stored })()
-    assert.equal(result.error, undefined)
-    assert.equal(result.windows.length, 2)
-    assert.equal(result.plan, undefined)
-    assert.equal(result.user, undefined)
-  }
+  await refused.assertClean()
 })
 
 // plugins#1234 (qiankun229): agy run for usage with an ended access token
 // renews it first, and when that failed for a moment (a DNS miss at
 // Windows startup, a 10s keyring timeout) it opened Google's sign-in in the
-// browser. With such a token agy -p isn't run: the quota is read directly.
-test("an ended or ending access token with a refresh token is read without running agy -p", async t => {
+// browser. With such a token agy isn't run for usage, and the plugin
+// doesn't renew it either: agy's next chat does, and the quota is read
+// after that.
+test("an ended or ending access token with a refresh token runs no agy and asks Google nothing", async t => {
+  const asked = noFetch(t)
   for (const ends of [1, 1_000_000 + 60_000]) {
     const f = await fixture(t, { TEST_VERSION: "1.5.9" })
-    const asked = []
-    const quota = async o => { asked.push(o.version); return SUMMARY }
-    const stored = { state: "present", fp: "ended", canRenew: true, expiresAt: ends, expired: ends === 1 }
-    const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => 1_000_000, signIn: async () => stored })
-    const result = await read()
-    assert.equal(result.error, undefined)
-    assert.equal(result.signIn, "kept")
-    assert.equal(result.windows.length, 2)
-    assert.deepEqual(asked, ["1.5.9"])
-    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+    let stored = { state: "present", fp: "ended", canRenew: true, expiresAt: ends, expired: ends === 1 }
+    const read = createUsageReader(() => f.executable, { ...f.options, now: () => 1_000_000, signIn: async () => stored })
+    for (let i = 0; i < 2; i++) {
+      const result = await read()
+      assert.deepEqual(result.windows, [])
+      assert.equal(result.error, DUE_FOR_RENEWAL)
+      assert.equal(result.signIn, "kept")
+    }
+    await assert.rejects(f.logs(), { code: "ENOENT" })
+    // agy renewed it (a chat): read at once, nothing held
+    stored = { ...stored, expiresAt: 1_000_000 + 3600_000, expired: false }
+    const back = await read()
+    assert.equal(back.windows.length, 1)
+    assert.equal(back.signIn, "kept")
     await f.assertClean()
   }
+  assert.deepEqual(asked, [])
 })
 
 // agy -p /usage makes about twelve Code Assist calls in six rounds before
-// the two that read the quota: 5 to 10 seconds on a quick network, past
-// the deadline on a slow one ("agy usage query timed out." on the card).
-// With a stored sign-in the two are made first, and agy -p only when they
-// can't answer.
-test("a stored sign-in with time left is read directly first, so a slow agy -p doesn't time the card out", async t => {
-  const f = await fixture(t, { TEST_MODE: "hang" })
-  let asked = 0
-  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
-  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota: async () => { asked++; return SUMMARY }, signIn: async () => stored })
-  const result = await read()
-  assert.equal(result.error, undefined)
-  assert.equal(result.signIn, "kept")
-  assert.equal(result.windows.length, 2)
-  assert.equal(asked, 1)
-  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+// the quota: 5 to 10 seconds on a quick network, 20 or more behind a slow
+// proxy. It had 15 seconds less what the direct read took, and said only
+// "agy usage query timed out." (9uK7K2AqpF10987 on X, Windows).
+test("agy's own read gets 45 seconds unless told otherwise", async t => {
+  const f = await fixture(t)
+  await fetchUsage(f.executable, { ...f.options, env: { ...f.env, AGY_BRIDGE_USAGE_TIMEOUT_MS: "" } })
+  const p = (await f.logs()).find(l => l.args[0] === "-p").args
+  const s = Number(/^(\d+)s$/.exec(p[p.indexOf("--print-timeout") + 1])[1])
+  assert.ok(s > 40 && s <= 45, `--print-timeout ${s}s`)
   await f.assertClean()
 })
 
-// plugins#1522: a direct read that can't connect hung until the deadline,
-// and agy -p, run after it with a second left, timed the card out.
-test("a direct read that hangs leaves agy -p the time it needs", async t => {
-  const f = await fixture(t)
-  const deadlines = []
-  const quota = async o => {
-    deadlines.push(o.deadline - Date.now())
-    await new Promise(r => setTimeout(r, Math.max(0, o.deadline - Date.now())))
-    throw new Error("The operation timed out.")
-  }
-  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
-  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 9000, quota, signIn: async () => stored })
-  const result = await read()
-  assert.equal(result.error, undefined)
-  assert.equal(result.windows.length, 1)
-  assert.equal(deadlines.length, 1)
-  assert.ok(deadlines[0] <= 5000, `the direct read had ${deadlines[0]}ms`)
-  const p = (await f.logs()).find(l => l.args[0] === "-p")
-  assert.ok(Number(p.args.at(-1).replace(/s$/, "")) >= 3, `agy -p had ${p.args.at(-1)}`)
-  await f.assertClean()
-})
-
-test("a direct read that can't answer goes through agy -p, and agy's answer stands", async t => {
-  const f = await fixture(t)
-  let asked = 0
-  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: 1_000_000 + 10 * 60_000, expired: false }
-  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; throw new Error("ECONNRESET") }, now: () => 1_000_000, signIn: async () => stored })
-  const result = await read()
-  assert.equal(result.error, undefined)
-  assert.equal(result.windows.length, 1)
-  assert.equal(asked, 1)
-  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
-  // a region refusal after it: the direct read isn't asked a second time
-  const g = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED })
-  let again = 0
-  const refused = await createUsageReader(() => g.executable, { ...g.options, quota: async () => { again++; throw new Error("ECONNRESET") }, signIn: async () => stored, now: () => 1_000_000 })()
-  assert.deepEqual(refused.windows, [])
-  assert.equal(again, 1)
-  assert.match(refused.error, /Reading the quota directly failed too: a network request failed\./)
-})
-
-test("a renewal that fails for a moment backs off and keeps the sign-in; one Google refuses asks for a new sign-in", async t => {
-  forgetStoredSignIn({ dead: true })
-  t.after(() => forgetStoredSignIn({ dead: true }))
-  const f = await fixture(t)
-  let clock = 1_000_000
-  let fail = () => { throw new TypeError("fetch failed: getaddrinfo ENOTFOUND oauth2.googleapis.com") }
-  let asked = 0
-  const quota = async () => { asked++; return fail() }
-  const stored = { state: "present", fp: "blip", canRenew: true, expiresAt: 1, expired: true }
-  const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => clock, signIn: async () => stored })
+test("a read longer than magpie waits says agy is still reading, and the next call takes its answer without running agy again", async t => {
+  const f = await fixture(t, { TEST_MODE: "delay", TEST_REPORT_DELAY_MS: "1500" })
+  let settled
+  const done = new Promise(r => { settled = r })
+  const read = createUsageReader(() => f.executable, { ...f.options, waitMs: 300, timeoutMs: 20_000, onSettled: () => settled() })
   const first = await read()
+  assert.deepEqual(first.windows, [])
+  assert.equal(first.error, STILL_READING)
   assert.equal(first.signIn, "kept")
-  assert.match(first.error, /network or proxy/)
-  assert.equal((await read()).signIn, "kept")
-  assert.equal(asked, 1, "held until the backoff ends")
-  clock += 10 * 60 * 1000
-  fail = () => SUMMARY
-  const back = await read()
-  assert.equal(back.windows.length, 2)
-  assert.equal(back.signIn, "kept")
-  assert.ok((await f.logs()).every(l => l.args[0] === "--version"), "agy -p never ran")
-  // Google refusing the refresh token: the sign-in is over, and nothing runs for it again
-  const refused = { ...stored, fp: "revoked" }
-  const api = async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }), { status: 400 })
-  const ended = structuredClone(STORED)
-  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
-  const read2 = createUsageReader(() => f.executable, {
-    ...f.options, now: () => clock, signIn: async () => refused,
-    quota: o => readQuotaDirect({ ...o, stored: async () => ended, fetch: api }),
-  })
-  const over = await read2()
-  assert.equal(over.signIn, "expired")
-  assert.match(over.error, /Sign in again/)
-  clock += 7 * 60 * 60 * 1000
-  assert.equal((await read2()).signIn, "expired")
+  // the run goes on with nobody waiting, and its answer is kept
+  await done
+  const runs = async () => (await f.logs()).filter(l => l.args[0] === "-p").length
+  const next = await read()
+  assert.equal(next.error, undefined)
+  assert.equal(next.signIn, "kept")
+  assert.equal(next.windows.length, 1)
+  assert.equal(await runs(), 1, "the late answer is taken, agy isn't run again")
+  // taken once: the call after it reads again
+  f.env.TEST_MODE = ""
+  const again = await read()
+  assert.equal(again.windows.length, 1)
+  assert.equal(await runs(), 2)
   await f.assertClean()
 })
 
-test("the direct read's renewal: invalid_grant is a sign-in that no longer works, anything else a failed read", async t => {
-  const ended = structuredClone(STORED)
-  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
-  for (const [status, body, kind] of [
-    [400, { error: "invalid_grant" }, "auth"],
-    [401, { error: "invalid_grant" }, "auth"],
-    [400, { error: "invalid_request" }, ""],
-    [503, { error: "backendError" }, ""],
-    [500, "not json", ""],
-  ]) {
-    const fetchFn = async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status })
-    await assert.rejects(readQuotaDirect({ env: {}, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ended, fetch: fetchFn }),
-      e => e.kind === kind && /sign-in/.test(e.message), `${status} ${JSON.stringify(body)}`)
-  }
-})
-
-test("only a region refusal reads the quota directly", async t => {
-  for (const error of [
-    "Eligibility check failed: EOF",
-    "Authentication required",
-    "quota request timed out",
-  ]) {
-    let asked = 0
-    const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: JSON.stringify({ status: "ERROR", error }) })
-    const result = await createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY } })()
-    assert.deepEqual(result.windows, [])
-    assert.equal(asked, 0, error)
-  }
+test("a read that runs out of time says so plainly, and is asked again a minute later", async t => {
+  const f = await fixture(t, { TEST_MODE: "hang" })
+  const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
+  let clock = 0
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => live })
+  const result = await read()
+  assert.deepEqual(result.windows, [])
+  assert.equal(result.signIn, "kept")
+  assert.match(result.error, /agy's own usage read didn't finish in 3s[\s\S]*asked again in a minute[\s\S]*network or proxy/)
+  const runs = async () => (await f.logs()).filter(l => l.args[0] === "-p").length
+  assert.equal(await runs(), 1)
+  clock += 59_000
+  assert.equal((await read()).error, result.error)
+  assert.equal(await runs(), 1, "held for a minute")
+  f.env.TEST_MODE = ""
+  clock += 1_000
+  assert.equal((await read()).windows.length, 1)
+  assert.equal(await runs(), 2)
+  await f.assertClean()
 })
 
 test("agyRefusal: Google turning the account away, never a network failure or agy's own log lines", () => {

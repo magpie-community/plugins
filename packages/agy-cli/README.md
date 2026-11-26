@@ -13,8 +13,8 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
 流式响应。
 
 - 底层是真正的 agy CLI，走它自带的 ACP 通道。ACP 握手里的 `clientInfo` 是本插件自己的
-  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己只在一种情况下请求 Google
-  的接口：agy 因地区拒绝 `/usage` 时，按 agy 的方式读额度（见「额度」）。
+  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己不请求 Google 的接口：
+  额度也只经 agy 自己读（`agy -p /usage`，见「额度」），不拿 agy 存的登录令牌去直接查。
 - 客户端自己的工具（读写文件、执行命令等）通过 MCP 暴露给模型。工具由客户端执行，结果
   回传到同一轮 agy 对话里，模型看到的是原生工具调用。
 - 账号风险不由插件决定。Google 的使用政策变化时，插件无法替你保证账号不受限制。
@@ -80,7 +80,7 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   Google 那边完成，插件不直接请求 Google。每条结果的标题是来源的域名，链接是 Google 的
   跳转地址（agy 给出的就是这样），正文是摘要里引用这个来源的句子。按账号搜索时，用的是
   这个账号的 agy 登录。
-- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。插件直接向 Google Code Assist 读额度时，Magpie 还会显示这次读取给出的账号套餐和邮箱。
+- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。agy 的 `/usage` 报告不带账号套餐，所以不显示套餐。
 
 ## 助手预填（assistant prefill）
 
@@ -177,21 +177,26 @@ magpie quota refresh agy-cli --json
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
 分别列出。同一组的模型共用这一组的 5 小时和每周额度，所以 Magpie 显示各组，并在「全部模型」
 里列出组里的每个模型，读数是这一组用得最多的那个额度（先用完的那个；Google 自己给每个模型的
-读数就是组的读数）。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
+读数就是组的读数）。插件不写 Google 令牌，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
-在 Antigravity 未开放的地区，agy 会在资格检查时拒绝 `/usage`（"not currently available in
-your location"），尽管它自己查的额度已经拿到了。这时插件按 agy 的方式自己查：用 agy 存的登录，
-以 agy 的 User-Agent 依次请求 Google Code Assist 的 `loadCodeAssist` 和
-`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。个人 Google 账号的
-`loadCodeAssist` 没给项目时，按 Google 给所有个人账号用的 `aicode-consumers` 项目查（agy
-自己不带项目查，Google 会拒绝）。这次查询也失败时，账号显示 agy 的拒绝原因和查询失败的原因，
+额度只经 agy 自己读：插件运行 `agy -p /usage`，Google 看到的每个请求都是 agy 自己发的。插件不读
+agy 存的登录令牌去直接请求 Google 的额度接口，也不替 agy 续期令牌（Google 已经提醒过，第三方工具
+这样直接读可能让账号被标记）。agy 自己读一次要向 Google 依次请求十来次，通常 5–10 秒，
+冷启动、Windows、新加的账号或网络/代理慢时更久，所以插件给它 45 秒。Magpie 一次只等 20 秒：
+超过时账号显示「agy 还在读这个账号的额度」，agy 接着读完，下次刷新直接显示结果，不再运行一次 agy。
+45 秒内仍没读完时，账号说明 agy 自己的读取没在 45 秒内完成、通常是网络或代理慢，一分钟后再试。
+agy 因地区拒绝 `/usage`（"not currently available in your location"）时，账号显示 agy 的拒绝原因，
 不显示数字。
+
+agy 的访问令牌已到期或两分钟内到期（有刷新令牌）时，插件不为额度运行 agy：agy 续期失败时
+可能在浏览器里打开 Google 登录页（#1234）。账号显示「agy 的登录待续期」，agy 在这个账号下次对话时
+自己续期，之后再读额度；在此之前显示上次读到的额度。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
 先看系统钥匙串（macOS）或凭据管理器（Windows）里 agy 存的登录，只读有没有、何时到期。没有登录、
 登录已过期且无法续期、或 agy 已在这份登录上失败过时，不运行 agy，账号显示登录已过期，直到重新登录。
-其他失败的额度查询等 10 分钟再试，每次翻倍，最长 6 小时。
+超时的额度查询一分钟后再试；其他失败的等 10 分钟再试，每次翻倍，最长 6 小时。
 
 macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里，读不到登录钥匙串，agy 在那里也读不到。
 这时 agy 自己的账号用 Magpie 窗口为它复制的那份登录（见上文）；没有复制的，账号会说明原因：
@@ -221,7 +226,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 一条提示词的字节预算（agy 会把一条提示词截在 128 KiB） |
 | `AGY_BRIDGE_MAX_REPLAY_BYTES` | 模型窗口减去输出和 32K token，按每 token 2 字节算（插件不认识的模型为 384 KiB） | 新会话重放历史的字节预算，需要几条提示词就分几条发（agy 1.5.17 起）；超出的部分不发，并告诉模型 |
 | `AGY_BRIDGE_SEED_REPLAY` | 开启 | 设为 `0` 时重放只发一条 `AGY_BRIDGE_MAX_PROMPT_BYTES` 大小的提示词，即 0.1.139 之前的做法 |
-| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
+| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 45000 | agy 自己读额度的时间预算，最高 120000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | 未设置 | 设为 `skip` 时插件不读 agy 存的登录 |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
