@@ -390,7 +390,7 @@ test("a coding plan with no live ZCode session says its gift plans need ZCode's 
   const line = (u) => u.windows.find((w) => w.name === "ZCode gift plans (-Trial models) need ZCode's sign-in")
   const h = await hooks()
   const key = await h.auth.usage(async () => ({ type: "api", key: state.key }), { id: "zcode" })
-  expect(line(key)).toEqual({ name: "ZCode gift plans (-Trial models) need ZCode's sign-in", used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" })
+  expect(line(key)).toEqual({ name: "ZCode gift plans (-Trial models) need ZCode's sign-in", used: 0, aside: true, display: "not read with an API key: add the account with a Z.ai or BigModel sign-in" })
   expect(Object.keys(await h.provider.models({ models: {} }, { auth: { type: "api", key: state.key } })).some((id) => id.endsWith("-Trial"))).toBe(false)
   const dead = ["{}", JSON.stringify({ exp: now - 60 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".synthetic"
   const aged = { ...auth, refresh: JSON.stringify({ ...state, jwt: dead }) }
