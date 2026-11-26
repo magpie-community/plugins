@@ -36,6 +36,29 @@ which magpie reads. The key is the per-agent gateway key magpie gives UEBox
 (`magpie-uebox`), written as a command UEBox runs because UEBox encrypts any key
 it is given and cannot be handed one from outside. Usage is counted as `uebox`.
 
+## Library support
+
+`uebox.agent.js` declares UEBox's `library` places so magpie's Library can sync:
+
+- **Instructions** (`$APPDATA/unreal-box/instructions.md`): UEBox reads this file
+  as `<user_instructions>` in its system prompt (capped at 4000 characters by
+  UEBox).
+- **Memory**: works through both the Memory digest written into `instructions.md`
+  (when UEBox is ticked under Library → Instructions) and the `magpie-memory` MCP
+  server (when ticked for UEBox under Library → MCP servers).
+- **MCP servers** (`$APPDATA/unreal-box/mcp.json`, format `claude`): supports
+  both `stdio` and `http` servers under `mcpServers`. Note that UEBox only accepts
+  server IDs matching `/^[a-zA-Z0-9_-]{1,32}$/`.
+- **Skills** (`$APPDATA/unreal-box/skills`): **set UEBox to Copy mode**
+  (`magpie library skill how copy uebox`, or switch UEBox to Copy in Library →
+  Skills). UEBox's skill scanner uses `Dirent.isDirectory()`, which skips
+  symlinks and Windows directory junctions.
+
+Hooks, Environment variables, Subagents, Slash commands, and Rules are not
+applicable: magpie currently exposes only `instructions`, `mcp`, and `skills` to
+plugin-added agents, and UEBox itself does not load external files for those five
+categories.
+
 ## Limits
 
 - UEBox reads `models.json` when it starts, and again when Settings → Models is

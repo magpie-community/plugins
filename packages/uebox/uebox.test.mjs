@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { PROVIDER_ID, buildProvider, link_path, merge, sync, uebox_dir } from "./lib/sync.mjs"
+import { agent, connect } from "./uebox.agent.js"
 
 const link = {
   magpie_v1: "http://127.0.0.1:3425/v1",
@@ -135,4 +136,20 @@ test("the paths are UEBox's and magpie's", () => {
   expect(uebox_dir({}).endsWith("unreal-box")).toBe(true)
   if (process.platform !== "win32") expect(uebox_dir({ XDG_CONFIG_HOME: "/x" })).toBe(join("/x", "unreal-box"))
   if (process.platform !== "win32") expect(link_path({ XDG_CONFIG_HOME: "/x" })).toBe(join("/x", "magpie", "uebox-link.json"))
+})
+
+test("uebox.agent.js declares Library places for instructions, MCP, and skills", () => {
+  expect(agent.id).toBe("uebox")
+  expect(agent.library).toEqual({
+    instructions: "$APPDATA/unreal-box/instructions.md",
+    mcp: "$APPDATA/unreal-box/mcp.json",
+    mcpFormat: "claude",
+    skills: "$APPDATA/unreal-box/skills",
+  })
+  const out = connect({
+    gateway: { key: "k", url: "http://127.0.0.1:8425", v1: "http://127.0.0.1:8425/v1" },
+    models: [{ id: "m1", name: "M1", context: 1000, output: 100, images: false, efforts: [] }],
+  })
+  expect(out.magpie_key).toBe("k")
+  expect(out.magpie_models).toHaveLength(1)
 })
