@@ -94,6 +94,14 @@ vendor, not a Doubao task. Add that API to magpie as its own provider instead.
   is read about seven times a second.
 - **Text only.** Images and files in a request are left out.
 - **Usage** is Doubao's own prompt count; the reply's tokens are estimated.
+- **A spent allowance** is not an answer. Doubao says it as an ordinary
+  reply (「本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。
+  升级正式订阅」, or 本周 / 今日 for a shorter window); a reply that is that
+  notice and nothing else is answered as a 429 with Doubao's words, so magpie
+  rests the account and asks the next one. When it says when it is back
+  (下个月, 下周, 明天), the 429 says that time too, on Beijing's clock, as
+  `resets_at` and `Retry-After`. A stream holds back a reply that begins like
+  the notice until it is either the notice or an answer.
 - **The DevTools port** is on 127.0.0.1 only, but any program on this
   computer can drive the signed-in Doubao window through it while it runs.
 - macOS and Windows. Neither app has a Linux build.

@@ -12,11 +12,12 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | Package | Signs in to | Provider id |
 |---|---|---|
 | [agnes](packages/agnes) | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance | `agnes` |
-| [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
+| [agnes-code](packages/agnes-code) | Agnes Code, both sites — international (agnes-ai.com) and China (agnes-ai.cn) as `agnes-code` and `agnes-code-cn` — with a browser loopback sign-in on any platform or the desktop's saved session (Windows): live models, daily credit check-in and points balance per site (unofficial) | `agnes-code`, `agnes-code-cn` |
 | [agy-cli](packages/agy-cli) | Antigravity on your installed agy CLI through ACP (`agy acp`), with agy's own Google sign-in: only the models agy offers this client, a process pool, MCP tool bridge and session resume (unofficial) | `agy-cli` |
 | [antigravity](packages/antigravity) | Withdrawn for new users: Google suspends accounts it sees used this way. Kept working for whoever has it; use agy-cli instead | `antigravity` |
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
+| [bailucode](packages/bailucode) | BAILU AI (白鹿) Open Platform (bailucode.com): an API key, or a browser sign-in that fetches the account's key — live models, the 白鹿通行证 quota (credits, tokens, per-protocol packs) on the card, and the portal's daily check-in | `bailucode` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |

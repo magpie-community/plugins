@@ -4,22 +4,24 @@ import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
 import { familiesInGroup } from "./model-ids.mjs"
-import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./signin.mjs"
+import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
 
-const DEFAULT_TIMEOUT_MS = 15_000
-const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
+// agy's own read, --version included. Magpie waits 20 seconds for a usage
+// call; a read that takes longer goes on past it (createUsageReader).
+const DEFAULT_TIMEOUT_MS = 45_000
+const MAX_TIMEOUT_MS = 120_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
-// The direct read made before agy -p (fetchUsage's first) takes about 1.5
-// seconds; agy -p, 5 to 10. The first gets this long, agy -p the rest.
-const FIRST_READ_MS = 5_000
 
 // kind: "auth" (agy says it needs a sign-in), "timeout" (output: what agy
-// had printed by then, never shown), "cancel", or none.
+// had printed by then, never shown), "cancel", or none. slow: ran out of
+// time where no sign-in is waited on (agy --version), asked again as soon
+// as a timeout is.
 class UsageError extends Error {
-  constructor(message, { kind = "", output = "" } = {}) {
+  constructor(message, { kind = "", output = "", slow = false } = {}) {
     super(message)
     this.kind = kind
     this.output = output
+    this.slow = slow
   }
 }
 
@@ -37,16 +39,6 @@ function withoutDiagnostics(output) {
 
 const ELIGIBILITY = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i
 const NETWORK = /\b(?:eof|timeout|timed out|deadline exceeded|no such host|connection (?:refused|reset)|network|proxy|tls|ssl|certificate)\b/i
-
-// refusedEligibility says agy turned the run away on its eligibility
-// check. agy's print mode waits for that verdict before any command,
-// /usage too, and stops there when Antigravity says it doesn't serve the
-// account where it is (UNSUPPORTED_LOCATION), though the quota read agy
-// made meanwhile had its answer. (A check that failed on the network
-// says "Eligibility check failed: EOF"; that one is left alone.)
-function refusedEligibility(output) {
-  return ELIGIBILITY.test(output)
-}
 
 // Google's 403 #3501 at agy's eligibility check: Google turns the account
 // itself away, and agy refuses every command with it, `agy models`, print
@@ -254,7 +246,8 @@ export function parseUsageReport(value) {
   if (!windows.some(w => w.used !== undefined)) {
     throw new UsageError("Limits not available: agy returned no enabled, measured quota buckets.")
   }
-  // /usage has no verified account or plan identity. Do not borrow one elsewhere.
+  // /usage has no verified account or plan identity: none is made up from
+  // it.
   return { windows: [...[...models.values()].sort((a, b) => a.name.localeCompare(b.name)), ...windows] }
 }
 
@@ -395,126 +388,16 @@ function supportedVersion(output) {
   return major > 1 || major === 1 && (minor > 1 || minor === 1 && patch >= 11)
 }
 
-// ---- the quota read agy makes, made directly ----------------------------
-//
-// Recorded from agy 1.5.9's own /usage (CLOUD_CODE_URL pointed at a
-// recording proxy, 2026-11-16): with its stored Google sign-in it asks
-//   POST <Code Assist>/v1internal:loadCodeAssist {"metadata":{"ideType":"ANTIGRAVITY"}}
-// for the account's project (cloudaicompanionProject), then
-//   POST <Code Assist>/v1internal:retrieveUserQuotaSummary {"project":"<that project>"}
-// whose reply is the groups /usage prints, in camelCase. Both carry
-// User-Agent "antigravity/cli/<version> (aidev_client; os_type=<GOOS>;
-// arch=<GOARCH>; cl=<changelist>; auth_method=<auth_method>)" and
-// Content-Type application/json. With loadCodeAssist naming an ineligible
-// tier and no current one, agy still read the quota (200) and then
-// refused /usage with "Eligibility check failed: …" (01dadada on X:
-// 绕过查额度前询问地区限制就可以查到). So when agy refuses for that, the
-// same two requests are made here, the same way, and nothing else.
-
-const CODE_ASSIST = "https://daily-cloudcode-pa.googleapis.com"
-const TOKEN_URL = "https://oauth2.googleapis.com/token"
-// The installed-app OAuth client agy signs in with (its token is renewed
-// with the same client; the retired antigravity plugin used it too).
-// Google says such a client's secret isn't one. Written in parts so secret
-// scanners don't take it for a leak.
-const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep" + ".apps.googleusercontent.com"
-const CLIENT_SECRET = ["GOCSPX", "K58FWR486LdLJ1mLB8sXC4z6qDAf"].join("-")
-// The build changelist each agy release puts in its User-Agent (cl=), read
-// from its requests; a release not listed goes with the newest known one.
-const CLS = { "1.5.9": "1021519450" }
-const NEWEST_CL = "1021519450"
-const GOOS = { darwin: "darwin", linux: "linux", win32: "windows" }
-const GOARCH = { arm64: "arm64", x64: "amd64" }
-
-export function quotaUserAgent(version, authMethod, platform = process.platform, arch = process.arch) {
-  return `antigravity/cli/${version} (aidev_client; os_type=${GOOS[platform] ?? platform}; arch=${GOARCH[arch] ?? arch}; cl=${CLS[version] ?? NEWEST_CL}; auth_method=${authMethod || "consumer"})`
-}
-
-const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p.id : ""
-
-// The project Code Assist serves every consumer (personal Google) account
-// under: loadCodeAssist names it for Free, Pro and Ultra alike. Where
-// Google refuses the account at agy's eligibility check, loadCodeAssist
-// can name no project at all, and agy then asks retrieveUserQuotaSummary
-// with none, which Google answers 403 #3501 (agy 1.5.10, recorded
-// 2026-11-18), while its ACP sessions, which run no eligibility check,
-// go on serving the account's requests (IcyLiqu1d on X). Asked with this
-// project, the same account's quota answers 200.
-export const CONSUMER_PROJECT = "aicode-consumers"
-
-// readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
-// sign-in, as agy asks it. An access token with under two minutes left is
-// renewed in memory only; agy's stored sign-in is never written.
-export async function readQuotaDirect({
-  env = process.env, version, deadline, signal,
-  stored = storedToken, fetch: fetchFn = globalThis.fetch, now = Date.now,
-} = {}) {
-  const left = () => deadline - now()
-  const timed = () => {
-    if (left() <= 0) throw new UsageError("agy usage query timed out.")
-    const t = AbortSignal.timeout(left())
-    return signal ? AbortSignal.any([signal, t]) : t
-  }
-  const sign = await stored()
-  const token = sign?.token
-  if (!token) throw new UsageError("agy's stored sign-in couldn't be read.")
-  let access = text(token.access_token)
-  const ends = Date.parse(token.expiry ?? "")
-  if (!access || Number.isFinite(ends) && ends > 0 && ends - now() < 2 * 60 * 1000) {
-    if (!text(token.refresh_token)) throw new UsageError("agy's stored sign-in has expired.")
-    const res = await fetchFn(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token.refresh_token, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }).toString(),
-      signal: timed(),
-    })
-    let fresh
-    try { fresh = JSON.parse(await res.text()) } catch {}
-    access = res.ok ? text(fresh?.access_token) : ""
-    // Google's answer for a refresh token it no longer takes: only a new
-    // sign-in mends it
-    if (!access && (res.status === 400 || res.status === 401) && fresh?.error === "invalid_grant") {
-      throw new UsageError("agy's stored sign-in no longer works.", { kind: "auth" })
-    }
-    if (!access) throw new UsageError("agy's stored sign-in couldn't be renewed.")
-  }
-  const base = (text(env.CLOUD_CODE_URL) || CODE_ASSIST).replace(/\/+$/, "")
-  const headers = {
-    "User-Agent": quotaUserAgent(version, text(sign.auth_method)),
-    Authorization: "Bearer " + access,
-    "Content-Type": "application/json",
-    "Accept-Encoding": "gzip",
-  }
-  const call = async (method, body) => {
-    const res = await fetchFn(`${base}/v1internal:${method}`, { method: "POST", headers, body: JSON.stringify(body), signal: timed() })
-    const reply = await res.text()
-    if (res.status !== 200) throw new UsageError(`Antigravity's ${method} answered ${res.status}.`)
-    try { return JSON.parse(reply) } catch { throw new UsageError(`Antigravity's ${method} answered with no JSON.`) }
-  }
-  const load = await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } })
-  let project = companion(load?.cloudaicompanionProject)
-  // a consumer account Google names no project for: the one every consumer
-  // account is served under (a Workspace or Cloud one has its own)
-  if (!project && load?.gcpManaged !== true && (text(sign.auth_method) || "consumer") === "consumer") project = CONSUMER_PROJECT
-  if (!project) {
-    const why = text((load?.ineligibleTiers ?? []).find(x => text(x?.reasonMessage))?.reasonMessage)
-    throw new UsageError(why ? `Antigravity names no project for this account (${why.slice(0, 300)})` : "Antigravity names no project for this account.")
-  }
-  return call("retrieveUserQuotaSummary", { project })
-}
-
 export async function fetchUsage(agy, {
   env = process.env,
   timeoutMs = env.AGY_BRIDGE_USAGE_TIMEOUT_MS,
   maxOutputBytes = MAX_OUTPUT_BYTES,
   signal,
   tempRoot = os.tmpdir(),
-  quota = readQuotaDirect,
-  direct = false,
-  first = false,
 } = {}) {
   if (!agy) throw new UsageError(NO_AGY)
-  const deadline = Date.now() + timeout(timeoutMs)
+  const limit = timeout(timeoutMs)
+  const deadline = Date.now() + limit
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
   let pendingTreeKill = null
   try {
@@ -550,58 +433,27 @@ export async function fetchUsage(agy, {
     let version = binary && versionCache.get(binary)
     if (!version) {
       version = await run(agy, ["--version"], options).catch((error) => {
-        if (error?.kind === "timeout") throw new UsageError(error.message)
+        // not kind "timeout": --version needs no sign-in, so its hang is
+        // never agy waiting on one
+        if (error?.kind === "timeout") throw new UsageError(`agy didn't say its version in ${limit / 1000}s (its first start after an update can take that long), so the quota wasn't read. It's asked again in a minute.`, { slow: true })
         throw error
       })
       if (version.code !== 0) throw commandFailure(version.stderr)
       if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
       if (binary) versionCache.set(binary, { code: 0, stdout: version.stdout, stderr: "" })
     }
-    // agy's access token has ended (or is about to): agy renews it when it
-    // runs, and when that renewal fails, even for a moment (DNS at startup,
-    // a slow keyring), agy starts its own Google sign-in, which on Windows
-    // opens the browser past every shim (plugins#1234). So the quota is
-    // read the way agy reads it, renewing the token in memory, and agy -p
-    // isn't run: a failed renewal is a failed read, never a sign-in.
-    if (direct) {
-      let data
-      try {
-        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
-      } catch (error) {
-        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
-        if (error instanceof UsageError) throw error
-        throw new UsageError("agy's stored sign-in couldn't be renewed. Check the network or proxy.")
-      }
-      return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
-    }
-    // With a stored sign-in to read it with, the quota is read first the
-    // way agy's /usage reads it: loadCodeAssist, then
-    // retrieveUserQuotaSummary. agy -p /usage makes those two only after
-    // its whole start, about twelve Code Assist calls in six rounds one
-    // after another (loadCodeAssist four times, fetchUserInfo,
-    // fetchAvailableModels, fetchAdminControls, listExperiments…, recorded
-    // from agy 1.5.12 on 2026-11-20): 5 to 10 seconds on a quick network,
-    // past the deadline on a slower one or behind a proxy, where the card
-    // said "agy usage query timed out.". The two calls take about 1.5
-    // seconds. When they can't answer (a sign-in that can't be read, a
-    // refusal, a reply with no quota), agy -p is asked as before, in the
-    // time left, and its answer (a refusal, a sign-in agy asks for) stands.
-    //
-    // It gets FIRST_READ_MS of the deadline, not all of it: a read that
-    // can't connect (a proxy down, a network that drops Google) hung until
-    // the deadline and left agy -p a second, so the card said "timed out"
-    // when agy -p alone would have answered (plugins#1522).
-    let firstFailed = ""
-    if (first) {
-      try {
-        const data = await quota({ env, version: version.stdout.trim(), deadline: Math.min(deadline, Date.now() + FIRST_READ_MS), signal })
-        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
-      } catch (error) {
-        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
-        firstFailed = error instanceof UsageError ? error.message : "a network request failed"
-      }
-    }
-    const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
+    // Only agy asks Google for the quota: its own /usage, so every request
+    // Google sees is one agy makes itself. agy -p /usage makes about twelve
+    // Code Assist calls in six rounds, one after another (loadCodeAssist
+    // four times, fetchUserInfo, fetchAvailableModels, fetchAdminControls,
+    // listExperiments…, recorded from agy 1.5.12 on 2026-11-20), before
+    // the quota: 5 to 10 seconds on a quick network, 20 or more behind a
+    // slow proxy (2 to 3 seconds a call, plugins#1255), or on agy's first
+    // start. It gets the whole deadline.
+    const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options).catch((error) => {
+      if (error?.kind !== "timeout") throw error
+      throw new UsageError(`agy's own usage read didn't finish in ${limit / 1000}s. agy asks Google about twelve times, one after another, before it has the quota, which takes longer behind a slow network or proxy. It's asked again in a minute; if this stays, check agy's network or proxy.`, { kind: "timeout", output: error.output })
+    })
     let report
     try { report = JSON.parse(result.stdout) } catch {}
     if (result.code === 0 && report?.status === "SUCCESS") return parseUsageReport(report)
@@ -610,28 +462,6 @@ export async function fetchUsage(agy, {
       ? text(report.error) || text(report.response)
       : result.stderr + "\n" + result.stdout
     const failure = commandFailure(said)
-    // Refused on eligibility (a region Antigravity doesn't serve), not on
-    // a network failure: the quota is read the way agy reads it. Any
-    // failure of that read leaves agy's own answer standing: unknown,
-    // never zero or full.
-    if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
-      // when that read fails too, the error says why, after agy's refusal
-      const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
-      // asked already, before agy -p: not asked twice
-      if (firstFailed) throw alsoFailed(firstFailed)
-      let data
-      try {
-        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
-      } catch (error) {
-        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
-        throw alsoFailed(error instanceof UsageError ? error.message : "a network request failed")
-      }
-      try {
-        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
-      } catch {
-        throw alsoFailed("Google's reply had no quota in it")
-      }
-    }
     throw failure
   } finally {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -653,12 +483,17 @@ export async function fetchUsage(agy, {
 
 // A read that failed isn't run again for this long, doubled for each
 // failure in a row, up to BACKOFF_MOST: agy is a process of its own, and one
-// that fails every few minutes all day helps nobody.
+// that fails every few minutes all day helps nobody. One that ran out of
+// time is asked again sooner: a slow minute on the network (or agy's first
+// start after an update) said "timed out" for ten (flmaximwang on
+// plugins#1522), and a newly added account showed no quota for as long
+// (Jayc1world on X).
 const BACKOFF_FIRST_MS = 10 * 60 * 1000
+const BACKOFF_SLOW_MS = 60 * 1000
 const BACKOFF_MOST_MS = 6 * 60 * 60 * 1000
 
-function backoff(n) {
-  return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
+function backoff(n, slow = false) {
+  return Math.min((slow ? BACKOFF_SLOW_MS : BACKOFF_FIRST_MS) * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
 }
 
 // what usage says while no agy is found: never held (createUsageReader),
@@ -667,15 +502,27 @@ export const NO_AGY = "agy CLI not found. Sign in to this account again in magpi
 
 const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or run `agy` in a terminal; magpie doesn't run agy for usage until then."
 
+// what usage says while agy's access token is due to be renewed (below)
+export const DUE_FOR_RENEWAL = "agy's sign-in is due to be renewed, and agy renews it itself on this account's next chat; the quota is read after that. " +
+  "magpie doesn't run agy just for usage meanwhile: a renewal that fails there can open a Google sign-in in the browser."
+
+// what usage says while agy is still reading, past what the caller waits
+export const STILL_READING = "agy is still reading this account's quota (its own read takes longer here: a slow network or proxy, or agy's first start). " +
+  "It shows on the next refresh."
+
 // No completed-result cache: sequential refreshes must see account/allowance changes.
 // What is kept is what keeps agy from being run when it can't answer:
 // - agy's stored sign-in is read first (signin.mjs), and agy isn't run when
 //   there is none, or it has ended with nothing to renew it: the read says
 //   the sign-in has expired (signIn "expired"), which magpie shows on the
 //   account, and nothing starts a Google sign-in in the background.
-// - while its access token has ended with a refresh token to renew it, agy
-//   -p isn't run either: the quota is read directly (fetchUsage's direct),
-//   so a renewal that fails for a moment can't start one (plugins#1234).
+// - while its access token has ended (or ends within two minutes) with a
+//   refresh token to renew it, agy isn't run either: agy renews the token
+//   when it runs, and when that renewal fails, even for a moment (DNS at
+//   startup, a slow keyring), agy starts its own Google sign-in, which on
+//   Windows opens the browser past every shim (plugins#1234). agy's chats
+//   renew it; the quota is read once they have (DUE_FOR_RENEWAL). The
+//   plugin never renews it, nor asks Google itself.
 // - an explicit authentication rejection, or an ended token hanging silently
 //   or with sign-in talk, blocks further background runs for that credential.
 //   Diagnostic-only output isn't evidence of a browser sign-in.
@@ -683,16 +530,51 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 //   held: finding it costs a few stat calls, and an agy installed since (a
 //   sign-in installs it; tmr11235 on X saw it) is used on the next read,
 //   not after hours of "not found" while its chats already run.
+//
+// Magpie waits 20 seconds for a usage call; agy's own read can take
+// longer (fetchUsage). A call waits waitMs at most and then says agy is
+// still reading (STILL_READING); the read goes on to its own deadline, and
+// what it reads with nobody waiting is kept for the next call (taken once,
+// within LATE_KEPT_MS), so the next refresh shows it without running agy
+// again. A failure is held as any other is.
+const CALL_WAIT_MS = 17_000
+const LATE_KEPT_MS = 3 * 60 * 1000
+
 export function createUsageReader(resolveAgy, options = {}) {
-  const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
+  const { signIn = () => storedSignIn(), now = () => Date.now(), waitMs = CALL_WAIT_MS, onSettled = () => {}, ...fetchOptions } = options
   const pending = new Map()
   let held = null
+  let late = null
   let saidExpired = false
   const expired = (why) => {
     saidExpired = true
     return { windows: [], error: `${why}. ${NEEDS_SIGN_IN}`, signIn: "expired" }
   }
+  // what a finished read says, worked out once for whoever takes it
+  const settle = (outcome, { agy, key, stored }) => {
+    if (!outcome.error) {
+      const result = { ...structuredClone(outcome.result), signIn: saidExpired ? "renewed" : "kept" }
+      held = null
+      saidExpired = false
+      return result
+    }
+    const error = outcome.error
+    const message = error instanceof UsageError ? error.message : "agy usage query failed. Check the CLI and temporary-directory permissions."
+    if (error?.kind === "cancel") return { windows: [], error: message, signIn: "kept" }
+    const output = String(error.output ?? "")
+    const auth = error?.kind === "auth" || error?.kind === "timeout" && stored?.state === "present" && stored.expired &&
+      (!output.trim() || SIGN_IN_TALK.test(withoutDiagnostics(output)))
+    if (auth && stored?.state === "present") {
+      noteDead(stored)
+      return expired("agy's sign-in no longer works")
+    }
+    const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
+    held = { key, agy, n, until: now() + backoff(n, !auth && (error?.kind === "timeout" || error?.slow === true)), error: message, auth }
+    if (auth) saidExpired = true
+    return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
+  }
   return async () => {
+    const asked = Date.now()
     let stored
     try { stored = await signIn() } catch { stored = { state: "unknown" } }
     const why = cannotSignIn(stored)
@@ -703,41 +585,44 @@ export function createUsageReader(resolveAgy, options = {}) {
     const key = stored?.state === "present" ? stored.fp : "unknown"
     const agy = resolveAgy()
     if (!agy) return { windows: [], error: NO_AGY, signIn: "kept" }
+    // read while nobody waited: this call's answer, once
+    if (late && late.key === key && late.agy === agy && now() - late.at < LATE_KEPT_MS) {
+      const { reply } = late
+      late = null
+      return reply
+    }
+    late = null
     // a failure held for another agy (gone, or another found since) isn't
     // this one's
     if (held && held.key === key && held.agy === agy && now() < held.until) {
       return { windows: [], error: held.error, signIn: held.auth ? "expired" : "kept" }
     }
-    try {
+    let read = pending.get(agy)
+    if (!read) {
       // an access token that has ended or ends within two minutes, with a
-      // refresh token: read without running agy (fetchUsage's direct)
-      const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
-      if (!pending.has(agy)) {
-        // any other stored sign-in: read directly first, agy -p after
-        const first = !direct && stored?.state === "present"
-        const query = fetchUsage(agy, { ...fetchOptions, direct, first }).finally(() => {
-          if (pending.get(agy) === query) pending.delete(agy)
-        })
-        pending.set(agy, query)
+      // refresh token: agy isn't run (plugins#1234, above)
+      if (stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000) {
+        return { windows: [], error: DUE_FOR_RENEWAL, signIn: "kept" }
       }
-      const result = { ...structuredClone(await pending.get(agy)), signIn: saidExpired ? "renewed" : "kept" }
-      held = null
-      saidExpired = false
-      return result
-    } catch (error) {
-      const message = error instanceof UsageError ? error.message : "agy usage query failed. Check the CLI and temporary-directory permissions."
-      if (error?.kind === "cancel") return { windows: [], error: message, signIn: "kept" }
-      const output = String(error.output ?? "")
-      const auth = error?.kind === "auth" || error?.kind === "timeout" && stored?.state === "present" && stored.expired &&
-        (!output.trim() || SIGN_IN_TALK.test(withoutDiagnostics(output)))
-      if (auth && stored?.state === "present") {
-        noteDead(stored)
-        return expired("agy's sign-in no longer works")
-      }
-      const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
-      held = { key, agy, n, until: now() + backoff(n), error: message, auth }
-      if (auth) saidExpired = true
-      return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
+      const entry = { waiting: 0 }
+      entry.done = fetchUsage(agy, fetchOptions).then(result => ({ result }), error => ({ error })).then((outcome) => {
+        if (pending.get(agy) === entry) pending.delete(agy)
+        const reply = settle(outcome, { agy, key, stored })
+        // nobody waits for it any more: the next call takes it
+        if (entry.waiting === 0 && !outcome.error) late = { key, agy, reply, at: now() }
+        onSettled(reply)
+        return reply
+      })
+      pending.set(agy, entry)
+      read = entry
     }
+    read.waiting++
+    let timer
+    const gaveUp = new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, waitMs - (Date.now() - asked)), null) })
+    const reply = await Promise.race([read.done, gaveUp])
+    clearTimeout(timer)
+    read.waiting--
+    if (reply) return structuredClone(reply)
+    return { windows: [], error: STILL_READING, signIn: "kept" }
   }
 }

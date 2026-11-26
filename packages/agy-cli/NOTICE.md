@@ -54,7 +54,7 @@ A1–A16、U1–U6 逐项并入。两边都有、且 `acb8d84` 写法更新的�
 | A15 | 防止 503 进程池饿死：并发上限默认值由 8 改为 16（`AGY_BRIDGE_MAX_PROCS`，`magpie.maxConcurrency` 同为 16）。`evictLRU` 分两级淘汰，第二级淘汰客户端已断开超过 30 秒（`AGY_BRIDGE_DETACHED_EVICT_MS`）的挂起工具回合，之后补交的合法 `tool_result` 会在新进程上重放。`acquireProcLocked` 遇到同会话旧回合时先判断过期并回收。历史压缩后变短的新请求判为 fork，回收旧回合 |
 | A16 | 长历史重放预算：`renderInitialPromptParts` 默认限制在 112 KiB（`AGY_BRIDGE_MAX_PROMPT_BYTES`）内。先为必保段预留预算（system 说明、`</conversation_history>` 闭合标签及禁止输出工具调用声明的文字、完整的 `<current_turn>`），历史按头尾保留，超长的 `[tool result]` 保留首尾、省略中间，保证不被 agy 的 128 KiB 尾部截断切掉 |
 
-## 4. `usage.mjs` 并入的修复（U1–U6）
+## 4. `usage.mjs` 并入的修复与改动（U1–U7）
 
 | 编号 | 内容 |
 |---|---|
@@ -64,6 +64,7 @@ A1–A16、U1–U6 逐项并入。两边都有、且 `acb8d84` 写法更新的�
 | U4 | Windows 上拦截浏览器启动：写入内容为 `@exit /b 1` 的 `open.cmd`，并让 `BROWSER` 指向它 |
 | U5 | PATH 大小写去重：删除非大写的 `Path` 键，继承 `env.PATH`，没有时回落到 `env.Path` |
 | U6 | 临时目录删除遇到 `EBUSY`、`EPERM`、`ENOTEMPTY` 时，先等待在途的 `taskkill` 释放目录句柄，再最多重试 4 次，每次间隔递增 50 ms |
+| U7 | 用量只经 agy 自己读取（`agy -p /usage`）：插件不读 agy 存的登录令牌去直接请求 Google 的额度接口（`loadCodeAssist`、`retrieveUserQuotaSummary`），也不替 agy 续期令牌；Google 看到的每个额度请求都是 agy 自己发的 |
 
 ## 5. 包与文档层改动
 

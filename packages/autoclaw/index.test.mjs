@@ -3370,3 +3370,248 @@ test("catalog gates are judged like the official client's", () => {
   expect(gatedOut([{ effect: "hidden", dimension: "somethingNew" }], ctx)).toBe(true)
   expect(gatedOut([{ effect: "other", dimension: "somethingNew" }], ctx)).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// 按模型的免费额度（plugins#817 的同款问题：一个模型用尽不该连坐整个账号）
+// ---------------------------------------------------------------------------
+
+const quotaState = () => {
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-quota-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  _internal.clearModelQuota()
+  return dir
+}
+
+const catalogModel = (id, name, extra = {}) => ({ id, name, ...extra })
+
+// 真正走接线：loader.fetch 收到 403 → 记账 → usage() 出这一行；
+// 同一模型 200 → 行消失；另一个账号不受影响。
+// 把 index.mjs 里 quotaRefusal 的记账或三处 modelQuotaNote(..., "ok") 去掉，这条会红。
+test("quota: a real 403 is booked to the model that was asked, shows on the card, and its 200 clears it", async () => {
+  const realFetch = globalThis.fetch
+  const dir = quotaState()
+  // 上游拒绝文案点的是 GLM-5.3，但被请求、被拒的是 Flash：Flash 的官方模板
+  // 写的就是这句。照文案记账会把从没被问过的 GLM-5.3 一起挡掉（复查第 1 点）。
+  const SPENT_FLASH = { code: 810000, message: "GLM5.3 免费额度已用完，推荐切换至 Auto 模型" }
+  let answer = () => Response.json(SPENT_FLASH, { status: 403 })
+  globalThis.fetch = async (input, init) => {
+    const u = String(input)
+    if (u.includes("autoclaw-model-config")) return Response.json({ models: [
+      catalogModel("zai_glm-5.3-flash", "GLM-5.3-Flash", { input: ["text"], reasoning: true }),
+      catalogModel("zaicoding_glm-5.3", "GLM-5.3", { input: ["text"], reasoning: true }),
+    ] })
+    if (u.includes("wallets")) return Response.json({ code: 0, data: { total_balance: 1000, wallets: [] } })
+    if (init?.body) {
+      expect(JSON.parse(String(init.body)).model).toBeTruthy()
+      return answer()
+    }
+    return Response.json({ code: 0, data: null })
+  }
+  try {
+    const hooks = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const a = { type: "oauth", access: "a1", uid: "u-a" }
+    const loader = await hooks.auth.loader(async () => a)
+    // 宿主会先读官方目录；usage() 从落盘的目录事实里取显示名
+    await _internal.catalogModels("autoclaw-cn", "a1", {}, undefined)
+    const chat = (model) => loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+    })
+
+    const spent = await chat("zai_glm-5.3-flash")
+    expect(spent.status).toBe(429)
+
+    const rows = async (auth) => (await hooks.auth.usage(async () => auth)).windows.filter((w) => Array.isArray(w.models))
+    const marked = await rows(a)
+    expect(marked.map((w) => w.models[0])).toEqual(["zai_glm-5.3-flash"])
+    expect(marked[0].used).toBe(100)
+    expect(marked[0].name).toBe("GLM-5.3-Flash")
+    // 文案里点到的 GLM-5.3 没有被问过，不能跟着被挡
+    expect(marked.find((w) => w.models[0] === "zaicoding_glm-5.3")).toBeUndefined()
+
+    // 同一模型成功一次 → 行立刻消失
+    answer = () => Response.json({ ok: true })
+    expect((await chat("zai_glm-5.3-flash")).status).toBe(200)
+    expect(await rows(a)).toEqual([])
+
+    // 另一个账号（同 provider，不同 uid）共用一本账才是 bug
+    expect(await rows({ type: "oauth", access: "b1", uid: "u-b" })).toEqual([])
+  } finally {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("quota: only a stated reset period is read from the catalog, never the notice itself", () => {
+  const { catalogQuotaFacts } = _internal
+  // forbiddenNotice 是静态模板（Flash 没有它照样能用），不能当成「已用尽」
+  const autoFast = catalogModel("zai_auto-fast", "Auto-Fast", {
+    metadata: { forbiddenNotice: { desc: "Auto-Fast 模型免费额度已用完，24 小时后会进行重置" } },
+  })
+  expect(catalogQuotaFacts(autoFast).resetHours).toBe(24)
+  expect(catalogQuotaFacts(catalogModel("zai_glm-5.3-flash", "GLM-5.3-Flash", {
+    metadata: { forbiddenNotice: { desc: "GLM5.3 免费额度已用完，推荐切换至 Auto 模型" } },
+  })).resetHours).toBeUndefined()
+  expect(catalogQuotaFacts(undefined)).toEqual({})
+})
+
+test("quota: a spent model blocks itself only, and its row is the only one on the card", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, signinAccountKey } = _internal
+  const auth = { type: "oauth", access: "a", refresh: "r", uid: "u1" }
+  const key = signinAccountKey("autoclaw-cn", auth)
+  modelQuotaNote(key, "zai_glm-x-preview", "exhausted", "GLM-5.4 免费额度已用完,开通连续包月会员继续使用", "upstream", undefined, "autoclaw-cn")
+
+  const windows = modelQuotaWindows("autoclaw-cn", auth, Date.now(), ["zai_glm-x-preview", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
+  expect(windows.length).toBe(1)
+  expect(windows[0].models).toEqual(["zai_glm-x-preview"])
+  expect(windows[0].used).toBe(100)
+  expect(windows[0].aside).toBeFalsy()
+  expect(Date.parse(windows[0].resetsAt)).toBeGreaterThan(Date.now())
+  expect(windows[0].display).toContain("上游未给重置时刻")
+  // 正常模型不加行（没有分母就不画进度条）
+  expect(windows.find((w) => w.models[0] === "zai_glm-5.3-flash")).toBeUndefined()
+})
+
+test("quota: a success clears the mark, and two accounts keep separate ledgers", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, signinAccountKey } = _internal
+  const a = { type: "oauth", access: "a", refresh: "r-a", uid: "u-a" }
+  const b = { type: "oauth", access: "b", refresh: "r-b", uid: "u-b" }
+  const ka = signinAccountKey("autoclaw-cn", a)
+  modelQuotaNote(ka, "zaicoding_glm-5.3", "exhausted", "GLM-5.3 免费额度已用完", "upstream", undefined, "autoclaw-cn")
+  expect(modelQuotaWindows("autoclaw-cn", a, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(1)
+  expect(modelQuotaWindows("autoclaw-cn", b, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(0)
+
+  // 同一模型后来成功 → 立刻放行
+  modelQuotaNote(ka, "zaicoding_glm-5.3", "ok")
+  expect(modelQuotaWindows("autoclaw-cn", a, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(0)
+})
+
+test("quota: the re-check starts at 15 minutes, backs off to 6 hours, and never holds forever", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, modelQuotaHoldMs, modelQuotaHoldUntil, modelQuotaRead, signinAccountKey } = _internal
+  const auth = { type: "oauth", access: "a", refresh: "r", uid: "u2" }
+  const key = signinAccountKey("autoclaw-cn", auth)
+  const said = "GLM-5.4 free quota used up."
+  // 连续被拒：15m, 30m, 1h, 2h, 4h, 6h, 6h（封顶）。先短后长：刚开会员最多等 15 分钟，
+  // 反复撞同一句时也不会变成每分钟一问。
+  const spans = []
+  for (let i = 0; i < 7; i++) {
+    modelQuotaNote(key, "zai_glm-x-preview", "exhausted", said, "upstream", undefined, "autoclaw-cn")
+    spans.push(modelQuotaHoldMs(modelQuotaRead(key, "zai_glm-x-preview")))
+  }
+  expect(spans).toEqual([15, 30, 60, 120, 240, 360, 360].map((m) => m * 60 * 1000))
+
+  // 一次成功即清零，下一轮又从 15 分钟起
+  modelQuotaNote(key, "zai_glm-x-preview", "ok")
+  modelQuotaNote(key, "zai_glm-x-preview", "exhausted", said, "upstream", undefined, "autoclaw-cn")
+  const row = modelQuotaRead(key, "zai_glm-x-preview")
+  const until = Date.parse(row.exhaustedAt) + 15 * 60 * 1000
+  expect(modelQuotaWindows("autoclaw-cn", auth, until - 1, ["zai_glm-x-preview"]).length).toBe(1)
+  expect(modelQuotaWindows("autoclaw-cn", auth, until + 1, ["zai_glm-x-preview"]).length).toBe(0)
+
+  // 官方明说 24h 的按官方时刻，不参与退避
+  modelQuotaNote(key, "zai_auto-fast", "exhausted", "Auto-Fast 免费额度已用完，24 小时后会进行重置", "upstream", undefined, "autoclaw-cn")
+  const fast = modelQuotaRead(key, "zai_auto-fast")
+  expect(modelQuotaHoldUntil(fast)).toBe(Date.parse(fast.resetAt))
+})
+
+// The gateway's catalog carries one number per model: creditCostFactor, what a
+// request costs in points. magpie's `rate` is that multiplier; without it the
+// card and `routing=cheap` saw every AutoClaw model as equally priced.
+test("catalog: the official per-model credit factor becomes the row's rate", async () => {
+  const realFetch = globalThis.fetch
+  let body = {
+    models: [
+      { id: "zai_glm-x-preview", name: "GLM-5.4", creditCostFactor: 2.25, input: ["text"], reasoning: true },
+      { id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", creditCostFactor: 0.5, input: ["text"] },
+      { id: "zai_auto", name: "Auto", creditCostFactor: 0.4, input: ["text"] },
+    ],
+  }
+  globalThis.fetch = async () => Response.json(body)
+  try {
+    const rows = await _internal.catalogModels("autoclaw-cn", "t0ken", {}, undefined)
+    expect(rows["zai_glm-x-preview"].rate).toBe(2.25)
+    expect(rows["zai_glm-5.3-flash"].rate).toBe(0.5)
+    expect(rows["zai_auto"].rate).toBe(0.4)
+
+    // A missing, zero or non-numeric factor adds no rate at all: filling in 0
+    // would claim the model is free.
+    body = {
+      models: [
+        { id: "zai_glm-x-preview", name: "GLM-5.4", input: ["text"] },
+        { id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", creditCostFactor: 0, input: ["text"] },
+        { id: "zai_auto", name: "Auto", creditCostFactor: "n/a", input: ["text"] },
+      ],
+    }
+    const bare = await _internal.catalogModels("autoclaw-cn", "t0ken", {}, undefined)
+    expect("rate" in bare["zai_glm-x-preview"]).toBe(false)
+    expect("rate" in bare["zai_glm-5.3-flash"]).toBe(false)
+    expect("rate" in bare["zai_auto"]).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// The overseas path asks two hosts, and each of them has its own "a success
+// clears the mark" call. A test that only covers the first host would miss the
+// second, so this walks both: 403 on the first host (the second is not asked),
+// a 200 from the first host, then 403 again with the first host refusing the
+// token and the second host answering 200.
+test("quota: a success on either overseas host clears the mark", async () => {
+  const realFetch = globalThis.fetch
+  const dir = quotaState()
+  const SPENT = { code: 810000, message: "GLM-5.4 free quota used up." }
+  const GLOBAL = "https://autoglm-api.autoglm.ai"
+  let host1 = () => Response.json(SPENT, { status: 403 })
+  const host2 = () => Response.json({ ok: true })
+  const asked = []
+  globalThis.fetch = async (input) => {
+    const u = String(input)
+    if (u.includes("wallets")) return Response.json({ code: 0, data: { total_balance: 1000, wallets: [] } })
+    if (u.includes("autoclaw-model-config")) return Response.json({ models: [
+      catalogModel("zai_glm-x-preview", "GLM-5.4", { input: ["text"], reasoning: true }),
+    ] })
+    if (u.startsWith(GLOBAL)) {
+      asked.push("global")
+      return host1()
+    }
+    asked.push("cn")
+    return host2()
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const a = { type: "oauth", access: "a1", uid: "u-overseas" }
+    const loader = await hooks.auth.loader(async () => a)
+    const key = _internal.signinAccountKey("autoclaw", a)
+    const marked = () => Boolean(_internal.modelQuotaRead(key, "zai_glm-x-preview")?.exhaustedAt)
+    const chat = () => loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model: "zai_glm-x-preview", messages: [{ role: "user", content: "hi" }] }),
+    })
+
+    // 403 on the first host: booked, and the second host is not asked
+    expect((await chat()).status).toBe(429)
+    expect(marked()).toBe(true)
+    expect(asked).toEqual(["global"])
+
+    // a 200 from the first host clears it
+    host1 = () => Response.json({ ok: true })
+    expect((await chat()).status).toBe(200)
+    expect(marked()).toBe(false)
+
+    // 403 again, then the first host refuses the token and the second answers
+    host1 = () => Response.json(SPENT, { status: 403 })
+    expect((await chat()).status).toBe(429)
+    expect(marked()).toBe(true)
+    asked.length = 0
+    host1 = () => Response.json({ code: 401, message: "token invalid" }, { status: 401 })
+    expect((await chat()).status).toBe(200)
+    expect(asked).toEqual(["global", "cn"])
+    expect(marked()).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

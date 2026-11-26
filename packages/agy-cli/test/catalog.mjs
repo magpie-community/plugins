@@ -5,6 +5,8 @@
 // 全部经真实仓内 index.mjs 的 plugin.provider.models() / fetch 入口，边界替身见 testkit.mjs。
 
 import { test } from "node:test"
+import { tokenFile } from "../account.mjs"
+import { DUE_FOR_RENEWAL } from "../usage.mjs"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -33,6 +35,40 @@ async function withKit(options, fn) {
   } finally {
     await kit.dispose()
   }
+}
+
+// agy -p /usage as the fake agy answers it: the quota of the account that
+// run's agy reads, the kept home's token file under that home (accountEnv
+// sets SSH_CONNECTION there), else agy's keyring (options.storedSignIn).
+// asked gets each read's account; refuse(email) makes agy say its sign-in
+// no longer works.
+function usageThroughAgy(options, { asked, left = () => 0.9, refuse = () => false }) {
+  const readBy = (opts) => {
+    const home = opts?.env?.SSH_CONNECTION ? opts.env.HOME : null
+    if (home) {
+      try { return JSON.parse(fs.readFileSync(tokenFile(home), "utf8")).id_token_email } catch { return null }
+    }
+    return JSON.parse(Buffer.from(String(options.storedSignIn).trim().replace(/^go-keyring-base64:/, ""), "base64").toString()).id_token_email
+  }
+  return (_file, args, opts) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.12\n" }
+    if (args[0] !== "-p") return 1
+    const email = readBy(opts)
+    asked.push(email)
+    if (refuse(email)) return { code: 1, stdout: "Error: oauth2: \"invalid_grant\" \"Token has been expired or revoked.\"\n" }
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [{
+      name: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ id: "w", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: left(email) }],
+    }] } } }) }
+  }
+}
+
+// the plugin asks Google nothing itself for usage: only agy does
+function noFetch() {
+  const fetched = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => { fetched.push(String(url)); throw new Error("no network in tests") }
+  return { fetched, restore: () => { globalThis.fetch = realFetch } }
 }
 
 async function timed(fn) {
@@ -104,22 +140,10 @@ test("an account of agy's own that agy no longer holds shows no other account's 
     token: { access_token: "ya29." + email, refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
     auth_method: "consumer", id_token_email: email,
   })).toString("base64") + "\n"
-  const options = {
-    platform: "darwin", storedSignIn: keyring("b@example.com"), modelsBehavior: DYNAMIC_OK,
-    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
-  }
-  // the quota read agy makes (usage.mjs readQuotaDirect), answered here
   const asked = []
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async (url, init) => {
-    asked.push(init.headers.Authorization)
-    const left = init.headers.Authorization === "Bearer ya29.a@example.com" ? 0.9 : 0.25
-    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
-      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
-      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: left }],
-    }] }
-    return new Response(JSON.stringify(reply), { status: 200 })
-  }
+  const options = { platform: "darwin", storedSignIn: keyring("b@example.com"), modelsBehavior: DYNAMIC_OK }
+  options.onSpawn = usageThroughAgy(options, { asked, left: email => email === "a@example.com" ? 0.9 : 0.25 })
+  const net = noFetch()
   try {
     await withKit(options, async (kit) => {
       const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
@@ -133,7 +157,7 @@ test("an account of agy's own that agy no longer holds shows no other account's 
       const ub = await kit.plugin.auth.usage(async () => b, {})
       assert.equal(ub.error, undefined, JSON.stringify(ub))
       assert.equal(ub.windows.find(w => !w.model)?.used, 75)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"))
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), JSON.stringify(asked))
 
       // a's requests would go out as b
       const la = await kit.plugin.auth.loader(async () => a)
@@ -156,17 +180,18 @@ test("an account of agy's own that agy no longer holds shows no other account's 
       assert.equal(again.error, undefined, JSON.stringify(again))
       assert.equal(again.signIn, "renewed")
       assert.equal(again.windows.find(w => !w.model)?.used, 10)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"))
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), JSON.stringify(asked))
       // b was kept while agy held it: its card reads b's own quota now
       asked.length = 0
       const bNow = await kit.plugin.auth.usage(async () => b, {})
       assert.equal(bNow.error, undefined, JSON.stringify(bNow))
       assert.equal(bNow.windows.find(w => !w.model)?.used, 75)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"))
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), JSON.stringify(asked))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
       await settle(kit)
     })
   } finally {
-    globalThis.fetch = realFetch
+    net.restore()
   }
 })
 
@@ -181,28 +206,13 @@ test("an account of agy's own that agy held once reads its own usage, and sends 
     auth_method: "consumer", id_token_email: email,
   })
   const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn(email))).toString("base64") + "\n"
-  const options = {
-    platform: "darwin", storedSignIn: keyring("a@example.com"), modelsBehavior: DYNAMIC_OK,
-    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
-  }
   const asked = []
   let refused = false
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async (url, init) => {
-    if (/oauth2\.googleapis\.com\/token/.test(url)) {
-      asked.push("renew " + new URLSearchParams(init.body).get("refresh_token"))
-      return refused
-        ? new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })
-        : new Response(JSON.stringify({ access_token: "ya29.renewed" }), { status: 200 })
-    }
-    asked.push(init.headers.Authorization)
-    const left = init.headers.Authorization === "Bearer ya29.a@example.com" ? 0.9 : 0.25
-    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
-      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
-      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: left }],
-    }] }
-    return new Response(JSON.stringify(reply), { status: 200 })
-  }
+  const options = { platform: "darwin", storedSignIn: keyring("a@example.com"), modelsBehavior: DYNAMIC_OK }
+  options.onSpawn = usageThroughAgy(options, {
+    asked, left: email => email === "a@example.com" ? 0.9 : 0.25, refuse: email => refused && email === "a@example.com",
+  })
+  const net = noFetch()
   try {
     await withKit(options, async (kit) => {
       const a = { type: "oauth", key: "agy", metadata: { email: "A@example.com" } }
@@ -225,11 +235,11 @@ test("an account of agy's own that agy held once reads its own usage, and sends 
       assert.equal(ua.error, undefined, JSON.stringify(ua))
       assert.notEqual(ua.signIn, "expired")
       assert.equal(ua.windows.find(w => !w.model)?.used, 10)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"), asked.join())
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), asked.join())
       asked.length = 0
       const ub = await kit.plugin.auth.usage(async () => b, {})
       assert.equal(ub.windows.find(w => !w.model)?.used, 75)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.b@example.com"), asked.join())
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), asked.join())
 
       // a's request runs agy in a's kept home, b's in agy's own
       const la = await kit.plugin.auth.loader(async () => a)
@@ -244,8 +254,19 @@ test("an account of agy's own that agy held once reads its own usage, and sends 
       await servedB.text()
       assert.ok(kit.acpSpawns.slice(before).every(s => s.env.HOME !== kit.acpSpawns[0].env.HOME), "b's request ran in a's kept home")
 
-      // Google no longer takes a's kept sign-in: a's card says to sign in again
+      // a's kept access token has ended: agy isn't run for usage (it renews
+      // the token on a's next chat), and nobody asks Google
       fs.writeFileSync(keptFile, JSON.stringify(signIn("a@example.com", "2020-01-01T00:00:00Z")))
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const due = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(due.windows, [])
+      assert.equal(due.error, DUE_FOR_RENEWAL)
+      assert.notEqual(due.signIn, "expired")
+      assert.deepEqual(asked, [])
+
+      // agy says Google no longer takes a's kept sign-in: a's card says to sign in again
+      fs.writeFileSync(keptFile, JSON.stringify(signIn("a@example.com", "2099-01-01T00:00:00Z")))
       refused = true
       kit.clock.advance(60_000)
       asked.length = 0
@@ -253,13 +274,14 @@ test("an account of agy's own that agy held once reads its own usage, and sends 
       assert.deepEqual(gone.windows, [])
       assert.equal(gone.signIn, "expired")
       assert.match(gone.error, /not to A@example\.com/)
-      assert.ok(asked.every(h => h === "renew 1//a@example.com"), asked.join())
+      assert.deepEqual(asked, ["a@example.com"])
       // agy's keyring was only read
       assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || c.args[0] === "find-generic-password"))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
       await settle(kit)
     })
   } finally {
-    globalThis.fetch = realFetch
+    net.restore()
   }
 })
 
@@ -273,21 +295,13 @@ test("out of the login keychain's reach (a LaunchDaemon), an account of agy's ow
     token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry: "0001-01-01T00:00:00Z" },
     auth_method: "consumer", id_token_email: email,
   })
+  const asked = []
   const options = {
     platform: "darwin", modelsBehavior: DYNAMIC_OK,
     storedSignIn: "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn("a@example.com"))).toString("base64") + "\n",
-    onSpawn: (_file, args) => args[0] === "--version" ? { code: 0, stdout: "1.5.12\n" } : 1,
   }
-  const asked = []
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async (url, init) => {
-    asked.push(init.headers.Authorization)
-    const reply = /loadCodeAssist/.test(url) ? { cloudaicompanionProject: "p" } : { groups: [{
-      displayName: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
-      buckets: [{ bucketId: "w", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T00:00:00Z", remainingFraction: 0.9 }],
-    }] }
-    return new Response(JSON.stringify(reply), { status: 200 })
-  }
+  options.onSpawn = usageThroughAgy(options, { asked })
+  const net = noFetch()
   try {
     await withKit(options, async (kit) => {
       const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
@@ -308,7 +322,7 @@ test("out of the login keychain's reach (a LaunchDaemon), an account of agy's ow
       const ua = await kit.plugin.auth.usage(async () => a, {})
       assert.equal(ua.error, undefined, JSON.stringify(ua))
       assert.equal(ua.windows.find(w => !w.model)?.used, 10)
-      assert.ok(asked.length > 0 && asked.every(h => h === "Bearer ya29.a@example.com"), asked.join())
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), asked.join())
       const la = await kit.plugin.auth.loader(async () => a)
       const served = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
       assert.notEqual(served.status, 401, await served.clone().text())
@@ -332,10 +346,11 @@ test("out of the login keychain's reach (a LaunchDaemon), an account of agy's ow
       assert.doesNotMatch(ub.error, /Sign in again/)
       // the keychain was only read
       assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || ["find-generic-password", "list-keychains"].includes(c.args[0])))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
       await settle(kit)
     })
   } finally {
-    globalThis.fetch = realFetch
+    net.restore()
   }
 })
 

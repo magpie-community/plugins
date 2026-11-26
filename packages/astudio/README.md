@@ -26,7 +26,7 @@ same daily points balance.
 
 三种方式（登录时选一种）：
 
-1. **浏览器登录（推荐，可多账号）**——弹出的浏览器里登录讯飞账号（手机验证码或扫码），插件收割网页会话 Cookie（`ssoSessionId` + `account_id` 必需，`token` 有则一并带上），再调桌面端启动时的同款 `POST auth/bearer-token` 换发模型凭据（JWT，实测 3 年有效；换发后旧 token 仍可用）。不装桌面端也能用。每次登录用全新浏览器 profile，绝不带旧票；登录收尾后连 profile 一起删掉（会话已进账号 metadata，浏览器目录不留第二份凭据）。网页会话 Cookie 过期后积分/签到会提示重新登录（重新走一次浏览器登录即可；模型凭据是 3 年 JWT，聊天不受影响）。需要本机有 Chrome 或 Edge（或用 `ASTUDIO_CHROME_PATH` 指到可执行文件）；profile 根目录是 `<配置目录>/magpie/astudio-browser-profiles`——Windows 为 `%APPDATA%`、macOS/Linux 为 `~/.config`（`XDG_CONFIG_HOME` 可改），`ASTUDIO_BROWSER_PROFILE` 可整体覆盖；登录收尾即删。
+1. **浏览器登录（推荐，可多账号）**——弹出的浏览器里登录讯飞账号（手机验证码或扫码），插件收割网页会话 Cookie（`ssoSessionId` + `account_id` 必需，`token` 有则一并带上），再调桌面端启动时的同款 `POST auth/bearer-token` 换发模型凭据（JWT，实测 3 年有效；换发后旧 token 仍可用）。不装桌面端也能用。每次登录用全新浏览器 profile，绝不带旧票；登录收尾后连 profile 一起删掉（会话已进账号 metadata，浏览器目录不留第二份凭据）。网页会话 Cookie 过期后积分/签到会提示重新登录（重新走一次浏览器登录即可；模型凭据是 3 年 JWT，聊天不受影响）。Windows 会优先使用系统默认浏览器的注册路径，也会识别 Chrome++ portable 并自动加 `--portable`；也可用 `ASTUDIO_CHROME_PATH` 指到可执行文件。profile 根目录是 `<配置目录>/magpie/astudio-browser-profiles`——Windows 为 `%APPDATA%`、macOS/Linux 为 `~/.config`（`XDG_CONFIG_HOME` 可改），`ASTUDIO_BROWSER_PROFILE` 可整体覆盖；登录收尾即删。
 2. **读取 AStudio 桌面端登录态**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用），不用填任何东西。没装/没登录时这一步会给出 [AStudio 官网](https://agent.xfyun.cn/) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（会话不是有效 JSON、没有凭据、账号被封禁）会直接说明原因，登录/修好后同样自动完成。数据目录按以下顺序查找：
    - `ASTUDIO_HOME`（或 `SYNARA_HOME`）环境变量指定的目录；
    - Windows 注册表 `HKCU\Software\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；

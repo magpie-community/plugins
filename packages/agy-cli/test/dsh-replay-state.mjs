@@ -10,8 +10,8 @@ const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agy-dsh-state-test-"))
 const entry = new URL("../index.mjs", import.meta.url)
 let source = fs.readFileSync(entry, "utf8")
 source = source.replace(/from "(\.\/[^"\n]+)"/g, (_, target) => `from ${JSON.stringify(new URL(target, entry).href)}`)
-fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { renderInitialPrompt };\n")
-const { renderInitialPrompt } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
+fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { renderInitialPrompt, extractMetaRemindersFromText };\n")
+const { renderInitialPrompt, extractMetaRemindersFromText } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
 const joinText = ({ parts }) => parts.map((p) => p.text || "").join("")
@@ -400,13 +400,23 @@ test("does not anchor pasted <system-reminder> or backtrack on unclosed tags in 
   })
   messages.push({ role: "user", content: [{ type: "text", text: "Summarize the refactor" }] })
 
-  const t0 = performance.now()
   const text = joinText(renderInitialPrompt({ system: "You are Claude Code.", messages }, "/repo", false, 0))
-  const elapsed = performance.now() - t0
 
-  assert.ok(elapsed < 500, `expected linear-time scan, took ${elapsed.toFixed(1)} ms`)
   assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
   assert.ok(!text.includes("`pasted-only`: ignore"))
+})
+
+// The scan is linear in the open tags it meets: 50,000 unclosed ones take a
+// few milliseconds, where a scan that looks for each one's close from where
+// it opens (the old lazy regex) takes tens of seconds. The bar sits far from
+// both, so a loaded machine doesn't turn it red (it was 500ms over the whole
+// replay, and went red at 507ms on WSL).
+test("an unclosed <system-reminder> flood is scanned in linear time", () => {
+  const flood = "<system-reminder>".repeat(50_000) + "<available_skills>".repeat(12_500) + "\nok"
+  const t0 = performance.now()
+  assert.deepEqual(extractMetaRemindersFromText(flood), [])
+  const elapsed = performance.now() - t0
+  assert.ok(elapsed < 3000, `expected a linear scan, took ${elapsed.toFixed(1)} ms`)
 })
 
 test("keeps latest assistant reply under combined pinReserve and stateReserve on short nudge", () => {
@@ -445,4 +455,84 @@ test("preserves latest reply and <available_skills> when history[0] is oversized
   assert.ok(text.includes("HUGE_OPENING"))
   assert.ok(text.includes("FINAL_ASSISTANT_TURN"))
   assert.ok(text.includes("`megrez-db-map`: db lookup"))
+})
+
+test("recognizes marker-only compact-budget notice as a baseline", () => {
+  const markerOnly = "Workspace instruction budget 128 bytes: omitted ~/.dsh/AGENTS.md; truncated ./AGENTS.md from 400 to 0 bytes"
+
+  // Marker-only budget notice in history supersedes earlier baseline and changes.
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Start under ultra-tight budget" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_MARKER_ONLY" }]),
+    { role: "assistant", content: [{ type: "text", text: "Loaded." }] },
+    changesMsg([{ action: "add", path: "sub/AGENTS.md", scope: "sub", content: "STALE_CHANGE_BEFORE_MARKER_ONLY" }]),
+    reminderMsg(markerOnly),
+  ]
+  pushFillerTurns(messages)
+  messages.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const text = joinText(renderInitialPrompt({ system: "You are DSH.", messages }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
+  assert.ok(text.includes(markerOnly))
+  assert.ok(!text.includes("STALE_BEFORE_MARKER_ONLY"))
+  assert.ok(!text.includes("STALE_CHANGE_BEFORE_MARKER_ONLY"))
+
+  // Standalone compact intro without paths supersedes earlier baseline too.
+  const compactOnly = [
+    { role: "user", content: [{ type: "text", text: "Start" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_COMPACT_ONLY" }]),
+    reminderMsg(COMPACT_INTRO),
+  ]
+  pushFillerTurns(compactOnly)
+  compactOnly.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const compactOnlyText = joinText(renderInitialPrompt({ system: "You are DSH.", messages: compactOnly }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(compactOnlyText, "utf8") <= LIMIT)
+  assert.ok(compactOnlyText.includes(COMPACT_INTRO))
+  assert.ok(!compactOnlyText.includes("STALE_BEFORE_COMPACT_ONLY"))
+
+  // Marker-only budget notice arriving in <current_turn> drops stale history baseline.
+  const inCurrent = [
+    { role: "user", content: [{ type: "text", text: "Start" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_CURRENT_MARKER_ONLY" }]),
+  ]
+  pushFillerTurns(inCurrent)
+  inCurrent.push(reminderMsg(markerOnly))
+  inCurrent.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const inCurrentText = joinText(renderInitialPrompt({ system: "You are DSH.", messages: inCurrent }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(inCurrentText, "utf8") <= LIMIT)
+  assert.ok(inCurrentText.includes(markerOnly))
+  assert.ok(!inCurrentText.includes("STALE_BEFORE_CURRENT_MARKER_ONLY"))
+})
+
+test("preserves middle of >12 KiB anchored state reminders via clipHistoryMessage preserveMeta", () => {
+  const bigSkills = []
+  for (let i = 0; i < 40; i++) {
+    if (i === 20) {
+      bigSkills.push(["middle-skill-sentinel", "MIDDLE_SKILL_MARKER_MUST_SURVIVE " + "m".repeat(450)])
+    } else {
+      bigSkills.push([`skill-${String(i).padStart(2, "0")}`, `entry ${i} ` + "s".repeat(480)])
+    }
+  }
+  const bigAgents = "A".repeat(9500) + "\nMIDDLE_AGENTS_RULE_MUST_SURVIVE\n" + "B".repeat(9500)
+  const skillsMessage = skillCatalogMsg(bigSkills)
+  const agentsMessage = baselineMsg([{ path: "~/.dsh/AGENTS.md", content: bigAgents }])
+  assert.ok(Buffer.byteLength(skillsMessage.content[0].text, "utf8") > 16 * 1024)
+  assert.ok(Buffer.byteLength(agentsMessage.content[0].text, "utf8") > 16 * 1024)
+
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Run workflow using skills and workspace rules" }] },
+    agentsMessage,
+    skillsMessage,
+    { role: "assistant", content: [{ type: "text", text: "Ready." }] },
+  ]
+  pushFillerTurns(messages, 45, 2400)
+  messages.push({ role: "user", content: [{ type: "text", text: "Use the middle skill and follow the middle rule" }] })
+
+  const text = joinText(renderInitialPrompt({ system: "You are DSH.", messages }, "/repo", false, 0))
+
+  assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
+  assert.ok(text.includes("MIDDLE_SKILL_MARKER_MUST_SURVIVE"))
+  assert.ok(text.includes("MIDDLE_AGENTS_RULE_MUST_SURVIVE"))
 })

@@ -3930,6 +3930,24 @@ const maxModel = (...ms) => {
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
 
+// WIDENED is, per site, the models whose base entry was measured serving a
+// prompt past its dev budget: only these advertise the Max window on the base
+// entry (yetone/magpie#5809). A model without that evidence keeps its dev
+// budget, which can only make an agent compact early. Every measurement was
+// on Trae CN; Trae Global is its own deployment and none of its models was
+// measured, so it keeps dev. Extend it as models are tested.
+const WIDENED = { "trae-cn": new Set([
+  "deepseek-v4.1-flash",
+  "deepseek-v4-flash",
+  "glm-5.4",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "glm-5.3-flashx",
+  "glm-5.2",
+  "doubao-seed-2.1-pro",
+  "doubao-seed-evolving",
+]) }
+
   // traeRateOf is a model's consumption multiplier, from the account's list:
   // display_contact_config is a JSON string naming the rate now and the full
   // price, and an activity's off-peak windows, which are computed here rather
@@ -4868,7 +4886,9 @@ const makePlugin = (site) => async ({ client }) => {
   const modelOf = (provider, m) => {
     const id = String(m.config_name)
     const was = provider.models?.[id] ?? {}
-    // context_window_tokens: dev is what a request gets, max only in Max mode
+    // context_window_tokens: dev is the budget Trae's own agent asks with;
+    // the model's window is its Max one, put on the entry by provider.models
+    // below (yetone/magpie#5809)
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
     // output: the detail requests are served by (an enterprise model's own
     // when it has no __dev one)
@@ -4947,6 +4967,11 @@ const makePlugin = (site) => async ({ client }) => {
             const id = String(m.config_name)
             const own = modelOf(provider, m)
             const max = maxes.get(id)
+            // the window the model takes, not the budget Trae's own agent asks
+            // with: dev is what the IDE compacts to, and a request past it is
+            // served, not refused — but only where that was measured
+            // (yetone/magpie#5809)
+            if (max && WIDENED[site.id]?.has(id.toLowerCase())) own.limit = { ...own.limit, context: Math.max(own.limit.context, max.window) }
             if (!max || ids.has(id + MAX)) return [[id, own]]
             // its Max, a model of its own: the window and output Max mode gives
             const was = provider.models?.[id + MAX] ?? {}

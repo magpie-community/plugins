@@ -508,7 +508,7 @@ test("A16: a replay of more than 128 KiB of history stays within 112 KiB and kee
     assert.ok(prompt.endsWith("</current_turn>"))
     assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
     assert.ok(prompt.includes("NEWEST assistant reply"), "the newest history is kept")
-    assert.ok(prompt.includes("[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"))
+    assert.ok(prompt.includes("[... earlier conversation history omitted to fit the prompt budget ...]"))
     assert.ok(!prompt.includes("belongs to an earlier turn that is already done"), "non-loop replay adds no loop handoff note")
     assert.ok(prompt.includes("bytes of this history block omitted"), "oversized history blocks keep only head and tail")
     assert.ok(prompt.includes('Never output "[tool call ...]" text'))
@@ -574,7 +574,7 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
     assert.ok(prompt.includes("Human: TASK START: rename parseConfig to loadConfig everywhere"), "the loop's prompt is kept")
     assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
-    const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
+    const note = "[... earlier conversation history omitted to fit the prompt budget ...]"
     // the turn before the loop (ANCHOR reply) takes room the steps left, so
     // the one gap is between the loop's prompt and its newest steps (plugins#1401)
     assert.ok(prompt.includes("ANCHOR reply"), "the turn before the loop is kept")

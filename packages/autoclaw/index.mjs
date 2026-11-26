@@ -288,7 +288,7 @@ function said(d) {
 }
 
 /** quotaRefusal is a 403 chat answer read as a spent quota, or null when it isn't one (a 401 or any other 403 is still the sign-in). */
-async function quotaRefusal(res) {
+async function quotaRefusal(res, ctx) {
   if (res.status !== 403) return null;
   const text = await res.clone().text().catch(() => "");
   let d;
@@ -297,6 +297,17 @@ async function quotaRefusal(res) {
   const { code, message } = said(d);
   if (!QUOTA_CODES.has(String(code)) && !(message && QUOTA_WORDS.test(message))) return null;
   try { res.body?.cancel?.(); } catch {}
+  // 记到**这次被请求的那个模型**名下：上游的免费额度门槛是按模型判的
+  // （GLM-5.4 用尽时 GLM-5.3 / Flash 仍然 200）。不记模型，magpie 只能把
+  // 整个账号歇掉。
+  //
+  // 只认 ctx.model，**不认文案里点到的名字**：上游拒绝文案里的模型名不一定
+  // 是被拒的那个。Flash 自己的官方模板写的就是「GLM5.3 免费额度已用完…」
+  // （index.test.mjs 的 SPENT fixture 正是这句），照文案记账会把从没被问过的
+  // GLM-5.3 一起挡掉，而那条窗口是 100%，一次成功清不掉它。
+  if (ctx?.accountKey && ctx?.model) {
+    modelQuotaNote(ctx.accountKey, ctx.model, "exhausted", message, "upstream", undefined, ctx.providerId);
+  }
   return new Response(JSON.stringify({ error: { message: `AutoClaw: ${message || "quota exhausted"}`, type: "rate_limit_error", code } }), {
     status: 429,
     headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
@@ -367,8 +378,272 @@ async function fingerprintRefusal(res) {
 }
 
 /** refusedNotSignIn is a 401/403 that is the account's (quota or ban), not its sign-in, or null. */
-async function refusedNotSignIn(res) {
-  return (await quotaRefusal(res)) ?? (await accountRefusal(res));
+async function refusedNotSignIn(res, ctx) {
+  return (await quotaRefusal(res, ctx)) ?? (await accountRefusal(res));
+}
+
+// ---------------------------------------------------------------------------
+// 按模型的免费额度门槛（额度显示与限流范围）
+// ---------------------------------------------------------------------------
+//
+// 上游的免费额度是**按模型**判的：2026-11-26 真机，同一账号同一分钟内
+// GLM-5.4 回 403 810000「免费额度已用完」，GLM-5.3 与 GLM-5.3-Flash 都是 200。
+// 插件原来只把这句转成账号级 429，magpie 便把整个账号歇掉（默认十几分钟），
+// 连还能用的模型一起停；歇完再问一次，又被同一句歇掉——这就是「频繁重试导致
+// 限流」的来路，而且歇的其实是没坏的那几个模型。
+//
+// 上游**不下发**按模型的额度数值：wallets.v2 只有积分总额与细分钱包，
+// autoclaw-model-config 只有每个模型的积分倍率（creditCostFactor）和
+// 「额度用尽时给客户端看什么」（metadata.forbiddenNotice）。所以这里不编造
+// 上限数字，只如实上报两件事：
+//   ① 上游明确说过「这个模型免费额度已用完」——按模型记，带官方文案；
+//   ② 本地观察到的该模型最近一次成功/被拒时刻（事实，不是推算的配额）。
+// ① 用 magpie 的按模型窗口（windows[].models）表达：用尽只挡这个模型，
+// 同账号其它模型照常路由；恢复时刻只有上游明说「24 小时后重置」时才写
+// resetsAt（Auto-Fast 的官方文案），其余不编时间，靠下一次成功调用清掉。
+
+/** 目录条目里的官方积分倍率与「额度用尽」提示；读不到就是 undefined，不猜。 */
+function catalogQuotaFacts(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const md = raw.metadata && typeof raw.metadata === "object" ? raw.metadata : {};
+  const notice = md.forbiddenNotice && typeof md.forbiddenNotice === "object" ? md.forbiddenNotice : null;
+  const desc = notice ? String(notice.desc ?? "").trim() : "";
+  const title = notice ? String(notice.title ?? "").trim() : "";
+  return {
+    ...(desc || title ? { forbiddenNotice: desc || title } : {}),
+    // 官方文案明说 24 小时后重置（Auto-Fast），才认这个恢复周期。
+    ...(desc && /24\s*(?:小时|hours?)/i.test(desc) ? { resetHours: 24 } : {}),
+  };
+}
+
+// 账号键 → routeModelId → { exhaustedAt, said, resetAt, lastOk, lastRefusal, source }
+// 只存事实与时刻，不存 token；写盘沿用 autoclaw-usage.json（同目录、同 0600、
+// 同临时文件 + rename），键前缀 model: 与余额账本分开，30 天没动的条目一并清走。
+const MODEL_QUOTA_TTL_MS = 30 * 86400 * 1000;
+const modelQuotaMemo = new Map();
+
+function modelQuotaLoad() {
+  const st = usageStateLoad();
+  st.models ??= {};
+  return st.models;
+}
+
+function modelQuotaRead(accountKey, model) {
+  const held = modelQuotaMemo.get(`${accountKey}\u0000${model}`);
+  if (held) return held;
+  const row = modelQuotaLoad()[`${accountKey}\u0000${model}`];
+  if (!row || typeof row !== "object") return null;
+  const at = Date.parse(row.at ?? "");
+  if (!Number.isFinite(at) || Date.now() - at > MODEL_QUOTA_TTL_MS) return null;
+  return row;
+}
+
+/** 同一账号+模型的“仅刷新时刻”写盘节流：成功调用很频繁，不必每次都重写整个账本。 */
+const MODEL_QUOTA_FLUSH_MS = 5 * 60 * 1000;
+
+function modelQuotaWrite(accountKey, model, patch, { flush = true } = {}) {
+  if (!accountKey || !model) return null;
+  // 先合盘上更新的行，再写自己这条：避免本进程的旧缓存把别的宿主刚记的
+  // 用尽/成功状态覆盖掉（两个宿主都写同一个文件）。
+  modelQuotaSyncFromDisk();
+  const key = `${accountKey}\u0000${model}`;
+  const st = usageStateLoad();
+  st.models ??= {};
+  const prev = st.models[key] && typeof st.models[key] === "object" ? st.models[key] : {};
+  const nowIso = new Date().toISOString();
+  const next = { ...prev, ...patch, at: nowIso, ...(flush ? { flushedAt: nowIso } : {}) };
+  st.models[key] = next;
+  modelQuotaMemo.set(key, next);
+  if (flush) usageStateSave();
+  return next;
+}
+
+// 读盘兜底：magpie 的每个宿主进程各自缓存一份 usageState，CLI 宿主与网关宿主
+// 会互相覆盖对方刚写的行。所以判「用尽」前先按 mtime 重读一次文件，把盘上
+// 更新的行合并进内存（只补自己缺的/更旧的，不拿旧值盖新值）。
+let usageStateMtime = 0;
+function modelQuotaSyncFromDisk() {
+  try {
+    const path = usageStatePath ?? usageStatePathDefault();
+    const mtime = statSync(path).mtimeMs;
+    if (mtime === usageStateMtime) return;
+    const disk = JSON.parse(readFileSync(path, "utf8"));
+    if (!disk || typeof disk !== "object") return;
+    // 只有真的读到并解析成功才记下 mtime：Windows 上 rename 期间读到半份
+    // 文件会抛，若先记 mtime 就再也不会重试那一次合并。
+    usageStateMtime = mtime;
+    const st = usageStateLoad();
+    st.models ??= {};
+    // 余额账本同理：别的宿主记的更新一行要认，否则本进程写盘时会把它覆盖掉。
+    st.accts ??= {};
+    for (const [k, v] of Object.entries(disk.accts ?? {})) {
+      if (!v || typeof v !== "object") continue;
+      const mineAt = Date.parse(st.accts[k]?.at ?? "");
+      const diskAt = Date.parse(v.at ?? "");
+      if (!(k in st.accts) || (Number.isFinite(diskAt) && (!Number.isFinite(mineAt) || diskAt > mineAt))) {
+        st.accts[k] = v;
+      }
+    }
+    for (const [k, v] of Object.entries(disk.models ?? {})) {
+      if (!v || typeof v !== "object") continue;
+      const mine = st.models[k];
+      const mineAt = Date.parse(mine?.at ?? "");
+      const diskAt = Date.parse(v.at ?? "");
+      if (!mine || (Number.isFinite(diskAt) && (!Number.isFinite(mineAt) || diskAt > mineAt))) {
+        st.models[k] = v;
+        modelQuotaMemo.set(k, v);
+      }
+    }
+    // 目录事实同理：别的进程刚读到的官方目录，本进程直接用。
+    for (const [pid, entry] of Object.entries(disk.catalog ?? {})) {
+      const at = Date.parse(entry?.at ?? "");
+      const held = catalogFacts.get(pid);
+      if (Number.isFinite(at) && (!held || at > held.at)) catalogFacts.set(pid, { at, models: entry.models });
+    }
+  } catch { /* 读不到就用内存里那份，绝不影响对话 */ }
+}
+
+/** 上游说这个模型的免费额度用完了：记时刻与官方原话，恢复时刻只在官方给了周期时才写。 */
+function modelQuotaNote(accountKey, model, kind, said, source, resetHours, providerId = "") {
+  const now = Date.now();
+  // 周期优先取调用方给的，其次解析官方原话（「24 小时后会进行重置」），
+  // 再退回官方目录里该模型的 resetHours。三处都没有就不写 resetAt。
+  const statedSecs = noticeResetSeconds(said);
+  const factHours = Number(catalogFactsOf(providerId, now, CATALOG_DISPLAY_TTL_MS)?.[model]?.resetHours);
+  const hours = Number(resetHours)
+    || (statedSecs ? statedSecs / 3600 : 0)
+    || (Number.isFinite(factHours) && factHours > 0 ? factHours : 0);
+  const resetAt = Number.isFinite(hours) && hours > 0 ? new Date(now + hours * 3600 * 1000).toISOString() : undefined;
+  const marking = String(kind) === "exhausted";
+  // 「成功」多数时候只是刷新最近成功时刻：没有要清的账就只改内存，
+  // 每 5 分钟才落一次盘——成功调用很频繁，每次都重写整个账本既浪费，
+  // 也放大两个宿主互相覆盖的窗口。要清掉一条「用尽」时立即落盘。
+  const prev = modelQuotaRead(accountKey, model) ?? {};
+  const clearsLedger = !marking && Boolean(prev.exhaustedAt);
+  const lastFlush = Date.parse(prev.flushedAt ?? "");
+  const flush = marking || clearsLedger || !Number.isFinite(lastFlush) || now - lastFlush > MODEL_QUOTA_FLUSH_MS;
+  return modelQuotaWrite(accountKey, model, {
+    ...(kind === "exhausted"
+      ? {
+          exhaustedAt: new Date(now).toISOString(),
+          said: String(said ?? "").slice(0, 300),
+          source: String(source ?? "upstream"),
+          // 连续被拒次数：决定下一次复核间隔（见 modelQuotaHoldMs）。
+          refusals: (Number(prev.refusals) || 0) + 1,
+          ...(resetAt ? { resetAt } : {}),
+        }
+      : { lastOk: new Date(now).toISOString(), exhaustedAt: undefined, said: undefined, resetAt: undefined, refusals: undefined }),
+  }, { flush });
+}
+
+/**
+ * 这个模型此刻是否仍按「上游说用尽」处理。
+ *
+ * 时限是安全阀，不是配额推算：上游不给重置时刻时，**不能永久把模型当成用尽**
+ * （zcode 上游同样只 rest 一个短窗口，plugins#817）。所以：
+ *   · 官方明说周期（Auto-Fast 24h）→ 按该时刻放行；
+ *   · 没说 → 按下面的间隔复核一次；
+ *   · 期间任何一次成功调用立即清账。
+ *
+ * 复核间隔：第一次 15 分钟（与 magpie 自己的 quota rest 同一量级），之后每被
+ * 拒一次翻一倍，封顶 6 小时。本机 7 天 usage.jsonl 里，凡被判 429 的模型在
+ * 观察窗口内（最长约 28 小时）都没有再出现 200，没有可抄的真实恢复间隔；
+ * 所以取「先短后长」——刚开会员时最多等 15 分钟就能恢复，反复被同一句拒绝时
+ * 也不会变成每分钟一问（1 次/15m → 1 次/30m → … → 1 次/6h）。
+ *
+ * 只有窗口（magpie 的按模型 rest）用它，**不在 fetch 里短路请求**：那样会把
+ * 401「登录失效」也盖成 429，账号真的掉线时反而看不到（上游 index.test.mjs
+ * 的既有用例正是这么测的）。
+ */
+const MODEL_QUOTA_HOLD_MS = 15 * 60 * 1000;
+const MODEL_QUOTA_HOLD_MAX_MS = 6 * 3600 * 1000;
+
+/** 连续被拒次数 → 复核间隔（1→15m，2→30m，3→1h，…，封顶 6h）。 */
+function modelQuotaHoldMs(row) {
+  const n = Math.min(16, Math.max(1, Math.floor(Number(row?.refusals) || 1)));
+  return Math.min(MODEL_QUOTA_HOLD_MAX_MS, MODEL_QUOTA_HOLD_MS * 2 ** (n - 1));
+}
+
+function modelQuotaHoldUntil(row) {
+  const at = Date.parse(row?.exhaustedAt ?? "");
+  if (!Number.isFinite(at)) return 0;
+  const stated = Date.parse(row?.resetAt ?? "");
+  if (Number.isFinite(stated) && stated > at) return stated;
+  return at + modelQuotaHoldMs(row);
+}
+
+function modelQuotaBlocked(accountKey, model, now = Date.now()) {
+  modelQuotaSyncFromDisk();
+  const row = modelQuotaRead(accountKey, model);
+  if (!row?.exhaustedAt) return null;
+  const okAt = Date.parse(row.lastOk ?? "");
+  if (Number.isFinite(okAt) && okAt > Date.parse(row.exhaustedAt)) return null;
+  return now < modelQuotaHoldUntil(row) ? row : null;
+}
+
+/** 官方文案里的「24 小时后重置」→ 秒；没明说就是 undefined（绝不编一个周期）。 */
+function noticeResetSeconds(text) {
+  const m = /(\d+)\s*(小时|hours?)/i.exec(String(text ?? ""));
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n * 3600 : undefined;
+}
+
+/** 北京时间的 HH:MM（只用于展示，不参与计算）。 */
+function beijingClock(iso) {
+  const ms = Date.parse(iso ?? "");
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms + 8 * 3600 * 1000).toISOString().slice(11, 16);
+}
+
+/**
+ * 按模型的额度窗口。
+ *
+ * **只在真有模型被上游判定用尽时才出一行**，`models: [id]` 把这行钉在那一个
+ * 模型上：magpie 只用它判这个模型能不能走，同账号别的模型不受影响。
+ *
+ * 为什么不再给每个模型都画一行：上游**不下发**按模型的额度数值（wallets.v2
+ * 只有积分总额；`/agent-assetmgr/api/v1/entitlements` 实测返回空数组），
+ * 没有分母就画不出 ZCode 那种 `3,000,000 / 3,000,000 已用 100%` 的条。
+ * 六行「未知」既不好看也没有信息量，所以正常账号的卡片与原版一致，只在
+ * 某个模型的免费额度真的用尽时多出一条 100% 的窗口（带官方原话）。
+ * 官方明说重置周期的写 resetsAt（Auto-Fast 24h），没说的不编时间。
+ */
+function modelQuotaWindows(providerId, auth, now = Date.now(), extraIds = []) {
+  modelQuotaSyncFromDisk();
+  // 目录事实用于「官方显示名」（GLM-5.4）与重置周期；允许旧一些（跨进程读盘），
+  // 因为 magpie 每次读额度都会起一个新宿主进程。
+  const facts = catalogFactsOf(providerId, now, CATALOG_DISPLAY_TTL_MS);
+  const ids = [...new Set([
+    ...Object.keys(autoclawModels(providerId)),
+    ...Object.keys(facts ?? {}),
+    ...(Array.isArray(extraIds) ? extraIds.filter((x) => typeof x === "string" && x) : []),
+  ])];
+  if (!ids.length) return [];
+  const key = signinAccountKey(providerId, auth);
+  const out = [];
+  for (const id of ids) {
+    const fact = facts?.[id] ?? {};
+    // 用尽、且还没到复核时刻，才占一行；到期就整行消失，让下一次真实调用
+    // 去问上游（不在 fetch 里短路，见 modelQuotaBlocked 的注释）。
+    const row = modelQuotaBlocked(key, id, now);
+    if (!row) continue;
+    // 窗口是「上游说过用尽」这条事实；resetsAt 用官方明说的周期，
+    // 没有就用本地安全阀（到点放一次真实请求），不编造厂商的重置时刻。
+    const statedSecs = noticeResetSeconds(row.said) ?? (fact.resetHours ? fact.resetHours * 3600 : undefined);
+    const resetsAt = new Date(modelQuotaHoldUntil(row)).toISOString();
+    out.push({
+      name: fact.name ?? autoclawModels(providerId)[id]?.name ?? id,
+      models: [id],
+      used: 100,
+      resetsAt,
+      ...(statedSecs ? { span: statedSecs } : {}),
+      display: statedSecs
+        ? `免费额度已用完 · 官方 ${statedSecs / 3600}h 后重置（${beijingClock(resetsAt)} UTC+8）`
+        : `免费额度已用完 · 上游未给重置时刻，${beijingClock(resetsAt)}（UTC+8）再核`,
+    });
+  }
+  return out;
 }
 
 // A 401 is not always the sign-in either: the CN managed gateway answers a
@@ -655,6 +930,12 @@ function catalogEntry(raw) {
     ? [...new Set(levelsRaw.filter((x) => typeof x === "string").map((x) => x.trim()).filter((x) => REASONING_LEVELS.has(x)))]
     : [];
   const metadata = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata) ? raw.metadata : {};
+  // The vendor's per-model credit factor: what one request costs in points
+  // (Auto 0.4, Flash 0.5, GLM-5.3 and GLM-5.4 2.25). magpie's `rate` is exactly
+  // that multiplier, and it used to be 0 for every AutoClaw model, so `cheap`
+  // routing and the card could not tell an expensive model from a cheap one.
+  const factor = Number(raw.creditCostFactor);
+  const creditFactor = Number.isFinite(factor) && factor > 0 ? factor : undefined;
   return {
     id,
     name: catalogText(raw.name, 2048) ?? id,
@@ -665,6 +946,8 @@ function catalogEntry(raw) {
     maxTokens,
     levels,
     gates: metadata.gates,
+    ...catalogQuotaFacts(raw),
+    creditFactor,
   };
 }
 
@@ -699,6 +982,7 @@ function catalogRow(entry, providerId, given, template) {
       input: { ...(base.capabilities?.input ?? {}), text: true, image },
     },
     variants,
+    ...(entry.creditFactor !== undefined ? { rate: entry.creditFactor } : {}),
   };
 }
 
@@ -737,6 +1021,7 @@ async function catalogModels(providerId, accessToken, given = {}, signal) {
     : { version: OFFICIAL_CLIENT_VERSION, channel: "overseas" };
   const template = Object.values(given ?? {})[0];
   const rows = {};
+  const facts = {};
   for (const raw of list) {
     const entry = catalogEntry(raw);
     // The client drops the whole list when one entry is malformed.
@@ -746,8 +1031,46 @@ async function catalogModels(providerId, accessToken, given = {}, signal) {
     if (entry.api === "anthropic-messages") continue;
     if (gatedOut(entry.gates, ctx)) continue;
     rows[entry.id] = catalogRow(entry, providerId, given?.[entry.id], template);
+    facts[entry.id] = {
+      name: entry.name,
+      ...(entry.forbiddenNotice ? { forbiddenNotice: entry.forbiddenNotice } : {}),
+      ...(entry.resetHours ? { resetHours: entry.resetHours } : {}),
+    };
   }
-  return Object.keys(rows).length > 0 ? rows : null;
+  if (Object.keys(rows).length === 0) return null;
+  catalogFacts.set(providerId, { at: Date.now(), models: facts });
+  catalogFactsSave(providerId, facts);
+  return rows;
+}
+
+// providerId → { at, models: { id → { name, forbiddenNotice, resetHours } } }
+// 最近一次成功读到的官方目录事实。usage() 与对话链路都读它，不再各自打一次网络。
+// 同时落盘：magpie 每次读额度会起一个**新的插件宿主进程**（CLI quota / GUI 刷新），
+// 只放内存的话新进程里 facts 为空，额度行就退化成「倍率未知」，按模型的用尽
+// 状态也认不回官方显示名。落在 autoclaw-usage.json 的 catalog 节点，与账本同文件
+// 同权限，不新增文件、不存凭据。
+const catalogFacts = new Map();
+const CATALOG_FACTS_TTL_MS = 10 * 60 * 1000;
+/** 展示与模型名认领可用的目录事实寿命：1 天（只影响卡片文案与名字映射，不放行请求）。 */
+const CATALOG_DISPLAY_TTL_MS = 24 * 3600 * 1000;
+
+function catalogFactsSave(providerId, models) {
+  try {
+    const st = usageStateLoad();
+    st.catalog ??= {};
+    st.catalog[providerId] = { at: new Date().toISOString(), models };
+    usageStateSave();
+  } catch { /* 落盘失败只影响展示新鲜度，不影响对话 */ }
+}
+
+function catalogFactsOf(providerId, now = Date.now(), maxAgeMs = CATALOG_FACTS_TTL_MS) {
+  const held = catalogFacts.get(providerId);
+  if (held && now - held.at <= maxAgeMs) return held.models;
+  const saved = usageStateLoad().catalog?.[providerId];
+  const at = Date.parse(saved?.at ?? "");
+  if (!saved?.models || !Number.isFinite(at) || now - at > maxAgeMs) return null;
+  catalogFacts.set(providerId, { at, models: saved.models });
+  return saved.models;
 }
 
 // ---------------------------------------------------------------------------
@@ -976,6 +1299,8 @@ let usageState;
 function setUsageStatePath(p) {
   usageStatePath = p;
   usageState = undefined;
+  usageStateMtime = 0;
+  modelQuotaMemo.clear();
 }
 function usageStateLoad() {
   if (usageState) return usageState;
@@ -990,10 +1315,21 @@ function usageStateLoad() {
 const USAGE_STATE_TTL_MS = 30 * 86400 * 1000;
 function usageStateSave() {
   try {
+    // 写前先合盘：magpie 会给每个宿主进程各一份内存态（网关一个、每次 CLI
+    // 读额度一个新进程），不合就把对方刚写的余额/额度行整份覆盖掉。
+    modelQuotaSyncFromDisk();
     const now = Date.now();
     for (const [k, v] of Object.entries(usageState.accts)) {
       const at = Date.parse(v?.at ?? "");
       if (!Number.isFinite(at) || now - at > USAGE_STATE_TTL_MS) delete usageState.accts[k];
+    }
+    // 按模型的额度账本同寿命清理（键含账号与模型，长期不用的号不留在盘上）。
+    for (const [k, v] of Object.entries(usageState.models ?? {})) {
+      const at = Date.parse(v?.at ?? "");
+      if (!Number.isFinite(at) || now - at > USAGE_STATE_TTL_MS) {
+        delete usageState.models[k];
+        modelQuotaMemo.delete(k);
+      }
     }
     const path = usageStatePath ?? usageStatePathDefault();
     mkdirSync(dirname(path), { recursive: true });
@@ -1640,7 +1976,11 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         if (auth?.type !== "oauth" || !auth.access) return {};
         const accessToken = bareToken(auth.access);
         const hosts = providerId === "autoclaw-cn" ? [CN_HOST, GLOBAL_HOST] : [GLOBAL_HOST, CN_HOST];
-
+        // 按模型记账的键：**只**用 signinAccountKey（uid，没 uid 按 refresh 哈希），
+        // 与余额账本同一把。不用 magpie.account()：它读的是宿主的 AsyncLocalStorage
+        // 作用域，而 loader.fetch 是在作用域之外被调用的（宿主缓存了 loader 的结果），
+        // 多账号时会拿回 provider id 而不是账号键，两个号会共用一本账。
+        const accountKey = signinAccountKey(providerId, auth);
         return {
           baseURL: homeHost,
           async fetch(input, init) {
@@ -1666,6 +2006,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   routeModel = String(sent?.model ?? "");
                 } catch {}
               }
+              const ctx = { accountKey, model: routeModel, providerId };
               // The official 2.0.3 fingerprint, except Linux omits X-Tm because
               // the gateway still refuses its official "linux" value (#367).
               setOfficialChatHeaders(headers, { accessToken, model: routeModel, sessionId: conversationSessionId(sent) });
@@ -1676,16 +2017,16 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               const sentBytes = bodyBytes(nextBody);
               const res1 = await tryFetch(hosts[0]);
               if (res1.status !== 401 && res1.status !== 403) {
-                if (res1.ok) noteServed(providerId, sentBytes);
+                if (res1.ok) { noteServed(providerId, sentBytes); modelQuotaNote(accountKey, routeModel, "ok"); }
                 return explained(res1, nextBody, providerId, options);
               }
               // a spent quota or a ban is the account's on every host: not asked again
-              const spent1 = await refusedNotSignIn(res1);
+              const spent1 = await refusedNotSignIn(res1, ctx);
               if (spent1) return spent1;
               const fingerprint1 = await fingerprintRefusal(res1);
               try { res1.body?.cancel?.(); } catch {}
               const res2 = await tryFetch(hosts[1]);
-              const spent2 = await refusedNotSignIn(res2);
+              const spent2 = await refusedNotSignIn(res2, ctx);
               if (spent2) return spent2;
               const fingerprint2 = await fingerprintRefusal(res2);
               const fingerprint = fingerprint2 ?? fingerprint1;
@@ -1724,7 +2065,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
-              if (res2.ok) noteServed(providerId, sentBytes);
+              if (res2.ok) { noteServed(providerId, sentBytes); modelQuotaNote(accountKey, routeModel, "ok"); }
               return explained(res2, nextBody, providerId, options);
             }
 
@@ -1741,10 +2082,10 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             });
             const sentBytes = bodyBytes(sentBody);
             if (res.status !== 401 && res.status !== 403) {
-              if (res.ok) noteServed(providerId, sentBytes);
+              if (res.ok) { noteServed(providerId, sentBytes); modelQuotaNote(accountKey, model, "ok"); }
               return explained(res, sentBody, providerId, options);
             }
-            const spent = await refusedNotSignIn(res);
+            const spent = await refusedNotSignIn(res, { accountKey, model, providerId });
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
             const tooBig = await sizeRefusal(providerId, sentBytes, res.status, accessToken, hosts);
@@ -1757,7 +2098,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         };
       },
 
-      async usage(getAuth) {
+      async usage(getAuth, provider) {
         const auth = await getAuth();
         if (auth?.type !== "oauth" || !auth.access) return { error: "未登录", windows: [] };
         const hosts = providerId === "autoclaw-cn" ? [CN_HOST, GLOBAL_HOST] : [GLOBAL_HOST, CN_HOST];
@@ -1858,6 +2199,9 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
           // magpie ≥ v0.1.1790 会把窗口的 balance 当资金池，重复计入路由）。
           const parts = named.map((w) => `${w.name} ${Math.round(w.balance)}`);
           if (campaignRow) windows.push(campaignRow);
+          // provider.models 是宿主给的当前模型清单：新模型（只在官方目录里、
+          // 静态表没有）也要有自己的额度行，否则它的用尽状态无处表达。
+          windows.push(...modelQuotaWindows(providerId, auth, Date.now(), Object.keys(provider?.models ?? {})));
           return {
             balance: `${fmtPoints(total)} 积分${parts.length ? `（${parts.join(" · ")}）` : ""}`,
             windows,
@@ -2485,6 +2829,9 @@ export const _internal = {
   signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
   catalogModels, catalogEntry, catalogHeaders, catalogUrl, gatedOut, autoclawModels,
+  catalogQuotaFacts, catalogFactsOf, noticeResetSeconds, beijingClock,
+  modelQuotaRead, modelQuotaNote, modelQuotaBlocked, modelQuotaWindows, modelQuotaHoldMs, modelQuotaHoldUntil,
+  clearModelQuota: () => { modelQuotaMemo.clear(); catalogFacts.clear(); },
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
   refreshShared, rememberRotated, magpieCfgDir,

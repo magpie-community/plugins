@@ -18,9 +18,8 @@ response.
 - The work is done by the real agy CLI over the ACP channel it ships with. The
   ACP handshake's `clientInfo` is the plugin's own package name and version
   (`opencode-agy-cli-auth`), not Zed or any other editor. The plugin calls
-  Google's endpoints itself in one case only: when agy refuses `/usage` for
-  the account's region, it reads the quota the way agy does (see "Usage
-  quota").
+  none of Google's endpoints itself: the quota too is read through agy alone
+  (`agy -p /usage`, see "Usage quota"), never with agy's stored token.
 - Tools that belong to the client, such as file reads, writes and shell commands,
   are exposed to the model over MCP. The client runs them and the results flow
   back into the same agy conversation, so the model sees ordinary native tool
@@ -41,8 +40,12 @@ channel: Antigravity's models over ACP. The differences:
 - **Sessions**: Antigravity ACP opens a new session per request and carries the
   history as context. This plugin keeps a pool of agy processes, reuses one agy
   session for one conversation, and picks it up again with `session/resume`
-  after a restart; only when that fails does it replay the history, within a
-  byte budget. When magpie's image-slim swaps an earlier image for its
+  after a restart; only when that fails does it replay the history. agy cuts
+  one prompt at 128 KiB, so with agy 1.5.17 or later a longer replay (or a
+  long paste) goes in over as many prompts as it takes, each but the last
+  cancelled before the model answers it, up to the model's window
+  (`AGY_BRIDGE_MAX_REPLAY_BYTES`); the model is told when older history had
+  to be left out. When magpie's image-slim swaps an earlier image for its
   placeholder (on Codex, a whole view_image output for one line of text), or
   magpie leaves one out to fit a size or image limit, the session holds.
 - **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
@@ -92,9 +95,14 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.
-- **Session resume**: each finished turn is recorded. After a Magpie or plugin
-  restart, the session continues through `session/resume` as long as the history
-  and instruction hashes still match. agy's prompt cache follows the folder it
+- **Session resume**: each finished turn is recorded, and so is each step of a
+  tool loop in progress. After a Magpie or plugin restart, the session continues
+  through `session/resume` as long as the history and instruction hashes still
+  match; a restart in the middle of a tool loop sends only the step's tool
+  results, never the conversation again. Switching models (Claude Code's
+  `/model`, which also rewrites the model line in its system prompt) keeps the
+  session: agy changes the model in place, and only the new model's first turn
+  reads the context without a cache. agy's prompt cache follows the folder it
   runs in, so a resumed session runs in its own temporary folder again and its
   cache still hits. The state file stores session IDs, hashes and that folder,
   never message text.
@@ -112,7 +120,8 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Usage visibility**: Magpie shows the agy subscription usage windows. Each
   model's window (its pool's most used one) is what Magpie's routing weighs the
   account by for that model, so a routing group puts it by what it has left,
-  and a model whose pool is used up is passed over for the next member.
+  and a model whose pool is used up is passed over for the next member. agy's
+  `/usage` report names no plan, so none is shown.
 
 ## Assistant prefill
 
@@ -215,6 +224,17 @@ After installing, sign in from Magpie; no terminal needed.
    and each request is mapped back to the matching agy ID.
 3. Pick the model in your client as usual.
 
+## Image generation and editing
+
+`agy-cli/gemini-3.1-flash-image` is an image-only model, offered in Magpie's
+Settings → Images → Image generation. It answers OpenAI-compatible
+`/images/generations` and `/images/edits` (`multipart/form-data` or JSON data
+URLs, up to 3 reference images, no mask); `n` above 1 runs in parallel. Each
+request runs an isolated `agy acp` session that may only read files in its own
+working folder, call the `image-generator` subagent and `generate_image`;
+every other tool is refused. The folder and the session's files are removed
+afterwards. Pixel sizes and ratios are mapped to the aspect ratios agy takes.
+
 ## Concurrency
 
 - The plugin's own pool is capped by `AGY_BRIDGE_MAX_PROCS`, which defaults to 16
@@ -245,28 +265,37 @@ The numbers come from agy's own `/usage` report for whichever account is signed
 in to the CLI, broken down by model group. Each group's models share its
 5-hour and weekly limits, so magpie shows the groups, and under "Every model"
 each model the group names, reading the group's most used limit (the one that
-stops it; Google's own per-model figure was the group's). The plugin never writes Google tokens
-or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
+stops it; Google's own per-model figure was the group's). The plugin never writes Google tokens; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
-Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
-("not currently available in your location") even though the quota read it
-made had its answer. The plugin then makes that read itself, the way agy makes
-it: with agy's stored sign-in it asks Google's Code Assist server
-(`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
-An access token about to end is renewed in memory and never stored. When
-`loadCodeAssist` names no project for a personal Google account, the quota is
-asked under `aicode-consumers`, the project Google serves every personal account
-under (agy itself asks with none, and Google refuses that). If that read fails
-too, the account shows agy's refusal and why the read failed, and no numbers.
+The quota is read through agy alone: the plugin runs `agy -p /usage`, so every
+request Google sees is agy's own. The plugin never reads agy's stored token to
+call Google's quota endpoints itself, nor renews that token (Google has warned
+that third-party tools reading it this way can get accounts flagged). agy's own
+read asks Google about twelve times, one after another, which usually takes
+5–10 seconds and longer on a first start, on Windows, for a newly added account
+or behind a slow network or proxy, so the plugin gives it 45 seconds. Magpie
+waits 20 seconds for a read: past that the account says agy is still reading
+its quota, agy reads on, and the next refresh shows what it read without
+running agy again. A read that doesn't finish in 45 seconds says so, names a
+slow network or proxy as the usual cause, and is tried again a minute later.
+When agy refuses `/usage` for the account's region ("not currently available
+in your location"), the account shows agy's refusal and no numbers.
+
+While agy's access token has ended or ends within two minutes (with a refresh
+token to renew it), agy isn't run for usage: a renewal that fails there can
+open a Google sign-in in the browser (#1234). The account says agy's sign-in is
+due to be renewed; agy renews it on the account's next chat and the quota is
+read after that. Until then the last quota read stays shown.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored
 sign-in in the system keychain (macOS) or Credential Manager (Windows) and only
 reads whether one is there and when it ends. With none, with one that has ended
 and can't be renewed, or with one agy already failed on, agy is not run: the
-account shows its sign-in has expired until you sign in again. Other failed
-usage reads wait 10 minutes before the next try, doubling up to 6 hours.
+account shows its sign-in has expired until you sign in again. A usage read that
+ran out of time is tried again a minute later; other failed reads wait 10
+minutes before the next try, doubling up to 6 hours.
 
 On macOS, a Magpie run as a LaunchDaemon is outside your login session and
 can't read your login keychain, and neither can agy there. An account of agy's
@@ -295,8 +324,10 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | After this long, a still-running client tool gets a "still running" reply |
 | `AGY_BRIDGE_START_TIMEOUT_MS` / `_TURN_TIMEOUT_MS` / `_TOOL_TIMEOUT_MS` | 60 s / 5 min / 30 min | Limits for process startup, agy silence, and waiting on a client tool result |
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | How long a suspended tool turn whose client disconnected may keep its pool slot |
-| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
-| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
+| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for one prompt (agy cuts a prompt at 128 KiB) |
+| `AGY_BRIDGE_MAX_REPLAY_BYTES` | the model's window less its output and 32K tokens, at 2 bytes a token (384 KiB for a model the plugin doesn't know) | Byte budget for history replayed into a new session, over as many prompts as it takes (agy 1.5.17+); history past it is left out and the model is told |
+| `AGY_BRIDGE_SEED_REPLAY` | on | Set to `0` to send a replay as one prompt of `AGY_BRIDGE_MAX_PROMPT_BYTES`, as before 0.1.139 |
+| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 45000 | Time agy gets for its own usage read, capped at 120000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading agy's stored sign-in |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
@@ -323,7 +354,7 @@ as "You're …"), while the same account answers with agy's prompt alone, so
 agy's `systemPrompt.append` is no longer used by default.
 `AGY_BRIDGE_SYSTEM_APPEND=1` goes back to it (in the session, when agy
 advertises it). The cost: the client's system prompt shares the first
-prompt's byte budget with replayed history (`AGY_BRIDGE_MAX_PROMPT_BYTES`),
+prompt's byte budget with replayed history (`AGY_BRIDGE_MAX_REPLAY_BYTES`),
 and agy's context compaction may summarise it.
 
 Antigravity answers a 429 "Resource has been exhausted" to a few system

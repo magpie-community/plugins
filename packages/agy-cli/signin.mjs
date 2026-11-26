@@ -301,8 +301,9 @@ export async function readStoredSignIn({ now = Date.now(), ...opts } = {}) {
 
 // storedToken is agy's stored sign-in itself for the current account
 // ({ token: { access_token, refresh_token, expiry }, auth_method, … }), or
-// null when there is none or it can't be read. Only usage.mjs's direct
-// quota read uses it, and it never writes it back: agy owns the sign-in.
+// null when there is none or it can't be read. Only signedInEmail uses it,
+// and it never writes it back: agy owns the sign-in. Usage never reads it:
+// the quota is read through agy alone (usage.mjs).
 export async function storedToken(opts) {
   try {
     const v = await readStoredValue(opts)

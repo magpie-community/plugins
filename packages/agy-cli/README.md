@@ -13,8 +13,8 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
 流式响应。
 
 - 底层是真正的 agy CLI，走它自带的 ACP 通道。ACP 握手里的 `clientInfo` 是本插件自己的
-  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己只在一种情况下请求 Google
-  的接口：agy 因地区拒绝 `/usage` 时，按 agy 的方式读额度（见「额度」）。
+  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己不请求 Google 的接口：
+  额度也只经 agy 自己读（`agy -p /usage`，见「额度」），不拿 agy 存的登录令牌去直接查。
 - 客户端自己的工具（读写文件、执行命令等）通过 MCP 暴露给模型。工具由客户端执行，结果
   回传到同一轮 agy 对话里，模型看到的是原生工具调用。
 - 账号风险不由插件决定。Google 的使用政策变化时，插件无法替你保证账号不受限制。
@@ -29,7 +29,9 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   机器上没有时，在 Magpie 里登录会按 Google 官方安装脚本的方式装一份（见「环境要求」）。
 - **会话**：Antigravity ACP 每个请求开一个新会话，把历史当作上下文带上。本插件维护一个
   agy 进程池，同一段对话复用同一个 agy 会话，重启后用 `session/resume` 接上；只有接不上时
-  才在字节预算内重放历史。magpie 的 image-slim 把较早的图片换成占位文字（Codex 上是整段
+  才重放历史。agy 会把一条提示词截在 128 KiB，所以 agy 1.5.17 起，更长的重放（或很长的粘贴）
+  分几条提示词发完，除最后一条外每条都在模型回答前取消，直到模型的窗口
+  （`AGY_BRIDGE_MAX_REPLAY_BYTES`）；放不下的较早历史会明确告诉模型。magpie 的 image-slim 把较早的图片换成占位文字（Codex 上是整段
   view_image 结果换成一行字），或 magpie 为满足大小、图片数上限省去较早的图片时，会话照常复用。
 - **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把
   客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。
@@ -63,8 +65,10 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   图片交给 agy：走 MCP 的话，agy 会把它存成文件，模型看不到。
 - **工具调用**：支持并行和连续调用。运行超过 150 秒的工具会先收到 "still running" 的
   占位响应，真正的结果送达后继续同一轮对话，每个调用只在客户端执行一次。
-- **会话续接**：每轮结束后记录会话。重启 Magpie 或插件后，只要历史和指令的哈希一致，
-  就用 `session/resume` 接上上下文。agy 的提示缓存跟着它运行的目录走，所以接上的会话
+- **会话续接**：每轮结束后记录会话，工具循环进行中的每一步也记录。重启 Magpie 或插件后，
+  只要历史和指令的哈希一致，就用 `session/resume` 接上上下文；工具循环中途重启时只发送
+  这一步的工具结果，不会把整段对话再发一遍。切换模型（Claude Code 的 `/model` 会连带改掉系统提示里的
+  模型那一行）也留在同一个会话里：agy 原地换模型，只有新模型的第一轮读上下文时没有缓存。agy 的提示缓存跟着它运行的目录走，所以接上的会话
   回到原来的临时目录里运行，缓存照样命中。状态文件只存会话 ID、哈希和这个目录，不存消息原文。
 - **隔离运行**：不读取你的全局 MCP 配置。每个 agy 进程使用临时 agent。agy 为它自己的
   工具发起的权限请求（shell、写文件、浏览器等）一律拒绝；客户端工具经桥接的 `ide-tools`
@@ -72,7 +76,13 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   都在客户端侧完成。
 - **助手预填**：以 assistant 结尾的预填请求（SillyTavern 预设、继续写、bot 框架）不再
   400 拒绝：预填留在本轮并渲染为续写载体，会话跨轮保持对齐，见下文「助手预填」。
-- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。
+- **网页搜索**：给 Magpie 的网页搜索提供 `agy-cli:agy`（`magpie search add agy-cli`），
+  用的是 agy 自己的 `search_web`：插件开一个只有这一个工具的 agy 会话，让它搜这次的查询，
+  从 agy 保存的这一步输出里读出摘要和来源，然后取消这一轮，模型不写回答。搜索由 agy 在
+  Google 那边完成，插件不直接请求 Google。每条结果的标题是来源的域名，链接是 Google 的
+  跳转地址（agy 给出的就是这样），正文是摘要里引用这个来源的句子。按账号搜索时，用的是
+  这个账号的 agy 登录。
+- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。agy 的 `/usage` 报告不带账号套餐，所以不显示套餐。
 
 ## 助手预填（assistant prefill）
 
@@ -145,6 +155,14 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。
 
+## 生图与改图
+
+`agy-cli/gemini-3.1-flash-image` 是一个只出图的模型，在 Magpie 的 设置 → 图片 → 图片生成 里可选。
+它接 OpenAI 兼容的 `/images/generations`（文生图）和 `/images/edits`（改图，`multipart/form-data`
+或 JSON data URL 均可，最多 3 张参考图，不支持 mask），`n` 大于 1 时并行生成。每次请求起一个隔离的
+`agy acp` 会话，只放行工作目录内的读文件、`image-generator` 子代理和 `generate_image`，其余工具一律拒绝；
+结束后删掉临时目录和会话产物。像素尺寸和比例会折算成 agy 支持的宽高比。
+
 ## 并发
 
 - 插件自己的进程池上限由 `AGY_BRIDGE_MAX_PROCS` 决定，默认 16 个 agy 进程。
@@ -169,21 +187,26 @@ magpie quota refresh agy-cli --json
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
 分别列出。同一组的模型共用这一组的 5 小时和每周额度，所以 Magpie 显示各组，并在「全部模型」
 里列出组里的每个模型，读数是这一组用得最多的那个额度（先用完的那个；Google 自己给每个模型的
-读数就是组的读数）。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
+读数就是组的读数）。插件不写 Google 令牌，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
-在 Antigravity 未开放的地区，agy 会在资格检查时拒绝 `/usage`（"not currently available in
-your location"），尽管它自己查的额度已经拿到了。这时插件按 agy 的方式自己查：用 agy 存的登录，
-以 agy 的 User-Agent 依次请求 Google Code Assist 的 `loadCodeAssist` 和
-`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。个人 Google 账号的
-`loadCodeAssist` 没给项目时，按 Google 给所有个人账号用的 `aicode-consumers` 项目查（agy
-自己不带项目查，Google 会拒绝）。这次查询也失败时，账号显示 agy 的拒绝原因和查询失败的原因，
+额度只经 agy 自己读：插件运行 `agy -p /usage`，Google 看到的每个请求都是 agy 自己发的。插件不读
+agy 存的登录令牌去直接请求 Google 的额度接口，也不替 agy 续期令牌（Google 已经提醒过，第三方工具
+这样直接读可能让账号被标记）。agy 自己读一次要向 Google 依次请求十来次，通常 5–10 秒，
+冷启动、Windows、新加的账号或网络/代理慢时更久，所以插件给它 45 秒。Magpie 一次只等 20 秒：
+超过时账号显示「agy 还在读这个账号的额度」，agy 接着读完，下次刷新直接显示结果，不再运行一次 agy。
+45 秒内仍没读完时，账号说明 agy 自己的读取没在 45 秒内完成、通常是网络或代理慢，一分钟后再试。
+agy 因地区拒绝 `/usage`（"not currently available in your location"）时，账号显示 agy 的拒绝原因，
 不显示数字。
+
+agy 的访问令牌已到期或两分钟内到期（有刷新令牌）时，插件不为额度运行 agy：agy 续期失败时
+可能在浏览器里打开 Google 登录页（#1234）。账号显示「agy 的登录待续期」，agy 在这个账号下次对话时
+自己续期，之后再读额度；在此之前显示上次读到的额度。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
 先看系统钥匙串（macOS）或凭据管理器（Windows）里 agy 存的登录，只读有没有、何时到期。没有登录、
 登录已过期且无法续期、或 agy 已在这份登录上失败过时，不运行 agy，账号显示登录已过期，直到重新登录。
-其他失败的额度查询等 10 分钟再试，每次翻倍，最长 6 小时。
+超时的额度查询一分钟后再试；其他失败的等 10 分钟再试，每次翻倍，最长 6 小时。
 
 macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里，读不到登录钥匙串，agy 在那里也读不到。
 这时 agy 自己的账号用 Magpie 窗口为它复制的那份登录（见上文）；没有复制的，账号会说明原因：
@@ -210,8 +233,10 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | 工具运行超过该时间仍未结束时，先返回 "still running" |
 | `AGY_BRIDGE_START_TIMEOUT_MS` / `_TURN_TIMEOUT_MS` / `_TOOL_TIMEOUT_MS` | 60 秒 / 5 分钟 / 30 分钟 | 进程启动、agy 无输出、等待客户端工具结果的超时 |
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | 客户端已断开的挂起工具回合，最多占用进程池槽位这么久 |
-| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 重放历史提示词的字节预算 |
-| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
+| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 一条提示词的字节预算（agy 会把一条提示词截在 128 KiB） |
+| `AGY_BRIDGE_MAX_REPLAY_BYTES` | 模型窗口减去输出和 32K token，按每 token 2 字节算（插件不认识的模型为 384 KiB） | 新会话重放历史的字节预算，需要几条提示词就分几条发（agy 1.5.17 起）；超出的部分不发，并告诉模型 |
+| `AGY_BRIDGE_SEED_REPLAY` | 开启 | 设为 `0` 时重放只发一条 `AGY_BRIDGE_MAX_PROMPT_BYTES` 大小的提示词，即 0.1.139 之前的做法 |
+| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 45000 | agy 自己读额度的时间预算，最高 120000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | 未设置 | 设为 `skip` 时插件不读 agy 存的登录 |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
@@ -231,7 +256,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 agent that helps users with software engineering tasks."，改成 "You're …" 也一样），只用 agy
 自己的提示词时同一个账号能正常回答，所以默认不再用 agy 的 `systemPrompt.append`。设
 `AGY_BRIDGE_SYSTEM_APPEND=1` 恢复以前的做法（agy 声明支持时附加到会话）。代价：客户端的系统
-提示词和重放的历史共用第一条提示词的字节预算（`AGY_BRIDGE_MAX_PROMPT_BYTES`），agy 压缩上下文时
+提示词和重放的历史共用同一个字节预算（`AGY_BRIDGE_MAX_REPLAY_BYTES`），agy 压缩上下文时
 它也可能被概括掉。
 
 Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex、Hermes Agent、OpenCode

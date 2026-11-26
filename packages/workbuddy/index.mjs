@@ -19,6 +19,10 @@ const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
 const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before a request
 const LEAD_MS = 5 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
+const AHEAD_MS = 10 * 86400 * 1000 // a sign-in this near its end is renewed before a request: its access token lives 28 days, its refresh token 30
+const LONG_MS = 2 * AHEAD_MS // a token minted to live this long takes AHEAD_MS; a shorter one keeps EARLY_MS, so a renewal never renews again at once
+const AHEAD_RETRY_MS = 60 * 1000 // a failed ahead renewal waits this, doubled for each failure in a row
+const AHEAD_RETRY_MOST = 30 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000 // how long a refresh's result answers for the old refresh token
 
 // [id, name, context, efforts, output]
@@ -288,12 +292,56 @@ function stale(a) {
   return !!a.expires && Date.now() >= a.expires - EARLY_MS
 }
 
+// lifeOf is how long a's access token was minted to live, from its own
+// claims (WorkBuddy's tokens are RS256 JWTs with iat and exp): 0 when it
+// isn't one, or names no pair.
+function lifeOf(a) {
+  const seg = String(a?.access ?? "").split(".")[1]
+  if (!seg) return 0
+  try {
+    const c = JSON.parse(Buffer.from(seg, "base64url").toString("utf8"))
+    const iat = Number(c?.iat)
+    const exp = Number(c?.exp)
+    return iat > 0 && exp > iat ? (exp - iat) * 1000 : 0
+  } catch {
+    return 0
+  }
+}
+
+// ahead is whether a is renewed before a request while its access token
+// still has AHEAD_MS left. magpie renews only within refreshLead of the
+// end, and its host clamps that to a day (host.js leadOf), by when the
+// 30-day refresh token can already have ended. Desktop's sign-in is never
+// renewed ahead: its refresh token is the app's too, and spending it early
+// signs the app out (README: the app's file is read again instead).
+function ahead(a) {
+  if (!refreshable(a) || a.source === "desktop") return false
+  const left = (a.expires ?? 0) - Date.now()
+  return left > 0 && left <= AHEAD_MS && lifeOf(a) >= LONG_MS
+}
+
 // renewing is each refresh under way, by site and the refresh token it
 // spends; renewed is what each gave, kept a minute so one that read the
 // old refresh token after it was spent (magpie's auth.refresh, a request)
 // takes that rather than spending it again.
 const renewing = new Map()
 const renewed = new Map()
+
+// aheadHeld is each sign-in whose ahead renewal failed, by site and the
+// refresh token it spends: as the reference project's keepalive records a
+// failed refresh and tries it again later rather than dropping the account,
+// a failure here leaves the sign-in as it was and is retried after a wait,
+// doubled each failure in a row.
+const aheadHeld = new Map()
+const aheadKey = (site, a) => site.id + "\n" + a.refresh
+function aheadFailed(key) {
+  const n = (aheadHeld.get(key)?.n ?? 0) + 1
+  aheadHeld.set(key, { n, until: Date.now() + Math.min(AHEAD_RETRY_MS * 2 ** (n - 1), AHEAD_RETRY_MOST) })
+}
+function aheadWaiting(key) {
+  const h = aheadHeld.get(key)
+  return !!h && h.until > Date.now()
+}
 
 function refreshable(a) {
   return !!a.refresh && !(a.refreshExpiresAt && Date.now() >= a.refreshExpiresAt)
@@ -334,22 +382,29 @@ function merged(a, next) {
 const TOKEN_FIELDS = ["access", "refresh", "expires", "refreshExpiresAt", "domain", "tokenType"]
 
 // fresh is the sign-in with an access token that isn't about to end:
-// refreshed (and saved) when it is. A refresh that fails, or a refresh
+// refreshed (and saved) when it is, or when it comes near the end of a
+// long-lived sign-in's life (ahead). A refresh that fails, or a refresh
 // token that has ended, leaves the access token there is. Its failures
 // are worded as the built-in's (wbFresh), "WorkBuddy" on both sites.
 async function fresh(site, client, a) {
-  if (!stale(a)) return a
+  const early = !stale(a)
+  const key = aheadKey(site, a)
+  if (early && !ahead(a)) return a
+  if (early && aheadWaiting(key)) return a
   if (!refreshable(a)) {
     if (a.access) return a
     throw new Error("this WorkBuddy account is signed out; sign in again")
   }
   try {
-    return await renew(site, a, async (next) => {
+    const next = await renew(site, a, async (next) => {
       try {
         await client?.auth?.set?.({ path: { id: site.id }, body: next })
       } catch {}
     })
+    aheadHeld.delete(key)
+    return next
   } catch (e) {
+    if (early) aheadFailed(key)
     if (a.access) return a
     if (e?.bare) throw e
     throw new Error(`WorkBuddy token refresh: ${e?.said ?? e?.message ?? e}`)
@@ -2117,6 +2172,199 @@ function unsaid(res) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers })
 }
 
+
+// WorkBuddy streams reasoning in 1-4 character deltas (measured: 40 chunks
+// for 63 characters). OpenCode 2 stores every delta as its own part, so one
+// answer becomes thousands of parts and the message JSON is rewritten once
+// per part. coalesced holds the deltas and emits them as one event, which
+// leaves the reasoning text intact while cutting the part count by orders of
+// magnitude.
+//
+// Size alone is not enough: this fetch serves every client of the provider,
+// and a client that shows thinking as it arrives would see nothing for a
+// whole 8k thought. So the buffer also flushes on a clock (FLUSH_MS), which
+// keeps other clients live and still turns 2,263 parts into a few dozen.
+const MERGE_CHARS = 8192
+const FLUSH_MS = 300
+
+// WorkBuddy sends the null and empty forms of every field it is not using
+// (content: "", tool_calls: [], refusal: "", function_call: null), so a key
+// counts as carrying something only when it holds a value.
+const filled = (v) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Object.keys(v).length)
+
+function coalesced(res, flushMs = FLUSH_MS) {
+  if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  let rest = ""
+  let held = null
+  let buf = ""
+  let field = "reasoning_content"
+  let queue = []
+  let ctl = null
+  let timer = null
+  let sentUsage = null
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+  const pump = () => {
+    if (!ctl || !queue.length) return
+    const text = queue.map((e) => e + "\n\n").join("")
+    queue = []
+    ctl.enqueue(enc.encode(text))
+  }
+  // flush writes the reasoning field, plus role and usage when the chunk that
+  // opened the block carried them. Anything else in that chunk goes out once,
+  // with the rest of it, not again here. It returns whether usage was written,
+  // so the caller can drop the duplicate copy.
+  const flush = () => {
+    clearTimer()
+    if (!buf || !held) return false
+    const v = JSON.parse(JSON.stringify(held))
+    const c = v.choices?.[0]
+    if (c) {
+      const delta = { [field]: buf }
+      if (c.delta?.role !== undefined) delta.role = c.delta.role
+      c.delta = delta
+      c.finish_reason = null
+    }
+    const hadUsage = filled(v.usage)
+    if (hadUsage) sentUsage = v.usage
+    queue.push("data: " + JSON.stringify(v))
+    held = null
+    buf = ""
+    return hadUsage
+  }
+  // A repeated usage is the one already written with the block; a different
+  // one is newer and must reach the client.
+  const sameUsage = (usage) => filled(usage) && sentUsage !== null && JSON.stringify(usage) === JSON.stringify(sentUsage)
+  const arm = () => {
+    if (timer !== null || !held) return
+    timer = setTimeout(() => {
+      timer = null
+      flush()
+      pump()
+    }, flushMs)
+  }
+
+  const event = (ev) => {
+    const m = /^data:\s?(.*)$/m.exec(ev)
+    if (!m) {
+      queue.push(ev)
+      return
+    }
+    if (m[1] === "[DONE]") {
+      flush()
+      queue.push(ev)
+      return
+    }
+    let v
+    try {
+      v = JSON.parse(m[1])
+    } catch {
+      flush()
+      queue.push(ev)
+      return
+    }
+    // Only a single choice is coalesced; anything else goes through whole
+    // rather than being rebuilt from choice 0.
+    if (!Array.isArray(v?.choices) || v.choices.length !== 1) {
+      flush()
+      queue.push(ev)
+      return
+    }
+    const c = v.choices[0]
+    const d = c?.delta
+    const next =
+      typeof d?.reasoning_content === "string" && d.reasoning_content
+        ? "reasoning_content"
+        : typeof d?.reasoning === "string" && d.reasoning
+          ? "reasoning"
+          : ""
+    const reason = next ? d[next] : ""
+    if (reason) {
+      // A block is one field: a switch mid-block starts a new one.
+      if (held && field !== next) flush()
+      field = next
+      if (!held) held = v
+      // usage rides on whichever chunk the provider puts it on, which is not
+      // necessarily the one that opened the block
+      if (filled(v.usage)) held.usage = v.usage
+      buf += reason
+      // Anything else in the delta ends the block and goes out after the
+      // reasoning, once. WorkBuddy sends finish_reason: "" on every delta,
+      // so only a named reason ends it.
+      const rest = { ...(d ?? {}) }
+      delete rest.reasoning_content
+      delete rest.reasoning
+      delete rest.role
+      const restKeys = Object.keys(rest).filter((k) => filled(rest[k]))
+      const named = c?.finish_reason
+      if (restKeys.length || (named != null && named !== "")) {
+        flush()
+        const w = JSON.parse(JSON.stringify(v))
+        w.choices[0].delta = {}
+        for (const k of restKeys) w.choices[0].delta[k] = rest[k]
+        if (sameUsage(w.usage)) delete w.usage
+        queue.push("data: " + JSON.stringify(w))
+        return
+      }
+      if (buf.length >= MERGE_CHARS) flush()
+      else arm()
+      return
+    }
+    flush()
+    if (d && (typeof d.reasoning_content === "string" || typeof d.reasoning === "string")) {
+      const w = JSON.parse(JSON.stringify(v))
+      const kept = { ...(w.choices[0].delta ?? {}) }
+      delete kept.reasoning_content
+      delete kept.reasoning
+      const keptKeys = Object.keys(kept).filter((k) => filled(kept[k]))
+      if (sameUsage(w.usage)) delete w.usage
+      if (!keptKeys.length && !w.choices[0].finish_reason && w.usage === undefined) return
+      w.choices[0].delta = {}
+      for (const k of keptKeys) w.choices[0].delta[k] = kept[k]
+      queue.push("data: " + JSON.stringify(w))
+      return
+    }
+    queue.push(ev)
+  }
+
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      start(controller) {
+        ctl = controller
+      },
+      transform(chunk) {
+        rest = (rest + dec.decode(chunk, { stream: true })).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+        const evs = rest.split("\n\n")
+        rest = evs.pop()
+        for (const ev of evs) event(ev)
+        pump()
+      },
+      flush() {
+        rest += dec.decode()
+        if (rest) event(rest)
+        flush()
+        pump()
+        ctl = null
+      },
+      cancel() {
+        clearTimer()
+        ctl = null
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
 // ---- signing in -------------------------------------------------------------
 
 // poll asks path until WorkBuddy answers with data, retrying the codes
@@ -2856,16 +3104,33 @@ const CN_ESTIMATED_WINDOWS = [
     unit: "",
   },
 ]
-// WorkBuddy AI's window keeps the name it shipped with: there the model is
-// served at x0.00, so "Free model tokens" is what it is.
+// WorkBuddy AI's window is deepseek-v4.1-flash's while WorkBuddy AI serves
+// that model at x0.00. The card names the model and says its cap is an
+// estimate, as the China build's does (plugins#663): "Free model tokens"
+// read as an allowance for whatever model is free now, and the 1e8 was
+// measured on deepseek only (plugins#1567). It is shown only while the
+// account's model list, when there is one, still has deepseek free
+// (aiWindowApplies).
 const FREE_WINDOW_AI = {
   provider: "workbuddy-ai",
   model: "deepseek-v4.1-flash",
   aliases: ["deepseek-v4.1-flash-sg"],
   cap: 1e8,
-  name: "Free model tokens",
-  short: "100M",
-  unit: "tokens",
+  name: "deepseek-v4.1-flash tokens (est.)",
+  refusedName: "deepseek-v4.1-flash tokens",
+  short: "~100M",
+  unit: "",
+}
+
+// aiWindowApplies says whether a model's window still applies to an account
+// whose model list is `list` (liveModels' shape), or null for no list read.
+// With a list it applies only while the model is in it and not priced: once
+// WorkBuddy AI stops serving it free, the estimate is retired, and nothing
+// carries its count or cap to the model that is free instead.
+function aiWindowApplies(list, win = FREE_WINDOW_AI) {
+  if (!Array.isArray(list)) return true
+  const m = list.find((x) => x?.id === win.model)
+  return !!m && m.free !== false
 }
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
@@ -3818,15 +4083,18 @@ function enterpriseUsageOf(u) {
 // the account last, and behind every other, for its free models too. A
 // model free only some hours (a night promotion) is not free here, as in
 // the list (priceOf). A list that can't be read leaves the windows as they
-// are: every model counted, as before.
+// are: every model counted, as before. It gives back the list it read
+// (null when the read failed, undefined with no windows to mark), so a
+// caller that needs the list too costs the poll no second config request.
 async function spareFree(site, a, windows) {
-  if (!windows.length) return windows
-  let free = []
+  if (!windows.length) return undefined
+  let list = null
   try {
-    free = (await liveModels(site, a)).filter((m) => m.free).map((m) => m.id)
+    list = await liveModels(site, a)
   } catch {}
+  const free = (list ?? []).filter((m) => m.free).map((m) => m.id)
   if (free.length) for (const w of windows) w.notModels = free
-  return windows
+  return list
 }
 
 // The packages' codes, as WorkBuddy's own client lists them when it asks
@@ -4523,11 +4791,15 @@ function makePlugin(site) {
     },
     auth: {
       provider: site.id,
-      // magpie renews a browser sign-in LEAD_MS before its end (an hour's
-      // token), once for the account, before its requests, models and
-      // usage ask; the check before each request stays for OpenCode,
-      // which doesn't call this. Desktop's sign-in has no expiry stored
-      // and is renewed as before.
+      // magpie renews a browser sign-in LEAD_MS before its end, once for
+      // the account, before its requests, models and usage ask. The lead
+      // stays short: magpie's host takes any lead up to a day, and a sign-in
+      // whose token lives less than its lead would be due again as soon as
+      // it is renewed, so it would be renewed on every request and every
+      // keep-alive. A long-lived sign-in is renewed sooner by fresh (ahead)
+      // instead. The check before each request stays for OpenCode, which
+      // doesn't call this. Desktop's sign-in has no expiry stored and is
+      // renewed as before.
       refreshLead: LEAD_MS,
       rotating: true,
       refresh: (auth) => refreshed(site, auth),
@@ -4790,7 +5062,7 @@ function makePlugin(site) {
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
             if (res.status >= 400) return explained(res)
-            const told = native ? res : unsaid(await renamed(res, names))
+            const told = native ? res : coalesced(unsaid(await renamed(res, names)))
             // the ids are the ones the chat went with, after any renewal
             const conv = headers.get("X-Conversation-ID") ?? ""
             const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
@@ -4842,7 +5114,10 @@ function makePlugin(site) {
             try {
               ent = enterpriseUsageOf(await meter(site, a, "/billing/meter/get-enterprise-user-usage"))
             } catch {}
-            if (ent) return { plan: auth.plan || "Enterprise", windows: await spareFree(site, a, [ent]), signIn: said }
+            if (ent) {
+              await spareFree(site, a, [ent])
+              return { plan: auth.plan || "Enterprise", windows: [ent], signIn: said }
+            }
           }
           // when the plan's credits start again (cycleOf), and when the credits
           // left run out, for routing to spend them first (runsOutOf);
@@ -4883,7 +5158,7 @@ function makePlugin(site) {
               }
             } catch {}
           }
-          await spareFree(site, a, out.windows)
+          const known = await spareFree(site, a, out.windows)
           // each measured model's own window, which the credit meter above
           // does not show: what actually refuses a chat long before the
           // credits are spent. WorkBuddy AI has one (deepseek, 1e8, ten days
@@ -4893,7 +5168,10 @@ function makePlugin(site) {
           // (see the window definitions above)
           {
             const account = a.accountId || a.user || a.uid || ""
-            const wins = site.ai ? [FREE_WINDOW_AI] : CN_ESTIMATED_WINDOWS
+            // known is the list spareFree read for this poll: no request
+            // of its own (none read: shown, as the card names its model and
+            // says it is an estimate)
+            const wins = site.ai ? [FREE_WINDOW_AI].filter((w) => aiWindowApplies(known, w)) : CN_ESTIMATED_WINDOWS
             for (const win of wins) {
               const rows = await freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
               const w = rows && freeWindowOf(rows, account, Date.now(), win)
@@ -5046,4 +5324,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, AHEAD_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
