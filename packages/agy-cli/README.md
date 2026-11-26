@@ -290,6 +290,13 @@ DeepSeek Harness 的第一句 "You are an AI agent powered by DeepSeek Harness."
 "The browser provides no implicit DOM, route, or screenshot context."（#1105）原样发出也会被回 429，
 分别改成 "You're …" 和 "The browser gives …" 再发。
 
+agy 会把提示词里任何位置的命令名当成用户在运行这个命令：前后是空白（或在开头、结尾）的 `/learn`
+（或 `/plan`、`/goal` 等，以及会话自己的技能）会让 agy 把这个命令的整段说明加进本轮。系统提示词或技能
+列表里提到命令名，比如 Cindy 的 "invokes /learn or /skill:learn in Pi"，曾让每一轮都启动 agy 的
+`/learn`（#1294）。所以插件交给 agy 的所有内容里，这样的命令名会在 `/` 后加一个零宽连字符（U+2060）：
+agy 不再当它是命令，模型读到的还是同一个词；模型照抄它写出的工具调用，交给客户端时会去掉这个字符。路径、
+URL、`/learn.`、`/Learn`、`` `/learn` `` 和 `/skill:learn` 在 agy 看来不是命令，原样发出。
+
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
 发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的

@@ -414,6 +414,17 @@ implicit DOM, route, or screenshot context." in its Web GUI paragraph
 (#1105) get the 429 as written too, so they go as "You're …" and "The
 browser gives …".
 
+agy reads a command name anywhere in a prompt as the user running that
+command: `/learn` (or `/plan`, `/goal`, …, or a skill of the session's)
+between spaces, or at the start or end, gets the command's whole text added
+to the turn. A system prompt or a skill list that names one, as Cindy's
+"invokes /learn or /skill:learn in Pi" does, started agy's `/learn` on every
+turn (#1294). So in everything the plugin hands agy, such a name gets a word
+joiner (U+2060) after its `/`, which agy doesn't read as a command and the
+model reads as the same word; a tool call that copies it goes to the client
+without it. Paths, URLs, `/learn.`, `/Learn`, `` `/learn` `` and
+`/skill:learn` aren't commands to agy and go as written.
+
 Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
 request that goes upstream then has none of agy's own system prompt, only
 the plugin's one-line tool note and the client's system prompt (sent in one

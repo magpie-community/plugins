@@ -20,7 +20,7 @@ import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
 import { processExists } from "./proc.mjs"
 import { fitTools } from "./tool-budget.mjs"
-import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
+import { cloakUser, DEFAULT_SLASH_COMMANDS, defuseSlashCommands, hint, outgoing, restoreSlashCommands, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 import { IMAGE_MODEL_ID, handleImageFetch, imageModelEntry, imageRoute } from "./image.mjs"
 import { reapOneshotChildren } from "./oneshot-acp.mjs"
@@ -1078,7 +1078,7 @@ async function searchAsAccount(query, count, email, abort) {
       if (model && model !== session?.models?.currentModelId) {
         await conn.request("session/set_model", { sessionId, modelId: model }, 30_000).catch(() => {})
       }
-      const turn = conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: `search_web: ${query}` }] })
+      const turn = conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: defuseSlashCommands(`search_web: ${query}`) }] })
       turn.catch(() => {})
       const how = await Promise.race([found, turn.then(() => "ended", () => "ended")])
       // agy writes the step's output as the step ends: a moment's room
@@ -2991,7 +2991,17 @@ class Proc {
   }
 
   #onNotification(method, params) {
-    if (method !== "session/update" || params?.sessionId !== this.sessionId) return
+    if (method !== "session/update") return
+    if (params?.update?.sessionUpdate === "available_commands_update" &&
+      (!this.sessionId || params?.sessionId === this.sessionId) &&
+      Array.isArray(params.update.availableCommands)) {
+      this.slashCommands ??= new Set(DEFAULT_SLASH_COMMANDS)
+      for (const cmd of params.update.availableCommands) {
+        if (typeof cmd?.name === "string" && cmd.name) this.slashCommands.add(cmd.name)
+      }
+      return
+    }
+    if (params?.sessionId !== this.sessionId) return
     if (params.update?.sessionUpdate === "config_option_update" && Array.isArray(params.update.configOptions)) {
       this.configOptions = params.update.configOptions
       this.currentSelectionKey = null
@@ -3068,7 +3078,7 @@ class Proc {
         turn.arm()
         this.sessionPrompts++
         let ended = false
-        const reply = this.conn.request("session/prompt", { sessionId: this.sessionId, prompt: userTurnParts(parts) })
+        const reply = this.conn.request("session/prompt", { sessionId: this.sessionId, prompt: userTurnParts(parts, this.slashCommands) })
         reply.then(() => { ended = true }, () => { ended = true })
         while (!ended) {
           await new Promise((resolve) => setTimeout(resolve, SEED_CANCEL_EVERY_MS))
@@ -3250,8 +3260,10 @@ class Proc {
         // here resumes at them (parkStep), never at the turn before
         if (!parkStep(this)) unpark(this.convKey)
         // agy hands Antigravity the prompt as a user's turn, where Codex's
-        // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY)
-        promptParts = userTurnParts(promptParts)
+        // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY), and
+        // reads a command name anywhere in it as the user running that
+        // command (cloak.mjs, defuseSlashCommands)
+        promptParts = userTurnParts(promptParts, this.slashCommands)
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         turn.promptInFlight = true
         this.sessionPrompts++
@@ -3483,6 +3495,9 @@ class Proc {
     const name = message.name
     let args = message.arguments ?? {}
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("agy bridge: invalid tool arguments")
+    // what the model copied out of a prompt with a slash command defused
+    // goes to the client as the prompt's own text had it (cloak.mjs)
+    args = restoreSlashCommands(args, this.slashCommands)
     const tool = this.tools.find((item) => item.name === name)
     if (!tool) throw new Error(`agy bridge: undeclared tool ${name}`)
     const spilled = spilledOutput(this.agyDir, name, args)
@@ -3884,10 +3899,12 @@ function toPromptParts(content) {
   return out
 }
 
-// userTurnParts is parts with each text part as cloakUser says
-function userTurnParts(parts) {
+// userTurnParts is parts with each text part as cloakUser says, and with
+// slashCommands (the session's, DEFAULT_SLASH_COMMANDS before it lists them)
+// defused
+function userTurnParts(parts, slashCommands) {
   return parts.map((part) => part?.type === "text" && typeof part.text === "string"
-    ? { ...part, text: cloakUser(part.text) }
+    ? { ...part, text: defuseSlashCommands(cloakUser(part.text), slashCommands) }
     : part)
 }
 

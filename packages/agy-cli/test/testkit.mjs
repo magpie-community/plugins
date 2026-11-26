@@ -321,10 +321,22 @@ class FakeAgy {
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
+      const sendNew = () => {
+        this.respond(id, { sessionId: this.sessionId, models })
+        if (Array.isArray(this.kit.availableCommands)) {
+          this.send({
+            method: "session/update",
+            params: {
+              sessionId: this.sessionId,
+              update: { sessionUpdate: "available_commands_update", availableCommands: this.kit.availableCommands },
+            },
+          })
+        }
+      }
       const delay = (this.kit.sessionNewDelayMs || 0) + (this.booted ? 0 : this.kit.bootDelayMs || 0)
       this.booted = true
-      if (delay) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), delay)
-      else this.respond(id, { sessionId: this.sessionId, models })
+      if (delay) setTimeout(sendNew, delay)
+      else sendNew()
     } else if (method === "session/close" && this.kit.sessionClose) {
       this.respond(id, {})
     } else if (method === "session/set_model") {
@@ -523,6 +535,7 @@ export async function createBridgeKit(options = {}) {
     prompts: [],
     promptSerial: 0,
     defaultPrompt: null,
+    availableCommands: options.availableCommands ?? null,
     sessionSerial: 0,
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,

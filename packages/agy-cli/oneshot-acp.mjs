@@ -5,6 +5,7 @@ import path from "node:path"
 import { currentHome } from "./account.mjs"
 import { spawnAgy, windowsTreeKill } from "./platform.mjs"
 import { agyRefusal } from "./usage.mjs"
+import { defuseSlashCommands } from "./cloak.mjs"
 
 export const START_TIMEOUT_MS = 45 * 1000
 const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -496,7 +497,8 @@ export async function runOneshotAgySession({
         }
       }
 
-      const promptText = buildPrompt(workdirState)
+      // a command name in the prompt would run that command (cloak.mjs)
+      const promptText = defuseSlashCommands(buildPrompt(workdirState))
       const promptResult = await conn.request("session/prompt", {
         sessionId,
         prompt: [{ type: "text", text: promptText }],
