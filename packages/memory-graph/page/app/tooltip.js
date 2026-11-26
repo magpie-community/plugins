@@ -2,23 +2,47 @@
 // 悬浮详情卡：延迟出现、靠近光标、越界翻转、可滚动静止、移入卡片不消失。
 
 (function () {
-  const KIND_LABEL = {
-    profile: "个人档案",
-    preference: "偏好",
-    rule: "规则",
-    fact: "事实",
-    procedure: "流程",
-    episode: "经历",
-    reference: "参考",
-    unknown: "未分类",
-  };
+  const langParam = new URLSearchParams(location.search).get("lang");
+  const isZh = String(langParam || navigator.language || "en")
+    .toLowerCase()
+    .startsWith("zh");
+  const t = (zh, en) => (isZh ? zh : en);
 
-  const STATUS_LABEL = {
-    active: "活跃",
-    superseded: "已被取代",
-    candidate: "候选",
-    archived: "归档",
-  };
+  const KIND_LABEL = isZh
+    ? {
+        profile: "个人档案",
+        preference: "偏好",
+        rule: "规则",
+        fact: "事实",
+        procedure: "流程",
+        episode: "经历",
+        reference: "参考",
+        unknown: "未分类",
+      }
+    : {
+        profile: "Profile",
+        preference: "Preference",
+        rule: "Rule",
+        fact: "Fact",
+        procedure: "Procedure",
+        episode: "Episode",
+        reference: "Reference",
+        unknown: "Unknown",
+      };
+
+  const STATUS_LABEL = isZh
+    ? {
+        active: "活跃",
+        superseded: "已被取代",
+        candidate: "候选",
+        archived: "归档",
+      }
+    : {
+        active: "Active",
+        superseded: "Superseded",
+        candidate: "Candidate",
+        archived: "Archived",
+      };
 
   const pad = (value) => String(value).padStart(2, "0");
 
@@ -39,18 +63,24 @@
   }
 
   const MAX_LINKS = 6;
-  const SOURCE_LABEL = {
-    vector: "向量",
-    lexical: "词法",
-    lineage: "演进",
-  };
+  const SOURCE_LABEL = isZh
+    ? {
+        vector: "向量",
+        lexical: "词法",
+        lineage: "演进",
+      }
+    : {
+        vector: "Vector",
+        lexical: "Lexical",
+        lineage: "Lineage",
+      };
 
   function formatSim(edge) {
-    if (edge?.source === "lineage") return "演进";
+    if (edge?.source === "lineage") return SOURCE_LABEL.lineage;
     const pct = Number.isFinite(Number(edge?.sim)) ? `${Math.round(Number(edge.sim) * 100)}%` : "";
     const parts = [];
     if (pct) parts.push(pct);
-    if (edge?.lineage) parts.push("演进");
+    if (edge?.lineage) parts.push(SOURCE_LABEL.lineage);
     else if (SOURCE_LABEL[edge?.source]) parts.push(SOURCE_LABEL[edge.source]);
     return parts.join(" · ");
   }
@@ -70,13 +100,13 @@
     const idButton = document.createElement("button");
     idButton.type = "button";
     idButton.className = "tip-id";
-    idButton.title = "复制记忆 id";
+    idButton.title = t("复制记忆 id", "Copy memory ID");
 
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "tip-close";
-    closeButton.title = "关闭";
-    closeButton.setAttribute("aria-label", "关闭");
+    closeButton.title = t("关闭", "Close");
+    closeButton.setAttribute("aria-label", t("关闭", "Close"));
     closeButton.textContent = "×";
     closeButton.addEventListener("click", () => {
       close();
@@ -100,7 +130,7 @@
     const why = document.createElement("details");
     why.className = "tip-why";
     const whySummary = document.createElement("summary");
-    whySummary.textContent = "为什么记下它";
+    whySummary.textContent = t("为什么记下它", "Why remembered");
     const whyText = document.createElement("p");
     why.append(whySummary, whyText);
 
@@ -197,19 +227,19 @@
       reset();
       currentId = node.id;
 
-      kind.textContent = KIND_LABEL[node.kind] || node.kind || "未分类";
+      kind.textContent = KIND_LABEL[node.kind] || node.kind || KIND_LABEL.unknown;
       kind.dataset.kind = node.kind || "unknown";
       el.dataset.kind = node.kind || "unknown";
       idButton.textContent = node.id;
 
       title.textContent = node.title || node.id;
 
-      addMeta("范围", node.scopeLabel || node.scope);
-      addMeta("状态", STATUS_LABEL[node.status] || node.status);
-      addMeta("来源", node.origin);
+      addMeta(t("范围", "Scope"), node.scopeLabel || node.scope);
+      addMeta(t("状态", "Status"), STATUS_LABEL[node.status] || node.status);
+      addMeta(t("来源", "Origin"), node.origin);
       if (node.status === "superseded" && node.supersededBy) {
         const span = document.createElement("span");
-        span.textContent = "取代者 ";
+        span.textContent = t("取代者 ", "Superseded by ");
         const jump = document.createElement("button");
         jump.type = "button";
         jump.className = "tip-jump";
@@ -222,10 +252,13 @@
         meta.appendChild(span);
       }
 
-      body.textContent = node.body || "（正文为空）";
+      body.textContent = node.body || t("（正文为空）", "(Empty body)");
       if (node.bodyTruncated) {
         truncated.hidden = false;
-        truncated.textContent = `正文已截断，完整内容见 ${node.id}.md`;
+        truncated.textContent = t(
+          `正文已截断，完整内容见 ${node.id}.md`,
+          `Body truncated; see ${node.id}.md for full text`,
+        );
       }
 
       if (node.why) {
@@ -247,22 +280,23 @@
 
       if (node.created || node.updated) {
         times.hidden = false;
-        times.append("创建", Object.assign(document.createElement("b"), { textContent: when(node.created) }));
-        times.append("更新", Object.assign(document.createElement("b"), { textContent: when(node.updated) }));
+        times.append(t("创建", "Created"), Object.assign(document.createElement("b"), { textContent: when(node.created) }));
+        times.append(t("更新", "Updated"), Object.assign(document.createElement("b"), { textContent: when(node.updated) }));
       }
 
       if (Array.isArray(node.sources) && node.sources.length) {
         sources.hidden = false;
         const heading = document.createElement("div");
-        heading.textContent = "记录来源";
+        heading.textContent = t("记录来源", "Sources");
         sources.appendChild(heading);
         for (const source of node.sources) {
           const block = document.createElement("div");
           block.className = "tip-source";
-          block.textContent = [source.agent, shortDir(source.dir)].filter(Boolean).join(" · ") || "未知来源";
+          block.textContent =
+            [source.agent, shortDir(source.dir)].filter(Boolean).join(" · ") || t("未知来源", "Unknown source");
           if (source.quote) {
             const quote = document.createElement("em");
-            quote.textContent = `“${source.quote}”`;
+            quote.textContent = isZh ? `“${source.quote}”` : `"${source.quote}"`;
             block.appendChild(quote);
           }
           sources.appendChild(block);
@@ -286,8 +320,8 @@
         const heading = document.createElement("h4");
         heading.textContent =
           related.length > MAX_LINKS
-            ? `关联 ${related.length} 条 · 显示最相似前 ${MAX_LINKS}`
-            : `关联 ${related.length} 条`;
+            ? t(`关联 ${related.length} 条 · 显示最相似前 ${MAX_LINKS}`, `${related.length} related · top ${MAX_LINKS}`)
+            : t(`关联 ${related.length} 条`, `${related.length} related`);
         links.appendChild(heading);
         for (const { edge, other } of related.slice(0, MAX_LINKS)) {
           const peer = ctx.byId?.get(other);
@@ -315,13 +349,16 @@
       }
 
       foot.hidden = false;
-      foot.textContent = `${node.degree || 0} 条关联 · 基于本地语义相似度`;
+      foot.textContent = t(
+        `${node.degree || 0} 条关联 · 基于本地语义相似度`,
+        `${node.degree || 0} connections · local semantic similarity`,
+      );
     }
 
     function renderEdge(edge, ctx) {
       reset();
       currentId = "";
-      kind.textContent = edge.source === "lineage" ? "演进" : "语义关联";
+      kind.textContent = edge.source === "lineage" ? t("演进", "Lineage") : t("语义关联", "Semantic link");
       kind.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
       el.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
       idButton.textContent = `${edge.a} ↔ ${edge.b}`;
@@ -329,18 +366,18 @@
       const b = ctx.byId?.get(edge.b);
       title.textContent = `${a?.title || edge.a} ↔ ${b?.title || edge.b}`;
       if (edge.source !== "lineage" && Number.isFinite(Number(edge.sim))) {
-        addMeta("相似度", `${(Number(edge.sim) * 100).toFixed(1)}%`);
+        addMeta(t("相似度", "Similarity"), `${(Number(edge.sim) * 100).toFixed(1)}%`);
       }
       addMeta(
-        "来源",
+        t("来源", "Source"),
         edge.source === "lineage"
-          ? "记忆取代关系 (supersededBy)"
+          ? t("记忆取代关系 (supersededBy)", "Memory lineage (supersededBy)")
           : edge.source === "lexical"
-            ? "词法 + 标签回退"
-            : "本地多语言向量余弦",
+            ? t("词法 + 标签回退", "Lexical + tag fallback")
+            : t("本地多语言向量余弦", "Local multilingual vector cosine"),
       );
       if (edge.lineage && edge.source !== "lineage") {
-        addMeta("演进", "存在取代关系 (supersededBy)");
+        addMeta(t("演进", "Lineage"), t("存在取代关系 (supersededBy)", "Has lineage (supersededBy)"));
       }
 
       links.hidden = false;
@@ -361,7 +398,10 @@
       }
 
       foot.hidden = false;
-      foot.textContent = "节点关联由本地向量余弦相似度决定，可在顶栏实时调节阈值";
+      foot.textContent = t(
+        "节点关联由本地向量余弦相似度决定，可在顶栏实时调节阈值",
+        "Edges are computed via local vector cosine similarity; adjust threshold in the top bar",
+      );
     }
 
     function open(node, ctx, point) {

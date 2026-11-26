@@ -1,42 +1,19 @@
 // 本文由AI自动生成
-// 插件宿主入口：起一个只监听 127.0.0.1 的服务，页面导航到这里看图谱。
-//
-// 只读声明：本服务只读 ~/.config/magpie/memory/*.md 和 gateway.json，
-// 只调用 memory_search，不写记忆、不读任何凭证文件。
-//
-// 启动顺序很关键：先 listen 再做重活。宿主一启动就会调一次 server()，
-// 而页面导航可能比初始化更快到；先占住端口，带路页就不会扑空。
-// 端口被占时先问一句 /api/health：是自己的旧实例就 attach，是别的程序才退避重试。
-//
-// 空闲：5 分钟没有 2xx 请求就休眠（丢掉内存里的图、断开 MCP 会话），
-// 但 listener 保留——宿主是共享进程，退出会连带打断别的插件和正在跑的 magpie 命令。
+// Plugin host entry: binds a loopback-only HTTP server on 127.0.0.1 for the memory graph UI.
 
 import { createServer, request as httpRequest } from "node:http";
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdir } from "node:fs/promises";
 
 import { createBuilder } from "./lib/build.mjs";
 import { cleanupTempFiles, serviceToken } from "./lib/cache.mjs";
-import {
-  STATIC,
-  corsHeaders,
-  fetchSiteAllowed,
-  hostAllowed,
-  injectToken,
-  originAllowed,
-  send,
-  tokenOK,
-} from "./lib/http.mjs";
 import {
   dataDir as defaultDataDir,
   memoryDir as defaultMemoryDir,
   vectorsDir as defaultVectorsDir,
 } from "./lib/paths.mjs";
+import { handleRequest, json } from "./lib/server.mjs";
 
-const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PLUGIN_ID = "memory-graph";
-const VERSION = "0.2.0";
 const DEFAULT_PORT = 3491;
 const DEFAULT_IDLE_MS = 5 * 60 * 1000;
 
@@ -59,184 +36,38 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 
-function json(req, res, port, status, value, allowNull = false) {
-  send(req, res, port, status, JSON.stringify(value), "application/json; charset=utf-8", allowNull);
-}
-
-// 只看 2xx：过期页面拿着旧口令刷 401 时，不该把服务一直叫醒。
+// Only 2xx/3xx traffic keeps the service awake; stale pages hitting 401 should not reset idle timer.
 function touch(status) {
   if (status >= 400) return;
   LAST_ACTIVE = Date.now();
   if (!ASLEEP) return;
   ASLEEP = false;
   BUILDER?.wake();
-  console.log("[memory-graph] 收到请求，已唤醒");
-}
-
-async function handle(req, res, port) {
-  const started = Date.now();
-  const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
-  const done = (status) => {
-    touch(status);
-    console.log(
-      `[memory-graph] ${req.method} ${url.pathname} host=${req.headers.host || "-"} origin=${
-        req.headers.origin ?? "-"
-      } → ${status} ${Date.now() - started}ms`,
-    );
-  };
-
-  const isApi =
-    url.pathname === "/api/graph" ||
-    url.pathname === "/api/status" ||
-    url.pathname === "/api/rebuild";
-  const allowNull = isApi || url.pathname === "/api/health";
-
-  if (!hostAllowed(req, port) || !originAllowed(req, port, allowNull)) {
-    json(req, res, port, 403, { error: "只接受本机回环、且来自本插件页面或同源的请求" }, allowNull);
-    done(403);
-    return;
-  }
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204, { "cache-control": "no-store", ...corsHeaders(req, port, allowNull) });
-    res.end();
-    done(204);
-    return;
-  }
-
-  if (url.pathname === "/api/health") {
-    const authed = tokenOK(req, TOKEN);
-    if (!authed) {
-      json(req, res, port, 200, {
-        ok: true,
-        plugin: PLUGIN_ID,
-        port,
-        version: VERSION,
-      });
-      done(200);
-      return;
-    }
-    const status = BUILDER ? BUILDER.getStatus() : null;
-    json(req, res, port, 200, {
-      ok: true,
-      plugin: PLUGIN_ID,
-      pid: process.pid,
-      attached: ATTACHED,
-      asleep: ASLEEP,
-      uptimeMs: Date.now() - STARTED_AT,
-      idleMs: IDLE_MS,
-      port,
-      version: VERSION,
-      tokenPresent: Boolean(TOKEN),
-      phase: status?.phase || (INIT_ERROR ? "error" : "booting"),
-      initError: INIT_ERROR || status?.lastError || "",
-    }, true);
-    done(200);
-    return;
-  }
-
-  if (isApi) {
-    if (req.headers.origin !== "null" && !fetchSiteAllowed(req)) {
-      json(req, res, port, 403, { error: "拒绝跨站请求" }, allowNull);
-      done(403);
-      return;
-    }
-    try {
-      await ensureInit();
-    } catch (error) {
-      json(req, res, port, 503, { error: `本地服务初始化失败：${String(error?.message || error)}` }, allowNull);
-      done(503);
-      return;
-    }
-    if (!tokenOK(req, TOKEN)) {
-      json(req, res, port, 401, { error: "缺口令：请从这个插件的页面里打开，别直接敲地址" }, allowNull);
-      done(401);
-      return;
-    }
-  }
-
-  if (url.pathname === "/api/graph") {
-    if (req.method !== "GET") {
-      json(req, res, port, 405, { error: "需要 GET" }, true);
-      done(405);
-      return;
-    }
-    try {
-      BUILDER.maybeRefresh().catch(() => {});
-      const rawSim = url.searchParams.get("minSim");
-      const minSimilarity = rawSim !== null && Number.isFinite(Number(rawSim))
-        ? clamp(Number(rawSim), 0.35, 0.95)
-        : undefined;
-      const data = await BUILDER.getGraph({ minSimilarity });
-      json(req, res, port, 200, data, true);
-      done(200);
-    } catch (error) {
-      json(req, res, port, 500, { error: String(error?.message || error) }, true);
-      done(500);
-    }
-    return;
-  }
-
-  if (url.pathname === "/api/status") {
-    if (req.method !== "GET") {
-      json(req, res, port, 405, { error: "需要 GET" }, true);
-      done(405);
-      return;
-    }
-    json(req, res, port, 200, BUILDER.getStatus(), true);
-    done(200);
-    return;
-  }
-
-  if (url.pathname === "/api/rebuild") {
-    if (req.method !== "POST") {
-      json(req, res, port, 405, { error: "需要 POST" }, true);
-      done(405);
-      return;
-    }
-    try {
-      const result = BUILDER.run();
-      json(req, res, port, result.started ? 202 : 409, result, true);
-      done(result.started ? 202 : 409);
-    } catch (error) {
-      json(req, res, port, 500, { error: String(error?.message || error) }, true);
-      done(500);
-    }
-    return;
-  }
-
-  const hit = STATIC[url.pathname];
-  if (!hit) {
-    send(req, res, port, 404, "not found", "text/plain; charset=utf-8");
-    done(404);
-    return;
-  }
-
-  try {
-    let body = await readFile(join(ROOT, hit.file));
-    if (hit.type.startsWith("text/html")) body = injectToken(body.toString("utf8"), TOKEN);
-    res.writeHead(200, {
-      "content-type": hit.type,
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      ...corsHeaders(req, port),
-    });
-    res.end(body);
-    done(200);
-  } catch {
-    send(req, res, port, 500, `missing ${hit.file}`, "text/plain; charset=utf-8");
-    done(500);
-  }
+  console.log("[memory-graph] request received, woken up");
 }
 
 function listen(port) {
+  const ctx = {
+    getPort: () => port,
+    getToken: () => TOKEN,
+    getBuilder: () => BUILDER,
+    ensureInit,
+    getStatusExtra: () => ({
+      attached: ATTACHED,
+      asleep: ASLEEP,
+      startedAt: STARTED_AT,
+      idleMs: IDLE_MS,
+      initError: INIT_ERROR,
+    }),
+    onTouch: touch,
+  };
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
-      handle(req, res, port).catch((error) => {
+      handleRequest(req, res, ctx).catch((error) => {
         try {
           json(req, res, port, 500, { error: String(error?.message || error) });
         } catch {
-          /* 响应已经发出去 */
+          /* response already sent */
         }
       });
     });
@@ -294,7 +125,6 @@ async function init(settings) {
   }
 }
 
-// 懒初始化 + 失败可重试：初始化没成也要先占住端口，别让页面扑空。
 function ensureInit() {
   if (BUILDER) return Promise.resolve();
   if (!INIT) {
@@ -316,13 +146,12 @@ function startSweeper() {
     if (!BUILDER.sleep()) return;
     ASLEEP = true;
     console.log(
-      `[memory-graph] 空闲 ${Math.round(IDLE_MS / 60000)} 分钟，已休眠（端口 ${SETTINGS?.port} 保留）`,
+      `[memory-graph] idle for ${Math.round(IDLE_MS / 60000)}m, entered sleep (port ${SETTINGS?.port} kept)`,
     );
   }, 30000);
   SWEEPER.unref?.();
 }
 
-// attach 之后仍要盯着：占端口的实例一旦退掉，就把端口接过来自己服务。
 function startReconcile(port) {
   if (RECONCILE) return;
   RECONCILE = setInterval(async () => {
@@ -351,7 +180,7 @@ function SERVER_STARTED(port) {
   startSweeper();
   ensureInit()
     .then(() => BUILDER?.run())
-    .catch((error) => console.error("[memory-graph] 初始化失败:", error?.message || error));
+    .catch((error) => console.error("[memory-graph] init failed:", error?.message || error));
 }
 
 async function claim(port) {
@@ -366,14 +195,14 @@ async function claim(port) {
       const health = await probeHealth(port);
       if (health?.plugin === PLUGIN_ID) {
         console.log(
-          `[memory-graph] 端口 ${port} 已有实例（pid ${health.pid}），attach 到它，不再重复监听`,
+          `[memory-graph] port ${port} already owned by pid ${health.pid}, attaching`,
         );
         startReconcile(port);
         return { server: null, attached: true };
       }
       if (Date.now() > deadline) {
         throw new Error(
-          `端口 ${port} 被其他程序占用（健康检查不是 memory-graph），已重试 60 秒；可在插件选项里改 port`,
+          `Port ${port} is occupied by another process (health check did not match memory-graph) after 60s; configure a different port in plugin options`,
         );
       }
       await sleep(delay);
@@ -398,10 +227,9 @@ function boot(port, settings) {
       SERVER = bound.server;
       SERVER_STARTED(port);
     }
-    // attach 时不重复建图：已有实例在跑，重复查询只会白烧 memory_search。
     return bound;
   })().catch((error) => {
-    console.error("[memory-graph] 启动失败:", error?.message || error);
+    console.error("[memory-graph] boot failed:", error?.message || error);
     INIT_ERROR = String(error?.message || error);
     return null;
   });

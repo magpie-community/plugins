@@ -18,19 +18,26 @@
 
   let port = DEFAULT_PORT;
   let theme = "";
-  let lang = "";
+  let lang = new URLSearchParams(location.search).get("lang") || "";
   let service = "";
 
   try {
     const ready = await window.magpie?.ready;
     if (ready) {
       if (typeof ready.dark === "boolean") theme = ready.dark ? "dark" : "light";
-      if (typeof ready.lang === "string") lang = ready.lang;
+      if (!lang && typeof ready.lang === "string") lang = ready.lang;
     }
   } catch {
     /* 没有 bridge 就按浅色来 */
   }
   if (theme) document.documentElement.dataset.theme = theme;
+
+  const isZh = String(lang || navigator.language || "en")
+    .toLowerCase()
+    .startsWith("zh");
+  const effectiveLang = lang || (isZh ? "zh" : "en");
+  const t = (zh, en) => (isZh ? zh : en);
+  if (retry) retry.textContent = t("重试", "Retry");
 
   try {
     const given = window.magpie?.service;
@@ -50,7 +57,7 @@
   const base = service || `http://127.0.0.1:${port}`;
   const query = new URLSearchParams();
   if (theme) query.set("theme", theme);
-  if (lang) query.set("lang", lang);
+  if (effectiveLang) query.set("lang", effectiveLang);
   const url = `${base}/${query.toString() ? `?${query.toString()}` : ""}`;
 
   let tries = 0;
@@ -65,15 +72,15 @@
   }
 
   if (!go()) {
-    say("跳转失败。", "err");
+    say(t("跳转失败。", "Navigation failed."), "err");
   }
-  say("正在打开记忆图谱…");
+  say(t("正在打开记忆图谱…", "Opening Memory Graph…"));
 
   // 导航成功时这份文档已经被替换，下面的定时器不会有机会跑；
   // 所以这里的重试只会在「导航没生效」时发生。
   setTimeout(() => {
     if (document.visibilityState === "hidden") return;
-    say(`正在等待本地服务…（端口 ${port}）`);
+    say(t(`正在等待本地服务…（端口 ${port}）`, `Waiting for local service… (port ${port})`));
     if (tries < 2) go();
   }, 3000);
 
@@ -85,19 +92,22 @@
   setTimeout(() => {
     if (document.visibilityState === "hidden") return;
     say(
-      `还没连上本地服务（端口 ${port}）。确认 magpie 已启用「记忆图谱」插件；若端口被别的程序占用，可在插件选项里改 port。`,
+      t(
+        `还没连上本地服务（端口 ${port}）。确认 magpie 已启用「记忆图谱」插件；若端口被别的程序占用，可在插件选项里改 port。`,
+        `Could not connect to local service (port ${port}). Ensure the "Memory Graph" plugin is enabled in magpie; if the port is in use, change "port" in plugin options.`,
+      ),
       "err",
     );
     if (retry) {
       retry.classList.add("on");
       retry.addEventListener("click", () => {
         retry.classList.remove("on");
-        say("正在重试…");
+        say(t("正在重试…", "Retrying…"));
         tries = 0;
         go();
         setTimeout(() => {
           if (document.visibilityState === "hidden") return;
-          say(`还是没连上（端口 ${port}）。`, "err");
+          say(t(`还是没连上（端口 ${port}）。`, `Still unable to connect (port ${port}).`), "err");
           retry.classList.add("on");
         }, 4000);
       });

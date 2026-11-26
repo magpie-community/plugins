@@ -54,10 +54,10 @@ export async function AI_loadVectors(filePath) {
   if (!filePath) return { dim: 0, vectors: new Map(), count: 0 };
   const buf = await readFile(filePath);
   if (buf.length < 8 || buf.subarray(0, 4).toString("ascii") !== MEV1_MAGIC) {
-    throw new Error("vectors.bin 格式不是 MEV1");
+    throw new Error("Invalid vectors.bin format (expected MEV1)");
   }
   const dim = buf.readUInt32LE(4);
-  if (!dim || dim > 4096) throw new Error(`vectors.bin 维度异常: ${dim}`);
+  if (!dim || dim > 4096) throw new Error(`Invalid vectors.bin dimension: ${dim}`);
 
   const recSize = 32 + dim * 4;
   const vectors = new Map();

@@ -1,7 +1,6 @@
 {
   "name": "@magpie-community/page-memory-graph",
   "version": "0.2.0",
-  "_ai": "本文由AI自动生成",
   "description": "Obsidian-style memory graph for magpie powered by local cosine similarity (magpie's built-in multilingual vectors + zero-dependency TF-IDF fallback). Read-only, zero external dependencies, instant build.",
   "type": "module",
   "main": "./index.mjs",
@@ -39,7 +38,7 @@
   },
   "magpie": {
     "name": "记忆图谱",
-    "icon": "data:image/svg+xml;base64,PCEtLSDmnKzmlofnlLFBSeiHquWKqOeUn+aIkCAtLT4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmNzY2ZSIvPgogIDxnIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9Ii41NSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPgogICAgPHBhdGggZD0iTTIwIDIyIDQ0IDE4TTIwIDIyIDMwIDQ0TTQ0IDE4IDMwIDQ0TTQ0IDE4IDUwIDM2TTMwIDQ0IDUwIDM2Ii8+CiAgPC9nPgogIDxnIGZpbGw9IiNmZmZmZmYiPgogICAgPGNpcmNsZSBjeD0iMjAiIGN5PSIyMiIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNDQiIGN5PSIxOCIgcj0iNiIvPgogICAgPGNpcmNsZSBjeD0iMzAiIGN5PSI0NCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNTAiIGN5PSIzNiIgcj0iNCIvPgogIDwvZz4KPC9zdmc+Cg==",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmNzY2ZSIvPgogIDxnIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9Ii41NSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPgogICAgPHBhdGggZD0iTTIwIDIyIDQ0IDE4TTIwIDIyIDMwIDQ0TTQ0IDE4IDMwIDQ0TTQ0IDE4IDUwIDM2TTMwIDQ0IDUwIDM2Ii8+CiAgPC9nPgogIDxnIGZpbGw9IiNmZmZmZmYiPgogICAgPGNpcmNsZSBjeD0iMjAiIGN5PSIyMiIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNDQiIGN5PSIxOCIgcj0iNiIvPgogICAgPGNpcmNsZSBjeD0iMzAiIGN5PSI0NCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNTAiIGN5PSIzNiIgcj0iNCIvPgogIDwvZz4KPC9zdmc+Cg==",
     "summary": {
       "en": "Draws your magpie memories as an Obsidian-style graph linked by true semantic cosine similarity (reusing magpie's local multilingual vectors with zero-dep TF-IDF fallback). Live similarity threshold slider, superseded lineage edges, read-only.",
       "zh": "把 magpie 记忆画成 Obsidian 风格关系图谱：直接复用 magpie 本地多语言向量计算精确余弦相似度（缺失时自动词法+标签回退），支持 0.35~0.90 实时相似度阈值滑块与已取代演进连线，纯本地只读毫秒级出图。"

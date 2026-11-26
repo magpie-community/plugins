@@ -27,7 +27,7 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
   try {
     entries = await readdir(dir);
   } catch (error) {
-    const wrapped = new Error(`读不到记忆目录 ${dir}`);
+    const wrapped = new Error(`Cannot read memory directory ${dir}`);
     wrapped.code = "NO_MEMORY_DIR";
     wrapped.cause = error;
     throw wrapped;

@@ -3,21 +3,101 @@
 
 (function () {
   const token = document.querySelector('meta[name="memory-graph-token"]')?.content || "";
+  const isOpaqueOrigin = window.origin === "null" || location.origin === "null";
+  const langParam = new URLSearchParams(location.search).get("lang");
+  const lang = String(langParam || navigator.language || "en")
+    .toLowerCase()
+    .startsWith("zh")
+    ? "zh"
+    : "en";
+  const isZh = lang === "zh";
+  const t = (zh, en) => (isZh ? zh : en);
   const $ = (selector) => document.querySelector(selector);
 
-  const KIND_LABEL = {
-    profile: "个人档案",
-    preference: "偏好",
-    rule: "规则",
-    fact: "事实",
-    procedure: "流程",
-    episode: "经历",
-    reference: "参考",
-    unknown: "未分类",
-  };
+  const KIND_LABEL = isZh
+    ? {
+        profile: "个人档案",
+        preference: "偏好",
+        rule: "规则",
+        fact: "事实",
+        procedure: "流程",
+        episode: "经历",
+        reference: "参考",
+        unknown: "未分类",
+      }
+    : {
+        profile: "Profile",
+        preference: "Preference",
+        rule: "Rule",
+        fact: "Fact",
+        procedure: "Procedure",
+        episode: "Episode",
+        reference: "Reference",
+        unknown: "Unknown",
+      };
 
   const KIND_ORDER = ["profile", "preference", "rule", "fact", "procedure", "episode", "reference", "unknown"];
-  const SCOPE_LABEL = { global: "全局", project: "项目", agent: "Agent" };
+  const SCOPE_LABEL = isZh
+    ? { global: "全局", project: "项目", agent: "Agent" }
+    : { global: "Global", project: "Project", agent: "Agent" };
+
+  const I18N = {
+    brandTitle: t("记忆图谱", "Memory Graph"),
+    searchPlaceholder: t("搜索记忆标题、正文、标签…", "Search memory title, body, tags…"),
+    filterKind: t("类型", "Kind"),
+    filterScope: t("范围", "Scope"),
+    filterTag: t("标签", "Tag"),
+    clear: t("清空", "Clear"),
+    similarity: t("相似度", "Similarity"),
+    simTitle: t("拖动调节节点连线的最低语义相似度", "Adjust minimum semantic similarity for edges"),
+    hideSuperseded: t("隐藏已取代", "Hide superseded"),
+    fit: t("适配", "Fit"),
+    fitTitle: t("适配窗口 (0)", "Fit to view (0)"),
+    refresh: t("刷新", "Refresh"),
+    refreshTitle: t("重新扫描记忆并计算相似度", "Rescan memories and recompute similarity"),
+    theme: t("主题", "Theme"),
+    themeTitle: t("切换主题", "Toggle theme"),
+    canvasAria: t("记忆关系图谱", "Memory Graph"),
+    controlsAria: t("画布控制", "Canvas controls"),
+    settingsTitle: t("图谱显示设置", "Graph display settings"),
+    zoomInTitle: t("放大", "Zoom in"),
+    zoomOutTitle: t("缩小", "Zoom out"),
+    reheatTitle: t("重新分布节点", "Reheat layout"),
+    settingsHead: t("图谱显示", "Graph Display"),
+    settingsReset: t("默认", "Reset"),
+    nodeScale: t("节点大小", "Node size"),
+    edgeScale: t("连线粗细", "Edge width"),
+    repel: t("斥力强度", "Repulsion"),
+    linkDist: t("连线长度", "Link distance"),
+    labelZoom: t("文字显隐阈值", "Label zoom"),
+    retry: t("重试", "Retry"),
+    close: t("关闭", "Close"),
+    hint: t("单击节点看详情 · 双击聚焦 · Esc 关闭", "Click node for details · Double-click to focus · Esc to close"),
+    engineInit: t("引擎：语义相似度", "Engine: Semantic similarity"),
+  };
+
+  function applyI18n() {
+    document.documentElement.lang = isZh ? "zh-CN" : "en";
+    document.title = t("记忆图谱", "Memory Graph");
+    for (const el of document.querySelectorAll("[data-i18n]")) {
+      const key = el.dataset.i18n;
+      if (I18N[key]) el.textContent = I18N[key];
+    }
+    for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+      const key = el.dataset.i18nPlaceholder;
+      if (I18N[key]) el.placeholder = I18N[key];
+    }
+    for (const el of document.querySelectorAll("[data-i18n-title]")) {
+      const key = el.dataset.i18nTitle;
+      if (I18N[key]) el.title = I18N[key];
+    }
+    for (const el of document.querySelectorAll("[data-i18n-aria-label]")) {
+      const key = el.dataset.i18nAriaLabel;
+      if (I18N[key]) el.setAttribute("aria-label", I18N[key]);
+    }
+    if (els.counts && !state.data) els.counts.textContent = t("正在读取…", "Loading…");
+    if (els.status && !state.data) els.status.textContent = t("正在启动本地服务…", "Starting local service…");
+  }
 
   const els = {
     counts: $("#counts"),
@@ -67,6 +147,7 @@
 
   const state = {
     data: null,
+    allEdges: null,
     byId: new Map(),
     adj: new Map(),
     edgeList: [],
@@ -98,20 +179,20 @@
         return;
       }
       openNodeCard(node);
-      setStatus(`已选中：${node.title || node.id}`);
+      setStatus(t(`已选中：${node.title || node.id}`, `Selected: ${node.title || node.id}`));
     },
     onEdge(edge) {
       graph.select(null);
       openEdgeCard(edge);
       const a = state.byId.get(edge.a);
       const b = state.byId.get(edge.b);
-      setStatus(`选中关联：${a?.title || edge.a} ↔ ${b?.title || edge.b}`);
+      setStatus(t(`选中关联：${a?.title || edge.a} ↔ ${b?.title || edge.b}`, `Link: ${a?.title || edge.a} ↔ ${b?.title || edge.b}`));
     },
     onFocus(node) {
       if (!node) return;
       graph.focus(node.id);
       openNodeCard(node);
-      setStatus(`聚焦：${node.title || node.id} 两跳以内`);
+      setStatus(t(`聚焦：${node.title || node.id} 两跳以内`, `Focused: ${node.title || node.id} (2 hops)`));
     },
     onBackground() {
       closeCard();
@@ -127,16 +208,16 @@
       state.filters.tags.add(tag);
       applyFilters();
       renderBadges();
-      toast(`已筛选标签 #${tag}`);
+      toast(t(`已筛选标签 #${tag}`, `Filtered by #${tag}`));
     },
     onFocus(node) {
       graph.focus(node.id);
       graph.select(node.id);
       openNodeCard(node);
-      setStatus(`聚焦：${node.title || node.id}`);
+      setStatus(t(`聚焦：${node.title || node.id}`, `Focused: ${node.title || node.id}`));
     },
     onCopy(id) {
-      toast(id ? `已复制 ${id}` : "复制失败，请手动选中");
+      toast(id ? t(`已复制 ${id}`, `Copied ${id}`) : t("复制失败，请手动选中", "Copy failed, select manually"));
     },
     onClose() {
       card = null;
@@ -220,13 +301,14 @@
     }
     const data = state.data;
     if (!data) {
-      els.status.textContent = "正在启动本地服务…";
+      els.status.textContent = t("正在启动本地服务…", "Starting local service…");
       return;
     }
-    const cached = data.builtAt ? `缓存 ${when(data.builtAt)}` : "尚未建立缓存";
-    els.status.textContent = `${data.nodes.length} 节点 · ${data.edges.length} 边 · ${cached}${
-      data.complete === false ? " · 部分完成" : ""
-    }`;
+    const cached = data.builtAt ? t(`缓存 ${when(data.builtAt)}`, `Cached ${when(data.builtAt)}`) : t("尚未建立缓存", "Not cached");
+    const partial = data.complete === false ? t(" · 部分完成", " · Partial") : "";
+    els.status.textContent = isZh
+      ? `${data.nodes.length} 节点 · ${data.edges.length} 边 · ${cached}${partial}`
+      : `${data.nodes.length} nodes · ${data.edges.length} edges · ${cached}${partial}`;
   }
 
   function showBanner(text, retry) {
@@ -277,68 +359,121 @@
     return "global";
   }
 
+  function renderGraphData(data, { keepLayout = false } = {}) {
+    state.data = data;
+    if (Array.isArray(data.allEdges)) state.allEdges = data.allEdges;
+    state.builtAt = data.builtAt || "";
+    if (Number.isFinite(Number(data.minSimilarity))) {
+      state.filters.minSim = Number(data.minSimilarity);
+      if (els.optMinSim) els.optMinSim.value = state.filters.minSim.toFixed(2);
+      if (els.minSimVal) els.minSimVal.textContent = state.filters.minSim.toFixed(2);
+    }
+    buildIndexes(data.nodes, data.edges);
+    if (keepLayout) {
+      graph.updateEdges(data.edges);
+    } else {
+      graph.setData(data.nodes, data.edges);
+    }
+    applyFilters();
+    renderLegend(data);
+    renderBadges();
+    setStatus();
+    hideBanner();
+
+    if (data.vectorInfo?.matched > 0) {
+      els.engine.textContent = t(
+        `引擎：本地语义向量 (${data.vectorInfo.matched}/${data.vectorInfo.totalVisible})`,
+        `Engine: Local semantic vectors (${data.vectorInfo.matched}/${data.vectorInfo.totalVisible})`,
+      );
+    } else {
+      els.engine.textContent = t("引擎：本地词法+标签相似度", "Engine: Local lexical + tag similarity");
+    }
+
+    if (!data.nodes.length) {
+      const status = state.status;
+      if (!isOpaqueOrigin && status && status.phase && status.phase !== "idle" && status.phase !== "error") {
+        showEmpty(
+          t("正在读取记忆…", "Reading memories…"),
+          t("正在扫描记忆目录并计算本地语义相似度。", "Scanning memory directory and computing local semantic similarity."),
+        );
+      } else if (status?.phase === "error") {
+        showEmpty(
+          t("没能读到记忆", "Failed to read memories"),
+          status.lastError ||
+            t(
+              `检查 ${status.memoryDir || "~/.config/magpie/memory"} 是否存在。`,
+              `Check whether ${status.memoryDir || "~/.config/magpie/memory"} exists.`,
+            ),
+          t("再试一次", "Retry"),
+          () => retry(),
+        );
+      } else {
+        showEmpty(
+          t("还没有可显示的记忆", "No memories to display"),
+          t(
+            "让 magpie 先记住几件事，或者检查记忆目录是否有 status: active 的 m_*.md。",
+            "Save a few memories in magpie first, or check for active m_*.md files in your memory directory.",
+          ),
+          t("重新扫描", "Rescan"),
+          () => retry(),
+        );
+      }
+    } else {
+      hideEmpty();
+    }
+  }
+
+  function filterEdgesLocally(minSim) {
+    if (!state.data || !Array.isArray(state.allEdges)) return;
+    const filtered = state.allEdges.filter(
+      (e) => e.lineage || e.source === "lineage" || Number(e.sim) >= minSim,
+    );
+    const deg = new Map();
+    const strength = new Map();
+    for (const e of filtered) {
+      deg.set(e.a, (deg.get(e.a) || 0) + 1);
+      deg.set(e.b, (deg.get(e.b) || 0) + 1);
+      const s = Number(e.sim) || 0;
+      strength.set(e.a, (strength.get(e.a) || 0) + s);
+      strength.set(e.b, (strength.get(e.b) || 0) + s);
+    }
+    for (const n of state.data.nodes) {
+      n.degree = deg.get(n.id) || 0;
+      n.strengthSum = Number((strength.get(n.id) || 0).toFixed(4));
+    }
+    state.data.edges = filtered;
+    state.data.minSimilarity = minSim;
+    buildIndexes(state.data.nodes, filtered);
+    graph.updateEdges(filtered);
+    applyFilters();
+    setStatus();
+  }
+
   async function load({ keepLayout = false } = {}) {
     try {
       const qs = `?minSim=${encodeURIComponent(state.filters.minSim.toFixed(2))}`;
       const data = await api(`/api/graph${qs}`);
-      state.data = data;
-      state.builtAt = data.builtAt || "";
-      if (Number.isFinite(Number(data.minSimilarity))) {
-        state.filters.minSim = Number(data.minSimilarity);
-        if (els.optMinSim) els.optMinSim.value = state.filters.minSim.toFixed(2);
-        if (els.minSimVal) els.minSimVal.textContent = state.filters.minSim.toFixed(2);
-      }
-      buildIndexes(data.nodes, data.edges);
-      if (keepLayout) {
-        graph.updateEdges(data.edges);
-      } else {
-        graph.setData(data.nodes, data.edges);
-      }
-      applyFilters();
-      renderLegend(data);
-      renderBadges();
-      setStatus();
-      hideBanner();
-
-      if (data.vectorInfo?.matched > 0) {
-        els.engine.textContent = `引擎：本地语义向量 (${data.vectorInfo.matched}/${data.vectorInfo.totalVisible})`;
-      } else {
-        els.engine.textContent = "引擎：本地词法+标签相似度";
-      }
-
-      if (!data.nodes.length) {
-        const status = state.status;
-        if (status && status.phase && status.phase !== "idle" && status.phase !== "error") {
-          showEmpty("正在读取记忆…", "正在扫描记忆目录并计算本地语义相似度。");
-        } else if (status?.phase === "error") {
-          showEmpty(
-            "没能读到记忆",
-            status.lastError || `检查 ${status.memoryDir || "~/.config/magpie/memory"} 是否存在。`,
-            "再试一次",
-            () => retry(),
-          );
-        } else {
-          showEmpty(
-            "还没有可显示的记忆",
-            "让 magpie 先记住几件事，或者检查记忆目录是否有 status: active 的 m_*.md。",
-            "重新扫描",
-            () => retry(),
-          );
-        }
-      } else {
-        hideEmpty();
-      }
+      renderGraphData(data, { keepLayout });
     } catch (error) {
       if (error.status === 401) {
-        showBanner("页面口令失效了。请从 magpie 的插件入口重新打开记忆图谱。");
+        showBanner(
+          t(
+            "页面口令失效了。请从 magpie 的插件入口重新打开记忆图谱。",
+            "Page token expired. Please reopen Memory Graph from magpie.",
+          ),
+        );
       } else {
-        showBanner(`加载失败：${error.message}`, () => load());
+        showBanner(t(`加载失败：${error.message}`, `Failed to load: ${error.message}`), () => load());
       }
     }
   }
 
   function retry() {
     hideBanner();
+    if (isOpaqueOrigin) {
+      rebuild();
+      return;
+    }
     load();
   }
 
@@ -372,11 +507,18 @@
       edgeCount++;
     }
 
-    els.counts.textContent = `${visible.size}/${data.nodes.length} 节点 · ${edgeCount} 边`;
+    els.counts.textContent = isZh
+      ? `${visible.size}/${data.nodes.length} 节点 · ${edgeCount} 边`
+      : `${visible.size}/${data.nodes.length} nodes · ${edgeCount} edges`;
     setStatus();
 
     if (data.nodes.length && !visible.size) {
-      showEmpty("当前筛选没有结果", "把搜索词或类型/范围/标签清掉再看看。", "清空筛选", () => clearFilters());
+      showEmpty(
+        t("当前筛选没有结果", "No matching memories"),
+        t("把搜索词或类型/范围/标签清掉再看看。", "Clear the search query or kind/scope/tag filters to see all nodes."),
+        t("清空筛选", "Clear filters"),
+        () => clearFilters(),
+      );
     } else if (data.nodes.length) {
       hideEmpty();
     }
@@ -422,7 +564,7 @@
       const item = document.createElement("button");
       item.type = "button";
       item.className = `legend-item${state.filters.kinds.has(kind) ? " active" : ""}`;
-      item.title = "点击快速筛选此类型";
+      item.title = t("点击快速筛选此类型", "Click to filter by this kind");
       const dot = document.createElement("i");
       dot.style.background = `var(--k-${kind})`;
       item.append(dot, `${KIND_LABEL[kind] || kind} ${counts.get(kind)}`);
@@ -438,7 +580,7 @@
     if (superseded) {
       const item = document.createElement("span");
       item.className = "legend-note";
-      item.textContent = `空心虚线环 = 已取代 ${superseded}`;
+      item.textContent = t(`空心虚线环 = 已取代 ${superseded}`, `Dashed ring = Superseded ${superseded}`);
       els.legend.appendChild(item);
     }
   }
@@ -450,7 +592,7 @@
     if (onClear) {
       const clear = document.createElement("button");
       clear.type = "button";
-      clear.textContent = "清空";
+      clear.textContent = t("清空", "Clear");
       clear.style.cssText =
         "float:right;border:0;background:transparent;color:var(--accent);cursor:pointer;font-size:10px;padding:0";
       clear.addEventListener("click", onClear);
@@ -500,7 +642,7 @@
       const counts = new Map();
       for (const node of data.nodes) counts.set(node.kind, (counts.get(node.kind) || 0) + 1);
       els.menu.appendChild(
-        menuButton("按类型筛选", () => {
+        menuButton(t("按类型筛选", "Filter by kind"), () => {
           state.filters.kinds.clear();
           renderBadges();
           applyFilters();
@@ -532,7 +674,7 @@
         counts.set(group, (counts.get(group) || 0) + 1);
       }
       els.menu.appendChild(
-        menuButton("按范围筛选", () => {
+        menuButton(t("按范围筛选", "Filter by scope"), () => {
           state.filters.scopes.clear();
           renderBadges();
           applyFilters();
@@ -553,7 +695,7 @@
 
     if (kind === "tag") {
       els.menu.appendChild(
-        menuButton("按标签筛选", () => {
+        menuButton(t("按标签筛选", "Filter by tag"), () => {
           state.filters.tags.clear();
           renderBadges();
           applyFilters();
@@ -561,7 +703,7 @@
       );
       const search = document.createElement("input");
       search.type = "search";
-      search.placeholder = "找标签…";
+      search.placeholder = t("找标签…", "Find tag…");
       els.menu.appendChild(search);
 
       const counts = new Map();
@@ -581,7 +723,7 @@
         if (!rows.length) {
           const note = document.createElement("div");
           note.className = "empty-note";
-          note.textContent = "没有匹配的标签";
+          note.textContent = t("没有匹配的标签", "No matching tags");
           list.appendChild(note);
           return;
         }
@@ -625,33 +767,36 @@
     els.progress.hidden = !busy;
 
     if (phase === "scanning") {
-      els.progressText.textContent = "扫描记忆目录…";
+      els.progressText.textContent = t("扫描记忆目录…", "Scanning memory directory…");
       els.progress.style.setProperty("--p", "25%");
     } else if (phase === "computing") {
-      els.progressText.textContent = "计算本地语义相似度…";
+      els.progressText.textContent = t("计算本地语义相似度…", "Computing local semantic similarity…");
       els.progress.style.setProperty("--p", "70%");
     } else if (phase === "writing") {
-      els.progressText.textContent = "写入缓存…";
+      els.progressText.textContent = t("写入缓存…", "Writing cache…");
       els.progress.style.setProperty("--p", "96%");
     } else if (phase === "error") {
       els.progress.hidden = true;
-      showBanner(`构建失败：${status.lastError || "未知错误"}`, () => retry());
+      showBanner(t(`构建失败：${status.lastError || "未知错误"}`, `Build failed: ${status.lastError || "Unknown error"}`), () => retry());
     } else if (phase === "asleep") {
       els.progress.hidden = true;
     }
 
     if (busy) {
       els.rebuild.disabled = true;
-      els.rebuild.textContent = "计算中…";
+      els.rebuild.textContent = t("计算中…", "Building…");
     } else {
       els.rebuild.disabled = false;
-      els.rebuild.textContent = "刷新";
+      els.rebuild.textContent = t("刷新", "Refresh");
     }
 
     if (status.vectorInfo?.matched > 0) {
-      els.engine.textContent = `引擎：本地语义向量 (${status.vectorInfo.matched}/${status.vectorInfo.totalVisible})`;
+      els.engine.textContent = t(
+        `引擎：本地语义向量 (${status.vectorInfo.matched}/${status.vectorInfo.totalVisible})`,
+        `Engine: Local semantic vectors (${status.vectorInfo.matched}/${status.vectorInfo.totalVisible})`,
+      );
     } else if (status.cached) {
-      els.engine.textContent = "引擎：本地词法+标签相似度";
+      els.engine.textContent = t("引擎：本地词法+标签相似度", "Engine: Local lexical + tag similarity");
     }
 
     if (phase === "idle" && status.lastBuiltAt && status.lastBuiltAt !== state.builtAt) {
@@ -661,6 +806,7 @@
   }
 
   async function poll() {
+    if (isOpaqueOrigin) return;
     clearTimeout(state.pollTimer);
     state.pollTimer = 0;
 
@@ -673,7 +819,7 @@
     // 前台但 5 分钟没人动：停止轮询（服务端也会跟着休眠），任意交互立即恢复。
     if (Date.now() - state.lastInteraction >= IDLE_MS) {
       state.paused = true;
-      els.status.textContent = "已休眠（空闲 5 分钟）· 动一下鼠标唤醒";
+      els.status.textContent = t("已休眠（空闲 5 分钟）· 动一下鼠标唤醒", "Idle (5m) · Move mouse to wake");
       return;
     }
     state.paused = false;
@@ -691,7 +837,12 @@
       }
     } catch (error) {
       if (error.status === 401) {
-        showBanner("页面口令失效了。请从 magpie 的插件入口重新打开记忆图谱。");
+        showBanner(
+          t(
+            "页面口令失效了。请从 magpie 的插件入口重新打开记忆图谱。",
+            "Page token expired. Please reopen Memory Graph from magpie.",
+          ),
+        );
       }
     }
     const busy = state.status && !["idle", "error", "asleep"].includes(state.status.phase);
@@ -699,31 +850,39 @@
   }
 
   function markActive() {
+    if (isOpaqueOrigin) return;
     state.lastInteraction = Date.now();
     if (!state.paused && state.pollTimer) return;
     if (state.paused) {
       state.paused = false;
-      setStatus("已唤醒，正在载入…");
+      setStatus(t("已唤醒，正在载入…", "Waking up, loading…"));
     }
     if (state.pollTimer) return;
     poll();
   }
 
   async function rebuild() {
+    if (isOpaqueOrigin) {
+      const currentTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+      location.replace(
+        `/?refresh=1&minSim=${state.filters.minSim.toFixed(2)}&theme=${currentTheme}&lang=${lang}`,
+      );
+      return;
+    }
     try {
       const result = await api("/api/rebuild", {
         method: "POST",
         body: JSON.stringify({}),
       });
       if (result.started) {
-        toast("正在重新扫描并计算相似度…");
+        toast(t("正在重新扫描并计算相似度…", "Rescanning memories and computing similarity…"));
         els.rebuild.disabled = true;
-        els.rebuild.textContent = "计算中…";
+        els.rebuild.textContent = t("计算中…", "Building…");
       } else {
-        toast("正在计算中");
+        toast(t("正在计算中", "Already building"));
       }
     } catch (error) {
-      showBanner(`刷新失败：${error.message}`, () => rebuild());
+      showBanner(t(`刷新失败：${error.message}`, `Refresh failed: ${error.message}`), () => rebuild());
     }
   }
 
@@ -761,6 +920,11 @@
       const val = Number(els.optMinSim.value);
       state.filters.minSim = Number.isFinite(val) ? val : 0.6;
       if (els.minSimVal) els.minSimVal.textContent = state.filters.minSim.toFixed(2);
+      if (Array.isArray(state.allEdges)) {
+        filterEdgesLocally(state.filters.minSim);
+        return;
+      }
+      if (isOpaqueOrigin) return;
       clearTimeout(bind.simTimer);
       bind.simTimer = setTimeout(() => {
         load({ keepLayout: true });
@@ -861,7 +1025,7 @@
     }
 
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) return;
+      if (document.hidden || isOpaqueOrigin) return;
       state.lastInteraction = Date.now();
       state.paused = false;
       clearTimeout(state.pollTimer);
@@ -871,7 +1035,14 @@
   }
 
   applyTheme(initialTheme());
+  applyI18n();
   bind();
-  load();
-  poll();
+  if (window.__INITIAL_GRAPH__) {
+    const initial = window.__INITIAL_GRAPH__;
+    state.allEdges = Array.isArray(initial.allEdges) ? initial.allEdges : (initial.edges || []);
+    renderGraphData(initial);
+  } else {
+    load();
+  }
+  if (!isOpaqueOrigin) poll();
 })();

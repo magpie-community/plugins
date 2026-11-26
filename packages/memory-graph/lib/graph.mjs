@@ -96,17 +96,17 @@ export function buildPayload({
 
   const warnings = Array.isArray(state.warnings) ? state.warnings.slice(-8) : [];
   if (!payloadNodes.length) {
-    warnings.push({ level: "info", text: "还没有可显示的记忆，正在等第一次扫描结果。" });
+    warnings.push({ level: "info", text: "No visible memories yet; waiting for initial scan." });
   } else if (!keptEdges.length && builtAt) {
     warnings.push({
       level: "info",
-      text: `当前相似度阈值 ${minSimilarity.toFixed(2)} 下暂无连线，可在右下角 ⚙ 设置中调低阈值。`,
+      text: `No edges at similarity threshold ${minSimilarity.toFixed(2)}; lower the threshold in the top bar to reveal more links.`,
     });
   }
   if (payloadNodes.length > kept.length) {
     warnings.push({
       level: "info",
-      text: `图上展示关联度最高的 ${kept.length} 条，另有 ${payloadNodes.length - kept.length} 条未画。`,
+      text: `Showing top ${kept.length} connected nodes (${payloadNodes.length - kept.length} omitted by maxNodes).`,
     });
   }
 

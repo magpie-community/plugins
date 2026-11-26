@@ -80,7 +80,7 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
         await saveCache(dir, payload);
         cache = { ...payload, v: SCHEMA };
       } catch (error) {
-        state.lastError = `缓存写失败：${error?.message || error}`;
+        state.lastError = `Failed to write cache: ${error?.message || error}`;
         if (final) state.complete = false;
       }
     });
@@ -128,7 +128,7 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
       } catch (error) {
         state.warnings.push({
           level: "warn",
-          text: `本地向量库读取失败，已回退到词法+标签相似度：${error?.message || error}`,
+          text: `Failed to read local vectors, fell back to lexical + tag similarity: ${error?.message || error}`,
         });
       }
 
@@ -163,14 +163,7 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     return { started: true, phase: "scanning" };
   }
 
-  async function maybeRefresh() {
-    await load();
-    if (running) return false;
-
-    const now = Date.now();
-    if (now - lastCheck < 15000) return false;
-    lastCheck = now;
-
+  async function checkChanged() {
     let diskChanged = false;
     if (memoryDir) {
       try {
@@ -195,8 +188,37 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
       vectorsChanged = false;
     }
 
-    if (!cache.builtAt || diskChanged || vectorsChanged) {
+    return diskChanged || vectorsChanged;
+  }
+
+  async function maybeRefresh() {
+    await load();
+    if (running) return false;
+
+    const now = Date.now();
+    if (now - lastCheck < 15000) return false;
+    lastCheck = now;
+
+    const changed = await checkChanged();
+    if (!cache.builtAt || changed) {
       run();
+      return true;
+    }
+    return false;
+  }
+
+  async function ensureFresh({ force = false } = {}) {
+    await load();
+    if (running) {
+      await running;
+      if (!force) return false;
+    }
+
+    const needsBuild = force || !cache.builtAt || (await checkChanged());
+    lastCheck = Date.now();
+    if (needsBuild) {
+      run();
+      if (running) await running;
       return true;
     }
     return false;
@@ -235,6 +257,14 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     });
   }
 
+  async function getInlineGraph({ minSimilarity } = {}) {
+    const payload = await getGraph({ minSimilarity });
+    return {
+      ...payload,
+      allEdges: cache.edges || [],
+    };
+  }
+
   function getStatus() {
     const totals = counts();
     return {
@@ -257,5 +287,5 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     };
   }
 
-  return { run, maybeRefresh, getGraph, getStatus, sleep, wake };
+  return { run, maybeRefresh, ensureFresh, getGraph, getInlineGraph, getStatus, sleep, wake };
 }

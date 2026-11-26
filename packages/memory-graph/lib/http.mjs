@@ -1,5 +1,5 @@
 // 本文由AI自动生成
-// 传输层：只监听回环；Host / Origin / token 三道门；所有响应都带 CORS。
+// Transport layer: loopback-only binding; Host / Origin / Token gates.
 
 import { timingSafeEqual } from "node:crypto";
 
@@ -20,10 +20,9 @@ export function hostAllowed(req, port) {
   return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`;
 }
 
-export function originAllowed(req, port, allowNull = false) {
+export function originAllowed(req, port) {
   const origin = req.headers.origin;
   if (origin === undefined) return true;
-  if (origin === "null") return allowNull;
   const own = new Set([
     `http://127.0.0.1:${port}`,
     `https://127.0.0.1:${port}`,
@@ -41,7 +40,11 @@ export function fetchSiteAllowed(req) {
   return site === "same-origin" || site === "none";
 }
 
-export function corsHeaders(req, port, allowNull = false) {
+export function isCorsRequest(req) {
+  return String(req.headers["sec-fetch-mode"] || "").toLowerCase() === "cors";
+}
+
+export function corsHeaders(req, port) {
   const origin = String(req.headers.origin ?? "");
   const headers = {
     "access-control-allow-headers": `content-type, ${TOKEN_HEADER}`,
@@ -49,9 +52,7 @@ export function corsHeaders(req, port, allowNull = false) {
     "access-control-max-age": "600",
     vary: "Origin",
   };
-  if (origin === "null" && allowNull) {
-    headers["access-control-allow-origin"] = "null";
-  } else if (origin && origin !== "null" && originAllowed(req, port, false)) {
+  if (origin && originAllowed(req, port)) {
     headers["access-control-allow-origin"] = origin;
   }
   return headers;
@@ -70,13 +71,12 @@ export function send(
   status,
   body,
   type = "application/json; charset=utf-8",
-  allowNull = false,
 ) {
   res.writeHead(status, {
     "content-type": type,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
-    ...corsHeaders(req, port, allowNull),
+    ...corsHeaders(req, port),
   });
   res.end(body);
 }
@@ -86,7 +86,7 @@ export async function readBody(req, limit = 4096) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new Error("请求体过大");
+    if (size > limit) throw new Error("Request body too large");
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -95,6 +95,11 @@ export async function readBody(req, limit = 4096) {
 export function injectToken(html, token) {
   return String(html).replace(
     /<meta name="memory-graph-token" content="[^"]*"\s*\/?>/i,
-    `<meta name="memory-graph-token" content="${token}">`,
+    () => `<meta name="memory-graph-token" content="${token}">`,
   );
+}
+
+export function injectInitialGraph(html, data) {
+  const script = `<script>window.__INITIAL_GRAPH__=${JSON.stringify(data).replace(/</g, "\\u003c")};</script>`;
+  return String(html).replace(/<\/head>/i, (match) => `${script}${match}`);
 }
