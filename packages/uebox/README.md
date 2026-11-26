@@ -51,16 +51,28 @@ folder (`uebox_dir()` on Windows, macOS, and Linux):
   (when UEBox is ticked under Library → Instructions) and the `magpie-memory` MCP
   server (when ticked for UEBox under Library → MCP servers).
 - **MCP servers** (`mcp.json`, format `claude`): merges managed `stdio` and
-  `http` servers into `mcpServers`, preserves existing user servers (including
-  `trusted` / `allowedTools`), and removes only magpie-managed entries when
-  unticked. Server IDs that do not match UEBox's `/^[a-zA-Z0-9_-]{1,32}$/` are
-  skipped and logged.
+  `http` servers into `mcpServers`, preserves existing user servers as well as
+  per-server fields you set inside UEBox (`trusted`, `allowedTools`,
+  `readOnlyTools`, `disabled`), and removes only magpie-managed entries when
+  unticked. Server names longer than 32 characters (UEBox's limit) are skipped
+  and logged.
 - **Skills** (`skills/`): UEBox's `SkillsService` uses
   `readdir(..., { withFileTypes: true })` with `entry.isDirectory()`, which
   skips symlinks and Windows directory junctions. The plugin host dereferences
   staged skills and copies them as real directories into UEBox's `skills/`
   folder, leaving user-owned skills untouched, so skills work with magpie's
-  default link mode without manual configuration.
+  default link mode without manual configuration. If you edit a copied skill
+  inside UEBox, the plugin detects the content change and leaves your edited
+  copy alone on both updates and unticks.
+
+**Cleanup & sync state**: Before uninstalling this plugin, untick UEBox under
+Library → Instructions / MCP servers / Skills so the host removes its managed
+entries cleanly; otherwise remove the `<!-- magpie:begin … -->` block from
+`instructions.md`, managed entries from `mcp.json`, and copied folders from
+`skills/` manually. The host tracks which entries it owns in
+`~/.config/magpie/uebox-library/.uebox-sync-state.json`; if that state file is
+deleted, previously managed entries are treated as user-owned and will not be
+removed automatically.
 
 Hooks, Environment variables, Subagents, Slash commands, and Rules are not
 applicable: magpie currently exposes only `instructions`, `mcp`, and `skills` to

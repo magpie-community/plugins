@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { homedir, tmpdir } from "node:os"
 import { PROVIDER_ID, buildProvider, link_path, merge, sync, uebox_dir } from "./lib/sync.mjs"
 import { library_staging_dir, syncLibrary } from "./lib/library.mjs"
+import { syncOnce } from "./index.mjs"
 import { agent, connect } from "./uebox.agent.js"
 
 const link = {
@@ -135,7 +136,7 @@ test("the paths are UEBox's and magpie's", () => {
   expect(uebox_dir(env)).toBe(env.UEBOX_USER_DATA)
   // without an override each system's own folder, named unreal-box
   expect(uebox_dir({}).endsWith("unreal-box")).toBe(true)
-  if (process.platform !== "win32") expect(uebox_dir({ XDG_CONFIG_HOME: "/x" })).toBe(join("/x", "unreal-box"))
+  if (process.platform !== "win32") expect(uebox_dir({ XDG_CONFIG_HOME: "/x" }, "linux")).toBe(join("/x", "unreal-box"))
   if (process.platform !== "win32") expect(link_path({ XDG_CONFIG_HOME: "/x" })).toBe(join("/x", "magpie", "uebox-link.json"))
 })
 
@@ -151,6 +152,12 @@ test("uebox.agent.js points Library at cross-platform magpie staging folder", ()
   for (const val of Object.values(agent.library)) {
     expect(val).not.toContain("$APPDATA")
   }
+  // default library_staging_dir must match agent.library paths after expanding ~
+  const defaultStaging = library_staging_dir({})
+  const expandTilde = (p) => join(homedir(), ...p.replace(/^~[\\/]/, "").split("/"))
+  expect(dirname(expandTilde(agent.library.instructions))).toBe(defaultStaging)
+  expect(dirname(expandTilde(agent.library.mcp))).toBe(defaultStaging)
+  expect(dirname(expandTilde(agent.library.skills))).toBe(defaultStaging)
   const out = connect({
     gateway: { key: "k", url: "http://127.0.0.1:8425", v1: "http://127.0.0.1:8425/v1" },
     models: [{ id: "m1", name: "M1", context: 1000, output: 100, images: false, efforts: [] }],
@@ -231,7 +238,7 @@ test("syncLibrary merges MCP servers, preserves user entries, logs invalid IDs, 
   const logs = []
   const res = syncLibrary({ env: libEnv, log: (m) => logs.push(m) })
   expect(res.changed).toBe(true)
-  expect(res.mcp.skipped).toEqual(["bad.name", "name with space", "a".repeat(33)])
+  expect(res.mcp.skipped).toEqual(["a".repeat(33), "bad.name", "name with space"])
   expect(logs.some((l) => l.includes("bad.name"))).toBe(true)
 
   const written = JSON.parse(readFileSync(dstMcp, "utf8"))
@@ -305,4 +312,142 @@ test("syncLibrary does nothing when UEBox data folder does not exist", () => {
   expect(library_staging_dir(missingEnv)).toBe(missingEnv.MAGPIE_UEBOX_LIBRARY)
   expect(syncLibrary({ env: missingEnv, log: () => {} })).toEqual({ changed: false, reason: "no-uebox" })
   expect(existsSync(missingEnv.UEBOX_USER_DATA)).toBe(false)
+})
+
+test("syncLibrary keeps user-set UEBox fields (trusted/allowedTools/readOnlyTools/disabled) on magpie MCP servers", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  const dstMcp = join(env.UEBOX_USER_DATA, "mcp.json")
+
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({ mcpServers: { fs: { type: "stdio", command: "npx", args: ["-y", "@mcp/fs"], env: {} } } }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+
+  // User trusts and configures the server inside UEBox
+  const doc = JSON.parse(readFileSync(dstMcp, "utf8"))
+  doc.mcpServers.fs.trusted = true
+  doc.mcpServers.fs.allowedTools = ["read_file"]
+  doc.mcpServers.fs.readOnlyTools = ["list_dir"]
+  doc.mcpServers.fs.disabled = true
+  writeFileSync(dstMcp, JSON.stringify(doc, null, 2) + "\n", "utf8")
+
+  const tick = syncLibrary({ env: libEnv, log: () => {} })
+  expect(tick.changed).toBe(false)
+  const after = JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs
+  expect(after.trusted).toBe(true)
+  expect(after.allowedTools).toEqual(["read_file"])
+  expect(after.readOnlyTools).toEqual(["list_dir"])
+  expect(after.disabled).toBe(true)
+
+  // Updating command/args in magpie still preserves user's UEBox fields
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({ mcpServers: { fs: { type: "stdio", command: "npx", args: ["-y", "@mcp/fs@2"], env: {} } } }),
+    "utf8",
+  )
+  const updated = syncLibrary({ env: libEnv, log: () => {} })
+  expect(updated.changed).toBe(true)
+  const afterUpdate = JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs
+  expect(afterUpdate.args).toEqual(["-y", "@mcp/fs@2"])
+  expect(afterUpdate.trusted).toBe(true)
+  expect(afterUpdate.allowedTools).toEqual(["read_file"])
+  expect(afterUpdate.disabled).toBe(true)
+})
+
+test("syncLibrary never overwrites or deletes a copied skill edited by the user in UEBox", () => {
+  const staging = join(dir, "uebox-library")
+  const srcPdf = join(staging, "skills", "pdf")
+  const srcNotes = join(staging, "skills", "notes")
+  mkdirSync(srcPdf, { recursive: true })
+  mkdirSync(srcNotes, { recursive: true })
+  writeFileSync(join(srcPdf, "SKILL.md"), "---\nname: pdf\n---\nv1\n", "utf8")
+  writeFileSync(join(srcNotes, "SKILL.md"), "---\nname: notes\n---\nv1\n", "utf8")
+
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  syncLibrary({ env: libEnv, log: () => {} })
+
+  // User edits pdf SKILL.md -> must not be overwritten on next tick or source update
+  writeFileSync(join(env.UEBOX_USER_DATA, "skills", "pdf", "SKILL.md"), "---\nname: pdf\n---\nmy edit\n", "utf8")
+  writeFileSync(join(srcPdf, "SKILL.md"), "---\nname: pdf\n---\nv2\n", "utf8")
+  syncLibrary({ env: libEnv, log: () => {} })
+  expect(readFileSync(join(env.UEBOX_USER_DATA, "skills", "pdf", "SKILL.md"), "utf8")).toContain("my edit")
+
+  // User adds a file in notes skill, then unticks notes -> must not be deleted
+  writeFileSync(join(env.UEBOX_USER_DATA, "skills", "notes", "notes.md"), "my notes\n", "utf8")
+  rmSync(srcNotes, { recursive: true, force: true })
+  syncLibrary({ env: libEnv, log: () => {} })
+  expect(existsSync(join(env.UEBOX_USER_DATA, "skills", "notes", "notes.md"))).toBe(true)
+})
+
+test("syncLibrary does not overwrite an existing user skill with the same name", () => {
+  const staging = join(dir, "uebox-library")
+  const srcSame = join(staging, "skills", "same-name")
+  const userSame = join(env.UEBOX_USER_DATA, "skills", "same-name")
+  mkdirSync(srcSame, { recursive: true })
+  mkdirSync(userSame, { recursive: true })
+  writeFileSync(join(srcSame, "SKILL.md"), "---\nname: same-name\n---\nfrom-magpie\n", "utf8")
+  writeFileSync(join(userSame, "SKILL.md"), "---\nname: same-name\n---\nfrom-user\n", "utf8")
+
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  syncLibrary({ env: libEnv, log: () => {} })
+  expect(readFileSync(join(userSame, "SKILL.md"), "utf8")).toContain("from-user")
+})
+
+test("syncLibrary leaves UEBox mcp.json untouched when target or source mcp.json is unreadable", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  const dstMcp = join(env.UEBOX_USER_DATA, "mcp.json")
+
+  // Target mcp.json is malformed -> never overwritten
+  const broken = "{ invalid json // user secret token"
+  writeFileSync(dstMcp, broken, "utf8")
+  writeFileSync(join(staging, "mcp.json"), JSON.stringify({ mcpServers: { fs: { command: "npx" } } }), "utf8")
+  const rTarget = syncLibrary({ env: libEnv, log: () => {} })
+  expect(rTarget.mcp.reason).toBe("unreadable-target")
+  expect(readFileSync(dstMcp, "utf8")).toBe(broken)
+
+  // Valid sync first, then staging mcp.json becomes malformed -> managed server must NOT be deleted
+  writeFileSync(dstMcp, JSON.stringify({ version: 1, mcpServers: {} }), "utf8")
+  syncLibrary({ env: libEnv, log: () => {} })
+  expect(JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs).toBeDefined()
+
+  writeFileSync(join(staging, "mcp.json"), "{ broken staging", "utf8")
+  const rSource = syncLibrary({ env: libEnv, log: () => {} })
+  expect(rSource.mcp.reason).toBe("unreadable-source")
+  expect(JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs).toBeDefined()
+})
+
+test("idle syncLibrary ticks log nothing after initial warnings", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(join(staging, "skills", "ue-custom"), { recursive: true })
+  mkdirSync(join(env.UEBOX_USER_DATA, "skills", "ue-custom"), { recursive: true })
+  writeFileSync(join(staging, "mcp.json"), JSON.stringify({ mcpServers: { "bad.name": { command: "x" }, mine: { command: "m" } } }), "utf8")
+  writeFileSync(join(env.UEBOX_USER_DATA, "mcp.json"), JSON.stringify({ version: 1, mcpServers: { mine: { command: "mine" } } }), "utf8")
+  writeFileSync(join(staging, "skills", "ue-custom", "SKILL.md"), "x", "utf8")
+  writeFileSync(join(env.UEBOX_USER_DATA, "skills", "ue-custom", "SKILL.md"), "mine", "utf8")
+
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  syncLibrary({ env: libEnv, log: () => {} })
+
+  const logs = []
+  for (let i = 0; i < 3; i++) syncLibrary({ env: libEnv, log: (m) => logs.push(m) })
+  expect(logs).toEqual([])
+})
+
+test("index.mjs syncOnce runs both models sync and library sync", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  writeSettings(uebox())
+  writeLink(link)
+  writeFileSync(join(staging, "instructions.md"), "Use spaces.\n", "utf8")
+
+  const res = syncOnce({ env: { ...env, MAGPIE_UEBOX_LIBRARY: staging }, log: () => {} })
+  expect(res.models.changed).toBe(true)
+  expect(res.library.changed).toBe(true)
+  expect(readFileSync(join(env.UEBOX_USER_DATA, "instructions.md"), "utf8")).toContain("Use spaces.")
 })

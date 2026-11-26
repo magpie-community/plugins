@@ -5,6 +5,22 @@ import { syncLibrary, library_staging_dir } from "./lib/library.mjs"
 
 let started = false
 
+export function syncOnce({ env = process.env, platform = process.platform, log = (m) => console.log(m) } = {}) {
+  let models = null
+  let library = null
+  try {
+    models = sync({ env, log })
+  } catch (e) {
+    log(`uebox: sync failed: ${e && e.message ? e.message : e}`)
+  }
+  try {
+    library = syncLibrary({ env, platform, log })
+  } catch (e) {
+    log(`uebox: library sync failed: ${e && e.message ? e.message : e}`)
+  }
+  return { models, library }
+}
+
 function start() {
   if (started) return
   started = true
@@ -39,16 +55,7 @@ function start() {
     clearTimeout(timer)
     timer = setTimeout(() => {
       ensureWatchers()
-      try {
-        sync({ log: (m) => console.log(m) })
-      } catch (e) {
-        console.log(`uebox: sync failed: ${e && e.message ? e.message : e}`)
-      }
-      try {
-        syncLibrary({ log: (m) => console.log(m) })
-      } catch (e) {
-        console.log(`uebox: library sync failed: ${e && e.message ? e.message : e}`)
-      }
+      syncOnce()
     }, 400)
   }
 
