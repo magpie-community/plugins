@@ -642,7 +642,9 @@ test("only concurrent refreshes share work, and callers cannot mutate each other
   results[0].windows[0].used = 99
   assert.equal(results[1].windows[0].used, 25)
   await read()
-  assert.equal((await f.logs()).length, 4)
+  // the next refresh reads quota again; agy's --version answer is kept for
+  // its binary (plugins#1544)
+  assert.deepEqual((await f.logs()).map((call) => call.args[0]), ["--version", "-p", "-p"])
   await f.assertClean()
 })
 
@@ -890,6 +892,19 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
     await assert.rejects(fetchUsage(f.executable, { ...f.options, ...(maxOutputBytes ? { maxOutputBytes } : {}) }), expected)
     await f.assertClean()
   }
+})
+
+// plugins#1544: agy --version took 5 to 17 seconds on a one-CPU Linux host,
+// and the quota read was given up at 3 seconds, before it could start.
+test("a slow agy --version can finish within the usage deadline, and is asked once", async t => {
+  const f = await fixture(t, { TEST_START_DELAY_MS: "4000" })
+  const result = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
+  assert.equal(result.windows.length, 2)
+  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]])
+  const again = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
+  assert.equal(again.windows.length, 2)
+  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]], "the same binary isn't asked its version again")
+  await f.assertClean()
 })
 
 test("version/report hangs time out, terminate the process, and leave no workspace", async t => {

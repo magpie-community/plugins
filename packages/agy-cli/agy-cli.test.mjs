@@ -33,13 +33,18 @@ for (const [name, mocks] of [
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
   ["spare.mjs", false],
+  ["account-scope.mjs", false],
   ["stateless-reuse.mjs", false],
   ["tools-listed.mjs", false],
   ["concurrent-convs.mjs", false],
   ["masking-drift.mjs", false],
   ["spilled-output.mjs", false],
   ["tool-result-prefill.mjs", false],
+  ["tool-step-retry.mjs", false],
   ["image-bytes.mjs", false],
+  ["dsh-replay-state.mjs", false],
+  ["duplicate-result-notice.mjs", false],
+  ["image-slim.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests

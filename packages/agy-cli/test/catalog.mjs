@@ -749,6 +749,43 @@ test("Orchestrator 不列出，点名它的请求得 400 并指向它实际会�
   })
 })
 
+// plugins#1542: on an account without Claude 5.5, the sonnet family alias
+// served claude-sonnet-5-5 as claude-sonnet-4-6 with a 200, while another
+// signed-in account lists 5.5. That account is asked, not a stand-in.
+test("a family alias doesn't stand in for a model another signed-in account lists", async () => {
+  await withKit({ modelsBehavior: { stdout: modelsOutput(ORCH_ROWS) }, offeredModels: ORCH_ROWS }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    await kit.models()
+    const ask = async (label) => {
+      const response = await kit.request(baseBody({ model: "agy-cli/claude-sonnet-5-5", messages: [{ role: "user", content: label }] }))
+      return { status: response.status, text: await response.text() }
+    }
+    const file = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "models.json")
+    const data = JSON.parse(fs.readFileSync(file, "utf8"))
+    const [own] = Object.keys(data.byAgy)
+    const other = {
+      at: Date.now(),
+      list: [{ id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)", effort: "high" }, { id: "claude-sonnet-5-5-low", name: "Claude Sonnet 5.5 (Low)", effort: "low" }],
+    }
+    // an account removed since: its entry stays, its home is gone
+    data.byAgy[`${own}#abcdef0123456789`] = other
+    fs.writeFileSync(file, JSON.stringify(data))
+    const gone = await ask("removed account")
+    assert.equal(gone.status, 200, gone.text)
+
+    fs.mkdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "abcdef0123456789"), { recursive: true })
+    const spawned = kit.children.size
+    const listed = await ask("another account")
+    assert.equal(listed.status, 400, listed.text)
+    assert.match(JSON.parse(listed.text).error.message, /claude-sonnet-5-5 is unavailable to this agy account; another signed-in agy account lists it/)
+    assert.equal(kit.children.size, spawned, "no agy was started for it")
+
+    const plain = await kit.request(baseBody({ model: "agy-cli/claude-sonnet-4-6", messages: [{ role: "user", content: "own model" }] }))
+    assert.equal(plain.status, 200)
+  })
+})
+
 test("各家族 limit 正确，未知动态型号不猜成 1M", async () => {
   const expected = {
     "gemini-4-argon": { context: 1048576, output: 65536 },

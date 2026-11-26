@@ -1,0 +1,31 @@
+{
+ "session": "4ddb4b68-ad21-49d4-ac7e-7d56f776f5b6",
+ "body": {
+  "model": "claude-haiku-5-5",
+  "stream": true,
+  "system": "(system prompt trimmed)",
+  "tools": [],
+  "messages": [
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "<task>\nSUBTASK_BG: run two slow commands\n</task>\n<recent_steps>\ndid: Bash - python3 -c \"import time; time.sleep(40)\"; echo slow0 (described as: slow step 0)\n</recent_steps>\n<started_not_finished>\nBash - python3 -c \"import time; time.sleep(40)\"; echo slow1 (described as: slow step 1)\n</started_not_finished>\n<tools-used-before-summary>Bash</tools-used-before-summary>\n\nDescribe the agent's most recent action in 3-5 words using present tense (-ing). Name the file or function, not the branch.\n\nPrevious: \"Running sleep command\" — keep it if the agent is still doing that; otherwise say what is new.\n\nGood: \"Reading runAgent.ts\"\nGood: \"Fixing null check in validate.ts\"\nGood: \"Running auth module tests\"\nGood: \"Adding retry logic to fetchUser\"\n\nBad (past tense): \"Analyzed the branch diff\"\nBad (too vague): \"Investigating the issue\"\nBad (too long): \"Reviewing full branch diff and AgentTool.tsx integration\"\nBad (branch name): \"Analyzed adam/background-summary branch diff\"\n\nWrite the label in the language of the task — a stray word or code token in another language doesn't change it, and neither does the English of these instructions."
+     }
+    ]
+   }
+  ]
+ },
+ "reply": {
+  "type": "message",
+  "role": "assistant",
+  "content": [
+   {
+    "type": "text",
+    "text": "Running sleep command"
+   }
+  ],
+  "stop_reason": "end_turn"
+ }
+}

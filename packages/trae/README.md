@@ -172,7 +172,7 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `usage.credits`): magpie's ledger reads the singular `credit`, as kiro
     reports it (yetone/magpie#4328), and its
     `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
-    named no cache read (0.2.55). A cache count the stream did name wins;
+    named no cache read (0.2.56). A cache count the stream did name wins;
     a refused or failed lookup leaves the answer unchanged. The host is
     `TRAE_USAGE_API_HOST` when set, else the realm's own. A read has a
     timeout of its own (2 s), and an answer's end waits for it only as long
@@ -517,8 +517,8 @@ bills in yuan rather than in the credits the consumer page counts. The
 console's callback names its host bare (`console.enterprise.trae.cn`);
 since 0.2.54 that is read as https, and an enterprise sign-in that names no
 usable host keeps its console. A seat kept with no host before then (its
-token's scope is `saas`) is read as its console's with no new sign-in
-(plugins#1516):
+token's scope is `saas`, at its top or, since 0.2.55, under `data`) is read
+as its console's with no new sign-in (plugins#1516):
 
 - **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
   for the allowance and `…/get_user_model_usage` for the spend, both POST

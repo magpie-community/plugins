@@ -42,7 +42,9 @@ channel: Antigravity's models over ACP. The differences:
   history as context. This plugin keeps a pool of agy processes, reuses one agy
   session for one conversation, and picks it up again with `session/resume`
   after a restart; only when that fails does it replay the history, within a
-  byte budget.
+  byte budget. When magpie's image-slim swaps an earlier image for its
+  placeholder (on Codex, a whole view_image output for one line of text), or
+  magpie leaves one out to fit a size or image limit, the session holds.
 - **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
   `tool_calls`. This plugin feeds the client's result back into the same agy
   turn (see "Tool bridge" below).
@@ -281,7 +283,7 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_MAX_PROCS` | 16 | Maximum number of agy processes in the pool |
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
+| `AGY_BRIDGE_MINIMAL_AGENT` | off | **⚠️ Ban risk, not recommended.** Set to `1` to drop agy's own prompt components, so requests upstream no longer look like the official agy client's; a user reported their account banned within hours of turning it on. See "Minimal agent" below |
 | `AGY_BRIDGE_TELEMETRY` | off (agy reports nothing) | The bridge starts agy with `--disable-telemetry` when agy's `acp --help` lists it; set to `1` to keep agy's own reporting |
 | `AGY_BRIDGE_ALLOW_AGY_TOOLS` | off | Set to `1` to start every `agy acp` with `--dangerously-skip-permissions`, so agy's own tools (shell, file edits, browser) auto-approve instead of the bridge refusing each `session/request_permission`. Client `ide-tools` still run under the client's own permissions. agy's tools run on the computer magpie runs on, with your user's rights, for every request that reaches this provider: a client on another machine, or anyone holding a gateway key, can run commands there. Leave off unless only you use it |
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
@@ -302,6 +304,15 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | English system note | The note line rendered before a prefill fragment (sent to the model) |
 
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
+
+> **⚠️ Ban risk, not recommended.** With it on, requests go upstream without
+> agy's own system prompt, so they no longer look like the official agy
+> client's, and the point of this plugin is that requests are sent by the
+> official client and look like it. A user reported their account was banned
+> within hours of turning it on. That is one report, not proof of cause, but
+> treat the risk as real. While it is on, the plugin prints the same warning to its
+> log, once a process. If you turned it on, unset it to go back to the
+> default.
 
 By default agy runs every request with its own system prompt, and the
 client's system prompt goes as `<external_system_instructions>` at the start
@@ -347,8 +358,8 @@ request that goes upstream then has none of agy's own system prompt, only
 the plugin's one-line tool note and the client's system prompt (sent in one
 of the two ways above). The original author measured about 8,400 input
 tokens per model call with agy's prompt and about 500 without. The cost is
-that upstream no longer sees agy's own request shape, which is why it is
-off unless you turn it on.
+that upstream no longer sees agy's own request shape, a ban risk (see the
+top of this section), which is why it is off and not recommended.
 
 ## Troubleshooting
 

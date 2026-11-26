@@ -1565,6 +1565,58 @@ test("agy's high-traffic ending fails the turn as an overloaded 503, not a rate 
   }
 })
 
+// plugins#1541: before that ending agy retries the 503 for minutes, saying
+// so only in its log. The first retry line ends the turn, so magpie can ask
+// another account at once.
+const CAPACITY_RETRY = "I1125 13:34:23.878000 6120 run.go:88] Run: attempt 1 failed (transport error (Unavailable, HTTP 503): No capacity available for model gemini-4-hydrogen-low on the server), retrying in 4s\n"
+
+test("agy's silent no-capacity retry ends the turn as an overloaded 503 before anything is streamed", async () => {
+  for (const stream of [false, true]) {
+    await withKit({}, async (kit) => {
+      // how agy's turn ended: cancelled by the bridge, or by its own give-up
+      let ended = null
+      kit.defaultPrompt = async (agent) => {
+        fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+        ended = await Promise.race([agent.waitCancel().then(() => "cancelled"),
+          new Promise((resolve) => setTimeout(() => resolve("gave up"), 20000).unref())])
+        return { stopReason: "end_turn" }
+      }
+      const started = Date.now()
+      const response = await kit.request(baseBody({ metadata: { user_id: `capacity-${stream}` },
+        messages: [{ role: "user", content: "hello" }], stream }))
+      if (stream) {
+        const error = sseError(await response.text())
+        assert.equal(error.type, "overloaded_error")
+        assert.notEqual(error.noRetry, true)
+        assert.match(error.message, /no capacity for this model now: .*No capacity available for model gemini-4-hydrogen-low/)
+      } else {
+        const body = await response.json()
+        assert.equal(response.status, 503)
+        assert.equal(body.error.type, "overloaded_error")
+      }
+      assert.ok(Date.now() - started < 10000, `ended after ${Date.now() - started}ms, not at agy's next retry`)
+      assert.notEqual(ended, "gave up", "the reply didn't wait for agy to give up")
+    })
+  }
+})
+
+test("a no-capacity retry after the reply began leaves the turn to agy", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("Working on it. ")
+      fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await agent.text("Done.")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "capacity-late" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(replyText(body), "Working on it. Done.")
+  })
+})
+
 test("agy's high-traffic ending fails a non-stream request as an HTTP 503", async () => {
   await withKit({}, async (kit) => {
     markerAgent(kit, ["Let me look", BUSY.slice(0, 30), BUSY.slice(30)])
@@ -2019,6 +2071,83 @@ test("forked session or subagent carrying an ancestor tool_use does not hit conf
     const parentFinal = await readSse(await kit.request(continueWithToolResults(step2Body, turn2, () => "real-step-2"), { headers: parentHeaders }))
     assert.equal(parentFinal.stopReason, "end_turn")
     assert.ok(parentFinal.content.some((block) => block.text?.includes("parent done")))
+  })
+})
+
+// plugins#1545: Claude Code's AgentSummary sends the sub-agent's own
+// conversation again, its tool result and the ask for a few words, while the
+// worker's response still runs. In the worker's scope it got 503 "already
+// has an active response" seven times over.
+const SUMMARY_ASK = "Describe your most recent action in 3-5 words. Do not use tools."
+
+test("an AgentSummary beside a running worker is answered in a scope of its own", async () => {
+  await withKit({}, async (kit) => {
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    let workerReading = null
+    const reading = new Promise((resolve) => { workerReading = resolve })
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      if (text.includes(SUMMARY_ASK)) {
+        await agent.text("Reading the shared file")
+        return { stopReason: "end_turn" }
+      }
+      const result = await agent.tool("Read", { path: "/shared" })
+      workerReading()
+      await gate
+      await agent.text(`worker got:${result?.result?.content?.[0]?.text || ""}`)
+      return { stopReason: "end_turn" }
+    }
+    const headers = { "x-magpie-session": "claude:worker-1545", "x-magpie-subagent": "task-1" }
+    const opening = baseBody({ system: "worker system", messages: [{ role: "user", content: "WORK on it" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const resumed = continueWithToolResults(opening, turn1, () => "file body")
+    const workerDone = kit.request(resumed, { headers }).then(readSse)
+    await reading
+    const last = resumed.messages.at(-1)
+    const summary = { ...resumed, messages: [...resumed.messages.slice(0, -1),
+      { ...last, content: [...last.content, { type: "text", text: SUMMARY_ASK }] }] }
+    const summaryResponse = await kit.request(summary, { headers })
+    assert.equal(summaryResponse.status, 200, await summaryResponse.clone().text())
+    const parsed = await readSse(summaryResponse)
+    assert.ok(parsed.content.some((block) => block.text?.includes("Reading the shared file")), JSON.stringify(parsed.content))
+    release()
+    const worker = await workerDone
+    assert.equal(worker.stopReason, "end_turn")
+    assert.ok(worker.content.some((block) => block.text?.includes("worker got:file body")), JSON.stringify(worker.content))
+  })
+})
+
+test("a tool result whose text is the summary ask stays the worker's", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const result = await agent.tool("Read", { path: "/shared" })
+      await agent.text(`worker got:${result?.result?.content?.[0]?.text || ""}`)
+      return { stopReason: "end_turn" }
+    }
+    const headers = { "x-magpie-session": "claude:worker-1545b", "x-magpie-subagent": "task-2" }
+    const opening = baseBody({ system: "worker system", messages: [{ role: "user", content: "WORK on it" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers }))
+    const spawned = kit.acpSpawns.length
+    const done = await readSse(await kit.request(continueWithToolResults(opening, turn1, () => SUMMARY_ASK), { headers }))
+    assert.equal(done.stopReason, "end_turn")
+    assert.ok(done.content.some((block) => block.text?.includes(`worker got:${SUMMARY_ASK}`)))
+    assert.equal(kit.acpSpawns.length, spawned, "the result went to the worker's live session")
+  })
+})
+
+test("the summary ask from a main session, not a sub-agent, stays in its session", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "hello": "hi", "Describe your": "Said hello" })
+    const headers = { "x-magpie-session": "claude:main-1545" }
+    const first = baseBody({ system: "main system", messages: [{ role: "user", content: "hello" }] })
+    const done1 = await readSse(await kit.request(first, { headers }))
+    const spawned = kit.acpSpawns.length
+    const next = { ...first, messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: SUMMARY_ASK }] }
+    const done2 = await readSse(await kit.request(next, { headers }))
+    assert.equal(done2.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, spawned, "kept the main session")
   })
 })
 
