@@ -3012,6 +3012,15 @@ class Proc {
     // had it, so the next request's history goes on without it
     // (yetone/magpie#7223).
     if (droppedOneRequestText(this.expectedMessages, messages)) return true
+    // A client can hoist the images a tool returned (and their captions)
+    // into the tool result's user row for one request, then store the row
+    // without them (plugins#1556, OMP in #1447). agy saw them once, as that
+    // request had them; the rest of the history is the session's own.
+    if (droppedHoistedToolImages(this.expectedMessages, messages)) return true
+    // A hook between the client and agy (magpie's gateway hooks) can add a
+    // whole <system-reminder> or <system_message> to a plain user turn for
+    // one request (plugins#1556).
+    if (droppedOneRequestReminder(this.expectedMessages, messages)) return true
     // Clients such as Claude Code canonicalize tool_use.input when they
     // persist history (e.g. filling default replace_all: false). The live
     // session still has the model-issued arguments. historyKey already
@@ -4857,6 +4866,100 @@ function droppedOneRequestText(expected, actual) {
   const cut = a.map((item, index) => index !== row ? item
     : { ...item, content: kept == null ? mine.slice(0, -1) : [...mine.slice(0, -1), { ...mine.at(-1), text: kept }] })
   return sameUpToMasking(cut, b)
+}
+
+// The one row in which expected and actual differ, both rows a user's, or
+// -1: the rows otherwise the same but for masking.
+function oneDifferingUserRow(a, b) {
+  if (a.length !== b.length) return -1
+  let row = -1
+  for (let index = 0; index < a.length; index++) {
+    if (sameUpToMasking(a[index], b[index])) continue
+    if (row >= 0) return -1
+    row = index
+  }
+  if (row < 0 || a[row].role !== "user" || b[row].role !== "user") return -1
+  return row
+}
+
+// Whether actual is expected but for images a tool returned that the client
+// hoisted into the tool result's user row for one request, and left out of
+// the history it stored (plugins#1556; OMP's 3 -> 1 and 7 -> 1 rows in
+// #1447): in one user row, each run of image and text blocks right after a
+// tool_result that holds an image is gone, and nothing else changed. A text
+// run without an image, an image anywhere else, or a second changed row is
+// still a changed history.
+function droppedHoistedToolImages(expected, actual) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) return false
+  const a = historyRows(expected)
+  const b = historyRows(actual)
+  const row = oneDifferingUserRow(a, b)
+  if (row < 0) return false
+  const mine = a[row].content
+  const kept = []
+  let hoisted = false
+  for (let index = 0; index < mine.length;) {
+    const block = mine[index++]
+    kept.push(block)
+    if (block.type !== "tool_result") continue
+    let end = index
+    while (end < mine.length && (mine[end].type === "image" || mine[end].type === "text")) end++
+    if (mine.slice(index, end).some((item) => item.type === "image")) {
+      hoisted = true
+      index = end
+    }
+  }
+  return hoisted && sameUpToMasking(kept, b[row].content)
+}
+
+// Whether text is nothing but whole <system-reminder> and <system_message>
+// blocks, the wrappers a hook adds for one request. Linear, as
+// replaceClosedSystemReminders is.
+function wholeHookBlocks(text) {
+  let rest = String(text ?? "").trim()
+  if (!rest) return false
+  while (rest) {
+    const lower = asciiLower(rest)
+    const open = /^<(system-reminder|system_message)(?:\s[^>]*)?>/.exec(lower)
+    if (!open) return false
+    const close = new RegExp(`^</${open[1]}\\s*>`)
+    let at = open[0].length
+    for (;;) {
+      at = lower.indexOf(`</${open[1]}`, at)
+      if (at < 0) return false
+      const end = lower.indexOf(">", at)
+      if (end < 0) return false
+      if (close.test(lower.slice(at, end + 1))) {
+        rest = rest.slice(end + 1).trimStart()
+        break
+      }
+      at = end + 1
+    }
+  }
+  return true
+}
+
+// Whether actual is expected but for whole hook blocks (wholeHookBlocks) at
+// the end of expected's newest user row, which actual has without them, the
+// rest the same but for masking (plugins#1556). The row is the newest one
+// only: what a hook adds goes with one request. Any other text that went is
+// still a changed history.
+function droppedOneRequestReminder(expected, actual) {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) return false
+  const a = historyRows(expected)
+  const b = historyRows(actual)
+  const row = oneDifferingUserRow(a, b)
+  if (row < 0 || a.slice(row + 1).some((item) => item.role === "user")) return false
+  const mine = a[row].content
+  const theirs = b[row].content
+  const last = mine.at(-1)
+  if (last?.type !== "text") return false
+  const kept = theirs.length === mine.length && theirs.at(-1).type === "text" ? theirs.at(-1).text : null
+  if (kept == null && theirs.length !== mine.length - 1) return false
+  if (kept != null && (kept === last.text || !last.text.startsWith(kept))) return false
+  if (!wholeHookBlocks(last.text.slice(kept?.length ?? 0))) return false
+  const cut = kept == null ? mine.slice(0, -1) : [...mine.slice(0, -1), { ...last, text: kept }]
+  return sameUpToMasking(cut, theirs)
 }
 
 function sameToolUseIdentities(left, right) {
