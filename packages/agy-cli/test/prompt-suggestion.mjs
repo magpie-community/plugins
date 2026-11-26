@@ -4,6 +4,40 @@ import { baseBody, createBridgeKit, readSse } from "./testkit.mjs"
 
 const SUGGESTION_OPENING = "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]"
 const SUGGESTION = `${SUGGESTION_OPENING}\n\nSuggest a short next input. Or nothing.\nReply with ONLY the suggestion, no quotes or explanation.`
+// Claude Code 2.1.316's own template, byte for byte as its binary holds
+// it (a template literal; the \u escapes are its own)
+const CLAUDE_CODE_SUGGESTION = `[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.]
+
+FIRST: Look at the user's recent messages and original request.
+
+Your job is to predict what THEY would type - not what you think they should do.
+
+THE TEST: Would they think "I was just about to type that"?
+
+EXAMPLES:
+User asked "fix the bug and run tests", bug is fixed \u2192 "run the tests"
+After code written \u2192 "try it out"
+Claude offers options \u2192 suggest the one the user would likely pick, based on conversation
+Claude asks to continue \u2192 "yes" or "go ahead"
+Task complete, obvious follow-up \u2192 "commit this" or "push it"
+After error or misunderstanding \u2192 silence (let them assess/correct)
+
+Be specific: "run the tests" beats "continue".
+
+NEVER SUGGEST:
+- Evaluative ("looks good", "thanks")
+- Questions ("what about...?")
+- Claude-voice ("Let me...", "I'll...", "Here's...")
+- New ideas they didn't ask about
+- Multiple sentences
+
+Stay silent if the next step isn't obvious from what the user said.
+
+Stay silent if a suggestion could be unsafe or inappropriate \u2014 including any sensitive topic (security incidents, credentials, harm, private data). Even when the user is doing legitimate security or cybersecurity work, do not predict potentially unsafe actions.
+
+Format: 2-12 words, match the user's style. Or nothing.
+
+Reply with ONLY the suggestion, no quotes or explanation.`
 const IMAGE = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }
 const ZERO_USAGE = { input_tokens: 0, output_tokens: 0 }
 const user = (content) => ({ role: "user", content })
@@ -123,3 +157,19 @@ test("a quoted marker or a marker without the reply instruction is an ordinary u
     assert.ok(!journal.some((row) => row.action === "suggestion_skipped"))
   })
 })
+
+for (const stream of [true, false]) {
+  test(`Claude Code's own suggestion template (${stream ? "SSE" : "JSON"}) reaches no agy`, async () => {
+    await withKit(async (kit, journal) => {
+      const headers = { "x-magpie-session": "claude:prompt-suggestion-literal" }
+      const body = baseBody({ messages: [user("opening sentinel")] })
+      const first = await readSse(await kit.request(body, { headers }))
+      const history = [...body.messages, { role: "assistant", content: first.content }]
+      const acpLength = kit.acpLog.length
+      const suggestion = await kit.request({ ...body, stream, messages: [...history, user(CLAUDE_CODE_SUGGESTION)] }, { headers })
+      assert.deepEqual(kit.acpLog.slice(acpLength), [], "the suggestion must send no ACP messages")
+      assert.ok(journal.some((row) => row.action === "suggestion_skipped"))
+      await assertEmptyResponse(suggestion, body.model, stream)
+    })
+  })
+}
