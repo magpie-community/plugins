@@ -2856,16 +2856,33 @@ const CN_ESTIMATED_WINDOWS = [
     unit: "",
   },
 ]
-// WorkBuddy AI's window keeps the name it shipped with: there the model is
-// served at x0.00, so "Free model tokens" is what it is.
+// WorkBuddy AI's window is deepseek-v4.1-flash's while WorkBuddy AI serves
+// that model at x0.00. The card names the model and says its cap is an
+// estimate, as the China build's does (plugins#663): "Free model tokens"
+// read as an allowance for whatever model is free now, and the 1e8 was
+// measured on deepseek only (plugins#1567). It is shown only while the
+// account's model list, when there is one, still has deepseek free
+// (aiWindowApplies).
 const FREE_WINDOW_AI = {
   provider: "workbuddy-ai",
   model: "deepseek-v4.1-flash",
   aliases: ["deepseek-v4.1-flash-sg"],
   cap: 1e8,
-  name: "Free model tokens",
-  short: "100M",
-  unit: "tokens",
+  name: "deepseek-v4.1-flash tokens (est.)",
+  refusedName: "deepseek-v4.1-flash tokens",
+  short: "~100M",
+  unit: "",
+}
+
+// aiWindowApplies says whether a model's window still applies to an account
+// whose model list is `list` (liveModels' shape), or null for no list read.
+// With a list it applies only while the model is in it and not priced: once
+// WorkBuddy AI stops serving it free, the estimate is retired, and nothing
+// carries its count or cap to the model that is free instead.
+function aiWindowApplies(list, win = FREE_WINDOW_AI) {
+  if (!Array.isArray(list)) return true
+  const m = list.find((x) => x?.id === win.model)
+  return !!m && m.free !== false
 }
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
@@ -3818,15 +3835,18 @@ function enterpriseUsageOf(u) {
 // the account last, and behind every other, for its free models too. A
 // model free only some hours (a night promotion) is not free here, as in
 // the list (priceOf). A list that can't be read leaves the windows as they
-// are: every model counted, as before.
+// are: every model counted, as before. It gives back the list it read
+// (null when the read failed, undefined with no windows to mark), so a
+// caller that needs the list too costs the poll no second config request.
 async function spareFree(site, a, windows) {
-  if (!windows.length) return windows
-  let free = []
+  if (!windows.length) return undefined
+  let list = null
   try {
-    free = (await liveModels(site, a)).filter((m) => m.free).map((m) => m.id)
+    list = await liveModels(site, a)
   } catch {}
+  const free = (list ?? []).filter((m) => m.free).map((m) => m.id)
   if (free.length) for (const w of windows) w.notModels = free
-  return windows
+  return list
 }
 
 // The packages' codes, as WorkBuddy's own client lists them when it asks
@@ -4842,7 +4862,10 @@ function makePlugin(site) {
             try {
               ent = enterpriseUsageOf(await meter(site, a, "/billing/meter/get-enterprise-user-usage"))
             } catch {}
-            if (ent) return { plan: auth.plan || "Enterprise", windows: await spareFree(site, a, [ent]), signIn: said }
+            if (ent) {
+              await spareFree(site, a, [ent])
+              return { plan: auth.plan || "Enterprise", windows: [ent], signIn: said }
+            }
           }
           // when the plan's credits start again (cycleOf), and when the credits
           // left run out, for routing to spend them first (runsOutOf);
@@ -4883,7 +4906,7 @@ function makePlugin(site) {
               }
             } catch {}
           }
-          await spareFree(site, a, out.windows)
+          const known = await spareFree(site, a, out.windows)
           // each measured model's own window, which the credit meter above
           // does not show: what actually refuses a chat long before the
           // credits are spent. WorkBuddy AI has one (deepseek, 1e8, ten days
@@ -4893,7 +4916,10 @@ function makePlugin(site) {
           // (see the window definitions above)
           {
             const account = a.accountId || a.user || a.uid || ""
-            const wins = site.ai ? [FREE_WINDOW_AI] : CN_ESTIMATED_WINDOWS
+            // known is the list spareFree read for this poll: no request
+            // of its own (none read: shown, as the card names its model and
+            // says it is an estimate)
+            const wins = site.ai ? [FREE_WINDOW_AI].filter((w) => aiWindowApplies(known, w)) : CN_ESTIMATED_WINDOWS
             for (const win of wins) {
               const rows = await freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
               const w = rows && freeWindowOf(rows, account, Date.now(), win)
@@ -5046,4 +5072,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

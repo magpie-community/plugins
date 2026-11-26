@@ -481,8 +481,11 @@ to continue using it.
 That is a token allowance of its own — per account, per 24 hours, about 1e8
 tokens, counted as prompt + cache-read + completion. Nothing the vendor
 answers with reports it, so the plugin rebuilds the current window from
-magpie's `usage.jsonl` and gives it to the card as **Free model tokens**
-beside **Credits**. `quota alert` and `magpie quota` show it too; before,
+magpie's `usage.jsonl` and gives it to the card as
+**deepseek-v4.1-flash tokens (est.)** (~100M) beside **Credits**, while the
+account's model list has deepseek-v4.1-flash at x0.00. Once the list prices
+it or drops it, the card goes, and no other free model takes its count or
+cap: nothing has measured another model's window (plugins#1567). `quota alert` and `magpie quota` show it too; before,
 the card read 0% on an account that was already refused.
 
 What is measured, and what is easy to read wrongly:

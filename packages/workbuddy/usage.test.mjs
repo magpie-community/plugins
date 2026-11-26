@@ -796,9 +796,11 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] }) })
     const auth = { type: "oauth", access: "ai-access", expires: later(), uid: "ai3", accountId: "me@example.com", domain: "www.codebuddy.ai" }
     const out = await usageOf(WorkBuddyAIAuthPlugin, auth)
-    expect(out.windows.map((w) => w.name)).toEqual(["Credits", "Free model tokens"])
+    // the card names its model and says its cap is an estimate, as the
+    // China build's does: not "Free model tokens" (plugins#1567)
+    expect(out.windows.map((w) => w.name)).toEqual(["Credits", "deepseek-v4.1-flash tokens (est.)"])
     // the ledger's sum is set aside: shown, never the allowance (plugins#641)
-    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "tokens", aside: true })
+    expect(out.windows[1]).toMatchObject({ amount: 30_000_000, limit: 1e8, unit: "", aside: true })
     serve({ "/billing/meter/get-user-resource-summary": () =>
       ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "500", CycleUsedCapacity: "0" }] }) })
     const cn = await usageOf(WorkBuddyAuthPlugin, { ...auth, domain: "" })
@@ -808,6 +810,53 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
   } finally {
     rmSync(ledger, { force: true })
   }
+})
+
+// plugins#1567: the deepseek window is WorkBuddy AI's while deepseek is
+// free there. Once the account's list prices it, or lists it no longer,
+// the estimate is retired and no other model inherits its count or cap.
+// The list is the one the poll already reads for the credits' free models
+// (spareFree): no second config request.
+test("WorkBuddy AI's deepseek window goes once its list no longer has deepseek free", async () => {
+  const dir = join(home, ".config", "magpie")
+  mkdirSync(dir, { recursive: true })
+  const ledger = join(dir, "usage.jsonl")
+  const t = new Date(Date.now() - 3600_000).toISOString()
+  writeFileSync(ledger, JSON.stringify({ provider: "workbuddy-ai", providerAccount: "me@example.com", model: "deepseek-v4.1-flash", t, status: 200, in: 30_000_000, cache_read: 0, out: 0 }) + "\n")
+  const summary = () => ok({ IsPaidUser: false, Packages: [{ CycleTotalCapacity: "160", CycleUsedCapacity: "0" }] })
+  const config = (models) => () => ok({ agents: [{ name: "cli", models: models.map((m) => m.id) }], models })
+  const auth = { type: "oauth", access: "ai-access", expires: later(), uid: "ai4", accountId: "me@example.com", domain: "www.codebuddy.ai" }
+  try {
+    for (const [models, want] of [
+      [[{ id: "deepseek-v4.1-flash", credits: "x0.00" }, { id: "hy4free", credits: "x0.00" }], ["Credits", "deepseek-v4.1-flash tokens (est.)"]],
+      [[{ id: "deepseek-v4.1-flash", credits: "x0.03" }, { id: "hy4free", credits: "x0.00" }], ["Credits"]],
+      [[{ id: "hy4free", credits: "x0.00" }], ["Credits"]],
+    ]) {
+      const calls = serve({ "/v3/config": config(models), "/billing/meter/get-user-resource-summary": summary })
+      const out = await usageOf(WorkBuddyAIAuthPlugin, auth)
+      expect(out.windows.map((w) => w.name)).toEqual(want)
+      expect(calls.filter((c) => c.url.pathname === "/v3/config").length).toBe(1)
+    }
+    // a list that can't be read: shown, named for its model
+    serve({ "/billing/meter/get-user-resource-summary": summary })
+    const out = await usageOf(WorkBuddyAIAuthPlugin, auth)
+    expect(out.windows.map((w) => w.name)).toEqual(["Credits", "deepseek-v4.1-flash tokens (est.)"])
+  } finally {
+    rmSync(ledger, { force: true })
+  }
+})
+
+test("aiWindowApplies reads only the window's own model", () => {
+  const { aiWindowApplies } = _internal
+  expect(aiWindowApplies(null)).toBe(true)
+  expect(aiWindowApplies([{ id: "deepseek-v4.1-flash", free: true }])).toBe(true)
+  // a price it couldn't read is no sign the promotion ended
+  expect(aiWindowApplies([{ id: "deepseek-v4.1-flash" }])).toBe(true)
+  expect(aiWindowApplies([{ id: "deepseek-v4.1-flash", free: false, rate: 0.03 }])).toBe(false)
+  // the paid -sg id, or a similar prefix, is not the free model
+  expect(aiWindowApplies([{ id: "deepseek-v4.1-flash-sg", free: true }])).toBe(false)
+  expect(aiWindowApplies([{ id: "deepseek-v4.1-flash-x", free: true }])).toBe(false)
+  expect(aiWindowApplies([])).toBe(false)
 })
 
 // cdredfox on X (2026-11-11): the Credits card said only the plan's end,
