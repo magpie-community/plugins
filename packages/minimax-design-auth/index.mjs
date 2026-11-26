@@ -31,6 +31,8 @@ const DEFAULT_VERSION_CODE = "4.0.18"
 const DESKTOP_POLL_MS = 2000
 const DESKTOP_WAIT_MS = 5 * 60 * 1000
 const MODELS_TTL_MS = 5 * 60 * 1000
+const OWNER_VERIFY_FAIL_TTL_MS = 30_000
+const OWNER_CACHE_MAX = 16
 const REQUEST_TIMEOUT_MS = 15_000
 const MODALITIES = ["text", "image", "audio", "video", "pdf"]
 const SUPPORTED_NPMS = new Set(["@ai-sdk/anthropic", "@ai-sdk/openai", "@ai-sdk/openai-compatible"])
@@ -866,10 +868,10 @@ async function fetchRemoteConfig(site, cred, versionCode, fetchImpl) {
   return specs
 }
 
-// Prepaid credit wallets report remaining credits rather than a consumed
-// percentage of an allowance, so report the total in top-level `balance` (as
-// packages/minimax does) and put optional sub-credit breakdowns in `aside`
-// windows with expiry batches — never fabricate a 0% primary progress bar.
+// Prepaid credit wallets report a numeric remaining balance (without `used`,
+// `limit`, or `aside`) so magpie can route away from 0-credit accounts and rank
+// higher-balance accounts ahead on ties, while sub-credit expiry batches stay
+// in `aside` windows.
 function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false } = {}) {
   const wallets = Array.isArray(walletBody?.wallets) ? walletBody.wallets.filter(isRecord) : []
   if (!wallets.length) return null
@@ -879,8 +881,15 @@ function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false
   const plan = trimStr(primary.plan_name)
   const until = parseDateIso(primary.end_time)
   const labels = CREDIT_TYPE_LABELS[site.lang] ?? CREDIT_TYPE_LABELS.en
+  const unit = site.lang === "zh" ? "积分" : "credits"
 
-  const windows = []
+  const windows = [
+    {
+      name: site.lang === "zh" ? "积分" : "Credits",
+      balance: total,
+      unit,
+    },
+  ]
   const subs = Array.isArray(primary.sub_credits) ? primary.sub_credits.filter(isRecord) : []
   for (const sub of subs) {
     const amount = num(sub.credit)
@@ -915,7 +924,6 @@ function usageFromWallet(site, walletBody, nowMs = Date.now(), { renewed = false
   return {
     ...(plan ? { plan } : {}),
     ...(until ? { until } : {}),
-    balance: formatCredits(total, site.lang),
     windows,
     ...(renewed ? { signIn: "renewed" } : {}),
   }
@@ -927,8 +935,15 @@ function usageFromBalance(site, balanceBody, { hasGroupId = false, renewed = fal
   const team = num(balanceBody.team_credit)
   const primary = hasGroupId && team !== undefined ? team : total
   if (primary === undefined) return null
+  const unit = site.lang === "zh" ? "积分" : "credits"
 
-  const windows = []
+  const windows = [
+    {
+      name: hasGroupId && team !== undefined ? (site.lang === "zh" ? "团队积分" : "Team Credits") : site.lang === "zh" ? "积分" : "Credits",
+      balance: primary,
+      unit,
+    },
+  ]
   if (hasGroupId && team !== undefined && total !== undefined && total !== team) {
     windows.push({
       name: site.lang === "zh" ? "总积分" : "Total Credits",
@@ -943,7 +958,6 @@ function usageFromBalance(site, balanceBody, { hasGroupId = false, renewed = fal
     })
   }
   return {
-    balance: formatCredits(primary, site.lang),
     windows,
     ...(renewed ? { signIn: "renewed" } : {}),
   }
@@ -1074,7 +1088,16 @@ function createPlugin(
   const resolvedVersion = normalizeVersionCode(versionCode ?? detectInstalledVersion({ env, platform, readFileImpl }))
   const modelCache = new Map() // cacheKey -> { at, specs }
   const diskCache = new Map() // cacheKey -> { mtimeMs, cred }
-  const verifiedTokenOwners = new Map() // token -> uid (null if rejected/unverifiable)
+  const verifiedTokenOwners = new Map() // token -> { uid, expiresAt }
+
+  function setOwnerCache(token, uid, expiresAt) {
+    if (verifiedTokenOwners.has(token)) verifiedTokenOwners.delete(token)
+    verifiedTokenOwners.set(token, { uid, expiresAt })
+    while (verifiedTokenOwners.size > OWNER_CACHE_MAX) {
+      const oldest = verifiedTokenOwners.keys().next().value
+      verifiedTokenOwners.delete(oldest)
+    }
+  }
 
   function readLiveDesktopForAuth(auth, { force = false } = {}) {
     const meta = isRecord(auth?.metadata) ? auth.metadata : {}
@@ -1124,8 +1147,10 @@ function createPlugin(
     if (savedOwner && liveOwner && savedOwner !== liveOwner) {
       return false
     }
-    if (verifiedTokenOwners.has(live.key)) {
-      return verifiedTokenOwners.get(live.key) === expectedUserId
+    const now = nowMsImpl()
+    const cached = verifiedTokenOwners.get(live.key)
+    if (cached && cached.expiresAt > now) {
+      return cached.uid === expectedUserId
     }
     try {
       const profile = await fetchAccountProfile(
@@ -1135,14 +1160,15 @@ function createPlugin(
         fetchImpl,
       )
       if (!profile.uid) {
-        verifiedTokenOwners.set(live.key, null)
+        setOwnerCache(live.key, null, now + OWNER_VERIFY_FAIL_TTL_MS)
         return false
       }
-      verifiedTokenOwners.set(live.key, profile.uid)
+      setOwnerCache(live.key, profile.uid, Number.POSITIVE_INFINITY)
       return profile.uid === expectedUserId
     } catch {
-      // Do not accept an unverified rotated token; fall back to saved credential
-      // and do not poison cache on transient network errors unless auth failed.
+      // Short negative cache prevents repeated 15s profile timeouts while offline
+      // or during a transient upstream outage, then retries after 30s.
+      setOwnerCache(live.key, null, now + OWNER_VERIFY_FAIL_TTL_MS)
       return false
     }
   }
@@ -1213,7 +1239,7 @@ function createPlugin(
         ),
       )
     }
-    if (profile?.uid) verifiedTokenOwners.set(cred.key, profile.uid)
+    if (profile?.uid) setOwnerCache(cred.key, profile.uid, Number.POSITIVE_INFINITY)
     return authResult({ ...cred, method: "desktop" }, profile)
   }
 
@@ -1513,6 +1539,7 @@ export const _internal = {
   PLACEHOLDER_KEY,
   DEFAULT_VERSION_CODE,
   MODELS_TTL_MS,
+  OWNER_VERIFY_FAIL_TTL_MS,
   OtherSite,
   createPlugin,
   decryptV2Token,

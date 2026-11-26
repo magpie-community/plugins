@@ -11,6 +11,7 @@ import { _internal } from "./index.mjs"
 const {
   SITES,
   MODELS_TTL_MS,
+  OWNER_VERIFY_FAIL_TTL_MS,
   OtherSite,
   createPlugin,
   decryptV2Token,
@@ -334,7 +335,7 @@ describe("model catalog & usage parsing", () => {
     assert.equal(parseRemoteConfig(SITES["minimax-design"], null), null)
   })
 
-  test("usageFromWallet puts credits in top-level balance, never fabricates 0 or Free, and sums same-instant expiries", () => {
+  test("usageFromWallet and usageFromBalance emit numeric balance primary window, handle 0 credits, never fabricate 0/Free, and sum same-instant expiries", () => {
     const now = Date.UTC(2026, 10, 26)
     const exp1 = Date.UTC(2026, 11, 25)
     const exp2 = Date.UTC(2027, 7, 10)
@@ -365,36 +366,44 @@ describe("model catalog & usage parsing", () => {
     const u = usageFromWallet(SITES["minimax-design"], wallet, now)
     assert.equal(u.plan, "Design Plus 年会员")
     assert.equal(u.until, "2027-09-29T00:00:00.000Z")
-    assert.equal(u.balance, "87145 积分")
+    assert.equal(u.balance, undefined)
     assert.equal(u.signIn, undefined)
-    // Only aside sub-credit breakdowns; no 0% primary progress bar window
-    assert.equal(u.windows.length, 2)
-    assert.equal(u.windows[0].name, "会员积分")
-    assert.equal(u.windows[0].aside, true)
+    // Primary numeric balance window (for routing) + 2 aside sub-credit breakdowns
+    assert.equal(u.windows.length, 3)
+    assert.deepEqual(u.windows[0], { name: "积分", balance: 87145, unit: "积分" })
     assert.equal(u.windows[0].used, undefined)
-    assert.equal(u.windows[0].balance, undefined)
-    assert.equal(u.windows[0].runsOutAt, new Date(exp1).toISOString())
-    assert.equal(u.windows[0].runsOut, 30000)
-    assert.equal(u.windows[1].name, "充值积分")
+    assert.equal(u.windows[0].limit, undefined)
+    assert.equal(u.windows[0].aside, undefined)
+    assert.equal(u.windows[1].name, "会员积分")
     assert.equal(u.windows[1].aside, true)
+    assert.equal(u.windows[1].used, undefined)
+    assert.equal(u.windows[1].balance, undefined)
+    assert.equal(u.windows[1].runsOutAt, new Date(exp1).toISOString())
+    assert.equal(u.windows[1].runsOut, 30000)
+    assert.equal(u.windows[2].name, "充值积分")
+    assert.equal(u.windows[2].aside, true)
+
+    // 0-credit account must expose primary window with balance: 0 so magpie stops routing to it
+    const zero = usageFromWallet(SITES["minimax-design"], { wallets: [{ source: 1, plan_name: "Plus", total_credit: "0", sub_credits: [] }] }, now)
+    assert.equal(zero.plan, "Plus")
+    assert.deepEqual(zero.windows, [{ name: "积分", balance: 0, unit: "积分" }])
 
     // Missing total_credit returns null (never 0 / Free); missing plan_name omits plan
     assert.equal(usageFromWallet(SITES["minimax-design"], { wallets: [{ source: 1 }] }, now), null)
     const noPlan = usageFromWallet(SITES["minimax-design"], { wallets: [{ source: 1, total_credit: "50" }] }, now)
     assert.equal(noPlan.plan, undefined)
-    assert.equal(noPlan.balance, "50 积分")
-    assert.deepEqual(noPlan.windows, [])
+    assert.deepEqual(noPlan.windows, [{ name: "积分", balance: 50, unit: "积分" }])
 
     const renewed = usageFromWallet(SITES["minimax-design"], wallet, now, { renewed: true })
     assert.equal(renewed.signIn, "renewed")
 
-    // Team-scoped balance fallback puts team_credit in top-level balance and total_credit in aside window
+    // Team-scoped balance fallback puts team_credit in numeric balance primary window and total_credit aside
     const teamBal = usageFromBalance(SITES["minimax-design"], { total_credit: "500", team_credit: "200" }, { hasGroupId: true })
-    assert.equal(teamBal.balance, "200 积分")
-    assert.equal(teamBal.windows.length, 1)
-    assert.equal(teamBal.windows[0].name, "总积分")
-    assert.equal(teamBal.windows[0].aside, true)
-    assert.equal(teamBal.windows[0].used, undefined)
+    assert.equal(teamBal.balance, undefined)
+    assert.deepEqual(teamBal.windows[0], { name: "团队积分", balance: 200, unit: "积分" })
+    assert.equal(teamBal.windows[1].name, "总积分")
+    assert.equal(teamBal.windows[1].aside, true)
+    assert.equal(teamBal.windows[1].used, undefined)
   })
 
   test("helper functions parse dates, versions, regions, JWT owner, and expiration", () => {
@@ -503,7 +512,7 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
 
       const usage = await hooks.auth.usage(async () => storedAuth)
       assert.equal(usage.plan, "Design Plus")
-      assert.equal(usage.balance, "1234 积分")
+      assert.deepEqual(usage.windows, [{ name: "积分", balance: 1234, unit: "积分" }])
       assert.equal(usage.signIn, "renewed")
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
@@ -642,22 +651,120 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       assert.equal(seen[3].groupId, "team-99")
       assert.equal(profileCalls, 0)
 
-      // 5. Mid-switch race: tokens updated to C (with same JWT owner omitted so profile check must fire)
-      //    while user.userID is STILL 20002 -> rejected by owner verification!
+      // 5a. Mid-switch race with mismatched JWT claims.user.id -> rejected immediately WITHOUT hitting profile
+      bumpWrite(
+        { ...dirObj.cfg, user: { userID: "20002", userName: "Bob" }, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(userCToken, dirObj.keyBuf) } },
+        6000,
+      )
+      await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(seen[4].token, dirObj.token)
+      assert.equal(profileCalls, 0)
+
+      // 5b. Mid-switch race where JWT omits user.id so profile check must fire -> rejected by profile uid!
       const raceTokenNoJwtUser = makeJwt({ exp: Math.floor(Date.now() / 1000) + 7200, race: 1 })
       bumpWrite(
         { ...dirObj.cfg, user: { userID: "20002", userName: "Bob" }, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(raceTokenNoJwtUser, dirObj.keyBuf) } },
         8000,
       )
       await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
-      assert.equal(seen[4].token, dirObj.token)
+      assert.equal(seen[5].token, dirObj.token)
       assert.equal(profileCalls, 1)
 
       // 6. Account B returns with same token and clears selectedGroupIds -> X-Group-Id MUST clear
       bumpWrite({ ...dirObj.cfg, selectedGroupIds: {} }, 12000)
       await loadedB.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
-      assert.equal(seen[5].token, dirObj.token)
-      assert.equal(seen[5].groupId, null)
+      assert.equal(seen[6].token, dirObj.token)
+      assert.equal(seen[6].groupId, null)
+    } finally {
+      rmSync(dirObj.root, { recursive: true, force: true })
+    }
+  })
+
+  test("usage retries desktop rotation on 403 and negative-caches transient owner-profile failures for 30s", async () => {
+    let fakeNow = Date.now()
+    const dirObj = makeTempDesktopDir({
+      userID: "10001",
+      token: makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, v: 1 }),
+    })
+    const rotated = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, v: 2 })
+    const rotated2 = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, v: 3 })
+    let failWallet403 = true
+    let failProfile = false
+    let profileAttempts = 0
+    const walletTokens = []
+
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: async (url, init = {}) => {
+        const u = String(url)
+        const tok = new Headers(init.headers).get("token")
+        if (u.endsWith("/api/v1/account/profile")) {
+          profileAttempts++
+          if (failProfile) throw new Error("transient profile outage")
+          return new Response(JSON.stringify({ uid: "10001", user_name: "Alice" }), { status: 200 })
+        }
+        if (u.endsWith("/api/v1/credit/wallet")) {
+          walletTokens.push(tok)
+          if (failWallet403 && tok === dirObj.token) {
+            failWallet403 = false
+            writeFileSync(
+              join(dirObj.root, "hub-config.json"),
+              JSON.stringify({ ...dirObj.cfg, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(rotated, dirObj.keyBuf) } }),
+            )
+            const t = new Date(fakeNow + 2000)
+            utimesSync(join(dirObj.root, "hub-config.json"), t, t)
+            return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 })
+          }
+          if (tok === rotated || tok === rotated2) {
+            return new Response(JSON.stringify({ wallets: [{ source: 1, plan_name: "Plus", total_credit: "321" }] }), { status: 200 })
+          }
+          return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 })
+        }
+        return new Response("{}", { status: 200 })
+      },
+      env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+      versionCode: TEST_VERSION,
+      nowMsImpl: () => fakeNow,
+    })
+
+    try {
+      const storedAuth = {
+        type: "api",
+        key: dirObj.token,
+        metadata: { userId: "10001", tokenOwnerId: "owner-10001", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+      // 1. Wallet returns 403 while disk rotates -> usage MUST forceRefresh on 403 and retry with rotated token
+      const recovered = await hooks.auth.usage(async () => storedAuth)
+      assert.equal(recovered.plan, "Plus")
+      assert.deepEqual(recovered.windows, [{ name: "积分", balance: 321, unit: "积分" }])
+      assert.equal(recovered.signIn, "renewed")
+      assert.deepEqual(walletTokens, [dirObj.token, rotated])
+      assert.equal(profileAttempts, 1)
+
+      // 2. New rotated token hits transient profile outage -> negative-cached for 30s
+      failProfile = true
+      writeFileSync(
+        join(dirObj.root, "hub-config.json"),
+        JSON.stringify({ ...dirObj.cfg, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(rotated2, dirObj.keyBuf) } }),
+      )
+      const t2 = new Date(fakeNow + 6000)
+      utimesSync(join(dirObj.root, "hub-config.json"), t2, t2)
+
+      const failed = await hooks.auth.usage(async () => storedAuth)
+      assert.equal(failed.signIn, "expired")
+      assert.equal(profileAttempts, 2)
+
+      // Within 30s negative-cache window, profile is NOT re-queried
+      fakeNow += 5_000
+      await hooks.auth.usage(async () => storedAuth)
+      assert.equal(profileAttempts, 2)
+
+      // After 30s TTL expires and profile recovers, verification runs again and succeeds
+      failProfile = false
+      fakeNow += OWNER_VERIFY_FAIL_TTL_MS
+      const recovered2 = await hooks.auth.usage(async () => storedAuth)
+      assert.equal(profileAttempts, 3)
+      assert.equal(recovered2.signIn, "renewed")
+      assert.deepEqual(recovered2.windows, [{ name: "积分", balance: 321, unit: "积分" }])
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
     }
@@ -804,6 +911,16 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
     )
     assert.equal(quota.status, 429)
     assert.equal(quota.headers.get("X-Magpie-Sign-In"), "kept")
+
+    // HTTP 402 with generic body (no credit keywords) still normalizes to 429 insufficient_credits + kept
+    const pay402 = await normalizeUpstreamResponse(
+      SITES["minimax-design"],
+      new Response(JSON.stringify({ error: { message: "payment required" } }), { status: 402 }),
+      false,
+    )
+    assert.equal(pay402.status, 429)
+    assert.equal(pay402.headers.get("X-Magpie-Sign-In"), "kept")
+    assert.match(await pay402.text(), /insufficient_credits/)
 
     // Upstream 429 RPM rate limit passes through untouched (NOT rewritten to insufficient_credits)
     const rateLimit = await normalizeUpstreamResponse(

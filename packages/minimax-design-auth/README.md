@@ -48,7 +48,7 @@ magpie quota
 
 ## 额度查询（`auth.usage`）
 
-通过 `GET /api/v1/credit/wallet`（随当前工作空间携带 `X-Group-Id`；失败或余额缺失时回退 `GET /api/v1/credit/balance`，团队空间优先展示 `team_credit`）读取会员方案名、到期日、顶层可用积分余额及分项积分明细（`aside`，含同刻到期批次汇总）。
+通过 `GET /api/v1/credit/wallet`（随当前工作空间携带 `X-Group-Id`；失败或余额缺失时回退 `GET /api/v1/credit/balance`，团队空间优先展示 `team_credit`）读取会员方案名、到期日、数字余额主窗口（支持 magpie 按余额路由与 0 余额停用）及分项积分明细（`aside`，含同刻到期批次汇总）。
 
 ## 环境变量
 
