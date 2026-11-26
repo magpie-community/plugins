@@ -480,6 +480,29 @@ test("a pasted key without its own portal login never shows a wallet", async () 
   expectTruthy(!fetch.calls.some((c) => c.url === "https://bailucode.com/auth/"))
 })
 
+// The files earlier versions wrote a session to may still be on disk: an
+// account without its own portal login reads none of them, with the
+// plugin's options left as they come.
+test("an old shared session file is never read for an account without its own", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bailu-shared-"))
+  const file = path.join(dir, "session")
+  fs.writeFileSync(file, "who=someone-else\n", { mode: 0o600 })
+  const candidates = _internal.SESSION_CANDIDATES
+  const was = [...candidates]
+  candidates.unshift(file)
+  try {
+    const fetch = mockFetch(() => response({ data: [{ id: "bailu-2.8" }] }, 200))
+    const plugin = await BailucodeAuthPlugin({}, { fetch })
+    const usage = await plugin.auth.usage(async () => fakeAuth())
+    expectEqual(usage.plan, "BAILU Open Platform")
+    expectTruthy(!fetch.calls.some((c) => String(c.init?.headers?.cookie ?? "").includes("someone-else")))
+    expectTruthy(!fetch.calls.some((c) => c.url === "https://bailucode.com/auth/"))
+  } finally {
+    candidates.splice(0, candidates.length, ...was)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("a renamed portal field is unknown, not zero", async () => {
   const windows = quotaWindows({ code: { planQuota: 8000 }, api: {}, packs: [] }, DASHBOARD)
   expectSame(windows, [])
