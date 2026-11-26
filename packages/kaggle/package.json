@@ -10,5 +10,5 @@
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/magpie-community/plugins", "directory": "packages/kaggle" },
   "scripts": { "test": "bun test" },
-  "magpie": { "icon": "https://cdn.simpleicons.org/kaggle/20BEFF", "maxConcurrency": 2 }
+  "magpie": { "icon": "https://raw.githubusercontent.com/CarlCloud-dev/magpie-kaggle/main/assets/icon.png", "maxConcurrency": 2 }
 }
