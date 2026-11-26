@@ -3516,3 +3516,40 @@ test("quota: the re-check starts at 15 minutes, backs off to 6 hours, and never 
   const fast = modelQuotaRead(key, "zai_auto-fast")
   expect(modelQuotaHoldUntil(fast)).toBe(Date.parse(fast.resetAt))
 })
+
+// The gateway's catalog carries one number per model: creditCostFactor, what a
+// request costs in points. magpie's `rate` is that multiplier; without it the
+// card and `routing=cheap` saw every AutoClaw model as equally priced.
+test("catalog: the official per-model credit factor becomes the row's rate", async () => {
+  const realFetch = globalThis.fetch
+  let body = {
+    models: [
+      { id: "zai_glm-x-preview", name: "GLM-5.4", creditCostFactor: 2.25, input: ["text"], reasoning: true },
+      { id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", creditCostFactor: 0.5, input: ["text"] },
+      { id: "zai_auto", name: "Auto", creditCostFactor: 0.4, input: ["text"] },
+    ],
+  }
+  globalThis.fetch = async () => Response.json(body)
+  try {
+    const rows = await _internal.catalogModels("autoclaw-cn", "t0ken", {}, undefined)
+    expect(rows["zai_glm-x-preview"].rate).toBe(2.25)
+    expect(rows["zai_glm-5.3-flash"].rate).toBe(0.5)
+    expect(rows["zai_auto"].rate).toBe(0.4)
+
+    // A missing, zero or non-numeric factor adds no rate at all: filling in 0
+    // would claim the model is free.
+    body = {
+      models: [
+        { id: "zai_glm-x-preview", name: "GLM-5.4", input: ["text"] },
+        { id: "zai_glm-5.3-flash", name: "GLM-5.3-Flash", creditCostFactor: 0, input: ["text"] },
+        { id: "zai_auto", name: "Auto", creditCostFactor: "n/a", input: ["text"] },
+      ],
+    }
+    const bare = await _internal.catalogModels("autoclaw-cn", "t0ken", {}, undefined)
+    expect("rate" in bare["zai_glm-x-preview"]).toBe(false)
+    expect("rate" in bare["zai_glm-5.3-flash"]).toBe(false)
+    expect("rate" in bare["zai_auto"]).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})

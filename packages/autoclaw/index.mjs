@@ -930,6 +930,12 @@ function catalogEntry(raw) {
     ? [...new Set(levelsRaw.filter((x) => typeof x === "string").map((x) => x.trim()).filter((x) => REASONING_LEVELS.has(x)))]
     : [];
   const metadata = raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata) ? raw.metadata : {};
+  // The vendor's per-model credit factor: what one request costs in points
+  // (Auto 0.4, Flash 0.5, GLM-5.3 and GLM-5.4 2.25). magpie's `rate` is exactly
+  // that multiplier, and it used to be 0 for every AutoClaw model, so `cheap`
+  // routing and the card could not tell an expensive model from a cheap one.
+  const factor = Number(raw.creditCostFactor);
+  const creditFactor = Number.isFinite(factor) && factor > 0 ? factor : undefined;
   return {
     id,
     name: catalogText(raw.name, 2048) ?? id,
@@ -941,6 +947,7 @@ function catalogEntry(raw) {
     levels,
     gates: metadata.gates,
     ...catalogQuotaFacts(raw),
+    creditFactor,
   };
 }
 
@@ -975,6 +982,7 @@ function catalogRow(entry, providerId, given, template) {
       input: { ...(base.capabilities?.input ?? {}), text: true, image },
     },
     variants,
+    ...(entry.creditFactor !== undefined ? { rate: entry.creditFactor } : {}),
   };
 }
 
