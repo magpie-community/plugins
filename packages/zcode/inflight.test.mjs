@@ -240,12 +240,43 @@ test("a wait that runs out is answered here, plainly, and nothing is sent", asyn
   expect(e.type).toBe("rate_limit_error")
   expect(e.message).toContain("serves this account 3 requests at a time")
   expect(e.message).toContain("was not sent")
+  // what it waited behind, as the gate saw it (plugins#1572)
+  expect(e.message).toMatch(/: 3 of this account's requests held the slots, the oldest in flight for \d+s\. /)
+  expect(e.message).not.toContain("refused")
   expect(messages().length).toBe(3)
   free()
   expect((await Promise.all(first)).every((r) => r.status === 200)).toBe(true)
   // the slots are back: the next request goes out at once
   expect((await one(opts)).status).toBe(200)
   expect(messages().length).toBe(4)
+})
+
+// plugins#1572: a wait that runs out names how long what it waited behind
+// has held its slot, so a slot held far past any reply reads as such from
+// the answer alone, as does how many more were waiting.
+test("a wait that runs out says how long the slot it waited for was held, and who else waited", async () => {
+  startGate.inflight = 1
+  startGate.wait = 100
+  let clock = 1_000_000_000_000
+  startGate.now = () => clock
+  let free = () => {}
+  const held = new Promise((r) => (free = r))
+  answer = async () => {
+    await held
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  const first = one(opts)
+  while (messages().length < 1) await sleep(5)
+  clock += 66 * 60_000
+  const [a, b] = await Promise.all([one(opts), sleep(20).then(() => one(opts))])
+  const e = JSON.parse(a.text).error.message
+  expect(a.status).toBe(429)
+  expect(e).toContain("serves this account 1 request at a time; this one waited 0s for a slot and was not sent: 1 of this account's requests held its slot, in flight for 66m, and 1 more was waiting.")
+  expect(JSON.parse(b.text).error.message).toContain("held its slot, in flight for 66m.")
+  free()
+  expect((await first).status).toBe(200)
+  expect(startGate.lanes.size).toBe(0)
 })
 
 test("an agent that gives up while waiting leaves the queue", async () => {
@@ -504,7 +535,16 @@ test("a requeued request whose turn doesn't come within the wait is answered her
   const second = await one(opts)
   expect(second.status).toBe(429)
   expect(second.retryAfter).toBe("5")
-  expect(JSON.parse(second.text).error.message).toContain("1 request at a time")
+  // plugins#1572 (llyy873): the answer said "waited 120s behind the others
+  // and was not sent" for a request that had been sent, refused twice and
+  // narrowed the gate, and named no others. It says what happened, and what
+  // held the one slot when the wait ran out.
+  const said = JSON.parse(second.text).error.message
+  expect(said).toContain("ZCode refused this request as busy at its first ask and again at its re-ask")
+  expect(said).toMatch(/serves this account 1 request at a time for the next (5m|4m \d+s), since/)
+  expect(said).toContain("while 2 of this account's were in flight from this computer")
+  expect(said).toMatch(/was not sent again: 1 of this account's requests held its slot, in flight for \d+s\. /)
+  expect(said).not.toContain("behind the others")
   // the first ask and its re-ask; nothing after the wait ran out
   expect(messages().length).toBe(3)
   release()

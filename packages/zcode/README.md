@@ -240,7 +240,12 @@ one of the three has been read to its end (or its agent went away), and
 is not sent to be refused. That covers what magpie's queue cannot see —
 a `maxConcurrency` raised past three, two magpie providers on one ZCode
 account, an older host. A request that has waited two minutes is answered
-here with a 429 that says it was not sent and why. Free first skips the
+here with a 429 that says it was not sent and why. Since 0.1.71 it also
+says what it waited behind, as the gate saw it then: how many of the
+account's requests held its slots and how long the oldest had been in
+flight, how many more were waiting, and, when the account is narrowed
+(below), for how much longer and why; a request that had been sent and
+refused before its wait says so (plugins#1572). Free first skips the
 gift while its account's gate is full, so the plain model goes to the
 coding plan rather than queueing.
 

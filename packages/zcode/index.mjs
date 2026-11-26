@@ -2246,7 +2246,8 @@ function narrowed(key) {
   const busy = startGate.lanes.get(key)?.busy ?? 0
   if (busy < 2) return false
   const limit = Math.max(1, Math.min(limitOf(key), busy - 1))
-  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR })
+  // busy is kept to say why, in startQueueAnswer
+  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR, busy })
   return true
 }
 
@@ -2263,19 +2264,23 @@ const startFull = (key) => {
 function startSlot(key, signal, { wait = startGate.wait, front = false } = {}) {
   const lanes = startGate.lanes
   let l = lanes.get(key)
-  if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
+  // held is when each slot taken now was taken, for startQueueAnswer
+  if (!l) lanes.set(key, (l = { busy: 0, queue: [], held: new Set() }))
   const next = () => {
     while (l.busy < limitOf(key) && l.queue.length) l.queue.shift()()
     if (!l.busy && !l.queue.length && lanes.get(key) === l) lanes.delete(key)
   }
   const take = () => {
     l.busy++
+    const at = { at: startGate.now() }
+    l.held.add(at)
     let gone = false
     return {
       release() {
         if (gone) return
         gone = true
         l.busy--
+        l.held.delete(at)
         next()
       },
     }
@@ -2375,21 +2380,53 @@ function released(res, slot, signal) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
 }
 
-// startQueueAnswer is a request that waited its whole turn behind the
-// account's others and was never sent: a 429 magpie reads as a rate limit,
-// so it tries the next account, and a short Retry-After.
-function startQueueAnswer(key) {
+// startQueueAnswer is a request whose wait for a slot ran out, never sent
+// (or, refused, not sent again): a 429 magpie reads as a rate limit, so it
+// tries the next account, and a short Retry-After. It says what the wait
+// was behind, as the gate saw it when the wait ran out: how many of the
+// lane's requests held its slots and since when, how many more waited, and
+// why the account's gate is below three, if it is. plugins#1572: "1 request
+// at a time … waited 120s behind the others and was not sent" named no
+// others, and the request had been sent and refused twice before it waited.
+function startQueueAnswer(key, { refused = false } = {}) {
   const n = limitOf(key)
   const s = n === 1 ? "" : "s"
-  const error = {
-    type: "rate_limit_error",
-    message: key === ADDRESS
-      ? `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`
-      : `ZCode's free Start Plan serves this account ${n} request${s} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+  const waited = `${Math.round(startGate.wait / 1000)}s`
+  const l = startGate.lanes.get(key)
+  const busy = l?.busy ?? 0
+  const queued = l?.queue.length ?? 0
+  const now = startGate.now()
+  const oldest = l?.held?.size ? Math.min(...[...l.held].map((h) => h.at)) : null
+  const holders = busy === 0
+    ? "no request held a slot when it ran out"
+    : `${busy} of ${key === ADDRESS ? "this computer's Start Plan requests" : "this account's requests"} held ${busy === 1 ? "its slot" : "the slots"}${oldest != null ? `, ${busy === 1 ? "in flight" : "the oldest in flight"} for ${lasted(now - oldest)}` : ""}`
+  const behind = `${holders}${queued ? `, and ${queued} more ${queued === 1 ? "was" : "were"} waiting` : ""}`
+  let message
+  if (key === ADDRESS) {
+    message = `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${waited} for a slot and was not sent: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
+  } else {
+    const nr = startGate.narrow.get(key)
+    const why = nr && n < startGate.inflight
+      ? ` for the next ${lasted(nr.until - now)}, since ZCode refused a request as busy again at its re-ask while ${nr.busy} of this account's were in flight from this computer`
+      : ""
+    const head = refused
+      ? `ZCode refused this request as busy at its first ask and again at its re-ask, and its free Start Plan now serves this account ${n} request${s} at a time${why}; it waited ${waited} for a slot to send it again and was not sent again`
+      : `ZCode's free Start Plan serves this account ${n} request${s} at a time${why}; this one waited ${waited} for a slot and was not sent`
+    message = `${head}: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
   }
+  const error = { type: "rate_limit_error", message }
   return new Response(JSON.stringify({ type: "error", error }), {
     status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
   })
+}
+
+// lasted says a duration as a person reads it: 45s, 2m 5s, 66m.
+function lasted(ms) {
+  const t = Math.max(0, Math.round(ms / 1000))
+  if (t < 60) return `${t}s`
+  const m = Math.floor(t / 60)
+  if (m >= 10) return `${m}m`
+  return t % 60 ? `${m}m ${t % 60}s` : `${m}m`
 }
 
 // busyHold is the firewall's countdown. Two days of logs (11-05 23:06–23:15
@@ -3457,7 +3494,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 own.slot?.release()
                 own.slot = null
                 const got = await startSlots(gateKey, opts.signal, { wait: until - Date.now(), front: true })
-                if (!got.release) return kept(startQueueAnswer(got.key))
+                if (!got.release) return kept(startQueueAnswer(got.key, { refused: true }))
                 own.slot = got
                 if (edgeHeld()) return kept(edgeHeldAnswer())
                 if (busyHeld()) return kept(busyHeldAnswer())
