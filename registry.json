@@ -331,6 +331,8 @@
       }
     },
     { "package": "@magpie-community/middleware-required-array", "name": "Required Array", "kind": "middleware", "community": true,
-      "summary": { "en": "Give every tool parameter schema an explicit required array. Some relays reject a function schema whose object has no required key (Mavis-Api: null is not of type \"array\"), so one zero-parameter tool such as get_goal fails the whole request. Adds \"required\": [] where missing; existing arrays, tools without parameters, built-in tools and Gemini are untouched.", "zh": "为工具参数 schema 补上显式 required 数组。部分中转会拒绝没有 required 键的对象 schema（Mavis-Api 报 null is not of type \"array\"），一个零参数工具（如 get_goal）就会让整个请求失败。只补缺失的 \"required\": []；已有数组、无参数工具、内置工具和 Gemini 不动。" } }
+      "summary": { "en": "Give every tool parameter schema an explicit required array. Some relays reject a function schema whose object has no required key (Mavis-Api: null is not of type \"array\"), so one zero-parameter tool such as get_goal fails the whole request. Adds \"required\": [] where missing; existing arrays, tools without parameters, built-in tools and Gemini are untouched.", "zh": "为工具参数 schema 补上显式 required 数组。部分中转会拒绝没有 required 键的对象 schema（Mavis-Api 报 null is not of type \"array\"），一个零参数工具（如 get_goal）就会让整个请求失败。只补缺失的 \"required\": []；已有数组、无参数工具、内置工具和 Gemini 不动。" } },
+    { "package": "@magpie-community/opencode-verboo-auth", "name": "Verboo Code", "icon": "https://code.verboo.ai/icon-192x192.png", "providers": ["verboo"], "community": true,
+      "summary": { "en": "Verboo Code subscription (code.verboo.ai) for Magpie and OpenCode: browser PKCE OAuth sign-in, live per-account models, reasoning effort mapping, and subscription/Stamina usage (unofficial).", "zh": "非官方接入 Verboo Code 订阅（code.verboo.ai）：浏览器 PKCE OAuth 登录、按账号发现模型、思考档位映射与订阅/Stamina 用量查询。" } }
   ]
 }
