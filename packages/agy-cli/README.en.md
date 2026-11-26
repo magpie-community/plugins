@@ -223,6 +223,14 @@ After installing, sign in from Magpie; no terminal needed.
    account, that account's usage, models and requests run agy with this
    copy. The keyring is only read, never written. An account agy stopped
    holding before 0.1.113 has no copy: sign it in again once.
+   agy's sign-in may not say which Google account it is (no
+   `id_token_email`, as a sign-in in a terminal can leave it). Each account
+   of agy's own then runs with its own copy; with two or more of them, one
+   with no copy is refused with why instead of running as whoever agy holds:
+   sign it in again with "Add another Google account". A second account of
+   agy's own signed in with "Sign in with Google" gets a home of its own,
+   with a copy of agy's sign-in, so two accounts never share agy's one
+   sign-in (#1599).
    Accounts signed in on the retired Antigravity plugin (`antigravity`) move
    over from the line Magpie shows over its Providers list (Move), or from
    agy-cli's Import accounts from a file…, which takes that plugin's sign-in or

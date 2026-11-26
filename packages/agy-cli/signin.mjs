@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { currentHome, homeOf, tokenFile } from "./account.mjs"
+import { accountsDir, currentHome, dropHome, homeOf, newHome, tokenFile } from "./account.mjs"
 
 // What agy's own sign-in looks like on this computer, read without running
 // agy. agy keeps its Google token in the system keyring through go-keyring,
@@ -136,11 +136,34 @@ export function heldByAnother(stored, saved) {
   return Boolean(now && was && now !== was)
 }
 
+// ownerUnknown says agy's own sign-in (stored, a storedSignIn read, null
+// before the first) can't say which Google account it is: not read yet,
+// unreadable, or stored without id_token_email. agy 1.5.18 writes that
+// field (StoredToken.IDTokenEmail, omitempty) only when Google's answer
+// carried an id token (RememberIDToken), and the value keeps no id token
+// to read it from instead: a terminal sign-in left one without it, and
+// agy ran as a banned account under every account of agy's own (#1599).
+// Unknown is not "the account's own".
+export function ownerUnknown(stored) {
+  if (stored?.state === "present") return !stored.who
+  return stored?.state !== "missing" && stored?.state !== "unreachable"
+}
+
 // notHeldError is what an account heldByAnother is told.
 export function notHeldError(saved) {
   return `agy is signed in to another Google account now, not to ${saved}: agy holds one Google account, so ` +
     `${saved}'s usage and requests would be the other account's. Sign ${saved} in again with "Add another Google ` +
     `account" to use both.`
+}
+
+// unknownOwnerError is what an account of agy's own is told when agy's
+// sign-in can't say whose it is (ownerUnknown) and another account of
+// agy's own is here, with no sign-in kept for it.
+export function unknownOwnerError(saved) {
+  const who = saved || "this account"
+  return `agy's sign-in on this computer doesn't say which Google account it is, and another account here uses it ` +
+    `too, so ${who}'s usage and requests could be another account's. Sign ${who} in again with "Add another ` +
+    `Google account" to give it a sign-in of its own.`
 }
 
 // ---- an account of agy's own, kept --------------------------------------
@@ -176,6 +199,50 @@ export function keptFor(email, env) {
   try { raw = fs.readFileSync(tokenFile(home), "utf8") } catch { return null }
   const s = parseStored(raw)
   return s.state === "present" && s.canRenew && s.who === whoOf(email) ? home : null
+}
+
+// keptOthers says a kept home holds a sign-in for another account than
+// email: another account of agy's own has been here.
+export function keptOthers(email, env) {
+  const who = whoOf(email)
+  let ids = []
+  try { ids = fs.readdirSync(accountsDir(env)) } catch { return false }
+  for (const id of ids) {
+    const home = isKeptId(id) ? homeOf(id, env) : null
+    if (!home) continue
+    let raw
+    try { raw = fs.readFileSync(tokenFile(home), "utf8") } catch { continue }
+    const s = parseStored(raw)
+    if (s.state === "present" && s.who && s.who !== who) return true
+  }
+  return false
+}
+
+// homeForOwn copies agy's own sign-in, the one email (or, unnamed, the
+// one just signed in) is, into a new account home (account.mjs): { id,
+// home }, or null when it can't. A second account of agy's own would
+// share agy's one keyring with the first (#1599), so it is saved as an
+// account with a home of its own instead. agy's keyring is only read.
+export async function homeForOwn(email, opts = {}) {
+  let account = null
+  try {
+    const v = await readStoredValue({ ...opts, home: null })
+    if (!("raw" in v)) return null
+    const s = parseStored(v.raw)
+    const value = decodeStored(v.raw)
+    if (s.state !== "present" || !s.canRenew || !value?.token) return null
+    if (s.who && email && s.who !== whoOf(email)) return null
+    account = newHome(opts.env)
+    const file = tokenFile(account.home)
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const tmp = `${file}.magpie-${process.pid}-${Date.now()}`
+    fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 })
+    fs.renameSync(tmp, file)
+    return account
+  } catch {
+    if (account) dropHome(account.home)
+    return null
+  }
 }
 
 // The keyring read (fp) each account was last kept from, by email.

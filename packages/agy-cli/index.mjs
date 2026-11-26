@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, isKeptId, keepOwn, keptFor, notHeldError, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, heldByAnother, homeForOwn, isKeptId, keepOwn, keptFor, keptOthers, notHeldError, ownerUnknown, signedInEmail, storedEmail, storedSignIn, storedSignInNow, unknownOwnerError, whoOf } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -994,10 +994,11 @@ function searchModel(models) {
 async function agySearch({ query, count } = {}, ctx = {}) {
   const q = typeof query === "string" ? query.trim() : ""
   if (!q) throw new Error("query is required")
-  const { home: savedHome, email } = await accountOfAuth(ctx.getAuth)
-  const home = savedHome ?? ownHome(email,
-    inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null))
-  return inAccount(home, () => searchAsAccount(q, count, email, ctx.abort))
+  const { home: savedHome, email, given } = await accountOfAuth(ctx.getAuth)
+  const own = savedHome ? { home: savedHome } : ownChoice(email,
+    inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null), given)
+  if (own.refuse) throw new SearchStatusError(401, own.refuse)
+  return inAccount(own.home, () => searchAsAccount(q, count, email, ctx.abort))
 }
 
 async function searchAsAccount(query, count, email, abort) {
@@ -9236,6 +9237,18 @@ async function signedInAs(homeId = "") {
     forgetStoredSignIn()
     await keepOwn(email, await storedSignIn())
   }
+  // Beside another account of agy's own, it would share agy's one keyring
+  // with it, and whichever account agy holds would answer for both
+  // (#1599): it gets a home of its own, with a copy of the sign-in.
+  if (!homeId && anotherOwn(email)) {
+    const account = await homeForOwn(email)
+    if (!account) {
+      return { type: "failed", error: `agy is signed in to ${email || "a Google account"}, and another account here uses ` +
+        `agy's sign-in already. Add it with "Add another Google account" instead, so each has a sign-in of its own.` }
+    }
+    homeId = account.id
+  }
+  if (!homeId) ownSeen.add(ownKey(email))
   const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
   return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }
@@ -9331,11 +9344,12 @@ async function importSignIns(texts) {
   return out
 }
 
-// homeOfAuth is the home of the account a saved sign-in is, null for
-// agy's own.
-async function homeOfAuth(getAuth) {
-  const { home, email } = await accountOfAuth(getAuth)
-  return home ?? ownHome(email, inAccount(null, () => storedSignInNow()))
+// ownOfAuth is where the account a saved sign-in is runs (ownChoice),
+// after the first keyring read, as a request waits for it.
+async function ownOfAuth(getAuth) {
+  const { home, email, given } = await accountOfAuth(getAuth)
+  return home ? { home } : ownChoice(email,
+    inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null), given)
 }
 
 // ownHome is where an account of agy's own (saved as email) runs, given
@@ -9348,8 +9362,41 @@ async function homeOfAuth(getAuth) {
 function ownHome(email, stored) {
   if (!email) return null
   if (heldByAnother(stored, email) || stored?.state === "unreachable") return keptFor(email)
+  // agy's sign-in can't say whose it is (#1599): the account's own kept
+  // sign-in, never one that may be another account's
+  if (ownerUnknown(stored)) return keptFor(email)
   inAccount(null, () => keepOwn(email, stored)).catch(() => {})
   return null
+}
+
+// ownChoice is ownHome as { home }, with refuse, why the account can't run,
+// when its home would be agy's own and agy's sign-in may be another
+// account's: held by another, or whose it is unknown while another account
+// of agy's own is here (#1599). A lone account of agy's own runs as agy's
+// sign-in when it can't be told, as it always did: it is the only one that
+// sign-in can be. given is false when no account was named at all
+// (OpenCode's catalog, a request without a sign-in): agy's own, as before.
+function ownChoice(email, stored, given = true) {
+  const home = ownHome(email, stored)
+  if (home) return { home }
+  if (email && heldByAnother(stored, email)) return { home: null, refuse: notHeldError(email) }
+  if ((email ? ownerUnknown(stored) : given) && anotherOwn(email)) return { home: null, refuse: unknownOwnerError(email) }
+  return { home: null }
+}
+
+// The accounts of agy's own this host was asked for (ownKey).
+const ownSeen = new Set()
+
+function ownKey(email) {
+  return whoOf(email) || "unnamed"
+}
+
+// anotherOwn says another account of agy's own than email is here: one
+// this host was asked for, or one kept (keptOthers).
+function anotherOwn(email) {
+  const me = ownKey(email)
+  for (const k of ownSeen) if (k !== me) return true
+  return keptOthers(email)
 }
 
 // accountOfAuth is homeOfAuth, with the email an account of agy's own was
@@ -9359,7 +9406,8 @@ async function accountOfAuth(getAuth) {
   try { auth = typeof getAuth === "function" ? await getAuth() : getAuth } catch {}
   const home = homeOf(homeIdOfAuth(auth))
   const email = !home && typeof auth?.metadata?.email === "string" ? auth.metadata.email.trim() : ""
-  return { home, email }
+  if (!home && auth) ownSeen.add(ownKey(email))
+  return { home, email, given: Boolean(auth) }
 }
 
 // usageGeminiDir is the folder agy -p /usage reads in place of ~/.gemini:
@@ -9383,9 +9431,11 @@ function readUsageOf(home, email = "") {
     if (email) {
       let stored = null
       try { stored = await storedSignIn() } catch {}
-      // out of reach: read with the sign-in kept for it, when there is one
-      const kept = stored?.state === "unreachable" ? keptFor(email) : null
+      // out of reach, or agy's sign-in can't say whose it is (#1599): read
+      // with the sign-in kept for it, when there is one
+      const kept = stored?.state === "unreachable" || ownerUnknown(stored) ? keptFor(email) : null
       if (kept) return readUsageOf(kept)
+      if (ownerUnknown(stored) && anotherOwn(email)) return { windows: [], error: unknownOwnerError(email), signIn: "expired" }
       if (heldByAnother(stored, email)) {
         // kept while agy held it: read with its own sign-in
         const kept = keptFor(email)
@@ -9431,7 +9481,10 @@ export const AntigravityBridgePlugin = async () => {
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
       usage: async (getAuth) => {
-        const { home, email } = await accountOfAuth(getAuth)
+        const { home, email, given } = await accountOfAuth(getAuth)
+        // saved without its email, beside another account of agy's own:
+        // whose agy's sign-in is can't be told for it (#1599)
+        if (given && !home && !email && anotherOwn("")) return { windows: [], error: unknownOwnerError(""), signIn: "expired" }
         return readUsageOf(home, email)
       },
       // magpie's "Import accounts from a file…" (OpenCode ignores it): the
@@ -9483,16 +9536,18 @@ export const AntigravityBridgePlugin = async () => {
       loader: async (getAuth) => {
         // the account's own home, null for agy's own sign-in: every agy
         // its requests run is started there
-        const { home: savedHome, email } = await accountOfAuth(getAuth)
+        const { home: savedHome, email, given } = await accountOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
           // an account of agy's own runs in its kept home while agy holds
-          // another (ownHome), from the last keyring read
-          // (none yet after a start: it is waited for, so the first
-          // request isn't sent as the account agy holds)
-          fetch: async (fetchInput, init = {}) => inAccount(savedHome ?? ownHome(email,
-            inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null)), async () => {
+          // another, or can't say whose its sign-in is (ownChoice), from the
+          // last keyring read (none yet after a start: it is waited for, so
+          // the first request isn't sent as the account agy holds)
+          fetch: async (fetchInput, init = {}) => {
+           const own = savedHome ? { home: savedHome } : ownChoice(email,
+             inAccount(null, () => storedSignInNow()) ?? (email ? await inAccount(null, () => storedSignIn()) : null), given)
+           return inAccount(own.home, async () => {
             const home = currentHome()
             const requestUrl = typeof fetchInput === "string"
               ? fetchInput
@@ -9533,6 +9588,10 @@ export const AntigravityBridgePlugin = async () => {
             // would go out as the account agy holds now
             if (heldByAnother(stored, email)) {
               return jsonError(401, notHeldError(email), undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
+            }
+            // or one whose sign-in may be another account's (#1599)
+            if (own.refuse) {
+              return jsonError(401, own.refuse, undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
             }
             const disabledAgo = disabledNow(home)
             if (disabledAgo != null) {
@@ -9853,7 +9912,8 @@ export const AntigravityBridgePlugin = async () => {
             } catch (error) {
               return jsonError(error.statusCode ?? 502, error.message, error.code, { noRetry: error.noRetry })
             }
-          }),
+           })
+          },
         }
       },
     },
@@ -9874,7 +9934,12 @@ export const AntigravityBridgePlugin = async () => {
       // Not an OpenCode hook: the adapter in opencode2.mjs reads the list
       // once more when this background work ends.
       warming: () => catalogWarming(),
-      models: async (_given, ctx) => inAccount(await homeOfAuth(ctx?.auth), async () => {
+      models: async (_given, ctx) => {
+       const own = await ownOfAuth(ctx?.auth)
+       // agy's sign-in may be another account's: its list isn't this one's,
+       // and magpie keeps the list it had and shows why
+       if (own.refuse) throw new Error(own.refuse)
+       return inAccount(own.home, async () => {
         const agy = findAgy()
         // Never force a refresh here: Magpie times models() out after about two seconds.
         const catalog = await loadModelCatalog(agy, { probeOffered: true })
@@ -9912,7 +9977,8 @@ export const AntigravityBridgePlugin = async () => {
         }
         out[IMAGE_MODEL_ID] = imageModelEntry(PROVIDER_ID)
         return out
-      }),
+       })
+      },
     },
   }
 }

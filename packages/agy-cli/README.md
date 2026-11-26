@@ -153,6 +153,11 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    之后还能用，插件会把它的登录按 agy 存的原样复制一份，放到上面那个目录下它自己的主目录
    （`own…`，文件只有你自己能读）。agy 换到别的账号后，这个账号的用量、模型和请求就用这份
    复制运行 agy。系统钥匙串只读不写。0.1.113 之前就已不在 agy 里的账号没有这份复制，需要再登录一次。
+   agy 存的登录可能不写是哪个 Google 账号（没有 `id_token_email`，在终端里登录有时就是这样）。
+   这时 agy 自己的每个账号都用它自己的那份复制运行；有两个或更多这样的账号时，没有复制的那个
+   会直接说明原因并拒绝，不会当成 agy 当前登录的账号去跑：用「添加另一个 Google 账号」把它再登录
+   一次即可。用「Sign in with Google」登录的第二个 agy 账号会有自己的主目录，带一份 agy 登录的复制，
+   两个账号不会再共用 agy 的同一个登录（#1599）。
    用过已退役的 Antigravity 插件（`antigravity`）的话，Magpie 的 Providers 页顶上会提示把那里的
    账号移过来，点 Move 即可；也可以在 agy-cli 的 Import accounts from a file… 里选那份登录记录
    或 agy 的令牌文件。它们本就是 Antigravity 自己的 Google 登录，每个账号放进自己的 agy 主目录，
