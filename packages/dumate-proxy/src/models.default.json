@@ -5,34 +5,462 @@
       "name": "QianfanPersonalQuota",
       "npm": "@ai-sdk/openai-compatible",
       "models": {
-        "model-text": {
-          "id": "model-text",
-          "name": "DuMate Auto",
-          "limit": { "context": 1000000, "output": 384000 },
+        "deepseek-v4-flash-0731": {
+          "id": "deepseek-v4-flash-0731",
+          "name": "DeepSeek V4 Flash 0731",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
           "tool_call": true,
-          "modalities": { "input": ["text", "image"], "output": ["text"] }
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "deepseek-v4-pro": {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
         },
         "deepseek-v41-flash": {
           "id": "deepseek-v41-flash",
           "name": "DeepSeek V4.1 Flash",
-          "limit": { "context": 1000000, "output": 384000 },
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
           "tool_call": true,
           "reasoning": true,
-          "modalities": { "input": ["text", "image"], "output": ["text"] }
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/mm.L0": {
+          "id": "dm-auto-model/mm.L0",
+          "name": "DuMate Auto MM L0",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/mm.L1": {
+          "id": "dm-auto-model/mm.L1",
+          "name": "DuMate Auto MM L1",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/mm.L2": {
+          "id": "dm-auto-model/mm.L2",
+          "name": "DuMate Auto MM L2",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/text.L0": {
+          "id": "dm-auto-model/text.L0",
+          "name": "DuMate Auto Text L0",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/text.L1": {
+          "id": "dm-auto-model/text.L1",
+          "name": "DuMate Auto Text L1",
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "dm-auto-model/text.L2": {
+          "id": "dm-auto-model/text.L2",
+          "name": "DuMate Auto Text L2",
+          "limit": {
+            "context": 983000,
+            "output": 128000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "doubao-seed-2-0-pro": {
+          "id": "doubao-seed-2-0-pro",
+          "name": "Doubao Seed 2.0 Pro",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "ernie-4.5-turbo-vl-32k": {
+          "id": "ernie-4.5-turbo-vl-32k",
+          "name": "ERNIE 4.5 Turbo VL 32K",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "glm-53": {
+          "id": "glm-53",
+          "name": "GLM 5.3",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
         },
         "glm-53-flash": {
           "id": "glm-53-flash",
           "name": "GLM 5.3 Flash",
-          "limit": { "context": 1000000, "output": 128000 },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          },
           "tool_call": true,
-          "modalities": { "input": ["text", "image", "video"], "output": ["text"] }
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "kimi-k3": {
+          "id": "kimi-k3",
+          "name": "Kimi K3",
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "kimi-k31": {
+          "id": "kimi-k31",
+          "name": "Kimi K3.1",
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "model-text": {
+          "id": "model-text",
+          "name": "DuMate Auto",
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen2.5-vl-32b-instruct": {
+          "id": "qwen2.5-vl-32b-instruct",
+          "name": "Qwen 2.5 VL 32B Instruct",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3.5-27b": {
+          "id": "qwen3.5-27b",
+          "name": "Qwen 3.5 27B",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3.5-35b-a3b": {
+          "id": "qwen3.5-35b-a3b",
+          "name": "Qwen 3.5 35B A3B",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3.5-397b-a17b": {
+          "id": "qwen3.5-397b-a17b",
+          "name": "Qwen 3.5 397B A17B",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": false,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3.8-max": {
+          "id": "qwen3.8-max",
+          "name": "Qwen 3.8 Max",
+          "limit": {
+            "context": 983000,
+            "output": 128000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen38-flash": {
+          "id": "qwen38-flash",
+          "name": "Qwen 3.8 Flash",
+          "limit": {
+            "context": 983000,
+            "output": 128000
+          },
+          "tool_call": true,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
         },
         "dumate-image0.1": {
           "id": "dumate-image0.1",
           "name": "DuMate Image",
-          "limit": { "context": 200000, "output": 32000 },
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
           "tool_call": false,
-          "modalities": { "input": ["text"], "output": ["image"] }
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ]
+          }
         }
       }
     }

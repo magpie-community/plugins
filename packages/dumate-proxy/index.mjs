@@ -39,6 +39,13 @@ function jsonResponse(status, value, extraHeaders = {}) {
   })
 }
 
+const cardText = (value, max = 200) => {
+  const cleaned = String(value ?? "")
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ")
+    .trim()
+  const points = Array.from(cleaned)
+  return points.length > max ? points.slice(0, max).join("") : cleaned
+}
 function cookieHeaderOf(cookies) {
   return (Array.isArray(cookies) ? cookies : []).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
 }
@@ -81,6 +88,36 @@ async function consoleGet(path, cookieStr, fetchImpl) {
   return payload.result
 }
 
+async function consolePost(path, body, cookies, fetchImpl) {
+  const hostname = new URL(CONSOLE_BASE).hostname
+  const response = await fetchImpl(`${CONSOLE_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: CONSOLE_BASE,
+      Referer: `${CONSOLE_BASE}/`,
+      Cookie: buildCookieHeader(cookies, hostname),
+      csrftoken: extractCsrfToken(cookies, hostname),
+      "User-Agent": UA,
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body ?? {}),
+    redirect: "manual",
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (response.status >= 300 && response.status < 400) throw signInError()
+  const text = await response.text()
+  let payload
+  try { payload = JSON.parse(text) } catch {}
+  if (!payload || typeof payload !== "object") {
+    if (/登录|login|<!DOCTYPE|<html/i.test(text.slice(0, 500))) throw signInError()
+    throw new Error(`DuMate console HTTP ${response.status} 非 JSON 响应`)
+  }
+  if (!response.ok) throw new Error(`DuMate console HTTP ${response.status}`)
+  if (payload.code !== 0 || payload.success === false) throw consoleError(payload, `code=${payload.code}`)
+  return payload.result
+}
 async function gatewayToken(cookieStr, fetchImpl) {
   const cached = tokenCache.get(cookieStr)
   if (cached && Date.now() < cached.expiresAt - 5 * 60_000) return cached.token
@@ -231,6 +268,100 @@ export const DuMateProxyPlugin = async (input = {}) => {
         if (!current) return undefined
         if (cookieHeaderOf(current.cookies) === cookieHeaderOf(auth.cookies)) return undefined
         return seat(current.cookies, "desktop", current)
+      },
+      async usage(getAuth) {
+        let auth
+        try { auth = await getAuth() } catch (error) {
+          return { error: cardText(error?.message) || "登录态读取失败", signIn: error?.signIn === "expired" ? "expired" : "kept" }
+        }
+        if (auth?.type !== "oauth" || !Array.isArray(auth.cookies) || !auth.cookies.length) {
+          return { error: "没有登录信息，请先在 Magpie 登录", signIn: "kept" }
+        }
+        try {
+          const header = cookieHeaderOf(auth.cookies)
+          let overviewError = null
+          const [overview, info] = await Promise.all([
+            consoleGet("/api/dumate/points/quota_overview?timezone=Asia%2FShanghai&clientType=desktop&ignoreLoginBonus=true", header, fetchImpl).catch((error) => {
+              overviewError = error
+              return null
+            }),
+            consoleGet("/api/dumate/points/loginBonusInfo", header, fetchImpl).catch(() => null),
+          ])
+          if (!overview) throw overviewError ?? new Error("quota_overview 不可用")
+          const total = parseFloat(overview.totalPoints) || 0
+          const used = parseFloat(overview.usedPoints) || 0
+          const packs = [...(overview.subscription ?? []), ...(overview.incremental ?? [])]
+          let soonest = null
+          for (const pack of packs) {
+            if (pack?.status !== "active") continue
+            const expMs = pack.expireDate == null ? NaN : Number(pack.expireDate) * 1000
+            if (!Number.isFinite(expMs) || expMs <= 0) continue
+            if (!soonest || expMs < soonest.ms) soonest = { ms: expMs, points: parseFloat(pack.totalPoints) || 0 }
+          }
+          return {
+            plan: info && info.totalTimes ? `已签到 ${info.totalTimes} 天` : "Free",
+            balance: `${(total - used).toFixed(2)} 积分`,
+            windows: [
+              {
+                name: "Points",
+                used: total > 0 ? (100 * used) / total : 0,
+                display: `${used.toFixed(2)} / ${total.toFixed(2)}`,
+                amount: used,
+                limit: total,
+                unit: "points",
+                ...(soonest
+                  ? { runsOutAt: new Date(soonest.ms).toISOString(), runsOut: Math.min(total - used, soonest.points) }
+                  : {}),
+              },
+            ],
+            user: auth.name || auth.accountId || "DuMate",
+            signIn: "kept",
+          }
+        } catch (error) {
+          return { error: cardText(error?.message) || "用量查询失败", signIn: error?.signIn === "expired" ? "expired" : "kept" }
+        }
+      },
+
+      async checkin(getAuth) {
+        let auth
+        try { auth = await getAuth() } catch (error) {
+          return {
+            outcome: "failed",
+            message: cardText(error?.message) || "登录态读取失败",
+            ...(error?.signIn === "expired" ? { signIn: "expired" } : {}),
+          }
+        }
+        if (auth?.type !== "oauth" || !Array.isArray(auth.cookies) || !auth.cookies.length) {
+          return { outcome: "failed", message: "没有登录信息，请先在 Magpie 登录" }
+        }
+        try {
+          const header = cookieHeaderOf(auth.cookies)
+          let before = null
+          try { before = await consoleGet("/api/dumate/points/loginBonusInfo", header, fetchImpl) }
+          catch (error) { if (error?.signIn === "expired") throw error }
+          if (before?.hasIssued === true) {
+            return { outcome: "done", message: `今日已签到（累计 ${cardText(before.totalTimes) || "?"} 天）` }
+          }
+          const beforePoints = parseFloat(before?.totalPoints ?? "0") || 0
+          await consolePost("/api/dumate/points/loginBonus", {}, auth.cookies, fetchImpl)
+          let after = null
+          try { after = await consoleGet("/api/dumate/points/loginBonusInfo", header, fetchImpl) } catch {}
+          if (after?.hasIssued === true) {
+            const delta = Math.max(0, Math.round((parseFloat(after.totalPoints ?? "0") || 0) - beforePoints))
+            return {
+              outcome: "claimed",
+              ...(delta ? { credit: delta } : {}),
+              message: `签到成功${delta ? ` +${delta} 积分` : ""}（累计 ${cardText(after.totalTimes) || "?"} 天）`,
+            }
+          }
+          return { outcome: "inactive", message: "签到请求已提交，但今日积分尚未到账（稍后自动重试）" }
+        } catch (error) {
+          return {
+            outcome: "failed",
+            message: cardText(error?.message) || "签到失败",
+            ...(error?.signIn === "expired" ? { signIn: "expired" } : {}),
+          }
+        }
       },
       methods: [
         {
