@@ -273,7 +273,8 @@ the model, the functions tried and the host, and says when the account's
 list doesn't have the model. Context is the list's
 `context_window_tokens.max` for a model measured to serve a prompt past its
 `dev` budget on the base entry (yetone/magpie#5809 and the measurements in
-its follow-up; the models are listed in `WIDENED`), else `dev`; `dev` is
+its follow-up, all on Trae CN; the models are listed in `WIDENED`, and
+Trae Global's keep `dev`), else `dev`; `dev` is
 the budget Trae's own agent asks with, and on a model with that evidence a
 request past it is served rather than refused. Output the `__dev` model's
 `max_tokens` (an enterprise model's own detail's, since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit

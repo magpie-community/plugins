@@ -3734,11 +3734,13 @@ const maxModel = (...ms) => {
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
 
-// WIDENED is the models whose base entry was measured serving a prompt past
-// its dev budget: only these advertise the Max window on the base entry
-// (yetone/magpie#5809). A model without that evidence keeps its dev budget,
-// which can only make an agent compact early. Extend it as models are tested.
-const WIDENED = new Set([
+// WIDENED is, per site, the models whose base entry was measured serving a
+// prompt past its dev budget: only these advertise the Max window on the base
+// entry (yetone/magpie#5809). A model without that evidence keeps its dev
+// budget, which can only make an agent compact early. Every measurement was
+// on Trae CN; Trae Global is its own deployment and none of its models was
+// measured, so it keeps dev. Extend it as models are tested.
+const WIDENED = { "trae-cn": new Set([
   "deepseek-v4.1-flash",
   "deepseek-v4-flash",
   "glm-5.4",
@@ -3748,7 +3750,7 @@ const WIDENED = new Set([
   "glm-5.2",
   "doubao-seed-2.1-pro",
   "doubao-seed-evolving",
-])
+]) }
 
   // traeRateOf is a model's consumption multiplier, from the account's list:
   // display_contact_config is a JSON string naming the rate now and the full
@@ -4773,7 +4775,7 @@ const makePlugin = (site) => async ({ client }) => {
             // with: dev is what the IDE compacts to, and a request past it is
             // served, not refused — but only where that was measured
             // (yetone/magpie#5809)
-            if (max && WIDENED.has(id.toLowerCase())) own.limit = { ...own.limit, context: Math.max(own.limit.context, max.window) }
+            if (max && WIDENED[site.id]?.has(id.toLowerCase())) own.limit = { ...own.limit, context: Math.max(own.limit.context, max.window) }
             if (!max || ids.has(id + MAX)) return [[id, own]]
             // its Max, a model of its own: the window and output Max mode gives
             const was = provider.models?.[id + MAX] ?? {}

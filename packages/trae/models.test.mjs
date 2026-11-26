@@ -121,6 +121,24 @@ test("a model without evidence keeps its dev budget on the base entry (yetone/ma
   expect(ms["glm-5.5-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
 })
 
+test("Trae Global keeps the dev budget: only Trae CN's models were measured (yetone/magpie#5809)", async () => {
+  // the same list on Trae Global: its deployment was never asked a prompt
+  // past dev, so the base entry stays at dev while its Max entry has the window
+  f = fakeTrae("trae-global")
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [{ config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+      display_config: { display_name: "DeepSeek-V4.1-Flash" },
+      context_window_tokens: { dev: 116000, max: 1_000_000 },
+      model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 16000 },
+        { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] }] },
+  ] }))
+  const { TraeGlobalAuthPlugin } = await import("./index.mjs")
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(ms["deepseek-v4.1-flash"].limit).toEqual({ context: 116000, output: 16000 })
+  expect(ms["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
+})
+
 // The two realms share the machinery, so the fix is one: Trae Global's
 // models carry capabilities too.
 test("Trae Global's models carry capabilities as well", async () => {
