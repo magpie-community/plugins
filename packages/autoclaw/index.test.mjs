@@ -3553,3 +3553,65 @@ test("catalog: the official per-model credit factor becomes the row's rate", asy
     globalThis.fetch = realFetch
   }
 })
+
+// The overseas path asks two hosts, and each of them has its own "a success
+// clears the mark" call. A test that only covers the first host would miss the
+// second, so this walks both: 403 on the first host (the second is not asked),
+// a 200 from the first host, then 403 again with the first host refusing the
+// token and the second host answering 200.
+test("quota: a success on either overseas host clears the mark", async () => {
+  const realFetch = globalThis.fetch
+  const dir = quotaState()
+  const SPENT = { code: 810000, message: "GLM-5.4 free quota used up." }
+  const GLOBAL = "https://autoglm-api.autoglm.ai"
+  let host1 = () => Response.json(SPENT, { status: 403 })
+  const host2 = () => Response.json({ ok: true })
+  const asked = []
+  globalThis.fetch = async (input) => {
+    const u = String(input)
+    if (u.includes("wallets")) return Response.json({ code: 0, data: { total_balance: 1000, wallets: [] } })
+    if (u.includes("autoclaw-model-config")) return Response.json({ models: [
+      catalogModel("zai_glm-x-preview", "GLM-5.4", { input: ["text"], reasoning: true }),
+    ] })
+    if (u.startsWith(GLOBAL)) {
+      asked.push("global")
+      return host1()
+    }
+    asked.push("cn")
+    return host2()
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const a = { type: "oauth", access: "a1", uid: "u-overseas" }
+    const loader = await hooks.auth.loader(async () => a)
+    const key = _internal.signinAccountKey("autoclaw", a)
+    const marked = () => Boolean(_internal.modelQuotaRead(key, "zai_glm-x-preview")?.exhaustedAt)
+    const chat = () => loader.fetch("x", {
+      method: "POST",
+      body: JSON.stringify({ model: "zai_glm-x-preview", messages: [{ role: "user", content: "hi" }] }),
+    })
+
+    // 403 on the first host: booked, and the second host is not asked
+    expect((await chat()).status).toBe(429)
+    expect(marked()).toBe(true)
+    expect(asked).toEqual(["global"])
+
+    // a 200 from the first host clears it
+    host1 = () => Response.json({ ok: true })
+    expect((await chat()).status).toBe(200)
+    expect(marked()).toBe(false)
+
+    // 403 again, then the first host refuses the token and the second answers
+    host1 = () => Response.json(SPENT, { status: 403 })
+    expect((await chat()).status).toBe(429)
+    expect(marked()).toBe(true)
+    asked.length = 0
+    host1 = () => Response.json({ code: 401, message: "token invalid" }, { status: 401 })
+    expect((await chat()).status).toBe(200)
+    expect(asked).toEqual(["global", "cn"])
+    expect(marked()).toBe(false)
+  } finally {
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
