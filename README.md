@@ -332,6 +332,7 @@ Agent skills for magpie users, in `skills/<name>/SKILL.md`.
 | [magpie-setup](skills/magpie-setup) | Lets an agent set magpie up as the user asks, through its own `magpie` commands: keys and subscriptions, an agent's model, routing groups with fallbacks and time-of-day rules, gateway keys with budgets, and MCP servers and instructions shared with every agent |
 | [magpie-quota](skills/magpie-quota) | Lets an agent check what is left of every subscription, coding plan and key balance magpie has (`magpie quota --json`), and wait for allowance to come back |
 | [magpie-sessions](skills/magpie-sessions) | Lets an agent search what was said in every coding agent's sessions on this computer (`magpie sessions search`) and read the session a hit is in (`magpie sessions show`) |
+| [aesthetics-os](skills/aesthetics-os) | An aesthetic operating system that refuses: set direction before the work, independently accept before delivery. Three red lines, measure/critique gates that reject empty passes, and five Euler lenses (hue phase / Fourier / PC / Gabor / golden spiral). Python with numpy + Pillow |
 
 In magpie, they are first under Library › Market › Skills. Elsewhere:
 
@@ -339,6 +340,7 @@ In magpie, they are first under Library › Market › Skills. Elsewhere:
 npx skills add magpie-community/plugins --skill magpie-setup
 npx skills add magpie-community/plugins --skill magpie-quota
 npx skills add magpie-community/plugins --skill magpie-sessions
+npx skills add magpie-community/plugins --skill aesthetics-os
 ```
 
 ## Use

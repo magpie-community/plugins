@@ -1,0 +1,11 @@
+{
+  "_comment": "默认品味锚点（仓库所有者的已确认偏好）。这不是客观美丑标准，是校准参照。项目可在自己的 .aos/taste-profile.json 覆盖，或用 critique --taste 指定。",
+  "confirmed_preferences": ["超写实摄影", "国风水墨", "电影感", "裸妆"],
+  "rejected_preferences": ["浓妆", "文艺胶片", "分离生成法", "塑料感", "模板化科技风"],
+  "user_taste_coordinates": { "x": 2, "y": 3, "z": 1 },
+  "axes": {
+    "x": "理法↔天机：规整模板 ↔ 自然灵动",
+    "y": "饱满↔空灵：堆砌满屏 ↔ 留白气口",
+    "z": "刚↔柔：锐利刺眼 ↔ 柔和温润"
+  }
+}
