@@ -5007,12 +5007,12 @@ function droppedOneRequestText(expected, actual) {
 }
 
 // The one row in which expected and actual differ, both rows a user's, or
-// -1: the rows otherwise the same but for masking.
-function oneDifferingUserRow(a, b) {
+// -1: the rows otherwise the same by same (masking, unless given).
+function oneDifferingUserRow(a, b, same = sameUpToMasking) {
   if (a.length !== b.length) return -1
   let row = -1
   for (let index = 0; index < a.length; index++) {
-    if (sameUpToMasking(a[index], b[index])) continue
+    if (same(a[index], b[index])) continue
     if (row >= 0) return -1
     row = index
   }
@@ -5020,34 +5020,98 @@ function oneDifferingUserRow(a, b) {
   return row
 }
 
+// A user's text block that is only magpie's placeholder for an image it left
+// out, as a block of its own, so the key doesn't join it to the text beside it.
+const IMAGE_LEFT_OUT = "image_left_out"
+
+// The history as the key reads it (historyRows), each placeholder a user's
+// message has where an image was (isImagePlaceholder) an IMAGE_LEFT_OUT block.
+function slimmedHistoryRows(messages) {
+  return historyRows(messages.map((message) => message?.role !== "user" || !Array.isArray(message.content) ? message : {
+    ...message,
+    content: message.content.map((block) => block?.type === "text" && isImagePlaceholder(block.text)
+      ? { type: IMAGE_LEFT_OUT }
+      : block),
+  }))
+}
+
+function isLeftOutImage(block) {
+  return block?.type === IMAGE_LEFT_OUT || (block?.type === "text" && isImagePlaceholder(block.text))
+}
+
+// sameUpToMasking, but an image in a may stand in b as magpie's placeholder
+// for it: the gateway leaves out a history's oldest images first, every one it
+// needs to on that request (body_cap.go withoutOldImages), so the rows before
+// the hoisted one can lose theirs on the same request. Never the other way.
+function sameUpToSlimming(a, b) {
+  if (a?.type === "image" && isLeftOutImage(b)) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => sameUpToSlimming(item, b[index]))
+  }
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return sameUpToMasking(a, b)
+  const keysA = Object.keys(a).filter((key) => a[key] !== undefined).sort()
+  const keysB = Object.keys(b).filter((key) => b[key] !== undefined).sort()
+  return keysA.length === keysB.length && keysA.every((key, index) => key === keysB[index] && sameUpToSlimming(a[key], b[key]))
+}
+
+const withoutSpace = (text) => text.replace(/\s+/g, "")
+
 // Whether actual is expected but for images a tool returned that the client
 // hoisted into the tool result's user row for one request, and left out of
 // the history it stored (plugins#1556; OMP's 3 -> 1 and 7 -> 1 rows in
 // #1447): in one user row, each run of image and text blocks right after a
-// tool_result that holds an image is gone, and nothing else changed. A text
-// run without an image, an image anywhere else, or a second changed row is
-// still a changed history.
+// tool_result, when the run holds an image, is
+// - gone (3 -> 1);
+// - gone, its texts back in the tool_result's content after what it had,
+//   as text parts (3 -> 1, the caption folded back);
+// - only its images, each one magpie's placeholder for it, the texts gone
+//   (3 -> 2: the client kept the image and not its caption, and magpie's
+//   gateway left the image out under the provider's size cap).
+// Nothing else in the row changed, and the other rows are the same but for
+// masking and images magpie left out. A text run without an image, an image
+// anywhere else, an image kept without its caption, or a second changed row
+// is still a changed history.
 function droppedHoistedToolImages(expected, actual) {
   if (!Array.isArray(expected) || !Array.isArray(actual)) return false
-  const a = historyRows(expected)
-  const b = historyRows(actual)
-  const row = oneDifferingUserRow(a, b)
+  const a = slimmedHistoryRows(expected)
+  const b = slimmedHistoryRows(actual)
+  const row = oneDifferingUserRow(a, b, sameUpToSlimming)
   if (row < 0) return false
   const mine = a[row].content
-  const kept = []
+  const theirs = b[row].content
   let hoisted = false
+  let at = 0
   for (let index = 0; index < mine.length;) {
     const block = mine[index++]
-    kept.push(block)
-    if (block.type !== "tool_result") continue
     let end = index
-    while (end < mine.length && (mine[end].type === "image" || mine[end].type === "text")) end++
-    if (mine.slice(index, end).some((item) => item.type === "image")) {
-      hoisted = true
-      index = end
+    while (block.type === "tool_result" && end < mine.length && (mine[end].type === "image" || mine[end].type === "text")) end++
+    const run = mine.slice(index, end)
+    const images = run.filter((item) => item.type === "image").length
+    if (!images) {
+      if (!sameUpToSlimming(block, theirs[at++])) return false
+      continue
+    }
+    hoisted = true
+    index = end
+    const result = theirs[at++]
+    if (result?.type !== "tool_result" || !Array.isArray(result.content) || result.content.length < block.content.length) return false
+    const had = result.content.slice(0, block.content.length)
+    if (!sameUpToSlimming(block, { ...result, content: had })) return false
+    const folded = result.content.slice(block.content.length)
+    if (folded.length) {
+      const texts = run.filter((item) => item.type === "text")
+      if (!texts.length || !folded.every((part) => part?.type === "text" && typeof part.text === "string")) return false
+      if (!sameTextUpToMasking(withoutSpace(folded.map((part) => part.text).join("")),
+        withoutSpace(texts.map((item) => item.text).join("")))) return false
+      continue
+    }
+    if (isLeftOutImage(theirs[at])) {
+      for (let left = 0; left < images; left++) {
+        if (!isLeftOutImage(theirs[at++])) return false
+      }
     }
   }
-  return hoisted && sameUpToMasking(kept, b[row].content)
+  return hoisted && at === theirs.length
 }
 
 // Whether text is nothing but whole <system-reminder> and <system_message>

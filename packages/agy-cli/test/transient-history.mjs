@@ -12,8 +12,8 @@ let source = fs.readFileSync(entry, "utf8")
 source = source.replace(/from "(\.\/[^"\n]+)"/g, (_, target) =>
   `from ${JSON.stringify(new URL(target, entry).href)}`)
 fs.writeFileSync(path.join(workspace, "bridge.mjs"), source +
-  "\nexport { droppedHoistedToolImages, droppedOneRequestReminder };\n")
-const { droppedHoistedToolImages, droppedOneRequestReminder } =
+  "\nexport { droppedHoistedToolImages, droppedOneRequestReminder, sameHistoryUpToImages };\n")
+const { droppedHoistedToolImages, droppedOneRequestReminder, sameHistoryUpToImages } =
   await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
@@ -97,6 +97,76 @@ test("transient history helpers accept only the exact one-request shapes", () =>
   ), false)
   assert.equal(droppedHoistedToolImages(withHoisted, [withHoisted[0], withHoisted[1], user([result("call-1", "other")])]), false)
 
+  // plugins#1556 (shinnamu), shape 1: the image dropped and the caption folded
+  // back into the tool_result's content (3 -> 1), the reporter's literal rows
+  const call = assistant([{ type: "tool_use", id: "tu_1", name: "Read", input: {} }])
+  const saved = text("Displayed image saved to: /tmp/x.jpg")
+  const closed = text("[system] last tab closed.")
+  const folding = [user("look"), call, user([result("tu_1", [saved]), image(), closed])]
+  assert.equal(droppedHoistedToolImages(folding, [user("look"), call, user([result("tu_1", [saved, closed])])]), true)
+  // the caption folded as it was, or in two parts
+  assert.equal(droppedHoistedToolImages(folding, [user("look"), call,
+    user([result("tu_1", [saved, text("[system] last "), text("tab closed.\n")])])]), true)
+  // other text folded in, the result's own text changed, text folded with no
+  // caption to fold, text folded and the image kept, or a fold after a result
+  // with no hoisted image
+  assert.equal(droppedHoistedToolImages(folding, [user("look"), call,
+    user([result("tu_1", [saved, text("[system] all tabs closed.")])])]), false)
+  assert.equal(droppedHoistedToolImages(folding, [user("look"), call,
+    user([result("tu_1", [text("Displayed image saved to: /tmp/y.jpg"), closed])])]), false)
+  assert.equal(droppedHoistedToolImages(
+    [user("look"), call, user([result("tu_1", [saved]), image()])],
+    [user("look"), call, user([result("tu_1", [saved, closed])])]), false)
+  assert.equal(droppedHoistedToolImages(folding, [user("look"), call,
+    user([result("tu_1", [saved, closed]), image()])]), false)
+  assert.equal(droppedHoistedToolImages(
+    [user("look"), call, user([result("tu_1", [saved]), closed])],
+    [user("look"), call, user([result("tu_1", [saved, closed])])]), false)
+
+  // shape 2: magpie's gateway left the hoisted image out under a size cap
+  // (body_cap.go imageLeftOut) and the client dropped the caption (3 -> 2)
+  const leftOut = text("[An earlier image was left out here to keep this request under its size limit.]")
+  const slimming = [user("look"), call, user([result("tu_1", [text("ok")]), image(), text("caption")])]
+  assert.equal(droppedHoistedToolImages(slimming, [user("look"), call, user([result("tu_1", [text("ok")]), leftOut])]), true)
+  // magpie's other placeholders for an image it left out
+  for (const said of [
+    "[An earlier image was omitted here to keep this request within the model's image limit.]",
+    "[This image is omitted here; the same image appears again later in this conversation.]",
+  ]) {
+    assert.equal(droppedHoistedToolImages(slimming, [user("look"), call, user([result("tu_1", [text("ok")]), text(said)])]), true)
+  }
+  // one placeholder for each of three images, and an older image left out on
+  // the same request (oldest first)
+  assert.equal(droppedHoistedToolImages(
+    [user("look"), call, user([result("tu_1"), image(), text("a"), image(), text("b"), image(), text("c")])],
+    [user("look"), call, user([result("tu_1"), leftOut, leftOut, leftOut])]), true)
+  assert.equal(droppedHoistedToolImages(
+    [user([text("look"), image()]), call, user([result("tu_1", [text("ok")]), image(), text("caption")])],
+    [user([text("look"), leftOut]), call, user([result("tu_1", [text("ok")]), leftOut])]), true)
+  // a placeholder where there was no image, one too few or too many, the
+  // caption changed beside it, the user's own text dropped beside it, or a
+  // placeholder put back as an image
+  assert.equal(droppedHoistedToolImages(
+    [user("look"), call, user([result("tu_1", [text("ok")]), text("caption")])],
+    [user("look"), call, user([result("tu_1", [text("ok")]), leftOut])]), false)
+  assert.equal(droppedHoistedToolImages(
+    [user("look"), call, user([result("tu_1"), image(), text("a"), image(), text("b")])],
+    [user("look"), call, user([result("tu_1"), leftOut])]), false)
+  assert.equal(droppedHoistedToolImages(slimming, [user("look"), call,
+    user([result("tu_1", [text("ok")]), leftOut, leftOut])]), false)
+  assert.equal(droppedHoistedToolImages(slimming, [user("look"), call,
+    user([result("tu_1", [text("ok")]), leftOut, text("edited caption")])]), false)
+  assert.equal(droppedHoistedToolImages(
+    [user([text("look"), text("and keep this")]), call, user([result("tu_1", [text("ok")]), image(), text("caption")])],
+    [user([text("look"), leftOut]), call, user([result("tu_1", [text("ok")]), leftOut])]), false)
+  assert.equal(droppedHoistedToolImages(
+    [user([text("look"), leftOut]), call, user([result("tu_1", [text("ok")]), image(), text("caption")])],
+    [user([text("look"), image()]), call, user([result("tu_1", [text("ok")])])]), false)
+  // magpie leaving the image out with the caption kept is the same history
+  // already (sameHistoryUpToImages), as body_cap.go swaps the image in place
+  assert.equal(sameHistoryUpToImages(slimming, [user("look"), call, user([result("tu_1", [text("ok")]), leftOut, text("caption")])]), true)
+  assert.equal(sameHistoryUpToImages(slimming, [user("look"), call, user([result("tu_1", [text("ok")]), leftOut])]), false)
+
   const withReminder = [user([text("continue"), text("<system-reminder>hook</system-reminder>")])]
   assert.equal(droppedOneRequestReminder(
     [user([text("continue\n\n<system-reminder>\nhook\n</system-reminder>")])],
@@ -176,7 +246,14 @@ test("ordinary text removed from a plain user turn still starts a new session", 
   }
 })
 
-test("a dropped hoisted tool image and caption keep the live ACP session", async () => {
+for (const [name, stored] of [
+  // 3 -> 1
+  ["dropped", (result) => [result]],
+  // 3 -> 1, the caption folded back into the result (plugins#1556 shape 1)
+  ["folded back", (result, caption) => [{ ...result, content: [{ type: "text", text: result.content }, caption] }]],
+  // 3 -> 2, magpie's placeholder for the image, the caption gone (shape 2)
+  ["left out by magpie", (result) => [result, text("[An earlier image was left out here to keep this request under its size limit.]")]],
+]) test(`a hoisted tool image and caption ${name} keep the live ACP session`, async () => {
   const stderr = captureStderr()
   const kit = await createBridgeKit({ promptImages: true })
   try {
@@ -196,6 +273,7 @@ test("a dropped hoisted tool image and caption keep the live ACP session", async
     assert.ok(call)
     const assistantCall = { role: "assistant", content: [call] }
     const result = { type: "tool_result", tool_use_id: call.id, content: "saved /repo/screenshot.png" }
+    const caption = { type: "text", text: "Screenshot: settings panel" }
     const hoisted = [
       opening,
       assistantCall,
@@ -204,7 +282,7 @@ test("a dropped hoisted tool image and caption keep the live ACP session", async
         content: [
           result,
           image(),
-          { type: "text", text: "Screenshot: settings panel" },
+          caption,
         ],
       },
     ]
@@ -219,7 +297,7 @@ test("a dropped hoisted tool image and caption keep the live ACP session", async
     const canonical = [
       opening,
       assistantCall,
-      { role: "user", content: [result] },
+      { role: "user", content: stored(result, caption) },
       assistantReply,
       { role: "user", content: "what changed?" },
     ]
