@@ -210,8 +210,20 @@ function createPlugin({
     }
   }
 
-  async function browserAuthorize(profile) {
-    const session = await openChrome(LOGIN)
+  /** 浏览器选择 prompt 的 options：本机真实存在的浏览器（Chrome 优先）。 */
+  const browserSelectOptions = (() => {
+    try {
+      const list = browserCandidates()
+      if (Array.isArray(list) && list.length) return list.map((p) => ({ label: p, value: p }))
+    } catch {
+      /* no candidate list -> no options; browserAuthorize's error is the real message */
+    }
+    return undefined
+  })()
+
+  async function browserAuthorize(profile, chosenBrowser) {
+    const browser = typeof chosenBrowser === "string" && chosenBrowser.trim() ? chosenBrowser.trim() : undefined
+    const session = await openChrome(LOGIN, { browser })
     return {
       url: "",
       instructions:
@@ -285,17 +297,41 @@ function createPlugin({
         {
           type: "oauth",
           label: "Agnes browser sign-in (plan key)",
-          authorize: () => browserAuthorize("plan"),
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
+          ],
+          authorize: (inputs) => browserAuthorize("plan", inputs?.browser),
         },
         {
           type: "oauth",
           label: "Agnes browser sign-in (personal key)",
-          authorize: () => browserAuthorize("default"),
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
+          ],
+          authorize: (inputs) => browserAuthorize("default", inputs?.browser),
         },
         {
           type: "oauth",
           label: "Agnes browser sign-in (enterprise key)",
-          authorize: () => browserAuthorize("enterprise"),
+          prompts: [
+            {
+              type: "select",
+              key: "browser",
+              message: "Which browser should open for the sign-in?",
+              options: browserSelectOptions,
+            },
+          ],
+          authorize: (inputs) => browserAuthorize("enterprise", inputs?.browser),
         },
         {
           type: "api",
@@ -532,6 +568,39 @@ function findBrowser(platform = process.platform, env = process.env) {
   return candidates.find((path) => path && existsSync(path)) ?? ""
 }
 
+/** 本机真实存在的候选浏览器（Chrome 优先，与 findBrowser 同序）；供 select prompt 用。 */
+function browserCandidates(platform = process.platform, env = process.env) {
+  if (env.AGNES_BROWSER && existsSync(env.AGNES_BROWSER)) return [env.AGNES_BROWSER]
+  const home = env.HOME || ""
+  const candidates =
+    platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+          join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ]
+      : platform === "win32"
+        ? [
+            join(env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
+            join(env["PROGRAMFILES(X86)"] || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),
+            join(env["PROGRAMFILES(X86)"] || "", "Microsoft/Edge/Application/msedge.exe"),
+          ]
+        : [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+            "/usr/bin/microsoft-edge",
+          ]
+  const seen = new Set()
+  return candidates.filter((path) => path && existsSync(path) && !seen.has(path) && seen.add(path))
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = createServer()
@@ -677,9 +746,9 @@ async function openChromeSession(
   {
     targetPrefix = "https://platform.agnes-ai.com/",
     profileDir = browserProfileDir(),
+    browser = findBrowser(),
   } = {},
 ) {
-  const browser = findBrowser()
   if (!browser) {
     throw new Error(
       "Chrome or Edge was not found; set AGNES_BROWSER or use the API key sign-in",

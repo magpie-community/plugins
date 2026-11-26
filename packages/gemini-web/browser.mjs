@@ -46,6 +46,32 @@ export function findBrowser(platform = process.platform, env = process.env) {
   return candidates.find((p) => p && existsSync(p)) ?? ""
 }
 
+/** 本机真实存在的候选浏览器（Chrome 优先，与 findBrowser 同序）；供 select prompt 用。 */
+export function browserCandidates(platform = process.platform, env = process.env) {
+  if (env.GEMINI_WEB_BROWSER && existsSync(env.GEMINI_WEB_BROWSER)) return [env.GEMINI_WEB_BROWSER]
+  const home = env.HOME || ""
+  const candidates =
+    platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ]
+      : platform === "win32"
+        ? [
+            join(env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
+            join(env["PROGRAMFILES(X86)"] || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
+            join(env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),
+            join(env["PROGRAMFILES(X86)"] || "", "Microsoft/Edge/Application/msedge.exe"),
+          ]
+        : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium", "/usr/bin/microsoft-edge"]
+  const seen = new Set()
+  return candidates.filter((p) => p && existsSync(p) && !seen.has(p) && seen.add(p))
+}
+
 export function browserArgs(profile, port, url, { headless = false } = {}) {
   return [
     `--user-data-dir=${profile}`,
@@ -162,8 +188,8 @@ export async function open(profile, url, { headless = false, browser = findBrows
 // signIn opens the window and waits (up to timeout) for the user to sign
 // in, then answers the cookies. It answers null when the window was
 // closed or the time ran out.
-export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settle = 2500, opener = open } = {}) {
-  const b = await opener(profile, SIGN_IN)
+export async function signIn(profile, { timeout = 5 * 60_000, poll = 1000, settle = 2500, opener = open, browser } = {}) {
+  const b = await opener(profile, SIGN_IN, { browser })
   try {
     const end = Date.now() + timeout
     while (Date.now() < end && !b.exited) {
