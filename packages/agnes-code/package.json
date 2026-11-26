@@ -7,7 +7,6 @@
   "exports": { ".": "./opencode2.mjs" },
   "files": [
     "index.mjs",
-    "index.test.mjs",
     "opencode.mjs",
     "opencode2.mjs",
     "README.md",

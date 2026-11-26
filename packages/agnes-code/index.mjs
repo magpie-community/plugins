@@ -280,9 +280,10 @@ async function readDesktopCredential({ site, homedir = osHomedir(), platform = p
     let sessionNames
     try {
       sessionNames = readDir(dir).filter((name) => SESSION_FILE_PATTERN.test(name))
-    } catch (error) {
-      problems.push(`${dir}（列目录失败：${error?.message ?? "未知"}）`)
-      continue
+    } catch {
+      // 列目录失败（权限、或调用方只注入了 readFile）时退回已知候选名：
+      // “某个文件读不到”和“这台机器上没有会话”是两件事，不能因为列不了目录就当成后者。
+      sessionNames = [site ? `code-auth-session.${site.domain}.v1` : null, "code-auth-session.v1"].filter(Boolean)
     }
     if (!sessionNames.length) continue
     // 站点专属文件优先，其次无后缀的（国际站），最后是别的端的。
@@ -328,9 +329,10 @@ async function readDesktopCredential({ site, homedir = osHomedir(), platform = p
       }
 
       // 会话自带 BFF 源站：判断账号属于哪一端最可靠的信号；老会话没写这个字段时，
-      // 退回文件名里的端标记（code-auth-session.cn.v1 是桌面端自己写的，同等可信）。
+      // 退回文件名里的端标记：带 .cn 的是国内站，其余（含无后缀的 code-auth-session.v1）按国际站算，
+      // 这样国内站 provider 读到无后缀文件会明确报 domain_mismatch，而不是拿国际站 token 去打 .cn 得 401。
       const rawBase = typeof session.bffPublicBaseUrl === "string" ? session.bffPublicBaseUrl : ""
-      const sessionSite = rawBase ? siteOfBase(rawBase) : name === "code-auth-session.cn.v1" ? SITES.cn : null
+      const sessionSite = rawBase ? siteOfBase(rawBase) : name === "code-auth-session.cn.v1" ? SITES.cn : SITES.intl
       if (rawBase && !sessionSite) {
         throw Object.assign(new Error(`桌面端会话里的 bffPublicBaseUrl 不在信任范围（${rawBase}），已拒绝使用这份凭据`), { code: "untrusted" })
       }
@@ -513,6 +515,10 @@ async function browserLogin(site, { fetchImpl = globalThis.fetch, waitMs = LOGIN
   // 监听器必须在返回 url 之前就挂上：用户可能比宿主先完成登录，晚挂的 request 监听会收不到
   // 已经到达的那一发 POST（Node 只在有监听者时才派发 request 事件）。
   const codePromise = waitForCallback(server, { state, origin: site.origin, timeoutMs: waitMs, signal })
+  // 宿主可能在授权和回调之间就放弃（用户关窗口、宿主不给 callback），此时没人 await codePromise。
+  // 先挂一个空 catch，避免那次 rejection 变成 unhandled rejection 把整个宿主进程带走；
+  // 真正的 await 仍然会拿到同一次失败。
+  codePromise.catch(() => {})
   return {
     url,
     redirectUri,
@@ -786,6 +792,11 @@ export const AgnesCNPlugin = async () => createPlugin(SITES.cn)
 export const _internal = {
   SITES,
   CLIENT_ID,
+  // 0.1.x 测试里用到的派生常量：让恢复回来的测试不必为了取站点常量再拆一份实现。
+  ID: SITES.intl.id,
+  OFFICIAL_SITE: SITES.intl.officialSite,
+  CHAT_GATEWAY_BASE: chatBase(SITES.intl),
+  MODELS_URL: modelsUrl(SITES.intl),
   CB_PATH,
   createPlugin,
   chatBase,
