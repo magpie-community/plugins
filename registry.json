@@ -326,7 +326,7 @@
         "zh": "跨 Agent 会话内容与上下文增长可视化：实时查看 System/User/Assistant/Tools 的 Token 构成、压缩事件与单轮完整内容，支持 DSH、Antigravity、Codex。"
       }
     },
-    { "package": "opencode-jevtypesafe-auth", "name": "JEV 托管决策", "icon": "https://raw.githubusercontent.com/zhang3776813/magpie-jevtypesafe/main/icon.svg", "providers": ["jevtypesafe"],
+    { "package": "jevtypesafe-auth", "name": "JEV 托管决策", "icon": "https://raw.githubusercontent.com/zhang3776813/magpie-jevtypesafe/main/icon.svg", "providers": ["jevtypesafe"],
       "summary": { "en": "Jev (jevtypesafe.org) as System One for Magpie classifiers and decision groups: choice, score and noul questions on a hosted decide API, billed per input token. A separate channel from OpenAI Decisions — its own endpoint, its own key, no OpenAI account.", "zh": "把 jevtypesafe.org 托管的 Jev 接成 Magpie 分类器与决策模型组的 System One：支持 choice、score、noul，按输入 token 计费。与 OpenAI Decisions 是两个不同渠道——独立端点、独立密钥，不需要 OpenAI 账号。" } }
   ]
 }
