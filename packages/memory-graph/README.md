@@ -2,9 +2,9 @@
 
 # @magpie-community/page-memory-graph
 
-Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Whether two memories are linked is decided **only by magpie's own `memory_search` order** — no embeddings, no external model, no API key. Click a node to read its full text, kind, scope, tags, why, sources, and the rank that links it to the top three neighbours; hovering only highlights its neighbours.
+Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Edges are computed locally from **semantic cosine similarity** — reusing magpie's built-in multilingual embedding vectors (`MEV1` `vectors.bin`), with a zero-dependency local TF-IDF + CJK bigram + tag Jaccard fallback when vectors are absent, plus dashed lineage edges for `supersededBy` memories.
 
-把 magpie 已保存的记忆画成 Obsidian 式关系图谱。两条记忆是否关联，**只由 magpie 内置 `memory_search` 的排序结果决定**：不自建向量、不调用外部模型、不需要 API key。**点击**节点看正文、类型、范围、标签、记录原因、来源，以及它与前三个关联的位次；悬浮只点亮相邻节点。
+把 magpie 已保存的记忆画成 Obsidian 式关系图谱。节点连线基于**本地语义余弦相似度**计算：直接复用 magpie 内置多语言向量库（`vectors.bin`），缺失向量时自动回退到零依赖本地 TF-IDF（中文二元词 + 英文词元）与标签 Jaccard 相似度，并为 `supersededBy` 记忆自动补全演进虚线。纯本地只读、零外部依赖、毫秒级出图。
 
 ## Install
 
@@ -14,131 +14,44 @@ From magpie's **Plugins › Discover**, or:
 magpie plugin add @magpie-community/page-memory-graph
 ```
 
-Open **Memory Graph** from the sidebar. The first open scans `~/.config/magpie/memory/` and calls `memory_search` once per active memory; on a library of ~120 active memories that takes about 50 seconds on an 8-way local pool. The graph is usable while it builds, and later opens only query new or changed memories.
+## How edges are decided
 
-## How an edge is decided
-
-For every memory with `status: active`, the plugin calls the built-in tool:
-
-```json
-{ "name": "memory_search", "arguments": { "query": "<title + first 500 chars>", "limit": 16, "scope": "all" } }
-```
-
-The returned order is the only signal. The plugin skips the memory itself and the first **3** remaining hits become edges:
-
-| Position in `memory_search` | What you see |
-| --- | --- |
-| 1st | `第 1 位` — thickest edge |
-| 2nd | `第 2 位` |
-| 3rd | `第 3 位` — thinnest edge |
-
-If both memories put each other in their top 3, the edge is marked **双向** and both ranks are shown. There is no score, because `memory_search` does not return one: the only honest thing to display is the position it returned. A pair can rank differently under a different query — that is retrieval, not a bug.
-
-Labels are hidden by default on a large graph. They appear when you zoom past `1.45×`, or when the current filter leaves at most 100 visible nodes; hover, click and double-click always show a label.
-
-Superseded memories are drawn as hollow nodes with a dashed ring; they can be link targets but are never used as query anchors. `candidate` and `archived` memories are not drawn.
+1. **Vector cosine similarity**: Reads `~/.cache/magpie/paraphrase-multilingual-MiniLM-L12-v2/*/vectors.bin` (`MEV1` 384-dim embeddings) and matches each memory via `sha256(text + "\n" + why)`. Pairwise cosine similarity determines edge presence and thickness.
+2. **Zero-dependency lexical fallback**: For memories without cached embeddings (or environments with semantic search off), falls back to local TF-IDF (CJK 2-grams + word tokens) combined with tag Jaccard overlap.
+3. **Evolution lineage**: Any `superseded` memory with `supersededBy` pointing to a visible node automatically receives a dashed lineage edge.
+4. **Live threshold slider**: Defaults to `minSimilarity = 0.60`, adjustable in real time from `0.35` to `0.90` in the top bar without rebuilding.
 
 ## What it reads and writes
 
 Read-only on magpie's data:
 
 - `~/.config/magpie/memory/m_*.md` — parsed locally, never modified.
-- `~/.config/magpie/gateway.json` — to find the local gateway address.
-- the built-in `memory_search` tool over the loopback MCP endpoint.
+- `~/.cache/magpie/paraphrase-multilingual-MiniLM-L12-v2/*/vectors.bin` — read-only vector lookup.
 
 Writes only its own derived cache:
 
 ```text
-~/.config/magpie/memory-graph/graph-cache.json   # nodes + each memory's hit order
+~/.config/magpie/memory-graph/graph-cache.json   # slim metadata + similarity edges (body omitted)
 ~/.config/magpie/memory-graph/service-token.json # token for the local page service
 ```
 
-Delete the directory and the next open rebuilds everything. No memory file is touched, and `memory_save` / `memory_forget` are never called.
+## Controls & Obsidian UI
 
-## Hover card
-
-Each node's card shows, in order:
-
-1. kind, memory id (click to copy), title;
-2. scope, status, origin, `supersededBy` when present;
-3. full body (truncated at 2,000 characters in the payload, with an explicit note);
-4. `why` — the reason magpie recorded;
-5. tags — click one to filter the graph;
-6. created / updated timestamps;
-7. sources — agent, shortened directory, quoted evidence;
-8. the top three related memories, each with the rank that links it (`第 1 位`, `第 2 位 · 双向`, …); click one to focus it;
-9. degree, with a note that ranks come from `memory_search`.
-
-Clicking an edge opens a card with both endpoints, direction and the rank on each side; both endpoints are buttons that jump to that memory's card. The card is anchored next to what you clicked and follows it while you zoom, pan or drag; close it with `×`, a click on the background, another click on the same node, or `Esc`.
-
-## Controls
-
-- drag a node to pin it while dragging; drag the background to pan; wheel to zoom;
-- hover a node to highlight its one-hop neighbours;
-- click a node to open its detail card; click an edge to open the link card; click the same node again, the background, `×` or `Esc` to close;
-- double-click a node to focus two hops; `Esc` also resets the view;
-- labels stay off on a dense graph; zoom past `1.45×` or filter down to 100 nodes to show them;
-- `/` or `⌘K` focuses search; `0` or `F` fits the graph;
-- filters: kind, scope, tag, free text, mutual-only, hide superseded;
-- **Rebuild all** re-queries every active memory (about 50 seconds for 120 memories).
+- Drag a node to pin while dragging; drag background to pan; wheel or bottom-right `+` / `−` to zoom; `⌖` (`0` / `F`) to fit; `↻` to re-layout;
+- `⚙` floating panel to tune node size, edge thickness, repel force, link distance, and label zoom threshold;
+- Top-bar **similarity slider (`0.35 ~ 0.90`)** to filter edges live;
+- Click legend dots to toggle kind filters; click a node or edge for its glassmorphic detail card (`supersededBy` jumps straight to the newer memory);
+- Double-click a node to focus 2 hops; `/` or `⌘K` focuses search; `Esc` closes and resets.
 
 ## Options
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `port` | `3491` | local page service; declared in `magpie.page.service` |
-| `topK` | `3` | how many `memory_search` hits become edges per memory |
-| `concurrency` | `8` | parallel `memory_search` calls |
-| `maxNodes` | `200` | render cap; the current 182 visible nodes fit |
+| `minSimilarity` | `0.6` | default cosine similarity threshold (`0.35`–`0.95`) |
+| `maxNodes` | `1000` | render cap (`0` for unlimited) |
 | `idleMinutes` | `5` | go to sleep after this many idle minutes; `0` never sleeps |
-
-Set them in magpie's plugin options. `gateway`, `memoryDir`, `dataDir` and `buildTimeoutMs` are also accepted for unusual installs.
-
-## Difference from the built-in `memory` knowledge-graph MCP
-
-The `memory` MCP server magpie can expose to agents (`create_entities`, `create_relations`, `read_graph`, …) is a separate, in-memory entity graph: it is agent-facing, it does not persist, and its relations are whatever an agent wrote. This page is different:
-
-- it is for **humans looking at the memories magpie already stores**;
-- its edges are **derived from `memory_search` order**, not authored relations;
-- it is **read-only** and adds no new write path to memory;
-- its cache is rebuildable and disposable.
-
-## Limits
-
-- First build is dominated by `memory_search` latency (~3 seconds per call here); 120 active memories at 8-way concurrency is ~50 seconds.
-- `memory_search` returns order, not scores; the rank is a position, not a probability.
-- The page is served on `127.0.0.1`; opening magpie web on another computer points at that computer's loopback, so this page is for the desktop window (same as other page+service plugins).
-- The graph shows at most 200 nodes by default; raise `maxNodes` if your library is larger.
-
-## Service lifecycle
-
-The page and its local service live inside magpie's shared plugin host, so this package never exits a process. It binds the port before doing any other work, so the hand-off page almost never has to wait.
-
-- If the port is already taken, the plugin asks `GET /api/health` who owns it. If the answer is another `memory-graph` instance (a host that is still draining), it **attaches** instead of failing, and takes the port over once that instance disappears.
-- After `idleMinutes` with no successful request, it goes to sleep: the in-memory graph and the MCP session are dropped, the listener stays. The next request wakes it in milliseconds and reloads `graph-cache.json`.
-- The page stops polling when it is in the background or after five minutes without pointer/keyboard activity, so a forgotten window does not keep the service awake.
-
-If the page still says it cannot reach the service:
-
-```sh
-curl -s http://127.0.0.1:3491/api/health
-```
-
-`{"plugin":"memory-graph", ...}` means the service is up and the page just needs reopening. A connection error means the port is held by something else — set another `port` in the plugin options. `initError` in that JSON explains a failure to reach magpie's gateway.
-
-## Security
-
-The local service binds `127.0.0.1` only, checks `Host` against loopback, allows only `Origin: null` (the sandboxed magpie page) or its own origin, and requires a 32-byte token injected into the HTML it serves. Memory text is rendered with `textContent`, never `innerHTML`. CORS headers are present on every response, including errors, so a failed request still shows its real status.
-
-## Files
-
-- `index.mjs` — plugin host, local HTTP service, token/Host/Origin checks;
-- `lib/` — memory scan, frontmatter parser, MCP client, ranking, cache, graph payload;
-- `page/index.html`, `page/boot.js` — sandboxed hand-off page;
-- `page/app/` — the real UI, force layout and the click-opened detail card.
 
 ## License
 
 MIT. See `LICENSE`.
-
-This package was written with AI assistance and reviewed by its author; it ships without a test suite.

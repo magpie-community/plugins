@@ -17,34 +17,31 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createBuilder } from "./lib/build.mjs";
-import { serviceToken } from "./lib/cache.mjs";
+import { cleanupTempFiles, serviceToken } from "./lib/cache.mjs";
 import {
   STATIC,
   corsHeaders,
+  fetchSiteAllowed,
   hostAllowed,
   injectToken,
   originAllowed,
-  readBody,
   send,
   tokenOK,
 } from "./lib/http.mjs";
-import { MemoryMcp } from "./lib/mcp.mjs";
 import {
   dataDir as defaultDataDir,
-  gatewayBase,
-  mcpUrl,
   memoryDir as defaultMemoryDir,
+  vectorsDir as defaultVectorsDir,
 } from "./lib/paths.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PLUGIN_ID = "memory-graph";
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const DEFAULT_PORT = 3491;
 const DEFAULT_IDLE_MS = 5 * 60 * 1000;
 
 let TOKEN = "";
 let BUILDER = null;
-let MCP = null;
 let SERVER = null;
 let SETTINGS = null;
 let INIT = null;
@@ -62,8 +59,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 
-function json(req, res, port, status, value) {
-  send(req, res, port, status, JSON.stringify(value));
+function json(req, res, port, status, value, allowNull = false) {
+  send(req, res, port, status, JSON.stringify(value), "application/json; charset=utf-8", allowNull);
 }
 
 // 只看 2xx：过期页面拿着旧口令刷 401 时，不该把服务一直叫醒。
@@ -88,20 +85,37 @@ async function handle(req, res, port) {
     );
   };
 
-  if (!hostAllowed(req, port) || !originAllowed(req, port)) {
-    json(req, res, port, 403, { error: "只接受本机回环、且来自本插件页面或同源的请求" });
+  const isApi =
+    url.pathname === "/api/graph" ||
+    url.pathname === "/api/status" ||
+    url.pathname === "/api/rebuild";
+  const allowNull = isApi || url.pathname === "/api/health";
+
+  if (!hostAllowed(req, port) || !originAllowed(req, port, allowNull)) {
+    json(req, res, port, 403, { error: "只接受本机回环、且来自本插件页面或同源的请求" }, allowNull);
     done(403);
     return;
   }
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204, { "cache-control": "no-store", ...corsHeaders(req, port) });
+    res.writeHead(204, { "cache-control": "no-store", ...corsHeaders(req, port, allowNull) });
     res.end();
     done(204);
     return;
   }
 
   if (url.pathname === "/api/health") {
+    const authed = tokenOK(req, TOKEN);
+    if (!authed) {
+      json(req, res, port, 200, {
+        ok: true,
+        plugin: PLUGIN_ID,
+        port,
+        version: VERSION,
+      });
+      done(200);
+      return;
+    }
     const status = BUILDER ? BUILDER.getStatus() : null;
     json(req, res, port, 200, {
       ok: true,
@@ -116,26 +130,26 @@ async function handle(req, res, port) {
       tokenPresent: Boolean(TOKEN),
       phase: status?.phase || (INIT_ERROR ? "error" : "booting"),
       initError: INIT_ERROR || status?.lastError || "",
-    });
+    }, true);
     done(200);
     return;
   }
 
-  const isApi =
-    url.pathname === "/api/graph" ||
-    url.pathname === "/api/status" ||
-    url.pathname === "/api/rebuild";
-
   if (isApi) {
+    if (req.headers.origin !== "null" && !fetchSiteAllowed(req)) {
+      json(req, res, port, 403, { error: "拒绝跨站请求" }, allowNull);
+      done(403);
+      return;
+    }
     try {
       await ensureInit();
     } catch (error) {
-      json(req, res, port, 503, { error: `本地服务初始化失败：${String(error?.message || error)}` });
+      json(req, res, port, 503, { error: `本地服务初始化失败：${String(error?.message || error)}` }, allowNull);
       done(503);
       return;
     }
     if (!tokenOK(req, TOKEN)) {
-      json(req, res, port, 401, { error: "缺口令：请从这个插件的页面里打开，别直接敲地址" });
+      json(req, res, port, 401, { error: "缺口令：请从这个插件的页面里打开，别直接敲地址" }, allowNull);
       done(401);
       return;
     }
@@ -143,17 +157,21 @@ async function handle(req, res, port) {
 
   if (url.pathname === "/api/graph") {
     if (req.method !== "GET") {
-      json(req, res, port, 405, { error: "需要 GET" });
+      json(req, res, port, 405, { error: "需要 GET" }, true);
       done(405);
       return;
     }
     try {
       BUILDER.maybeRefresh().catch(() => {});
-      const data = await BUILDER.getGraph();
-      json(req, res, port, 200, data);
+      const rawSim = url.searchParams.get("minSim");
+      const minSimilarity = rawSim !== null && Number.isFinite(Number(rawSim))
+        ? clamp(Number(rawSim), 0.35, 0.95)
+        : undefined;
+      const data = await BUILDER.getGraph({ minSimilarity });
+      json(req, res, port, 200, data, true);
       done(200);
     } catch (error) {
-      json(req, res, port, 500, { error: String(error?.message || error) });
+      json(req, res, port, 500, { error: String(error?.message || error) }, true);
       done(500);
     }
     return;
@@ -161,39 +179,27 @@ async function handle(req, res, port) {
 
   if (url.pathname === "/api/status") {
     if (req.method !== "GET") {
-      json(req, res, port, 405, { error: "需要 GET" });
+      json(req, res, port, 405, { error: "需要 GET" }, true);
       done(405);
       return;
     }
-    json(req, res, port, 200, BUILDER.getStatus());
+    json(req, res, port, 200, BUILDER.getStatus(), true);
     done(200);
     return;
   }
 
   if (url.pathname === "/api/rebuild") {
     if (req.method !== "POST") {
-      json(req, res, port, 405, { error: "需要 POST" });
+      json(req, res, port, 405, { error: "需要 POST" }, true);
       done(405);
       return;
     }
-    if (!/application\/json/i.test(String(req.headers["content-type"] || ""))) {
-      json(req, res, port, 415, { error: "需要 application/json" });
-      done(415);
-      return;
-    }
     try {
-      const body = await readBody(req);
-      let mode = "incremental";
-      try {
-        mode = JSON.parse(body || "{}").mode === "all" ? "all" : "incremental";
-      } catch {
-        mode = "incremental";
-      }
-      const result = BUILDER.run(mode);
-      json(req, res, port, result.started ? 202 : 409, result);
+      const result = BUILDER.run();
+      json(req, res, port, result.started ? 202 : 409, result, true);
       done(result.started ? 202 : 409);
     } catch (error) {
-      json(req, res, port, 500, { error: String(error?.message || error) });
+      json(req, res, port, 500, { error: String(error?.message || error) }, true);
       done(500);
     }
     return;
@@ -276,13 +282,11 @@ function probeHealth(port, timeoutMs = 1500) {
 async function init(settings) {
   INIT_ERROR = "";
   try {
-    const base = settings.gateway || (await gatewayBase());
-    MCP = new MemoryMcp({ url: mcpUrl(base), timeoutMs: settings.timeoutMs });
     BUILDER = createBuilder({
       dir: settings.dataDir,
       memoryDir: settings.memoryDir,
+      vectorsPath: settings.vectorsPath,
       options: settings,
-      mcp: MCP,
     });
   } catch (error) {
     INIT_ERROR = String(error?.message || error);
@@ -311,7 +315,6 @@ function startSweeper() {
     if (Date.now() - LAST_ACTIVE < IDLE_MS) return;
     if (!BUILDER.sleep()) return;
     ASLEEP = true;
-    MCP?.close();
     console.log(
       `[memory-graph] 空闲 ${Math.round(IDLE_MS / 60000)} 分钟，已休眠（端口 ${SETTINGS?.port} 保留）`,
     );
@@ -347,7 +350,7 @@ function SERVER_STARTED(port) {
   console.log(`[memory-graph] listening on http://127.0.0.1:${port}`);
   startSweeper();
   ensureInit()
-    .then(() => BUILDER?.run("incremental"))
+    .then(() => BUILDER?.run())
     .catch((error) => console.error("[memory-graph] 初始化失败:", error?.message || error));
 }
 
@@ -386,6 +389,7 @@ function boot(port, settings) {
     SETTINGS = settings;
     IDLE_MS = settings.idleMs;
     await mkdir(settings.dataDir, { recursive: true });
+    await cleanupTempFiles(settings.dataDir);
     TOKEN = await serviceToken(settings.dataDir);
 
     const bound = await claim(port);
@@ -410,7 +414,6 @@ function stop() {
   clearInterval(RECONCILE);
   SWEEPER = null;
   RECONCILE = null;
-  MCP?.close();
   if (SERVER) {
     SERVER.close();
     SERVER = null;
@@ -424,21 +427,20 @@ export default {
     const candidate = Number(options?.port);
     const port = Number.isFinite(candidate) && candidate > 0 && candidate < 65536 ? candidate : DEFAULT_PORT;
 
+    const rawMaxNodes = number(options?.maxNodes, 1000);
     const settings = {
       port,
-      topK: clamp(number(options?.topK, 3), 1, 20),
+      minSimilarity: clamp(number(options?.minSimilarity, 0.6), 0.35, 0.95),
       concurrency: clamp(number(options?.concurrency, 8), 1, 12),
-      maxNodes: clamp(number(options?.maxNodes, 200), 20, 1000),
-      queryChars: clamp(number(options?.queryChars, 500), 100, 2000),
-      buildTimeoutMs: clamp(number(options?.buildTimeoutMs, 300000), 30000, 1800000),
-      timeoutMs: clamp(number(options?.timeoutMs, 15000), 3000, 60000),
+      maxNodes: rawMaxNodes === 0 ? 0 : clamp(rawMaxNodes, 20, 5000),
       idleMs: clamp(number(options?.idleMinutes, 5), 0, 240) * 60000,
-      gateway: typeof options?.gateway === "string" ? options.gateway.trim() : "",
       dataDir: typeof options?.dataDir === "string" ? options.dataDir.trim() : "",
       memoryDir: typeof options?.memoryDir === "string" ? options.memoryDir.trim() : "",
+      vectorsPath: typeof options?.vectorsPath === "string" ? options.vectorsPath.trim() : "",
     };
     settings.dataDir = settings.dataDir || defaultDataDir();
     settings.memoryDir = settings.memoryDir || defaultMemoryDir();
+    settings.vectorsPath = settings.vectorsPath || defaultVectorsDir();
 
     boot(port, settings);
     return {};

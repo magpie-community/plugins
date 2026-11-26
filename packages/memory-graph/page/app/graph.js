@@ -43,6 +43,13 @@
     let panMoved = false;
     let swallowClick = 0;
     let lastClick = { id: "", at: 0 };
+    let visual = {
+      nodeScale: 1,
+      edgeScale: 1,
+      repel: 1,
+      linkDist: 1,
+      labelZoom: 1.45,
+    };
 
     const width = () => svg.clientWidth || 900;
     const height = () => svg.clientHeight || 600;
@@ -107,12 +114,16 @@
     }
 
     function updateLabels() {
-      const showAll = transform.k >= 1.45 || visible.size <= 100;
+      const showAll = transform.k >= visual.labelZoom || visible.size <= 100;
+      const hotNeighbors = hovered ? neighbors(hovered, 1) : selected ? neighbors(selected, 1) : null;
       for (const node of nodes) {
         if (!node.el) continue;
         const show =
           !node.hidden &&
-          (showAll || node.id === hovered || node.id === selected);
+          (showAll ||
+            node.id === hovered ||
+            node.id === selected ||
+            (hotNeighbors && hotNeighbors.has(node.id)));
         node.el.classList.toggle("show-label", show);
       }
     }
@@ -165,7 +176,7 @@
           const distance = Math.sqrt(distance2);
           const limit = a.r + b.r + 7;
 
-          let force = Math.min((k * k) / Math.max(distance2, 500), 12);
+          let force = Math.min(((k * k) / Math.max(distance2, 500)) * visual.repel, 14 * visual.repel);
           if (distance < limit) force += (limit - distance) * 0.14;
 
           const fx = (dx / distance) * force;
@@ -185,7 +196,11 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.hypot(dx, dy) || 1;
-        const rest = 72 + (3 - edge.s) * 26;
+        const sim = Number(edge.sim);
+        const baseRest = Number.isFinite(sim)
+          ? 56 + (1 - Math.max(0, Math.min(1, sim))) * 145
+          : 72 + (3 - edge.s) * 26;
+        const rest = baseRest * visual.linkDist;
         const force = (distance - rest) * 0.012;
         const fx = (dx / distance) * force;
         const fy = (dy / distance) * force;
@@ -261,6 +276,64 @@
       nodeLayer.textContent = "";
     }
 
+    function mountEdges(nextEdges, updateNodes = false) {
+      edgeLayer.textContent = "";
+      adj = new Map(nodes.map((node) => [node.id, new Set()]));
+      edgeMap = new Map();
+      const degree = new Map();
+
+      for (const edge of nextEdges) {
+        adj.get(edge.a)?.add(edge.b);
+        adj.get(edge.b)?.add(edge.a);
+        edgeMap.set(keyOf(edge.a, edge.b), edge);
+        degree.set(edge.a, (degree.get(edge.a) || 0) + 1);
+        degree.set(edge.b, (degree.get(edge.b) || 0) + 1);
+      }
+
+      edges = nextEdges.map((edge) => ({ ...edge, hidden: false, el: null, hit: null }));
+
+      for (const edge of edges) {
+        const line = document.createElementNS(NS, "line");
+        const classes = ["edge", `s${edge.s || 1}`];
+        if (edge.lineage || edge.source === "lineage") classes.push("lineage");
+        else if (edge.source === "lexical") classes.push("lexical");
+        line.setAttribute("class", classes.join(" "));
+        edge.el = line;
+        edgeLayer.appendChild(line);
+
+        const hit = document.createElementNS(NS, "line");
+        hit.setAttribute("class", "edge-hit");
+        hit.addEventListener("pointerenter", () => {
+          hoveredEdge = edge;
+          paint();
+        });
+        hit.addEventListener("pointerleave", () => {
+          if (hoveredEdge !== edge) return;
+          hoveredEdge = null;
+          paint();
+        });
+        hit.addEventListener("click", (event) => {
+          event.stopPropagation();
+          onEdge?.(edge, event);
+        });
+        edge.hit = hit;
+        edgeLayer.appendChild(hit);
+      }
+
+      if (updateNodes) {
+        for (const node of nodes) {
+          const d = degree.get(node.id) || 0;
+          node.degree = d;
+          node.baseR = Math.min(15, 4 + Math.sqrt(d) * 1.9);
+          node.r = node.baseR * visual.nodeScale;
+          node.el?.classList.toggle("hub", d >= 4);
+          node.el?.querySelector("circle.main")?.setAttribute("r", String(node.r));
+          node.el?.querySelector("circle.ring")?.setAttribute("r", String(node.r + 4));
+          node.el?.querySelector("text")?.setAttribute("y", String(node.r + 13));
+        }
+      }
+    }
+
     function setData(nextNodes, nextEdges) {
       cancelAnimationFrame(raf);
       raf = 0;
@@ -291,7 +364,8 @@
           vx: 0,
           vy: 0,
           degree: d,
-          r: Math.min(15, 4 + Math.sqrt(d) * 1.9),
+          baseR: Math.min(15, 4 + Math.sqrt(d) * 1.9),
+          r: Math.min(15, 4 + Math.sqrt(d) * 1.9) * visual.nodeScale,
           fixed: false,
           hidden: false,
           el: null,
@@ -299,48 +373,18 @@
       });
 
       byId = new Map(nodes.map((node) => [node.id, node]));
-      adj = new Map(nodes.map((node) => [node.id, new Set()]));
-      edgeMap = new Map();
-
-      for (const edge of nextEdges) {
-        adj.get(edge.a)?.add(edge.b);
-        adj.get(edge.b)?.add(edge.a);
-        edgeMap.set(keyOf(edge.a, edge.b), edge);
-      }
-
-      edges = nextEdges.map((edge) => ({ ...edge, hidden: false, el: null, hit: null }));
       visible = new Set(nodes.map((node) => node.id));
 
       clearLayers();
-
-      for (const edge of edges) {
-        const line = document.createElementNS(NS, "line");
-        line.setAttribute("class", `edge s${edge.s}${edge.m ? "" : " one"}`);
-        edge.el = line;
-        edgeLayer.appendChild(line);
-
-        const hit = document.createElementNS(NS, "line");
-        hit.setAttribute("class", "edge-hit");
-        hit.addEventListener("pointerenter", () => {
-          hoveredEdge = edge;
-          paint();
-        });
-        hit.addEventListener("pointerleave", () => {
-          if (hoveredEdge !== edge) return;
-          hoveredEdge = null;
-          paint();
-        });
-        hit.addEventListener("click", (event) => {
-          event.stopPropagation();
-          onEdge?.(edge, event);
-        });
-        edge.hit = hit;
-        edgeLayer.appendChild(hit);
-      }
+      mountEdges(nextEdges, false);
 
       for (const node of nodes) {
         const group = document.createElementNS(NS, "g");
-        group.setAttribute("class", `node${node.status === "superseded" ? " superseded" : ""}`);
+        const hub = node.degree >= 4 ? " hub" : "";
+        group.setAttribute(
+          "class",
+          `node${node.status === "superseded" ? " superseded" : ""}${hub}`,
+        );
         group.dataset.id = node.id;
         group.dataset.kind = node.kind;
 
@@ -403,6 +447,14 @@
       paint();
       zoomToFit();
       reheat(1);
+    }
+
+    function updateEdges(nextEdges) {
+      hoveredEdge = null;
+      mountEdges(nextEdges, true);
+      render();
+      paint();
+      reheat(0.45);
     }
 
     function setVisible(set, allowedEdges = null) {
@@ -613,14 +665,41 @@
       updateLabels();
     });
 
+    function zoomBy(factor) {
+      const cx = width() / 2;
+      const cy = height() / 2;
+      const next = clamp(transform.k * factor, 0.22, 4);
+      const ratio = next / transform.k;
+      transform.k = next;
+      transform.x = cx - (cx - transform.x) * ratio;
+      transform.y = cy - (cy - transform.y) * ratio;
+      applyTransform();
+    }
+
+    function setVisual(next = {}) {
+      visual = { ...visual, ...next };
+      for (const node of nodes) {
+        node.r = (node.baseR || node.r) * visual.nodeScale;
+        node.el?.querySelector("circle.main")?.setAttribute("r", String(node.r));
+        node.el?.querySelector("circle.ring")?.setAttribute("r", String(node.r + 4));
+        node.el?.querySelector("text")?.setAttribute("y", String(node.r + 13));
+      }
+      svg.style.setProperty("--edge-scale", String(visual.edgeScale));
+      updateLabels();
+      reheat(0.45);
+    }
+
     return {
       setData,
+      updateEdges,
       setVisible,
+      setVisual,
       highlight,
       select,
       focus,
       reset,
       zoomToFit,
+      zoomBy,
       reheat,
       neighbors,
       screenPoint,

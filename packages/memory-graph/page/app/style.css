@@ -2,46 +2,50 @@
 
 :root {
   color-scheme: light;
-  --bg: #f6f4ef;
-  --panel: #fffdf9;
-  --panel-2: #faf7f1;
-  --fg: #201d19;
-  --muted: #6f6a63;
-  --line: #e4dfd5;
-  --line-strong: #d3ccc0;
-  --accent: #0f766e;
-  --accent-2: #0b5f59;
-  --accent-soft: rgba(15, 118, 110, 0.1);
-  --danger: #b91c1c;
-  --shadow: 0 18px 48px rgba(32, 29, 25, 0.16);
-  --dot: rgba(32, 29, 25, 0.085);
-  --edge: #8b8377;
-  --k-profile: #b45309;
-  --k-preference: #0369a1;
-  --k-rule: #b91c1c;
-  --k-fact: #047857;
+  --bg: #f5f5f7;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-solid: #ffffff;
+  --panel-2: #f1f1f4;
+  --fg: #1c1c21;
+  --muted: #6c6c78;
+  --line: #e2e2e8;
+  --line-strong: #cdccd6;
+  --accent: #7c3aed;
+  --accent-2: #6d28d9;
+  --accent-soft: rgba(124, 58, 237, 0.11);
+  --danger: #dc2626;
+  --shadow: 0 20px 50px rgba(15, 15, 25, 0.14);
+  --dot: rgba(28, 28, 33, 0.08);
+  --glow: rgba(124, 58, 237, 0.06);
+  --edge: #9393a0;
+  --k-profile: #d97706;
+  --k-preference: #0284c7;
+  --k-rule: #dc2626;
+  --k-fact: #059669;
   --k-procedure: #7c3aed;
-  --k-episode: #c2410c;
+  --k-episode: #ea580c;
   --k-reference: #475569;
   --k-unknown: #6b7280;
 }
 
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #141416;
-  --panel: #1c1c20;
-  --panel-2: #202026;
-  --fg: #eae7e1;
-  --muted: #9a948c;
-  --line: #2e2e34;
-  --line-strong: #414149;
-  --accent: #2dd4bf;
-  --accent-2: #5eead4;
-  --accent-soft: rgba(45, 212, 191, 0.12);
+  --bg: #1e1e1e;
+  --panel: rgba(34, 34, 38, 0.88);
+  --panel-solid: #222226;
+  --panel-2: #2a2a30;
+  --fg: #dcddde;
+  --muted: #8e8e98;
+  --line: #34343c;
+  --line-strong: #464652;
+  --accent: #a78bfa;
+  --accent-2: #c4b5fd;
+  --accent-soft: rgba(167, 139, 250, 0.15);
   --danger: #f87171;
-  --shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
-  --dot: rgba(234, 231, 225, 0.07);
-  --edge: #77716a;
+  --shadow: 0 24px 56px rgba(0, 0, 0, 0.56);
+  --dot: rgba(255, 255, 255, 0.045);
+  --glow: rgba(139, 92, 246, 0.08);
+  --edge: #6f6f7b;
   --k-profile: #f59e0b;
   --k-preference: #38bdf8;
   --k-rule: #f87171;
@@ -162,6 +166,23 @@ button {
   color: var(--muted);
 }
 
+.kbd {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-solid);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.clear-btn {
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
 .filters {
   display: flex;
   align-items: center;
@@ -218,6 +239,34 @@ button {
 .toggle input {
   accent-color: var(--accent);
   margin: 0;
+}
+
+.sim-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sim-control input[type="range"] {
+  width: 78px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.sim-control b {
+  min-width: 28px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: var(--fg);
 }
 
 .actions {
@@ -285,8 +334,10 @@ button {
   height: 100%;
   cursor: grab;
   background-color: var(--bg);
-  background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-image:
+    radial-gradient(circle at 50% 48%, var(--glow) 0%, transparent 62%),
+    radial-gradient(circle, var(--dot) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px;
   touch-action: none;
   /* 拖拽画布时不要把 SVG 里的节点标题当成文本选中（否则整屏蓝色选区）。 */
   user-select: none;
@@ -312,32 +363,40 @@ button {
 
 .edge {
   stroke: var(--edge);
-  stroke-opacity: 0.08;
+  stroke-opacity: 0.15;
   stroke-linecap: round;
   fill: none;
+  transition: stroke-opacity 0.18s ease, stroke 0.18s ease;
 }
 
 .edge.s1 {
-  stroke-width: 0.8;
+  stroke-width: calc(0.8px * var(--edge-scale, 1));
 }
 
 .edge.s2 {
-  stroke-width: 1.5;
-  stroke-opacity: 0.18;
+  stroke-width: calc(1.4px * var(--edge-scale, 1));
+  stroke-opacity: 0.24;
 }
 
 .edge.s3 {
-  stroke-width: 2.4;
-  stroke-opacity: 0.38;
+  stroke-width: calc(2.2px * var(--edge-scale, 1));
+  stroke-opacity: 0.42;
 }
 
-.edge.one {
+.edge.lexical {
   stroke-dasharray: 4 3;
+}
+
+.edge.lineage {
+  stroke: var(--k-procedure);
+  stroke-opacity: 0.55;
+  stroke-width: calc(1.5px * var(--edge-scale, 1));
+  stroke-dasharray: 5 3;
 }
 
 .edge.hl {
   stroke: var(--accent);
-  stroke-opacity: 0.85;
+  stroke-opacity: 0.92;
 }
 
 .edge.dim {
@@ -366,6 +425,7 @@ button {
 
 .node {
   cursor: pointer;
+  transition: opacity 0.18s ease;
 }
 
 .node.hidden {
@@ -373,17 +433,21 @@ button {
 }
 
 .node circle.main {
-  stroke: var(--panel);
-  stroke-width: 1.4;
-  transition: stroke 0.12s, stroke-width 0.12s;
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  transition: stroke 0.15s, stroke-width 0.15s, filter 0.15s;
+}
+
+.node.hub circle.main {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 28%, transparent));
 }
 
 .node circle.ring {
   fill: none;
   stroke: var(--muted);
-  stroke-width: 1;
-  stroke-dasharray: 2 3;
-  opacity: 0.55;
+  stroke-width: 1.1;
+  stroke-dasharray: 2.5 2.5;
+  opacity: 0.65;
 }
 
 .node[data-kind="profile"] circle.main {
@@ -440,20 +504,22 @@ button {
 .node:hover circle.main {
   stroke: var(--accent);
   stroke-width: 2.4;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 60%, transparent));
 }
 
 .node.sel circle.main {
   stroke: var(--accent);
   stroke-width: 3;
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 70%, transparent));
 }
 
 .node.hl circle.main {
   stroke: var(--accent);
-  stroke-width: 2.2;
+  stroke-width: 2.1;
 }
 
 .node.dim {
-  opacity: 0.12;
+  opacity: 0.11;
 }
 
 .node.faded {
@@ -461,8 +527,19 @@ button {
 }
 
 .node.superseded circle.main {
-  opacity: 0.45;
+  fill: var(--bg) !important;
+  stroke-width: 1.8;
+  opacity: 0.85;
 }
+
+.node.superseded[data-kind="profile"] circle.main { stroke: var(--k-profile); }
+.node.superseded[data-kind="preference"] circle.main { stroke: var(--k-preference); }
+.node.superseded[data-kind="rule"] circle.main { stroke: var(--k-rule); }
+.node.superseded[data-kind="fact"] circle.main { stroke: var(--k-fact); }
+.node.superseded[data-kind="procedure"] circle.main { stroke: var(--k-procedure); }
+.node.superseded[data-kind="episode"] circle.main { stroke: var(--k-episode); }
+.node.superseded[data-kind="reference"] circle.main { stroke: var(--k-reference); }
+.node.superseded[data-kind="unknown"] circle.main { stroke: var(--k-unknown); }
 
 /* ── 图例 / 状态 ─────────────────────────────────────── */
 
@@ -472,22 +549,45 @@ button {
   bottom: 12px;
   display: flex;
   flex-wrap: wrap;
-  gap: 5px 10px;
-  max-width: min(600px, 72vw);
-  padding: 8px 10px;
+  align-items: center;
+  gap: 4px 6px;
+  max-width: min(620px, 70vw);
+  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--panel);
+  backdrop-filter: blur(12px);
   font-size: 10.5px;
   color: var(--muted);
-  pointer-events: none;
 }
 
-.legend span {
+.legend-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.legend-item:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+
+.legend-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
+
+.legend-note {
+  padding: 2px 4px;
 }
 
 .legend i {
@@ -495,6 +595,97 @@ button {
   height: 7px;
   border-radius: 50%;
   display: inline-block;
+}
+
+.graph-controls {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+}
+
+.ctrl-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ctrl-btn:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+
+.ctrl-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
+.settings-panel {
+  position: absolute;
+  right: 54px;
+  bottom: 14px;
+  z-index: 45;
+  width: 230px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+}
+
+.settings-head button {
+  border: 0;
+  background: transparent;
+  color: var(--accent-2);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.setting-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .statusbar {
@@ -522,15 +713,17 @@ button {
 .tip {
   position: fixed;
   z-index: 60;
-  width: 380px;
+  width: 390px;
   max-width: calc(100vw - 16px);
-  max-height: min(72vh, 620px);
+  max-height: min(74vh, 640px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 13px 15px 12px;
+  padding: 14px 16px 13px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-top: 3px solid var(--accent);
+  border-radius: 12px;
   background: var(--panel);
+  backdrop-filter: blur(16px);
   box-shadow: var(--shadow);
   font-size: 12.5px;
   line-height: 1.6;
@@ -538,6 +731,45 @@ button {
   cursor: default;
   user-select: text;
 }
+
+.tip[data-kind="profile"] { border-top-color: var(--k-profile); }
+.tip[data-kind="preference"] { border-top-color: var(--k-preference); }
+.tip[data-kind="rule"] { border-top-color: var(--k-rule); }
+.tip[data-kind="fact"] { border-top-color: var(--k-fact); }
+.tip[data-kind="procedure"] { border-top-color: var(--k-procedure); }
+.tip[data-kind="episode"] { border-top-color: var(--k-episode); }
+.tip[data-kind="reference"] { border-top-color: var(--k-reference); }
+
+.tip-jump {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--accent-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tip-jump:hover {
+  border-color: var(--accent);
+}
+
+.tip-link-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--k-unknown);
+}
+
+.tip-link-dot[data-kind="profile"] { background: var(--k-profile); }
+.tip-link-dot[data-kind="preference"] { background: var(--k-preference); }
+.tip-link-dot[data-kind="rule"] { background: var(--k-rule); }
+.tip-link-dot[data-kind="fact"] { background: var(--k-fact); }
+.tip-link-dot[data-kind="procedure"] { background: var(--k-procedure); }
+.tip-link-dot[data-kind="episode"] { background: var(--k-episode); }
+.tip-link-dot[data-kind="reference"] { background: var(--k-reference); }
 
 .tip[hidden] {
   display: none;

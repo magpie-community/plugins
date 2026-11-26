@@ -24,20 +24,26 @@
           <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
           <path d="M16 16l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
         </svg>
-        <input id="q" type="search" placeholder="搜标题、正文、标签…" autocomplete="off" spellcheck="false" />
+        <input id="q" type="search" placeholder="搜索记忆标题、正文、标签…" autocomplete="off" spellcheck="false" />
+        <kbd class="kbd">/</kbd>
       </label>
 
       <div class="filters">
         <button class="chip-btn" data-menu="kind" type="button">类型 <b id="kind-count"></b></button>
         <button class="chip-btn" data-menu="scope" type="button">范围 <b id="scope-count"></b></button>
         <button class="chip-btn" data-menu="tag" type="button">标签 <b id="tag-count"></b></button>
-        <label class="toggle"><input id="only-mutual" type="checkbox" /> 只看互指</label>
+        <button id="clear-filters" class="chip-btn clear-btn" type="button" hidden>清空</button>
+        <label class="sim-control" title="拖动调节节点连线的最低语义相似度">
+          <span>相似度</span>
+          <input id="opt-min-sim" type="range" min="0.35" max="0.9" step="0.01" value="0.6" />
+          <b id="min-sim-val">0.60</b>
+        </label>
         <label class="toggle"><input id="hide-superseded" type="checkbox" /> 隐藏已取代</label>
       </div>
 
       <div class="actions">
         <button id="fit" class="icon-btn" type="button" title="适配窗口 (0)">适配</button>
-        <button id="rebuild" class="icon-btn" type="button" title="重新计算全部关联">重建全部</button>
+        <button id="rebuild" class="icon-btn" type="button" title="重新扫描记忆并计算相似度">刷新</button>
         <button id="theme" class="icon-btn" type="button" title="切换主题">主题</button>
       </div>
     </header>
@@ -60,6 +66,41 @@
 
       <aside id="legend" class="legend"></aside>
 
+      <div class="graph-controls" aria-label="画布控制">
+        <button id="toggle-settings" class="ctrl-btn" type="button" title="图谱显示设置">⚙</button>
+        <button id="zoom-in" class="ctrl-btn" type="button" title="放大">+</button>
+        <button id="zoom-out" class="ctrl-btn" type="button" title="缩小">−</button>
+        <button id="ctrl-fit" class="ctrl-btn" type="button" title="适配窗口 (0)">⌖</button>
+        <button id="reheat" class="ctrl-btn" type="button" title="重新分布节点">↻</button>
+      </div>
+
+      <aside id="settings-panel" class="settings-panel" hidden>
+        <div class="settings-head">
+          <strong>图谱显示</strong>
+          <button id="settings-reset" type="button">默认</button>
+        </div>
+        <label class="setting-row">
+          <span>节点大小</span>
+          <input id="opt-node-scale" type="range" min="0.6" max="1.8" step="0.1" value="1" />
+        </label>
+        <label class="setting-row">
+          <span>连线粗细</span>
+          <input id="opt-edge-scale" type="range" min="0.5" max="2" step="0.1" value="1" />
+        </label>
+        <label class="setting-row">
+          <span>斥力强度</span>
+          <input id="opt-repel" type="range" min="0.4" max="2" step="0.1" value="1" />
+        </label>
+        <label class="setting-row">
+          <span>连线长度</span>
+          <input id="opt-link-dist" type="range" min="0.5" max="2" step="0.1" value="1" />
+        </label>
+        <label class="setting-row">
+          <span>文字显隐阈值</span>
+          <input id="opt-label-zoom" type="range" min="0.6" max="2.4" step="0.1" value="1.45" />
+        </label>
+      </aside>
+
       <div id="banner" class="banner" hidden>
         <span></span>
         <button id="banner-retry" type="button">重试</button>
@@ -79,7 +120,7 @@
     <footer class="statusbar">
       <span id="status">正在启动本地服务…</span>
       <span class="hint">单击节点看详情 · 双击聚焦 · Esc 关闭</span>
-      <span id="engine">引擎：memory_search</span>
+      <span id="engine">引擎：语义相似度</span>
     </footer>
 
     <script src="/graph.js"></script>

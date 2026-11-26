@@ -47,7 +47,7 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
       const key = statKey(info);
       const prev = cacheNodes[id];
 
-      if (prev && prev.stat === key && prev.hash) {
+      if (prev && prev.stat === key && prev.hash && prev.body !== undefined) {
         nodes.set(id, prev);
         return;
       }
@@ -55,7 +55,7 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
       const raw = await readFile(full, "utf8");
       const hash = hashOf(raw);
 
-      if (prev && prev.hash === hash) {
+      if (prev && prev.hash === hash && prev.body !== undefined) {
         nodes.set(id, { ...prev, stat: key, mtime: info.mtimeMs });
         return;
       }

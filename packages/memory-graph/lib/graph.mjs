@@ -1,8 +1,6 @@
 // 本文由AI自动生成
 // 组装给页面的图数据。节点只暴露 active / superseded；candidate 和 archived 不进图。
 
-import { edgesFromHits } from "./rank.mjs";
-
 export function scopeLabel(scope) {
   const text = String(scope || "global");
   if (text === "global") return "全局";
@@ -21,20 +19,39 @@ function statusRank(status) {
   return 2;
 }
 
-export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state = {}, memoryDir = "" }) {
+export function buildPayload({
+  nodes,
+  edges = [],
+  vectorInfo = null,
+  builtAt,
+  options = {},
+  state = {},
+  memoryDir = "",
+}) {
   const all = Object.values(nodes || {});
   const visibleNodes = all.filter((node) => node.status === "active" || node.status === "superseded");
   const visible = new Set(visibleNodes.map((node) => node.id));
-  const topK = Math.max(1, Math.min(20, Number(options.topK) || 3));
-  const edges = edgesFromHits(nodes, hits, { topK, visible });
+
+  const rawMinSim = Number(options.minSimilarity);
+  const minSimilarity = Number.isFinite(rawMinSim)
+    ? Math.max(0.35, Math.min(0.95, rawMinSim))
+    : 0.6;
+
+  const filteredEdges = (Array.isArray(edges) ? edges : []).filter(
+    (edge) =>
+      visible.has(edge.a) &&
+      visible.has(edge.b) &&
+      (edge.lineage || edge.source === "lineage" || Number(edge.sim) >= minSimilarity),
+  );
 
   const degree = new Map();
   const strength = new Map();
-  for (const edge of edges) {
+  for (const edge of filteredEdges) {
     degree.set(edge.a, (degree.get(edge.a) || 0) + 1);
     degree.set(edge.b, (degree.get(edge.b) || 0) + 1);
-    strength.set(edge.a, (strength.get(edge.a) || 0) + edge.s);
-    strength.set(edge.b, (strength.get(edge.b) || 0) + edge.s);
+    const sim = Number(edge.sim) || 0;
+    strength.set(edge.a, (strength.get(edge.a) || 0) + sim);
+    strength.set(edge.b, (strength.get(edge.b) || 0) + sim);
   }
 
   const payloadNodes = visibleNodes.map((node) => ({
@@ -54,7 +71,7 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
     body: node.body,
     bodyTruncated: Boolean(node.bodyTruncated),
     degree: degree.get(node.id) || 0,
-    strengthSum: strength.get(node.id) || 0,
+    strengthSum: Math.round((strength.get(node.id) || 0) * 1000) / 1000,
   }));
 
   payloadNodes.sort(
@@ -64,10 +81,11 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
       String(b.updated || "").localeCompare(String(a.updated || "")),
   );
 
-  const maxNodes = Math.max(1, Number(options.maxNodes) || 200);
+  const rawMax = Number(options.maxNodes);
+  const maxNodes = Number.isFinite(rawMax) && rawMax === 0 ? Infinity : Math.max(1, rawMax || 1000);
   const kept = payloadNodes.slice(0, maxNodes);
   const keptIds = new Set(kept.map((node) => node.id));
-  const keptEdges = edges.filter((edge) => keptIds.has(edge.a) && keptIds.has(edge.b));
+  const keptEdges = filteredEdges.filter((edge) => keptIds.has(edge.a) && keptIds.has(edge.b));
 
   const keptDegree = new Map();
   for (const edge of keptEdges) {
@@ -79,8 +97,11 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
   const warnings = Array.isArray(state.warnings) ? state.warnings.slice(-8) : [];
   if (!payloadNodes.length) {
     warnings.push({ level: "info", text: "还没有可显示的记忆，正在等第一次扫描结果。" });
-  } else if (!keptEdges.length && (stats?.queried || 0) > 0) {
-    warnings.push({ level: "info", text: `这些记忆之间暂时没有进入彼此前 ${topK} 位的语义关联。` });
+  } else if (!keptEdges.length && builtAt) {
+    warnings.push({
+      level: "info",
+      text: `当前相似度阈值 ${minSimilarity.toFixed(2)} 下暂无连线，可在右下角 ⚙ 设置中调低阈值。`,
+    });
   }
   if (payloadNodes.length > kept.length) {
     warnings.push({
@@ -95,20 +116,24 @@ export function buildPayload({ nodes, hits, stats, builtAt, options = {}, state 
     superseded: all.filter((node) => node.status === "superseded").length,
     candidate: all.filter((node) => node.status === "candidate").length,
     archived: all.filter((node) => node.status === "archived").length,
-    queried: Object.keys(hits || {}).length,
+    vectorized: vectorInfo?.matched || 0,
   };
 
   return {
     ok: true,
+    engine: "similarity",
+    minSimilarity,
+    vectorInfo: vectorInfo || null,
     builtAt: builtAt || null,
     complete: state.complete !== false,
     source: { ...totals, dir: memoryDir },
-    mcp: { ok: state.phase !== "error", lastError: state.lastError || "" },
     nodes: kept,
     edges: keptEdges,
     stats: {
       edges: keptEdges.length,
-      mutual: keptEdges.filter((edge) => edge.m).length,
+      vectorEdges: keptEdges.filter((edge) => edge.source === "vector").length,
+      lexicalEdges: keptEdges.filter((edge) => edge.source === "lexical").length,
+      lineageEdges: keptEdges.filter((edge) => edge.lineage || edge.source === "lineage").length,
       isolated: kept.filter((node) => !node.degree).length,
       nodesReturned: kept.length,
       totalNodes: payloadNodes.length,

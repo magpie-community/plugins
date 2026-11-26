@@ -25,11 +25,25 @@
     kindCount: $("#kind-count"),
     scopeCount: $("#scope-count"),
     tagCount: $("#tag-count"),
-    onlyMutual: $("#only-mutual"),
+    optMinSim: $("#opt-min-sim"),
+    minSimVal: $("#min-sim-val"),
     hideSuperseded: $("#hide-superseded"),
+    clearFilters: $("#clear-filters"),
     fit: $("#fit"),
     rebuild: $("#rebuild"),
     theme: $("#theme"),
+    toggleSettings: $("#toggle-settings"),
+    settingsPanel: $("#settings-panel"),
+    settingsReset: $("#settings-reset"),
+    zoomIn: $("#zoom-in"),
+    zoomOut: $("#zoom-out"),
+    ctrlFit: $("#ctrl-fit"),
+    reheat: $("#reheat"),
+    optNodeScale: $("#opt-node-scale"),
+    optEdgeScale: $("#opt-edge-scale"),
+    optRepel: $("#opt-repel"),
+    optLinkDist: $("#opt-link-dist"),
+    optLabelZoom: $("#opt-label-zoom"),
     progress: $("#progress"),
     progressText: $("#progress span"),
     canvas: $("#canvas"),
@@ -66,7 +80,7 @@
       kinds: new Set(),
       scopes: new Set(),
       tags: new Set(),
-      mutual: false,
+      minSim: 0.6,
       hideSuperseded: false,
     },
     menu: "",
@@ -263,29 +277,39 @@
     return "global";
   }
 
-  async function load() {
+  async function load({ keepLayout = false } = {}) {
     try {
-      const data = await api("/api/graph");
+      const qs = `?minSim=${encodeURIComponent(state.filters.minSim.toFixed(2))}`;
+      const data = await api(`/api/graph${qs}`);
       state.data = data;
       state.builtAt = data.builtAt || "";
+      if (Number.isFinite(Number(data.minSimilarity))) {
+        state.filters.minSim = Number(data.minSimilarity);
+        if (els.optMinSim) els.optMinSim.value = state.filters.minSim.toFixed(2);
+        if (els.minSimVal) els.minSimVal.textContent = state.filters.minSim.toFixed(2);
+      }
       buildIndexes(data.nodes, data.edges);
-      graph.setData(data.nodes, data.edges);
+      if (keepLayout) {
+        graph.updateEdges(data.edges);
+      } else {
+        graph.setData(data.nodes, data.edges);
+      }
       applyFilters();
       renderLegend(data);
       renderBadges();
       setStatus();
       hideBanner();
 
-      if (data.mcp?.lastError) {
-        showBanner(`构建出错：${data.mcp.lastError}`, () => retry());
-      } else if (data.complete === false) {
-        showBanner("这次构建只跑完一部分，点重试可以接着补。", () => retry());
+      if (data.vectorInfo?.matched > 0) {
+        els.engine.textContent = `引擎：本地语义向量 (${data.vectorInfo.matched}/${data.vectorInfo.totalVisible})`;
+      } else {
+        els.engine.textContent = "引擎：本地词法+标签相似度";
       }
 
       if (!data.nodes.length) {
         const status = state.status;
         if (status && status.phase && status.phase !== "idle" && status.phase !== "error") {
-          showEmpty("正在读取记忆…", "第一次打开会扫描记忆目录并逐条调用 memory_search，先等一下。");
+          showEmpty("正在读取记忆…", "正在扫描记忆目录并计算本地语义相似度。");
         } else if (status?.phase === "error") {
           showEmpty(
             "没能读到记忆",
@@ -325,22 +349,12 @@
     const filters = state.filters;
     const query = filters.q.trim().toLowerCase();
     const visible = new Set();
-    const mutualNodes = new Set();
-    const allowedEdges = filters.mutual ? new Set() : null;
-
-    for (const edge of data.edges) {
-      if (!edge.m) continue;
-      mutualNodes.add(edge.a);
-      mutualNodes.add(edge.b);
-      allowedEdges?.add(edge.a < edge.b ? `${edge.a}|${edge.b}` : `${edge.b}|${edge.a}`);
-    }
 
     for (const node of data.nodes) {
       if (filters.hideSuperseded && node.status === "superseded") continue;
       if (filters.kinds.size && !filters.kinds.has(node.kind)) continue;
       if (filters.scopes.size && !filters.scopes.has(scopeGroup(node.scope))) continue;
       if (filters.tags.size && ![...filters.tags].every((tag) => node.tags?.includes(tag))) continue;
-      if (filters.mutual && !mutualNodes.has(node.id)) continue;
       if (query) {
         const haystack = `${node.title || ""}\n${node.body || ""}\n${(node.tags || []).join(" ")}\n${
           node.id
@@ -350,12 +364,11 @@
       visible.add(node.id);
     }
 
-    graph.setVisible(visible, allowedEdges);
+    graph.setVisible(visible, null);
 
     let edgeCount = 0;
     for (const edge of data.edges) {
       if (!visible.has(edge.a) || !visible.has(edge.b)) continue;
-      if (filters.mutual && !edge.m) continue;
       edgeCount++;
     }
 
@@ -374,10 +387,8 @@
     state.filters.kinds.clear();
     state.filters.scopes.clear();
     state.filters.tags.clear();
-    state.filters.mutual = false;
     state.filters.hideSuperseded = false;
     els.q.value = "";
-    els.onlyMutual.checked = false;
     els.hideSuperseded.checked = false;
     renderBadges();
     applyFilters();
@@ -390,24 +401,44 @@
     els.kindCount.parentElement.classList.toggle("active", state.filters.kinds.size > 0);
     els.scopeCount.parentElement.classList.toggle("active", state.filters.scopes.size > 0);
     els.tagCount.parentElement.classList.toggle("active", state.filters.tags.size > 0);
+    const hasAny = Boolean(
+      state.filters.q.trim() ||
+        state.filters.kinds.size ||
+        state.filters.scopes.size ||
+        state.filters.tags.size ||
+        state.filters.hideSuperseded,
+    );
+    if (els.clearFilters) els.clearFilters.hidden = !hasAny;
+    renderLegend(state.data);
   }
 
   function renderLegend(data) {
+    if (!data) return;
     els.legend.textContent = "";
     const counts = new Map();
     for (const node of data.nodes) counts.set(node.kind, (counts.get(node.kind) || 0) + 1);
     for (const kind of KIND_ORDER) {
       if (!counts.get(kind)) continue;
-      const item = document.createElement("span");
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `legend-item${state.filters.kinds.has(kind) ? " active" : ""}`;
+      item.title = "点击快速筛选此类型";
       const dot = document.createElement("i");
       dot.style.background = `var(--k-${kind})`;
       item.append(dot, `${KIND_LABEL[kind] || kind} ${counts.get(kind)}`);
+      item.addEventListener("click", () => {
+        if (state.filters.kinds.has(kind)) state.filters.kinds.delete(kind);
+        else state.filters.kinds.add(kind);
+        applyFilters();
+        renderBadges();
+      });
       els.legend.appendChild(item);
     }
     const superseded = data.nodes.filter((node) => node.status === "superseded").length;
     if (superseded) {
       const item = document.createElement("span");
-      item.textContent = `虚线环 = 已取代 ${superseded}`;
+      item.className = "legend-note";
+      item.textContent = `空心虚线环 = 已取代 ${superseded}`;
       els.legend.appendChild(item);
     }
   }
@@ -595,13 +626,12 @@
 
     if (phase === "scanning") {
       els.progressText.textContent = "扫描记忆目录…";
-      els.progress.style.setProperty("--p", "8%");
-    } else if (phase === "querying") {
-      const pct = status.total ? Math.round((status.done / status.total) * 100) : 0;
-      els.progressText.textContent = `语义查询 ${status.done}/${status.total} · 并发 ${status.concurrency || ""}`.trim();
-      els.progress.style.setProperty("--p", `${pct}%`);
-    } else if (phase === "writing" || phase === "ranking") {
-      els.progressText.textContent = "计算关联并写入缓存…";
+      els.progress.style.setProperty("--p", "25%");
+    } else if (phase === "computing") {
+      els.progressText.textContent = "计算本地语义相似度…";
+      els.progress.style.setProperty("--p", "70%");
+    } else if (phase === "writing") {
+      els.progressText.textContent = "写入缓存…";
       els.progress.style.setProperty("--p", "96%");
     } else if (phase === "error") {
       els.progress.hidden = true;
@@ -612,13 +642,17 @@
 
     if (busy) {
       els.rebuild.disabled = true;
-      els.rebuild.textContent = "构建中…";
+      els.rebuild.textContent = "计算中…";
     } else {
       els.rebuild.disabled = false;
-      els.rebuild.textContent = "重建全部";
+      els.rebuild.textContent = "刷新";
     }
 
-    els.engine.textContent = `引擎：memory_search · ${status.counts?.queried || 0}/${status.counts?.active || 0} 条已查询`;
+    if (status.vectorInfo?.matched > 0) {
+      els.engine.textContent = `引擎：本地语义向量 (${status.vectorInfo.matched}/${status.vectorInfo.totalVisible})`;
+    } else if (status.cached) {
+      els.engine.textContent = "引擎：本地词法+标签相似度";
+    }
 
     if (phase === "idle" && status.lastBuiltAt && status.lastBuiltAt !== state.builtAt) {
       state.builtAt = status.lastBuiltAt;
@@ -676,21 +710,20 @@
   }
 
   async function rebuild() {
-    if (!window.confirm("重新查询全部 active 记忆？按当前数量大约需要几十秒。")) return;
     try {
       const result = await api("/api/rebuild", {
         method: "POST",
-        body: JSON.stringify({ mode: "all" }),
+        body: JSON.stringify({}),
       });
       if (result.started) {
-        toast("已开始重建，图会边算边更新");
+        toast("正在重新扫描并计算相似度…");
         els.rebuild.disabled = true;
-        els.rebuild.textContent = "构建中…";
+        els.rebuild.textContent = "计算中…";
       } else {
-        toast("已经有一个构建在跑");
+        toast("正在计算中");
       }
     } catch (error) {
-      showBanner(`重建失败：${error.message}`, () => rebuild());
+      showBanner(`刷新失败：${error.message}`, () => rebuild());
     }
   }
 
@@ -724,13 +757,19 @@
       }, 150);
     });
 
-    els.onlyMutual.addEventListener("change", () => {
-      state.filters.mutual = els.onlyMutual.checked;
-      applyFilters();
+    els.optMinSim?.addEventListener("input", () => {
+      const val = Number(els.optMinSim.value);
+      state.filters.minSim = Number.isFinite(val) ? val : 0.6;
+      if (els.minSimVal) els.minSimVal.textContent = state.filters.minSim.toFixed(2);
+      clearTimeout(bind.simTimer);
+      bind.simTimer = setTimeout(() => {
+        load({ keepLayout: true });
+      }, 90);
     });
 
     els.hideSuperseded.addEventListener("change", () => {
       state.filters.hideSuperseded = els.hideSuperseded.checked;
+      renderBadges();
       applyFilters();
     });
 
@@ -749,8 +788,52 @@
     });
 
     els.fit.addEventListener("click", () => graph.zoomToFit());
+    els.ctrlFit?.addEventListener("click", () => graph.zoomToFit());
+    els.zoomIn?.addEventListener("click", () => graph.zoomBy(1.25));
+    els.zoomOut?.addEventListener("click", () => graph.zoomBy(0.8));
+    els.reheat?.addEventListener("click", () => graph.reheat(0.85));
+    els.clearFilters?.addEventListener("click", () => clearFilters());
     els.rebuild.addEventListener("click", () => rebuild());
     els.bannerClose.addEventListener("click", () => hideBanner());
+
+    const syncVisual = () => {
+      graph.setVisual({
+        nodeScale: Number(els.optNodeScale?.value || 1),
+        edgeScale: Number(els.optEdgeScale?.value || 1),
+        repel: Number(els.optRepel?.value || 1),
+        linkDist: Number(els.optLinkDist?.value || 1),
+        labelZoom: Number(els.optLabelZoom?.value || 1.45),
+      });
+    };
+    for (const slider of [
+      els.optNodeScale,
+      els.optEdgeScale,
+      els.optRepel,
+      els.optLinkDist,
+      els.optLabelZoom,
+    ]) {
+      slider?.addEventListener("input", syncVisual);
+    }
+    els.toggleSettings?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = els.settingsPanel.hidden;
+      els.settingsPanel.hidden = !open;
+      els.toggleSettings.classList.toggle("active", open);
+    });
+    els.settingsReset?.addEventListener("click", () => {
+      if (els.optNodeScale) els.optNodeScale.value = "1";
+      if (els.optEdgeScale) els.optEdgeScale.value = "1";
+      if (els.optRepel) els.optRepel.value = "1";
+      if (els.optLinkDist) els.optLinkDist.value = "1";
+      if (els.optLabelZoom) els.optLabelZoom.value = "1.45";
+      syncVisual();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!els.settingsPanel || els.settingsPanel.hidden) return;
+      if (els.settingsPanel.contains(event.target) || event.target === els.toggleSettings) return;
+      els.settingsPanel.hidden = true;
+      els.toggleSettings?.classList.remove("active");
+    });
 
     els.theme.addEventListener("click", () => {
       const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";

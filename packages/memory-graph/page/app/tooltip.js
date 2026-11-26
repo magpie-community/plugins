@@ -38,7 +38,22 @@
     return parts.length <= 2 ? text : `…/${parts.slice(-2).join("/")}`;
   }
 
-  const MAX_LINKS = 3;
+  const MAX_LINKS = 6;
+  const SOURCE_LABEL = {
+    vector: "向量",
+    lexical: "词法",
+    lineage: "演进",
+  };
+
+  function formatSim(edge) {
+    if (edge?.source === "lineage") return "演进";
+    const pct = Number.isFinite(Number(edge?.sim)) ? `${Math.round(Number(edge.sim) * 100)}%` : "";
+    const parts = [];
+    if (pct) parts.push(pct);
+    if (edge?.lineage) parts.push("演进");
+    else if (SOURCE_LABEL[edge?.source]) parts.push(SOURCE_LABEL[edge.source]);
+    return parts.join(" · ");
+  }
 
   function create(el, handlers = {}) {
     let currentId = "";
@@ -184,6 +199,7 @@
 
       kind.textContent = KIND_LABEL[node.kind] || node.kind || "未分类";
       kind.dataset.kind = node.kind || "unknown";
+      el.dataset.kind = node.kind || "unknown";
       idButton.textContent = node.id;
 
       title.textContent = node.title || node.id;
@@ -192,7 +208,18 @@
       addMeta("状态", STATUS_LABEL[node.status] || node.status);
       addMeta("来源", node.origin);
       if (node.status === "superseded" && node.supersededBy) {
-        addMeta("取代者", node.supersededBy);
+        const span = document.createElement("span");
+        span.textContent = "取代者 ";
+        const jump = document.createElement("button");
+        jump.type = "button";
+        jump.className = "tip-jump";
+        jump.textContent = node.supersededBy;
+        jump.addEventListener("click", () => {
+          const target = ctx.byId?.get(node.supersededBy);
+          if (target) handlers.onFocus?.(target);
+        });
+        span.appendChild(jump);
+        meta.appendChild(span);
       }
 
       body.textContent = node.body || "（正文为空）";
@@ -247,15 +274,19 @@
         const edge = ctx.edgeFor?.(node.id, other);
         if (edge) related.push({ edge, other });
       }
-      const ownRank = (edge) => (node.id === edge.a ? edge.ra : edge.rb) || (node.id === edge.a ? edge.rb : edge.ra) || 99;
-      related.sort((a, b) => ownRank(a.edge) - ownRank(b.edge) || b.edge.s - a.edge.s);
+      related.sort(
+        (a, b) =>
+          Number(Boolean(b.edge.lineage || b.edge.source === "lineage")) -
+            Number(Boolean(a.edge.lineage || a.edge.source === "lineage")) ||
+          (Number(b.edge.sim) || 0) - (Number(a.edge.sim) || 0),
+      );
 
       if (related.length) {
         links.hidden = false;
         const heading = document.createElement("h4");
         heading.textContent =
           related.length > MAX_LINKS
-            ? `关联 ${related.length} 条 · 显示前 ${MAX_LINKS}`
+            ? `关联 ${related.length} 条 · 显示最相似前 ${MAX_LINKS}`
             : `关联 ${related.length} 条`;
         links.appendChild(heading);
         for (const { edge, other } of related.slice(0, MAX_LINKS)) {
@@ -265,45 +296,52 @@
           row.type = "button";
           row.className = "tip-link";
 
+          const dot = document.createElement("i");
+          dot.className = "tip-link-dot";
+          dot.dataset.kind = peer.kind || "unknown";
+
           const who = document.createElement("span");
           who.className = "who";
           who.textContent = peer.title || peer.id;
 
-          const forward = node.id === edge.a;
-          const rank = (forward ? edge.ra : edge.rb) || (forward ? edge.rb : edge.ra);
-          const back = forward ? edge.rb : edge.ra;
           const meta = document.createElement("span");
           meta.className = "s";
-          meta.textContent = [
-            rank ? `第 ${rank} 位` : "",
-            back && back !== rank ? `对向第 ${back} 位` : "",
-            edge.m ? "双向" : "",
-          ]
-            .filter(Boolean)
-            .join(" · ");
+          meta.textContent = formatSim(edge);
 
-          row.append(who, meta);
+          row.append(dot, who, meta);
           row.addEventListener("click", () => handlers.onFocus?.(peer));
           links.appendChild(row);
         }
       }
 
       foot.hidden = false;
-      foot.textContent = `${node.degree || 0} 条关联 · 位次来自 memory_search，第 1 位最相关`;
+      foot.textContent = `${node.degree || 0} 条关联 · 基于本地语义相似度`;
     }
 
     function renderEdge(edge, ctx) {
       reset();
       currentId = "";
-      kind.textContent = "关联";
-      kind.dataset.kind = "reference";
+      kind.textContent = edge.source === "lineage" ? "演进" : "语义关联";
+      kind.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
+      el.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
       idButton.textContent = `${edge.a} ↔ ${edge.b}`;
       const a = ctx.byId?.get(edge.a);
       const b = ctx.byId?.get(edge.b);
       title.textContent = `${a?.title || edge.a} ↔ ${b?.title || edge.b}`;
-      addMeta("方向", edge.m ? "双向" : "单向");
-      if (edge.ra) addMeta("A 侧位次", `第 ${edge.ra} 位`);
-      if (edge.rb) addMeta("B 侧位次", `第 ${edge.rb} 位`);
+      if (edge.source !== "lineage" && Number.isFinite(Number(edge.sim))) {
+        addMeta("相似度", `${(Number(edge.sim) * 100).toFixed(1)}%`);
+      }
+      addMeta(
+        "来源",
+        edge.source === "lineage"
+          ? "记忆取代关系 (supersededBy)"
+          : edge.source === "lexical"
+            ? "词法 + 标签回退"
+            : "本地多语言向量余弦",
+      );
+      if (edge.lineage && edge.source !== "lineage") {
+        addMeta("演进", "存在取代关系 (supersededBy)");
+      }
 
       links.hidden = false;
       for (const peer of [a, b]) {
@@ -311,16 +349,19 @@
         const row = document.createElement("button");
         row.type = "button";
         row.className = "tip-link";
+        const dot = document.createElement("i");
+        dot.className = "tip-link-dot";
+        dot.dataset.kind = peer.kind || "unknown";
         const who = document.createElement("span");
         who.className = "who";
         who.textContent = peer.title || peer.id;
-        row.appendChild(who);
+        row.append(dot, who);
         row.addEventListener("click", () => handlers.onFocus?.(peer));
         links.appendChild(row);
       }
 
       foot.hidden = false;
-      foot.textContent = "关联只由 memory_search 的位次决定，没有相似度分数";
+      foot.textContent = "节点关联由本地向量余弦相似度决定，可在顶栏实时调节阈值";
     }
 
     function open(node, ctx, point) {

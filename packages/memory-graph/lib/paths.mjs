@@ -19,6 +19,16 @@ export function dataDir() {
   return process.env.MAGPIE_MEMORY_GRAPH_DATA_DIR || join(configDir(), "memory-graph");
 }
 
+export function cacheDir() {
+  if (process.env.MAGPIE_CACHE_DIR) return process.env.MAGPIE_CACHE_DIR;
+  if (process.env.XDG_CACHE_HOME) return join(process.env.XDG_CACHE_HOME, "magpie");
+  return join(homedir(), ".cache", "magpie");
+}
+
+export function vectorsDir() {
+  return process.env.MAGPIE_VECTORS_PATH || join(cacheDir(), "paraphrase-multilingual-MiniLM-L12-v2");
+}
+
 function normalizeAddr(value) {
   const text = String(value || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   return text || "127.0.0.1:3425";

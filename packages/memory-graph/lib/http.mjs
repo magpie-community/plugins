@@ -20,29 +20,41 @@ export function hostAllowed(req, port) {
   return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`;
 }
 
-export function originAllowed(req, port) {
+export function originAllowed(req, port, allowNull = false) {
   const origin = req.headers.origin;
   if (origin === undefined) return true;
-  if (origin === "null") return true;
+  if (origin === "null") return allowNull;
   const own = new Set([
     `http://127.0.0.1:${port}`,
     `https://127.0.0.1:${port}`,
     `http://localhost:${port}`,
     `https://localhost:${port}`,
+    `http://[::1]:${port}`,
+    `https://[::1]:${port}`,
   ]);
   return own.has(String(origin).toLowerCase());
 }
 
-export function corsHeaders(req, port) {
+export function fetchSiteAllowed(req) {
+  const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (!site) return true;
+  return site === "same-origin" || site === "none";
+}
+
+export function corsHeaders(req, port, allowNull = false) {
   const origin = String(req.headers.origin ?? "");
-  const allow = origin === "null" ? "null" : origin && originAllowed(req, port) ? origin : "null";
-  return {
-    "access-control-allow-origin": allow,
+  const headers = {
     "access-control-allow-headers": `content-type, ${TOKEN_HEADER}`,
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-max-age": "600",
     vary: "Origin",
   };
+  if (origin === "null" && allowNull) {
+    headers["access-control-allow-origin"] = "null";
+  } else if (origin && origin !== "null" && originAllowed(req, port, false)) {
+    headers["access-control-allow-origin"] = origin;
+  }
+  return headers;
 }
 
 export function tokenOK(req, token) {
@@ -51,12 +63,20 @@ export function tokenOK(req, token) {
   return got.length > 0 && got.length === want.length && timingSafeEqual(got, want);
 }
 
-export function send(req, res, port, status, body, type = "application/json; charset=utf-8") {
+export function send(
+  req,
+  res,
+  port,
+  status,
+  body,
+  type = "application/json; charset=utf-8",
+  allowNull = false,
+) {
   res.writeHead(status, {
     "content-type": type,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
-    ...corsHeaders(req, port),
+    ...corsHeaders(req, port, allowNull),
   });
   res.end(body);
 }

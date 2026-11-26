@@ -1,18 +1,20 @@
 // 本文由AI自动生成
-// 建图编排：扫描 → 找出新增/变化 → 并发查询 memory_search → 落派生缓存。
+// 建图编排：扫描记忆目录 → 读取 magpie 本地 MEV1 向量库 → 毫秒级计算余弦/词法相似度 → 落派生缓存。
 //
-// 单飞：同一时间只允许一个构建。页面打开时只补新增/变化的记忆；
-// 「重建全部」清空 hits 后重跑。每 20 条落盘一次，构建中也能先看图。
+// 纯本地只读计算，不调用外部 API，不依赖 memory_search MCP。
 
-import { loadCache, saveCache } from "./cache.mjs";
+import {
+  AI_computeSimilarityEdges,
+  AI_findVectorsFile,
+  AI_loadVectors,
+} from "./AI_similarity.mjs";
+import { SCHEMA, loadCache, saveCache } from "./cache.mjs";
 import { buildPayload } from "./graph.mjs";
-import { parseIds } from "./mcp.mjs";
-import { queryText } from "./rank.mjs";
 import { scanMemories } from "./scan.mjs";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const EDGE_FLOOR = 0.35;
 
-function countNodes(nodes, hits) {
+function countNodes(nodes, vectorInfo) {
   const all = Object.values(nodes || {});
   return {
     total: all.length,
@@ -20,18 +22,18 @@ function countNodes(nodes, hits) {
     superseded: all.filter((node) => node.status === "superseded").length,
     candidate: all.filter((node) => node.status === "candidate").length,
     archived: all.filter((node) => node.status === "archived").length,
-    queried: Object.keys(hits || {}).length,
+    vectorized: vectorInfo?.matched || 0,
   };
 }
 
-export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
-  let cache = { nodes: {}, hits: {}, stats: {}, builtAt: null };
+export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
+  let cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, stats: {}, builtAt: null };
   let nodes = {};
   let loaded = false;
   let running = null;
   let lastCheck = 0;
-  let currentHits = null;
   let sleeping = false;
+  let persistChain = Promise.resolve();
 
   let state = {
     phase: "idle",
@@ -42,39 +44,52 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     lastError: "",
     complete: true,
     warnings: [],
-    failures: 0,
   };
 
   async function load() {
     if (loaded) return;
     cache = await loadCache(dir);
     nodes = cache.nodes || {};
+    const needsBody = Object.values(nodes).some((node) => node && node.body === undefined);
+    if (needsBody && memoryDir) {
+      try {
+        const concurrency = Math.max(1, Math.min(12, Number(options.concurrency) || 8));
+        const scan = await scanMemories(memoryDir, { cacheNodes: nodes, concurrency });
+        nodes = Object.fromEntries(scan.nodes);
+      } catch {
+        /* 记忆目录不可读时保留缓存元数据 */
+      }
+    }
     loaded = true;
   }
 
   function counts() {
-    return countNodes(nodes, cache.hits);
+    return countNodes(nodes, cache.vectorInfo);
   }
 
-  async function persist(hits, final) {
-    const payload = {
-      builtAt: new Date().toISOString(),
-      nodes,
-      hits,
-      stats: countNodes(nodes, hits),
-    };
-    try {
-      await saveCache(dir, payload);
-      cache = { ...payload, v: 1 };
-    } catch (error) {
-      state.lastError = `缓存写失败：${error?.message || error}`;
-      if (final) state.complete = false;
-    }
+  function persist(edges, vectorInfo, final) {
+    const task = persistChain.then(async () => {
+      const payload = {
+        builtAt: new Date().toISOString(),
+        nodes,
+        edges,
+        vectorInfo,
+        stats: countNodes(nodes, vectorInfo),
+      };
+      try {
+        await saveCache(dir, payload);
+        cache = { ...payload, v: SCHEMA };
+      } catch (error) {
+        state.lastError = `缓存写失败：${error?.message || error}`;
+        if (final) state.complete = false;
+      }
+    });
+    persistChain = task.catch(() => {});
+    return task;
   }
 
-  function run(mode = "incremental") {
+  function run() {
     if (running) return { started: false, phase: state.phase };
-    currentHits = null;
     sleeping = false;
 
     state = {
@@ -86,7 +101,6 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
       lastError: "",
       complete: true,
       warnings: [],
-      failures: 0,
     };
 
     running = (async () => {
@@ -97,91 +111,50 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
       nodes = Object.fromEntries(scan.nodes);
       if (scan.warnings?.length) state.warnings.push(...scan.warnings);
 
-      const hits = mode === "all" ? {} : { ...(cache.hits || {}) };
-      for (const id of Object.keys(hits)) {
-        if (!nodes[id] || nodes[id].status !== "active") delete hits[id];
-      }
-      currentHits = hits;
+      state.phase = "computing";
+      let vectorMap = new Map();
+      let vectorFile = null;
+      let dim = 0;
+      let totalVectors = 0;
 
-      // 先把「有哪些节点」落盘：页面能先看到点，边随后补。
-      await persist(hits, false);
-
-      const topK = Math.max(1, Math.min(20, Number(options.topK) || 3));
-      const targets = Object.values(nodes)
-        .filter(
-          (node) =>
-            node.status === "active" &&
-            (mode === "all" || !hits[node.id] || hits[node.id].hash !== node.hash),
-        )
-        .sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
-
-      state.total = targets.length;
-
-      if (targets.length) {
-        state.phase = "querying";
-        const startedAt = Date.now();
-        const budget = Math.max(30000, Number(options.buildTimeoutMs) || 300000);
-        const limit = Math.min(50, topK + 8);
-        let cursor = 0;
-        let failed = null;
-        let sinceSave = 0;
-
-        const workers = Array.from({ length: Math.min(concurrency, targets.length) }, async () => {
-          while (!failed) {
-            if (cursor >= targets.length) return;
-            const node = targets[cursor++];
-
-            if (Date.now() - startedAt > budget) {
-              failed = new Error("构建超过时间预算，已保存完成的部分");
-              return;
-            }
-
-            try {
-              const raw = await mcp.search(queryText(node, Number(options.queryChars) || 500), {
-                limit,
-              });
-              const ids = parseIds(raw);
-              if (!ids.length) {
-                state.warnings.push({
-                  level: "warn",
-                  text: `${node.id} 的 memory_search 没有返回可解析的 id`,
-                });
-              }
-              hits[node.id] = { hash: node.hash, ids, at: new Date().toISOString() };
-              state.failures = 0;
-            } catch (error) {
-              state.warnings.push({
-                level: "warn",
-                text: `${node.id}: ${error?.message || error}`,
-              });
-              state.failures = (state.failures || 0) + 1;
-              if (state.failures >= 3) failed = error;
-            }
-
-            state.done++;
-            if (++sinceSave >= 20) {
-              sinceSave = 0;
-              await persist(hits, false);
-            }
-          }
+      try {
+        vectorFile = await AI_findVectorsFile(vectorsPath);
+        if (vectorFile) {
+          const loadedVec = await AI_loadVectors(vectorFile.path);
+          vectorMap = loadedVec.vectors;
+          dim = loadedVec.dim;
+          totalVectors = loadedVec.count;
+        }
+      } catch (error) {
+        state.warnings.push({
+          level: "warn",
+          text: `本地向量库读取失败，已回退到词法+标签相似度：${error?.message || error}`,
         });
-
-        await Promise.all(workers);
-        if (failed) throw failed;
-        await sleep(0);
       }
 
+      const computed = AI_computeSimilarityEdges(nodes, vectorMap, { floor: EDGE_FLOOR });
+      const vectorInfo = {
+        path: vectorFile?.path || "",
+        mtimeMs: vectorFile?.mtimeMs || 0,
+        dim,
+        totalVectors,
+        matched: computed.vectorMatched,
+        totalVisible: computed.totalVisible,
+      };
+
+      state.total = computed.totalVisible;
+      state.done = computed.totalVisible;
       state.phase = "writing";
-      await persist(hits, true);
+
+      await persist(computed.edges, vectorInfo, true);
       state.phase = "idle";
       state.lastBuiltAt = Date.now();
       state.complete = true;
     })()
-      .catch(async (error) => {
+      .catch((error) => {
         state.phase = "error";
         state.lastError = String(error?.message || error);
         state.complete = false;
-        if (currentHits) await persist(currentHits, false);
       })
       .finally(() => {
         running = null;
@@ -195,25 +168,44 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     if (running) return false;
 
     const now = Date.now();
-    if (now - lastCheck < 30000) return false;
+    if (now - lastCheck < 15000) return false;
     lastCheck = now;
 
-    const active = Object.values(nodes).filter((node) => node.status === "active");
-    const stale =
-      !cache.builtAt ||
-      active.some((node) => !cache.hits?.[node.id] || cache.hits[node.id].hash !== node.hash);
+    let diskChanged = false;
+    if (memoryDir) {
+      try {
+        const concurrency = Math.max(1, Math.min(12, Number(options.concurrency) || 8));
+        const scan = await scanMemories(memoryDir, { cacheNodes: nodes, concurrency });
+        diskChanged = Boolean(scan.added.length || scan.changed.length || scan.removed.length);
+        nodes = Object.fromEntries(scan.nodes);
+      } catch {
+        diskChanged = false;
+      }
+    }
 
-    if (!stale) return false;
-    run("incremental");
-    return true;
+    let vectorsChanged = false;
+    try {
+      const vecFile = await AI_findVectorsFile(vectorsPath);
+      const prevMtime = cache.vectorInfo?.mtimeMs || 0;
+      const prevPath = cache.vectorInfo?.path || "";
+      if ((vecFile?.path || "") !== prevPath || (vecFile?.mtimeMs || 0) !== prevMtime) {
+        vectorsChanged = true;
+      }
+    } catch {
+      vectorsChanged = false;
+    }
+
+    if (!cache.builtAt || diskChanged || vectorsChanged) {
+      run();
+      return true;
+    }
+    return false;
   }
 
-  // 空闲休眠：丢掉内存里的节点与命中表（磁盘缓存还在），下次请求再懒加载。
-  // 不关 listener、不杀进程——宿主是共享的，退出会连带打断别的插件。
   function sleep() {
     if (running || sleeping) return false;
     nodes = {};
-    cache = { v: 1, nodes: {}, hits: {}, stats: {}, builtAt: cache.builtAt };
+    cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, stats: {}, builtAt: cache.builtAt };
     loaded = false;
     sleeping = true;
     state.phase = "asleep";
@@ -227,14 +219,17 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     return true;
   }
 
-  async function getGraph() {
+  async function getGraph({ minSimilarity } = {}) {
     await load();
+    const effectiveOptions =
+      minSimilarity !== undefined ? { ...options, minSimilarity } : options;
     return buildPayload({
       nodes,
-      hits: cache.hits,
+      edges: cache.edges,
+      vectorInfo: cache.vectorInfo,
       stats: cache.stats,
       builtAt: cache.builtAt,
-      options,
+      options: effectiveOptions,
       state,
       memoryDir,
     });
@@ -244,17 +239,17 @@ export function createBuilder({ dir, memoryDir, options = {}, mcp }) {
     const totals = counts();
     return {
       ok: true,
+      engine: "similarity",
       phase: state.phase,
       asleep: sleeping,
       done: state.done,
       total: state.total,
-      concurrency: Math.max(1, Math.min(12, Number(options.concurrency) || 8)),
-      queued: Math.max(0, state.total - state.done),
       startedAt: state.startedAt ? new Date(state.startedAt).toISOString() : null,
       lastBuiltAt: cache.builtAt,
       lastError: state.lastError,
       complete: state.complete,
       counts: totals,
+      vectorInfo: cache.vectorInfo,
       cached: Boolean(cache.builtAt),
       memoryDir,
       dataDir: dir,
