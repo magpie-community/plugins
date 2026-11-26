@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-agnes-code-auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Agnes Code sign-in (browser loopback and the desktop session) as an OpenCode/magpie provider, for both the international and the China site: OpenAI-compatible chat gateway, live model catalog, daily check-in and points balance",
   "type": "module",
   "main": "./opencode.mjs",

@@ -35,28 +35,33 @@ products: neither entry replaces the other.
 
 ## 登录什么
 
-三种方式（登录时三选一）：
+两种方式（登录时二选一）：
 
-1. **浏览器登录（推荐，三平台）**——点一下就打开该站的登录页，本地 `127.0.0.1:<随机端口>` 起一个回调监听，登录成功后自动换票完成，不需要桌面端、不需要密码，因此也没有「错密码反复重试被锁号」的风险。协议细节见下节。窗口没自动弹出时把上面给的链接手动打开即可。
-   注意：如果那个浏览器**已经登录着该站**，登录页会直接跳进网页版首页、不回传授权码（表现为一直转圈）。把链接粘到无痕/隐私窗口再打开一次即可。桌面端已登录的用户直接用下一条更省事。
-2. **读取 Agnes Code 桌面端登录态（仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
-   - 会话目录：`%APPDATA%\AgnesCode\`，文件名按端区分：`code-auth-session.v1`（国际站）、`code-auth-session.cn.v1`（国内站，实测 657 字节）。只认这一族文件，别的文件不碰。macOS/Linux 下桌面端解密不可用，会明确提示改用浏览器登录或粘贴。
+1. **读取 Agnes Code 桌面端登录态（仅 Windows，推荐）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 应用页](https://app.agnes-ai.com) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：
+   - 会话目录：`%APPDATA%\AgnesCode\`，文件名按端区分：`code-auth-session.v1`（国际站）、`code-auth-session.cn.v1`（国内站，实测 657 字节）。只认这一族文件，别的文件不碰。macOS/Linux 下桌面端解密不可用，会明确提示改用粘贴 token。
    - 会话里的 `bffPublicBaseUrl` 会被读出来并钉死到 `https://*.agnes-ai.cn` / `.com`：它决定这份凭据属于哪一端。会话属于另一端时会直接报错让用户换对应端的登录入口，而不是拿着 token 去打错的域名。
    - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。
-3. **粘贴 accessToken**——从会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
+2. **粘贴 accessToken**——从会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。
 
-## 浏览器登录协议
+装了桌面端就选 1，没有桌面端（macOS/Linux 或只用网页版）就选 2。
 
-```
-打开  {loginUrl}?client=agnes-code&redirect_uri=http://127.0.0.1:<port>/auth/callback&state=<uuid>
-页面  POST {code,state} 回本地（跨域：OPTIONS 预检必须回 Access-Control-Allow-Origin；GET query 兜底）
-换票  POST {bffBase}/api/v1/code/auth/exchange-code
-      headers: origin=<登录页 origin>、x-platform: 1、content-type: json
-      body:    {code, redirect_uri, state, client_id:"agnes-code"}
-      成功 = body.code 为 "000000" 或 "0"，token 在 data.access_token
-```
+## 为什么没有「浏览器登录」按钮
 
-`origin` 头与 `x-platform` 缺一不可（BFF 会校验）；`state` 必须比对，`code` 为空直接拒。回调监听在登录结束后关闭，超时 3 分钟。
+网页端确实有一个取码接口（`POST /v1/user/issue-authorization-code`，60 秒有效），但它只把码交给白名单里的 `redirect_uri`：
+
+| client | 唯一允许的 redirect_uri |
+| --- | --- |
+| `agnes-code` | `agnes://auth/callback`（桌面端自定义协议深链） |
+| `agh-code` | `aghcode://auth/callback` |
+| `agnes-cli*` | `http://127.0.0.1:<port>/auth/callback`（回环，插件原本用这个） |
+
+三个坑叠在一起，导致第三方回环登录目前不可行：
+
+- 已登录的浏览器访问 `/login?client=…&redirect_uri=…` 会被服务端直接弹回首页，**查询参数随跳转丢失**，页面里的取码分支不会执行（弹窗表现为「登录完就进了网页版首页」）。
+- 干净配置（未登录）的窗口里扫码登录后同样落到首页，说明登录成功后的回调路径也不依赖这些参数。
+- 桌面端 1.1.8 的登录日志证实官方走的是 `redirect_uri=agnes%3A%2F%2Fauth%2Fcallback` 的深链，而不是本地端口。
+
+实测三次（普通窗口 / 干净配置窗口 / 登录后再开）都收不到 `POST {code,state}`，因此这个按钮不再提供；官方桌面端能覆盖 Windows，其余场景用粘贴 token。
 
 每个账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。
 
@@ -102,8 +107,8 @@ products: neither entry replaces the other.
 
 ```
 magpie plugin add @magpie-community/opencode-agnes-code-auth
-magpie plugin login agnes-code              # 国际站：浏览器登录 / 读桌面端 / 粘贴 token
-magpie plugin login agnes-code-cn           # 国内站：浏览器登录（微信扫码等）/ 粘贴 token
+magpie plugin login agnes-code              # 国际站：读桌面端登录态 / 粘贴 token
+magpie plugin login agnes-code-cn           # 国内站：读桌面端登录态 / 粘贴 token
 magpie provider test agnes-code agnes-3.0-flash
 ```
 
