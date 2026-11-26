@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 
+const LOGIN_URL = "https://login.bce.baidu.com/?from=oa_dumate&redirect=https%3A%2F%2Fconsole.bce.baidu.com%2F"
 const PROVIDER_ID = "dumate"
 const PROVIDER_NAME = "DuMate Proxy"
 const KEEPALIVE_TTL_MS = 55 * 60 * 1000
@@ -61,6 +62,31 @@ function toMagpieModels(catalog) {
   return models
 }
 
+function normalizeCookie(value) {
+  return String(value ?? "").trim().replace(/^["']+|["']+$/g, "")
+}
+
+function hasRequiredCookie(raw) {
+  return String(raw ?? "").split(/;\s*/).some((part) => part.trim().toLowerCase().startsWith("bce-sessionid="))
+}
+
+async function postAuth(url, body, fetchImpl, proxyKey) {
+  try {
+    const headers = { "Content-Type": "application/json" }
+    if (proxyKey) headers.Authorization = "Bearer " + proxyKey
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const info = await response.json().catch(() => ({}))
+    if (!response.ok) return { failed: String(info?.error?.message || "HTTP " + response.status) }
+    return { info }
+  } catch (error) {
+    return { failed: String(error?.message ?? error) }
+  }
+}
 export const DuMateProxyPlugin = async (input = {}) => {
   const config = input.config ?? defaultLoadConfig(input.env ?? process.env)
   const catalog = input.catalog ?? defaultLoadCatalog(config)
@@ -70,6 +96,8 @@ export const DuMateProxyPlugin = async (input = {}) => {
   const models = toMagpieModels(catalog)
   const healthUrl = new URL("/healthz", proxyUrl).toString()
   const keepaliveUrl = new URL("/v1/keepalive", proxyUrl).toString()
+  const loginUrl = new URL("/v1/auth/login", proxyUrl).toString()
+  const desktopUrl = new URL("/v1/auth/desktop", proxyUrl).toString()
 
   const renewedSeat = (previous = {}) => ({
     type: "oauth",
@@ -81,6 +109,28 @@ export const DuMateProxyPlugin = async (input = {}) => {
     name: previous.name || "DuMate Proxy",
   })
 
+  const seatFromInfo = (info = {}, fallbackSource = "proxy") => {
+    const source = String(info.source || fallbackSource || "proxy").slice(0, 32)
+    const accountId = String(info.accountId || "DuMate Proxy").slice(0, 160)
+    const name = String(info.name || "DuMate Proxy").slice(0, 160)
+    return {
+      ...renewedSeat({ source, accountId, name }),
+      type: "success",
+      source,
+      accountId,
+      name,
+      metadata: { source, accountId, name, cookieTail: String(info.cookieTail || "").slice(-8) },
+    }
+  }
+
+  const loginWithCookie = async (raw, source) => {
+    const cookie = normalizeCookie(raw)
+    if (!cookie) return { type: "failed", error: "请粘贴完整 Cookie 请求头" }
+    if (!hasRequiredCookie(cookie)) return { type: "failed", error: "Cookie 缺少关键字段 bce-sessionid" }
+    const result = await postAuth(loginUrl, { cookie, source }, fetchImpl, proxyKey)
+    if (result.failed) return { type: "failed", error: `Cookie 验证失败：${result.failed}` }
+    return seatFromInfo(result.info, source)
+  }
   const isAllowedTarget = (target) => {
     const proxy = new URL(proxyUrl)
     const basePath = proxy.pathname.replace(/\/+$/, "")
@@ -145,41 +195,85 @@ export const DuMateProxyPlugin = async (input = {}) => {
       methods: [
         {
           type: "oauth",
-          label: "DuMate 本地反代（模型清单与登录态由反代进程管理）",
+          label: "反代已配置登录态（环境变量 / Cookie 文件）",
           authorize: async () => ({
             url: "",
-            instructions:
-              `请先启动 dumate-proxy（默认 ${proxyUrl}），确保 /healthz 返回 ok。` +
-              "插件只负责把反代暴露的 LLM 与生图模型登记到 Magpie。",
+            instructions: `检查 ${proxyUrl} 的 /healthz；登录态由反代进程持有。`,
             method: "auto",
+            opened: true,
             async callback() {
               try {
                 const response = await fetchImpl(healthUrl, {
-                  headers: proxyKey ? { Authorization: `Bearer ${proxyKey}` } : {},
+                  headers: proxyKey ? { Authorization: "Bearer " + proxyKey } : {},
                   signal: AbortSignal.timeout(5000),
                 })
-                if (!response.ok) throw new Error(`HTTP ${response.status}`)
-                const info = await response.json()
-                if (info?.login && info.login !== "ok") {
-                  return {
-                    type: "failed",
-                    error: "DuMate 代理登录态缺失，请先启动反代并配置 DuMate Cookie。",
-                  }
+                const info = await response.json().catch(() => ({}))
+                if (!response.ok || (info?.login && info.login !== "ok")) {
+                  return { type: "failed", error: "反代未报告可用登录态，请先配置 DuMate Cookie" }
                 }
-                return {
-                  ...renewedSeat(),
-                  type: "success",
-                  name: "DuMate Proxy（已登录）",
-                  accountId: "DuMate Proxy",
-                }
+                return seatFromInfo(info, "proxy")
               } catch (error) {
-                return {
-                  type: "failed",
-                  error: `连接 ${healthUrl} 失败：${error?.message ?? error}`,
-                }
+                return { type: "failed", error: "连接 " + healthUrl + " 失败：" + String(error?.message ?? error) }
               }
             },
           }),
+        },
+        {
+          type: "oauth",
+          label: "服务器本机 DuMate 桌面端登录态（auth.json，只读复用）",
+          authorize: async () => ({
+            url: "",
+            instructions: "从反代所在主机读取 qianfan-desktop-app/auth.json 与 .cookie-key，只读，不修改客户端文件。",
+            method: "auto",
+            opened: true,
+            async callback() {
+              const result = await postAuth(desktopUrl, {}, fetchImpl, proxyKey)
+              if (result.failed) return { type: "failed", error: "读取桌面端登录态失败：" + result.failed }
+              return seatFromInfo(result.info, "desktop")
+            },
+          }),
+        },
+        {
+          type: "oauth",
+          label: "浏览器登录：粘贴 Network 请求头 Cookie",
+          authorize: async () => ({
+            url: LOGIN_URL,
+            instructions:
+              "1. 打开上方链接登录百度账号。\n" +
+              "2. 登录成功后进入 console.bce.baidu.com，按 F12 打开 DevTools → Network。\n" +
+              "3. 刷新页面，点第一个请求，在 Request Headers 找到 Cookie，复制完整 value。\n" +
+              "4. 把 Cookie 粘贴到下方输入框。不要用 document.cookie，关键字段是 httpOnly。",
+            method: "code",
+            async callback(input) {
+              return loginWithCookie(input, "browser")
+            },
+          }),
+        },
+        {
+          type: "oauth",
+          label: "手动粘贴 Cookie 字符串",
+          prompts: [
+            {
+              type: "text",
+              key: "cookie",
+              message: "完整 Cookie 请求头（name=value; name2=value2）",
+              placeholder: "bce-sessionid=...; BDUSS=...",
+              validate: (value) => hasRequiredCookie(normalizeCookie(value)) ? undefined : "需要包含 bce-sessionid",
+            },
+          ],
+          authorize: async (inputs) => {
+            const raw = normalizeCookie(inputs?.cookie ?? inputs?.key)
+            if (!hasRequiredCookie(raw)) return { type: "failed", error: "请粘贴包含 bce-sessionid 的完整 Cookie" }
+            return {
+              url: "",
+              instructions: "正在验证 Cookie 并写入反代运行时登录态…",
+              method: "auto",
+              opened: true,
+              async callback() {
+                return loginWithCookie(raw, "manual")
+              },
+            }
+          },
         },
       ],
     },

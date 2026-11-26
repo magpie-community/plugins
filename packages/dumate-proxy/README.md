@@ -12,6 +12,14 @@ DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
 - Shows a usable DuMate sign-in method in magpie; it checks `/healthz` and refuses to save an account while proxy login is missing.
 - Allows plugin fetch for `/models`, `/chat/completions`, `/images/generations` and `/images/edits`.
 
+## Sign-in methods
+
+- Proxy-managed session: checks `/healthz` only.
+- Server-local desktop login: the proxy reads DuMate `auth.json` read-only.
+- Browser login: sign in at Baidu, copy the DevTools Network request Cookie, and the plugin submits it to the proxy for validation.
+- Manual cookie: paste the full Cookie request header into the Magpie form.
+
+Cookies are stored only by the proxy in `runtime-cookie.json`; the Magpie account keeps only source, name and cookie tail.
 ## Setup
 
 Run the proxy from <https://github.com/EFate/dumate-proxy>, then add this plugin:
