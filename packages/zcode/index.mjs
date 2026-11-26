@@ -1574,6 +1574,7 @@ async function authorize(site, log, onTeam = false) {
           continue // a hiccup: ask again
         }
         const token = site === "bigmodel" ? first(got.bigmodel?.access_token, got.bigmodel?.accessToken) : first(got.zai?.access_token)
+        if (got.status === "ready" && !token) return fail(`${SITES[site].name} sign-in: the poll answered ready without an OAuth access token; sign in again`)
         if (got.status === "pending" || !got.status) continue
         if (got.status === "failed") return fail(`the sign-in was declined on ${SITES[site].name}`)
         if (got.status !== "ready" || !token) return fail("ZCode sign-in: unexpected answer " + got.status)
