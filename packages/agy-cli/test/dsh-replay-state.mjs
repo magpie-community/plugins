@@ -10,8 +10,8 @@ const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agy-dsh-state-test-"))
 const entry = new URL("../index.mjs", import.meta.url)
 let source = fs.readFileSync(entry, "utf8")
 source = source.replace(/from "(\.\/[^"\n]+)"/g, (_, target) => `from ${JSON.stringify(new URL(target, entry).href)}`)
-fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { renderInitialPrompt };\n")
-const { renderInitialPrompt } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
+fs.writeFileSync(path.join(workspace, "bridge.mjs"), source + "\nexport { renderInitialPrompt, extractMetaRemindersFromText };\n")
+const { renderInitialPrompt, extractMetaRemindersFromText } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
 const joinText = ({ parts }) => parts.map((p) => p.text || "").join("")
@@ -400,13 +400,23 @@ test("does not anchor pasted <system-reminder> or backtrack on unclosed tags in 
   })
   messages.push({ role: "user", content: [{ type: "text", text: "Summarize the refactor" }] })
 
-  const t0 = performance.now()
   const text = joinText(renderInitialPrompt({ system: "You are Claude Code.", messages }, "/repo", false, 0))
-  const elapsed = performance.now() - t0
 
-  assert.ok(elapsed < 500, `expected linear-time scan, took ${elapsed.toFixed(1)} ms`)
   assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
   assert.ok(!text.includes("`pasted-only`: ignore"))
+})
+
+// The scan is linear in the open tags it meets: 50,000 unclosed ones take a
+// few milliseconds, where a scan that looks for each one's close from where
+// it opens (the old lazy regex) takes tens of seconds. The bar sits far from
+// both, so a loaded machine doesn't turn it red (it was 500ms over the whole
+// replay, and went red at 507ms on WSL).
+test("an unclosed <system-reminder> flood is scanned in linear time", () => {
+  const flood = "<system-reminder>".repeat(50_000) + "<available_skills>".repeat(12_500) + "\nok"
+  const t0 = performance.now()
+  assert.deepEqual(extractMetaRemindersFromText(flood), [])
+  const elapsed = performance.now() - t0
+  assert.ok(elapsed < 3000, `expected a linear scan, took ${elapsed.toFixed(1)} ms`)
 })
 
 test("keeps latest assistant reply under combined pinReserve and stateReserve on short nudge", () => {
