@@ -32,8 +32,8 @@ async function withRestart(options, fn) {
   const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-continuity-"))
   const env = { XDG_STATE_HOME: path.join(shared, "state"), ...(options.env || {}) }
   const kits = []
-  const start = async () => {
-    const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, ...options, env })
+  const start = async (more = {}) => {
+    const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, ...options, ...more, env })
     kits.push(kit)
     return kit
   }
@@ -259,5 +259,74 @@ test("a loop the bridge gave up on (its call answered with an error) is not resu
     assert.equal(out.stopReason, "end_turn")
     assert.equal(calls(b, "session/resume").length, 0)
     assert.equal(calls(b, "session/new").length, 1)
+  })
+})
+
+// Claude Code names its model in the system prompt ("You are powered by
+// the model agy-cli/…"), so /model rewrites that line. agy switches models
+// inside a session (session/set_model): the line alone must not make the
+// conversation a new one and replay it (chet030714 on X, hydrogen ⇄ neon).
+test("a Claude Code model switch, which rewrites the system prompt's model line, keeps the session", async () => {
+  await withRestart({}, async (start) => {
+    const kit = await start()
+    const system = (model) => `You are Claude Code, Anthropic's official CLI for Claude.\n\n# Environment\n - Platform: darwin\n\nYou are powered by the model ${model}.\n\nAssistant knowledge cutoff is January 2025.`
+    let session = null
+    kit.prompts.push(async (agent) => {
+      session = agent.sessionId
+      await agent.text("first")
+      return { stopReason: "end_turn" }
+    })
+    let body = opening({ model: "agy-cli/gemini-4-argon[1m]", system: system("agy-cli/gemini-4-argon[1m]") })
+    let parsed = await readSse(await kit.request(body))
+    assert.equal(parsed.stopReason, "end_turn")
+    answer(kit, "on another model")
+    body = { ...body, model: "agy-cli/gemini-3.8-flash-low", system: system("agy-cli/gemini-3.8-flash-low"), messages: [...body.messages,
+      { role: "assistant", content: [{ type: "text", text: "first" }] }, { role: "user", content: "same thing, faster model" }] }
+    parsed = await readSse(await kit.request(body))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(calls(kit, "session/new").length, 1, "the switch opened a new session and replayed the conversation")
+    const prompts = calls(kit, "session/prompt")
+    assert.equal(prompts.at(-1).params.sessionId, session)
+    assert.doesNotMatch(promptText(prompts.at(-1).params), /OPENING-MARK/)
+    assert.ok(calls(kit, "session/set_model").length + calls(kit, "session/set_config_option").length >= 1, "the model is switched in place")
+
+    // and after a restart the parked session is still found
+    await hostGone(kit)
+    const b = await start()
+    answer(b, "after restart")
+    body = { ...body, system: system("agy-cli/gemini-4-argon[1m]"), model: "agy-cli/gemini-4-argon[1m]", messages: [...body.messages,
+      { role: "assistant", content: [{ type: "text", text: "on another model" }] }, { role: "user", content: "back to the big one" }] }
+    parsed = await readSse(await b.request(body))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(calls(b, "session/new").length, 0)
+    assert.deepEqual(calls(b, "session/resume").map((entry) => entry.params.sessionId), [session])
+  })
+})
+
+test("a session parked before the model line left the key is still resumed after the update", async () => {
+  await withRestart({}, async (start) => {
+    const system = `You are Claude Code, Anthropic's official CLI for Claude.\n\nYou are powered by the model agy-cli/gemini-4-argon[1m].`
+    // the host before the update keyed conversations with the model line
+    const old = await start({ indexTransform: (source) => {
+      const from = "return stripMagpiePlaceholderNotice(legacy ? s : stripAgentModelLines(s))"
+      assert.ok(source.includes(from))
+      return source.replace(from, "return stripMagpiePlaceholderNotice(s)").replace("legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : \"\",", "")
+    } })
+    let session = null
+    old.prompts.push(async (agent) => {
+      session = agent.sessionId
+      await agent.text("first")
+      return { stopReason: "end_turn" }
+    })
+    let body = opening({ system })
+    assert.equal((await readSse(await old.request(body))).stopReason, "end_turn")
+    await hostGone(old)
+
+    const b = await start()
+    answer(b, "after the update")
+    body = { ...body, messages: [...body.messages, { role: "assistant", content: [{ type: "text", text: "first" }] }, { role: "user", content: "go on" }] }
+    assert.equal((await readSse(await b.request(body))).stopReason, "end_turn")
+    assert.equal(calls(b, "session/new").length, 0, "the update replayed a parked conversation")
+    assert.deepEqual(calls(b, "session/resume").map((entry) => entry.params.sessionId), [session])
   })
 })

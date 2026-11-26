@@ -99,7 +99,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   tool loop in progress. After a Magpie or plugin restart, the session continues
   through `session/resume` as long as the history and instruction hashes still
   match; a restart in the middle of a tool loop sends only the step's tool
-  results, never the conversation again. agy's prompt cache follows the folder it
+  results, never the conversation again. Switching models (Claude Code's
+  `/model`, which also rewrites the model line in its system prompt) keeps the
+  session: agy changes the model in place, and only the new model's first turn
+  reads the context without a cache. agy's prompt cache follows the folder it
   runs in, so a resumed session runs in its own temporary folder again and its
   cache still hits. The state file stores session IDs, hashes and that folder,
   never message text.

@@ -4101,13 +4101,19 @@ function resumeWorkspace(workspace) {
 
 function takeParked(convKey, opts) {
   loadParked()
-  const entry = parked.get(convKey)
+  let key = convKey
+  let legacy = false
+  if (!parked.has(key) && opts.legacyConvKey && parked.has(opts.legacyConvKey)) {
+    key = opts.legacyConvKey
+    legacy = true
+  }
+  const entry = parked.get(key)
   if (!entry) return null
-  parked.delete(convKey)
-  unparked.add(convKey)
+  parked.delete(key)
+  unparked.add(key)
   saveParked()
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
+    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions, legacy)) ||
     entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
   const workspace = resumeWorkspace(entry.workspace)
   // A step parked mid-turn is taken only by its results: the request goes
@@ -5131,10 +5137,26 @@ function stripAgentClockLines(text) {
   return s.split(/(\n)/).map((part) => (part === "\n" || !isAgentClockLine(part) ? part : "")).join("")
 }
 
+// Claude Code names its model in the system prompt ("You are powered by the
+// model agy-cli/gemini-4-hydrogen."), so /model rewrites that line. agy
+// switches models inside a session, so the line is not what makes a
+// conversation: with it in the identity a model switch opened a new session
+// and replayed the whole conversation (chet030714 on X). The session keeps
+// the line it was opened with. legacy keeps the line, as entries parked
+// before 0.1.143 were keyed, so they are still found once.
+const AGENT_MODEL_LINE_RE = /^(?:You are powered by the model (?:named [^\n]{1,80}?\. The exact model ID is \S{1,160}?|\S{1,160}?)\.(?:\s+Assistant knowledge cutoff is [^.\n]{1,40}\.)?|Assistant knowledge cutoff is [^.\n]{1,40}\.)$/
+
+function stripAgentModelLines(text) {
+  const s = String(text ?? "")
+  if (!s.includes("You are powered by the model") && !s.includes("Assistant knowledge cutoff is")) return s
+  return s.split(/(\n)/).map((part) => (part === "\n" || !AGENT_MODEL_LINE_RE.test(part.trim()) ? part : "")).join("")
+}
+
 // System prompt and session instructions: billing headers plus known agent
-// clock lines. User text is never passed through this helper.
-function stripVolatileSystem(text) {
-  return stripMagpiePlaceholderNotice(stripAgentClockLines(stripBillingHeader(text)))
+// clock and model lines. User text is never passed through this helper.
+function stripVolatileSystem(text, legacy = false) {
+  const s = stripAgentClockLines(stripBillingHeader(text))
+  return stripMagpiePlaceholderNotice(legacy ? s : stripAgentModelLines(s))
 }
 
 function instructionsIdentity(text) {
@@ -5159,8 +5181,8 @@ const USER_CLOAK = 1
 // before the field was written is not resumed: a new session gets them in
 // its first turn.
 
-function sentInstructionsIdentity(text) {
-  return compactIdentity(outgoing(stripVolatileSystem(text)))
+function sentInstructionsIdentity(text, legacy = false) {
+  return compactIdentity(outgoing(stripVolatileSystem(text, legacy)))
 }
 
 // Message text used for conversation/history identity: billing header lines,
@@ -6228,9 +6250,9 @@ function requestSessionScope(fetchInput, init) {
 // approval-policy notice) but run in different folders are different
 // conversations; without it they share one agy session and each one's
 // request is refused while the other's response runs.
-function conversationKey(rawBody, sessionScope = "", workDir = "") {
+function conversationKey(rawBody, sessionScope = "", workDir = "", legacy = false) {
   const body = canonicalBody(rawBody)
-  const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body))) }])
+  const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body), legacy)) }])
   const first = body.messages?.[0]
   // Hash the whole stripped first message, including non-text blocks such as
   // images. A shared 8 KiB text prefix must not put two chats in one session.
@@ -9279,6 +9301,8 @@ export const AntigravityBridgePlugin = async () => {
             // an account's conversations are its own: its agy has them
             const callerWorkDir = namedWorkDirectory(body, init)
             const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "")
+            // the key before the model line left it (0.1.142 and older)
+            const legacyConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "", true)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
@@ -9310,6 +9334,7 @@ export const AntigravityBridgePlugin = async () => {
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
+                legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : "",
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
