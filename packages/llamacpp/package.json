@@ -1,0 +1,23 @@
+{
+  "name": "@magpie-community/opencode-llamacpp-auth",
+  "version": "0.1.0",
+  "description": "Run local GGUF models through Magpie: a llama.cpp provider that starts/stops llama-server on demand, scans a folder recursively, and exposes chat, decision, embedding and completion models.",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
+  "scripts": { "test": "node --check index.mjs && node --check opencode.mjs" },
+  "magpie": {
+    "name": "Local llama.cpp",
+    "icon": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23111827%22%2F%3E%3Cpath%20d%3D%22M18%2020h28M18%2032h28M18%2044h28%22%20stroke%3D%22white%22%20stroke-width%3D%225%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2226%22%20cy%3D%2220%22%20r%3D%224%22%20fill%3D%22%2334d399%22%2F%3E%3Ccircle%20cx%3D%2240%22%20cy%3D%2232%22%20r%3D%224%22%20fill%3D%22%2360a5fa%22%2F%3E%3Ccircle%20cx%3D%2226%22%20cy%3D%2244%22%20r%3D%224%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E",
+    "maxConcurrency": 1
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT",
+  "keywords": ["opencode", "opencode-plugin", "magpie", "magpie-plugin", "llama.cpp", "gguf", "local-llm", "local"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins.git",
+    "directory": "packages/llamacpp"
+  }
+}
