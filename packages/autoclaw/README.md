@@ -50,8 +50,32 @@ OpenCode 同样可加载（`opencode auth login`）。登录信息保存在 magp
 - **本轮消耗**（aside，只展示、不参与路由）：上游没有按模型的积分流水接口（wallets.v2 只有余额），所以由本地余额差值算——每次 `usage()` 记下本轮峰值，`峰值 − 当前 = 本轮已消耗`；**任何上涨**（相对上次余额，含从 0 回升——签到、礼包、兑换）都开新一轮。因为每天签到都会开新一轮，「本轮」≈「自今天签到以来」。
 - **活动积分**（aside）：账号有活动流水时末尾多一行，见下文[「每日签到」](#每日签到)一节。
 - `total_balance` 为 null/空串/非数时按未知处理（「积分响应异常」），不记账。
+- **只有用尽的模型才多一行**（见下节）：`{ name, models: [id], used: 100, … }`，只挡这一个模型；正常模型不加行。
 
 状态按账号（键复用 `signinAccountKey`，#254：uid，没 uid 按 refresh token 哈希）存 JSON，地址优先级：`AUTOCLAW_USAGE_STATE_FILE`（显式覆盖）→ `$XDG_CONFIG_HOME/magpie/` → `$HOME/.config/magpie/`（Windows 上 HOME 常未设，改用 `USERPROFILE`，再兜底 `os.homedir()`，绝不落在盘根 `C:\.config\magpie`）→ 文件名 `autoclaw-usage.json`。写入走临时文件 + rename，30 天没动的条目清走；插件更新不会丢。测试可用 `_internal.setUsageStatePath` 指到临时目录。
+
+## 按模型的免费额度
+
+**为什么改**：上游的免费额度是**按模型**判的。2026-11-26 真机同一账号同一分钟：`zai_glm-x-preview`（GLM-5.4）回 `403 810000「免费额度已用完」`，而 `zaicoding_glm-5.3` 与 `zai_glm-5.3-flash` 都是 200。原版只把这句转成**账号级** 429，magpie 于是把整个账号歇掉（默认十几分钟），连还能用的模型一起停；歇完再问一次又被同一句歇掉——这就是「频繁重试导致限流」的来路，而且歇错了对象。
+
+**上游给什么、不给什么**（只读实测，`autoclaw-model-config` 与 `wallets.v2`）：
+
+| 读数 | 有没有 | 说明 |
+|---|---|---|
+| 每个模型的积分倍率 `creditCostFactor` | **有** | Auto 0.4 / Flash 0.5 / Auto-Fast 1（国际 0.7）/ GLM-5.3 与 5.4 均 2.25 |
+| 每个模型的「额度用尽」官方文案 `metadata.forbiddenNotice` | **有** | Auto-Fast 明说「24 小时后会进行重置」；GLM 系列只说开会员，不给时刻 |
+| 按模型的额度**数值上限 / 已用量 / 重置时刻** | **没有** | wallets.v2 只有积分总额与细分钱包；目录不含配额数字 |
+
+所以补丁**不编造上限数字**，只如实上报：
+
+1. **积分倍率进 `rate`**：模型行带官方 `creditCostFactor`，卡片与 `routing=cheap` 能看出「同样的积分，Flash 能问的次数是 GLM-5.4 的 4.5 倍」。原来一律 0。
+2. **按模型的额度窗口，只在真用尽时出现**：正常账号的卡片与原版一致（每日签到 / 积分余额 / 活动积分），**不给每个模型画一行「未知」**——上游没有分母，画不出 ZCode 那种 `3,000,000 / 3,000,000 已用 100%` 的条，硬画只是噪音。某个模型被上游判定用尽时，才多出一行 `{ name, models: [id], used: 100 }`，`models` 把这行钉在单个模型上，**用尽不再连坐同账号其它模型**；官方明说周期的写 `resetsAt`（Auto-Fast 24h），没说的写本地复核时刻并注明「上游未给重置时刻，HH:MM 再核」。
+3. **止住重试靠 magpie 自己的按模型 rest**：窗口带 `models: [id]` 且 `used: 100`，magpie 把该模型的 rest 写成 `by: "window"`、`key: <账号>/<模型>`，只歇这一个模型。**不在 `loader.fetch` 里短路**——那样会把 401「登录失效」也盖成 429，账号真掉线时反而看不见。一次成功调用即清账；没给重置时刻的模型按 6 小时复核一次（不是永久挡住）。
+4. **跨进程不丢账**：按模型账本与官方目录事实都写进 `autoclaw-usage.json`（`models` / `catalog` 节点，同 0600、同临时文件 + rename）。magpie 每次读额度会起**新的插件宿主进程**，只放内存会让卡片退化成「未知」。
+
+**模型名 ≠ routeModelId**：上游说「GLM-5.4」，其 id 是 `zai_glm-x-preview`（id 里没有 5.4）；GLM-5.3 的 id 是 `zaicoding_glm-5.3`。认领被点名的模型时先按官方目录的 `name` 精确匹配，再退回 id 含该名字的情形；两处都认不出就**不认**，绝不猜一个 id 去挡别的模型。
+
+回归测试见 `index.test.mjs` 的 `quota:` 用例（零网络、零推理）。
 
 ## 每日签到
 
@@ -123,7 +147,7 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 ## 已知行为
 
 - 手机号账号只认国内 host（走 managed gateway，401/403 标记登录失效）；z.ai/Google 账号只认国际 host（401/403 自动换侧重试，均拒绝时标记失效）。例外：国际网关精确返回裸 `403 forbidden` 时，插件用积分接口确认登录：凭据有效则按客户端指纹拒绝显示上游错误并保留登录；凭据也被拒则标记失效；确认失败则原样透传 403，不猜登录状态。
-- 额度用完不算登录失效：上游以 `403` + `{"code":810000,"message":"GLM-5.3 免费额度已用完,…"}` 回答时（或 403 正文说额度/余额已用完），插件转成 `429`，原样带上游文案，登录保留（`X-Magpie-Sign-In: kept`），国际版也不再换 host 重试（plugins#274）。
+- 额度用完不算登录失效：上游以 `403` + `{"code":810000,"message":"GLM-5.3 免费额度已用完,…"}` 回答时（或 403 正文说额度/余额已用完），插件转成 `429`，原样带上游文案，登录保留（`X-Magpie-Sign-In: kept`），国际版也不再换 host 重试（plugins#274）。**本机补丁**：这句同时记到被点名的那个模型名下（见「按模型的免费额度」一节），只挡该模型，同账号其它模型继续服务。
 - 账号被封不算登录失效：上游以 `403` + `{"code":410004,"message":"The account has been banned"}` 回答时（或 code/message 字段说 banned / 封禁 / 账号异常 / 账号被冻结等），对话、刷新、积分与签到都原样带上游文案，对话转成 `403 permission_error`，登录保留（`X-Magpie-Sign-In: kept`），不再换 host 重试。其他 401/403 仍按登录失效处理。
 - 请求过大不算登录失效（plugins#891）：国内网关会对约 200k tokens 的请求回 `401 AutoClaw 登录状态失效`，而同一凭据前后几秒的小请求都是 200。请求体比本进程见过的最大成功请求还大时遇到 401/403，插件先用积分接口确认登录：登录有效就转成 `413 request_too_large`（登录保留），magpie 换一条路由或让 agent 压缩对话；登录也被拒、确认失败，或请求不比已成功的大，仍按登录失效处理。不猜阈值，只拿已成功的最大请求作比较。
 - DeepSeek Harness 在 system 全文遮蔽，不只改身份句（plugins#924）：网关只要在 system / developer 文本任意位置看到这个名字就拒绝，所以其中每处 `DeepSeek Harness` 都改成 `DeepSeek`，身份句（有无逗号均可）改成 `You are an AI agent powered by a local coding harness.`；任意大小写的 `powered by the glm-<x> model` 句式统一写成 `GLM-<x>` 形式。用户消息与工具参数从不改动。

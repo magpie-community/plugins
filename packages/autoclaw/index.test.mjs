@@ -3370,3 +3370,116 @@ test("catalog gates are judged like the official client's", () => {
   expect(gatedOut([{ effect: "hidden", dimension: "somethingNew" }], ctx)).toBe(true)
   expect(gatedOut([{ effect: "other", dimension: "somethingNew" }], ctx)).toBe(false)
 })
+
+// ---------------------------------------------------------------------------
+// 按模型的免费额度（plugins#817 的同款问题：一个模型用尽不该连坐整个账号）
+// ---------------------------------------------------------------------------
+
+const quotaState = () => {
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-quota-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  return dir
+}
+
+const catalogModel = (id, name, extra = {}) => ({ id, name, ...extra })
+
+test("quota: the model a 403 names is matched by its catalog name, not by its id", () => {
+  const { quotaNamedModel } = _internal
+  // 上游说 GLM-5.4，routeModelId 是 zai_glm-x-preview（id 里没有 5.4）
+  const rows = [
+    catalogModel("zai_glm-x-preview", "GLM-5.4"),
+    catalogModel("zaicoding_glm-5.3", "GLM-5.3"),
+    catalogModel("zai_glm-5.3-flash", "GLM-5.3-Flash"),
+  ]
+  expect(quotaNamedModel("GLM-5.4 免费额度已用完,开通连续包月会员继续使用", "autoclaw-cn", rows)).toBe("zai_glm-x-preview")
+  expect(quotaNamedModel("GLM-5.3 免费额度已用完,开通连续包月会员继续使用", "autoclaw-cn", rows)).toBe("zaicoding_glm-5.3")
+  expect(quotaNamedModel("GLM-5.3-Flash 免费额度已用完", "autoclaw-cn", rows)).toBe("zai_glm-5.3-flash")
+  expect(quotaNamedModel("GLM-5.4 free quota used up. Subscribe to continue.", "autoclaw", rows)).toBe("zai_glm-x-preview")
+  // 认不出就不认：不让 GLM-5.3 抢走 Flash，也不猜一个不存在的 id
+  expect(quotaNamedModel("积分余额不足", "autoclaw-cn", rows)).toBe("")
+  expect(quotaNamedModel("GLM-9.9 免费额度已用完", "autoclaw-cn", rows)).toBe("")
+  expect(quotaNamedModel("GLM-5.4 免费额度已用完", "autoclaw")).toBe("")
+})
+
+test("quota: only the official credit factor and a stated reset period are read", () => {
+  const { catalogQuotaFacts } = _internal
+  expect(catalogQuotaFacts(catalogModel("zai_glm-x-preview", "GLM-5.4", { creditCostFactor: 2.25 })).creditFactor).toBe(2.25)
+  // forbiddenNotice 是静态模板（Flash 没有它照样能用），不能当成「已用尽」
+  const autoFast = catalogModel("zai_auto-fast", "Auto-Fast", {
+    creditCostFactor: 1,
+    metadata: { forbiddenNotice: { desc: "Auto-Fast 模型免费额度已用完，24 小时后会进行重置" } },
+  })
+  const facts = catalogQuotaFacts(autoFast)
+  expect(facts.creditFactor).toBe(1)
+  expect(facts.resetHours).toBe(24)
+  expect(catalogQuotaFacts(catalogModel("zai_glm-5.3-flash", "GLM-5.3-Flash", {
+    metadata: { forbiddenNotice: { desc: "GLM5.3 免费额度已用完，推荐切换至 Auto 模型" } },
+  })).resetHours).toBeUndefined()
+  expect(catalogQuotaFacts(undefined)).toEqual({})
+})
+
+test("quota: a spent model blocks itself only, and its row is the only one on the card", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, signinAccountKey } = _internal
+  const auth = { type: "oauth", access: "a", refresh: "r", uid: "u1" }
+  const key = signinAccountKey("autoclaw-cn", auth)
+  modelQuotaNote(key, "zai_glm-x-preview", "exhausted", "GLM-5.4 免费额度已用完,开通连续包月会员继续使用", "upstream", undefined, "autoclaw-cn")
+
+  const windows = modelQuotaWindows("autoclaw-cn", auth, Date.now(), ["zai_glm-x-preview", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
+  expect(windows.length).toBe(1)
+  expect(windows[0].models).toEqual(["zai_glm-x-preview"])
+  expect(windows[0].used).toBe(100)
+  expect(windows[0].aside).toBeFalsy()
+  expect(Date.parse(windows[0].resetsAt)).toBeGreaterThan(Date.now())
+  expect(windows[0].display).toContain("上游未给重置时刻")
+  // 正常模型不加行（没有分母就不画进度条）
+  expect(windows.find((w) => w.models[0] === "zai_glm-5.3-flash")).toBeUndefined()
+})
+
+test("quota: a success clears the mark, and two accounts keep separate ledgers", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, signinAccountKey } = _internal
+  const a = { type: "oauth", access: "a", refresh: "r-a", uid: "u-a" }
+  const b = { type: "oauth", access: "b", refresh: "r-b", uid: "u-b" }
+  const ka = signinAccountKey("autoclaw-cn", a)
+  modelQuotaNote(ka, "zaicoding_glm-5.3", "exhausted", "GLM-5.3 免费额度已用完", "upstream", undefined, "autoclaw-cn")
+  expect(modelQuotaWindows("autoclaw-cn", a, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(1)
+  expect(modelQuotaWindows("autoclaw-cn", b, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(0)
+
+  // 同一模型后来成功 → 立刻放行
+  modelQuotaNote(ka, "zaicoding_glm-5.3", "ok")
+  expect(modelQuotaWindows("autoclaw-cn", a, Date.now(), ["zaicoding_glm-5.3"]).length).toBe(0)
+})
+
+test("quota: the row disappears at its re-check time instead of holding forever", () => {
+  quotaState()
+  const { modelQuotaNote, modelQuotaWindows, modelQuotaHoldUntil, modelQuotaRead, signinAccountKey } = _internal
+  const auth = { type: "oauth", access: "a", refresh: "r", uid: "u2" }
+  const key = signinAccountKey("autoclaw-cn", auth)
+  modelQuotaNote(key, "zai_glm-x-preview", "exhausted", "GLM-5.4 free quota used up.", "upstream", undefined, "autoclaw-cn")
+  const row = modelQuotaRead(key, "zai_glm-x-preview")
+  const until = modelQuotaHoldUntil(row)
+  expect(until).toBeGreaterThan(Date.now())
+  expect(modelQuotaWindows("autoclaw-cn", auth, until - 1, ["zai_glm-x-preview"]).length).toBe(1)
+  expect(modelQuotaWindows("autoclaw-cn", auth, until + 1, ["zai_glm-x-preview"]).length).toBe(0)
+  // 官方明说 24h 的按官方时刻
+  modelQuotaNote(key, "zai_auto-fast", "exhausted", "Auto-Fast 免费额度已用完，24 小时后会进行重置", "upstream", undefined, "autoclaw-cn")
+  const fast = modelQuotaRead(key, "zai_auto-fast")
+  expect(modelQuotaHoldUntil(fast)).toBe(Date.parse(fast.resetAt))
+})
+
+test("quota: the catalog's credit factor reaches the model row as rate", async () => {
+  const realFetch = globalThis.fetch
+  const body = {
+    models: [
+      catalogModel("zai_glm-x-preview", "GLM-5.4", { creditCostFactor: 2.25, input: ["text"], reasoning: true }),
+      catalogModel("zai_glm-5.3-flash", "GLM-5.3-Flash", { creditCostFactor: 0.5, input: ["text", "image"] }),
+    ],
+  }
+  globalThis.fetch = async () => Response.json(body)
+  try {
+    const rows = await _internal.catalogModels("autoclaw-cn", "t0ken", {}, undefined)
+    expect(rows["zai_glm-x-preview"].rate).toBe(2.25)
+    expect(rows["zai_glm-5.3-flash"].rate).toBe(0.5)
+  } finally { globalThis.fetch = realFetch }
+})

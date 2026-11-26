@@ -50,8 +50,32 @@ OpenCode works the same way (`opencode auth login`). Sign-ins are kept in magpie
 - **Current spend** (aside, display-only, never routed): the upstream has no per-model credit ledger (wallets.v2 carries balances only), so it is computed from local balance deltas — each `usage()` records the cycle peak, `peak − current = spent this cycle`; **any rise** (relative to the last seen balance, including a rise from 0 — check-ins, gifts, redemptions) opens a new cycle. Since a daily check-in opens one every day, "current" ≈ "since today's check-in".
 - **Campaign points** (aside): when the account has campaign ledger activity, one extra row at the end — see [Daily check-in](#daily-check-in) below.
 - A `total_balance` that is null / empty / non-numeric is treated as unknown ("积分响应异常") and not recorded.
+- **A row only for a model that is exhausted** (see below): `{ name, models: [id], used: 100, … }` — it blocks only that model; healthy models add no row.
 
 State is kept per account (keyed by `signinAccountKey`, #254: uid, or a hash of the refresh token when there is none) as JSON. Address precedence: `AUTOCLAW_USAGE_STATE_FILE` (explicit override) → `$XDG_CONFIG_HOME/magpie/` → `$HOME/.config/magpie/` (on Windows HOME is usually unset, so `USERPROFILE` next, `os.homedir()` last — never the drive root `C:\.config\magpie`) → file name `autoclaw-usage.json`. Writes go through a temp file + rename; entries untouched for 30 days are pruned; plugin updates do not lose it. Tests can point it elsewhere with `_internal.setUsageStatePath`.
+
+## Per-model free quota
+
+**Why**: the upstream's free quota is judged **per model**. On 2026-11-26, same account, same minute: `zai_glm-x-preview` (GLM-5.4) answered `403 810000 "free quota used up"` while `zaicoding_glm-5.3` and `zai_glm-5.3-flash` both answered 200. The original plugin turned that into an **account-level** 429, so magpie rested the whole account (~15 min by default), stopping the models that still worked; when the rest ended it asked again and was rested again. That is where the repeated retries came from — and it rested the wrong thing.
+
+**What the upstream does and does not give** (read-only probes of `autoclaw-model-config` and `wallets.v2`):
+
+| Reading | Available | Notes |
+|---|---|---|
+| Per-model credit factor `creditCostFactor` | **yes** | Auto 0.4 / Flash 0.5 / Auto-Fast 1 (0.7 intl) / GLM-5.3 and 5.4 both 2.25 |
+| Per-model "quota exhausted" notice `metadata.forbiddenNotice` | **yes** | Auto-Fast says "resets in 24 hours"; the GLM ones only offer membership, no time |
+| Per-model numeric **cap / used / reset time** | **no** | wallets.v2 carries only the point total and its sub-wallets; the catalog has no quota numbers |
+
+So the patch **invents no cap numbers**; it reports only what is true:
+
+1. **Credit factor into `rate`**: model rows carry the official `creditCostFactor`, so the card and `routing=cheap` can see that the same points buy 4.5× as many Flash calls as GLM-5.4 ones. It used to be 0 for every model.
+2. **Per-model windows, only when a model is really exhausted**: a healthy account's card is exactly what it was before (check-in / credit balance / campaign points) — **no "unknown" row per model**, because with no denominator upstream there is no ZCode-style `3,000,000 / 3,000,000 · 100%` bar to draw and a row would be pure noise. When the vendor says a model's free quota is used up, one row appears, `{ name, models: [id], used: 100 }`; `models` pins it to that one model, so **an exhausted model no longer takes the account's other models down with it**. A period the vendor states becomes `resetsAt` (Auto-Fast 24h); otherwise the row carries a local re-check time, labelled "the upstream gave no reset time, re-checked at HH:MM".
+3. **The retries stop through magpie's own per-model rest**: the window carries `models: [id]` and `used: 100`, so magpie writes the rest as `by: "window"`, `key: <account>/<model>` and rests only that model. **Nothing is short-circuited in `loader.fetch`** — doing that would turn a 401 "sign-in expired" into a 429 and hide a genuinely signed-out account. One successful call clears the mark; a model with no vendor-stated reset is re-checked every 6 hours rather than held forever.
+4. **Nothing lost across processes**: the per-model ledger and the catalog facts both live in `autoclaw-usage.json` (`models` / `catalog` nodes, same 0600, same temp-file + rename). magpie starts a **new plugin host process** for each quota read, so memory-only state would degrade the card to "unknown".
+
+**Display name ≠ routeModelId**: the vendor says "GLM-5.4" while its id is `zai_glm-x-preview` (no 5.4 in the id); GLM-5.3's id is `zaicoding_glm-5.3`. The named model is matched first by the catalog's official `name`, then by an id containing that name; when neither knows it, **nothing is claimed** — never guess an id and block another model.
+
+Regression tests are the `quota:` cases in `index.test.mjs` (zero network, zero inference).
 
 ## Daily check-in
 
