@@ -285,6 +285,11 @@ reasoning parts and make OpenCode Desktop freeze when restoring a session.
 Since 0.2.38 the plugin removes only that empty list from forwarded deltas;
 real tool calls and unaffected events pass through unchanged (#1532).
 
+Since 0.2.41 the forwarded reasoning deltas are also held and emitted as one
+event, flushed on 8 KB, on a 300 ms clock, or when the block ends, so a long
+answer no longer becomes thousands of parts and the message is not rewritten
+per delta. The text is unchanged; only the chunk boundaries move (#1393).
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
