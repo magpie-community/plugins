@@ -692,7 +692,7 @@ async function enterpriseUsage(tok, includedOnly = false) {
     if (typeof used !== "number" || !Number.isFinite(used) || used < 0) return undefined
     if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return undefined
     const end = Date.parse(data.billingCycleEnd ?? "")
-    const resets = Number.isFinite(end) ? { resetsAt: new Date(end).toISOString() } : {}
+    const resets = Number.isFinite(end) ? { resetsAt: new Date(end).toISOString(), ...cycleSpan(data.billingCycleStart, data.billingCycleEnd) } : {}
     const od = data.teamUsage?.onDemand
     const spent = typeof od?.used === "number" && Number.isFinite(od.used) && od.used >= 0
     const unlimited = od?.enabled === true && od.limit === null
@@ -728,6 +728,17 @@ async function enterpriseUsage(tok, includedOnly = false) {
   }
 }
 
+// cycleSpan is the billing cycle's length in seconds, as span, when Cursor
+// sends its start beside its end (epoch ms, or ISO from usage-summary).
+// Every window that resets at the cycle's end runs that long, so magpie's
+// Usage table puts it in the column for its length (#1499) and routing
+// reads it as a budget of a day or more, not a rate cap.
+function cycleSpan(start, end) {
+  const at = (v) => (/^[+-]?\d+$/.test(String(v ?? "")) ? Number(v) : Date.parse(v ?? ""))
+  const s = at(start), e = at(end)
+  return Number.isFinite(s) && Number.isFinite(e) && e > s ? { span: Math.round((e - s) / 1000) } : {}
+}
+
 // usage is the account's windows this billing period. ids are the models it
 // can be asked for, each counted by the pool Cursor bills it to. An account
 // that may spend on-demand once its included usage is gone (fottencity on
@@ -760,7 +771,7 @@ async function usage(tok, ids, includedOnly = false, plan = undefined) {
     return { windows: windows ?? [], credits: credits(undefined, await grants, ids, {}).windows }
   }
   const ms = /^[+-]?\d+$/.test(data.billingCycleEnd ?? "") ? Number(data.billingCycleEnd) : 0
-  const resets = ms > 0 ? { resetsAt: new Date(ms).toISOString() } : {}
+  const resets = ms > 0 ? { resetsAt: new Date(ms).toISOString(), ...cycleSpan(data.billingCycleStart, data.billingCycleEnd) } : {}
   const bucket = new Set((data.autoBucketModels ?? []).map(poolBase))
   const inPool = (model) => {
     model = poolBase(model)

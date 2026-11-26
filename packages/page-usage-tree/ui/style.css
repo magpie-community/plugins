@@ -930,6 +930,22 @@ input, select {
 /* The fixed columns need about 680px. Switch to the compact tree before
    the expanding model rows can push their values out of the viewport. */
 @media (max-width: 700px) {
+  body {
+    padding: 12px 8px;
+  }
+
+  .view {
+    gap: 10px;
+  }
+
+  .panel-head {
+    padding: 10px;
+  }
+
+  .warn {
+    margin: 8px 10px 0;
+  }
+
   .cols {
     grid-template-columns: minmax(0, 1fr) 48px 82px 18px;
     gap: 8px;
@@ -951,6 +967,25 @@ input, select {
   .head-tools {
     justify-content: space-between;
     width: 100%;
+  }
+
+  .segs {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .segs button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 6px;
+  }
+
+  .cache-toggle {
+    flex: 0 0 auto;
+  }
+
+  .head-tools > .icon {
+    flex: 0 0 26px;
   }
 
   .tools {
@@ -1002,7 +1037,7 @@ input, select {
   .model-row {
     grid-template-columns: minmax(0, 1fr) 58px 74px;
     gap: 8px;
-    padding: 7px 12px 8px 20px;
+    padding: 7px 8px 8px 12px;
     border-top: 1px solid var(--magpie-line);
   }
 
@@ -1039,6 +1074,7 @@ input, select {
     flex-direction: column;
     align-items: flex-start;
     gap: 2px;
+    padding: 0 4px 4px;
   }
 }
 

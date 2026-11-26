@@ -19,6 +19,8 @@ Both providers support magpie's multi-account pools, failover, automatic token r
 - `zai_glm-5.3-flash` (fast reasoning, reasoning variants)
 - `zaicoding_glm-5.3` (GLM-5.3 coding, reasoning variants)
 
+Like the official client (AutoClaw 2.5.3), the model list is read live from the upstream managed gateway (`GET /autoclaw-proxy/proxy/autoclaw-model-config`; `autoglm-api.autoglm.ai` for the international side, `autoglm-acceleration-api.zhipuai.cn` for CN). A model upstream adds (a new GLM, say) shows once you are signed in, with no plugin release; models gated off by client version or channel, and Anthropic-wire models, are left out. When the list can't be read (not signed in, network failure, 401, an unexpected shape), the 4 models above stay.
+
 > Note: the old `zai_glm-5-turbo` and the Doubao DeepSeek mappings `tdpsk_deepseek-v4-flash-202605` / `tdpsk_deepseek-v4-pro-202606` were taken offline upstream (every call returns `400 illegal model`) and have been removed from the model list.
 
 ## Signing in

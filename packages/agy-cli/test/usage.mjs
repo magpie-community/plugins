@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
+import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, planOf, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -88,7 +88,24 @@ test("a live report names on each window the ids the listed catalog serves", () 
   assert.deepEqual(pools.map(w => w.used), [0, 0, 66.394961, 0, 0])
   // agy names a family in the description even though it lists no bare id.
   assert.ok(pools[2].models.includes("gpt-oss-120b"))
-  assert.ok(result.windows.every(w => w.aside === true))
+  // the pools' windows are set aside: they hold their models at a cap
+  assert.ok(pools.every(w => w.aside === true))
+  storeCatalogRows(null)
+})
+
+// will930128 on X: an Opus 5.5 routing group showed the agy-cli account's
+// share as not known, last behind every account known, while its card
+// showed Claude & GPT's 5 hours and 7 days. Every window was aside, so
+// magpie's routing had none to weigh it by.
+test("a model's own window is not set aside, so routing weighs the account by it", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  const own = result.windows.filter(w => w.model)
+  assert.equal(own.length, 6)
+  assert.ok(own.every(w => !w.aside && w.used !== undefined && w.models.length > 0))
+  const opus = own.find(w => w.model === "claude-opus-5-5")
+  assert.deepEqual([opus.pool, opus.used, opus.aside], ["Claude & GPT", 66.394961, undefined])
+  assert.ok(opus.models.includes("claude-opus-5-5-high"))
   storeCatalogRows(null)
 })
 
@@ -625,7 +642,9 @@ test("only concurrent refreshes share work, and callers cannot mutate each other
   results[0].windows[0].used = 99
   assert.equal(results[1].windows[0].used, 25)
   await read()
-  assert.equal((await f.logs()).length, 4)
+  // the next refresh reads quota again; agy's --version answer is kept for
+  // its binary (plugins#1544)
+  assert.deepEqual((await f.logs()).map((call) => call.args[0]), ["--version", "-p", "-p"])
   await f.assertClean()
 })
 
@@ -875,6 +894,19 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
   }
 })
 
+// plugins#1544: agy --version took 5 to 17 seconds on a one-CPU Linux host,
+// and the quota read was given up at 3 seconds, before it could start.
+test("a slow agy --version can finish within the usage deadline, and is asked once", async t => {
+  const f = await fixture(t, { TEST_START_DELAY_MS: "4000" })
+  const result = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
+  assert.equal(result.windows.length, 2)
+  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]])
+  const again = await fetchUsage(f.executable, { ...f.options, first: true, quota: async () => SUMMARY })
+  assert.equal(again.windows.length, 2)
+  assert.deepEqual((await f.logs()).map(call => call.args), [["--version"]], "the same binary isn't asked its version again")
+  await f.assertClean()
+})
+
 test("version/report hangs time out, terminate the process, and leave no workspace", async t => {
   for (const mode of ["version-hang", "hang"]) {
     const f = await fixture(t, { TEST_MODE: mode })
@@ -984,6 +1016,9 @@ test("an account agy refuses for its region has its quota read the way agy reads
     ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
     ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
   ])
+  // the account the sign-in names; LOAD names no tier, so no plan
+  assert.equal(result.user, "secret@example.com")
+  assert.equal(result.plan, undefined)
   // the two requests agy makes, as it makes them
   assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
     ["POST", "/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
@@ -1016,7 +1051,7 @@ test("an access token about to end is renewed in memory for the direct read, nev
   const ending = structuredClone(STORED)
   ending.token.expiry = new Date(Date.now() + 30_000).toISOString()
   const data = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ending, fetch: fetchFn })
-  assert.deepEqual(data, SUMMARY)
+  assert.deepEqual(data, { quota: SUMMARY, plan: "", user: "secret@example.com" })
   assert.equal(renewals.length, 1)
   assert.equal(renewals[0].grant_type, "refresh_token")
   assert.equal(renewals[0].refresh_token, "1//refresh")
@@ -1070,6 +1105,69 @@ test("an account with no project and Google's reason for it says that reason", a
   assert.equal(api.calls.length, 1)
 })
 
+// /usage names no plan or account; the direct read has both at hand: the
+// tiers loadCodeAssist names, read as the retired antigravity plugin read
+// them, and the email agy's stored sign-in names.
+test("the direct read names the plan loadCodeAssist gives and the account the sign-in names", async t => {
+  const free = { id: "free-tier", name: "Antigravity" }
+  for (const [tiers, plan] of [
+    [{ paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: free }, "Google AI Pro"],
+    [{ paidTier: { id: "g1-pro-tier" }, currentTier: { id: "g1-ultra-tier", name: "Google AI Ultra" } }, "Google AI Ultra"],
+    [{ paidTier: { id: "g1-pro-tier", name: "" }, currentTier: free }, "Antigravity"],
+    [{ currentTier: free }, "Antigravity"],
+    [{ currentTier: { id: "g1-pro-tier" } }, "g1-pro-tier"],
+    [{}, ""],
+  ]) {
+    const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, ...tiers }] })
+    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => STORED })
+    assert.deepEqual(read, { quota: SUMMARY, plan, user: "secret@example.com" }, JSON.stringify(tiers))
+  }
+  for (const [email, user] of [[" pro@example.com\n", "pro@example.com"], [undefined, ""], ["", ""], ["  ", ""], [42, ""]]) {
+    const api = await codeAssist(t)
+    const read = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ({ ...STORED, id_token_email: email }) })
+    assert.equal(read.user, user, String(email))
+  }
+})
+
+test("planOf: a paid tier with no name stands when there is no current tier; no tier, no plan", () => {
+  assert.equal(planOf({ paidTier: { id: "g1-pro-tier" } }), "g1-pro-tier")
+  assert.equal(planOf({ paidTier: { id: "g1-pro-tier", name: 7 }, currentTier: { id: "free-tier", name: "Antigravity" } }), "Antigravity")
+  assert.equal(planOf({ currentTier: {} }), "")
+  assert.equal(planOf(null), "")
+})
+
+test("a usage read made directly shows the account's plan and email beside its windows", async t => {
+  const api = await codeAssist(t, { loadCodeAssist: [200, { ...LOAD, paidTier: { id: "g1-pro-tier", name: "Google AI Pro" }, currentTier: { id: "free-tier", name: "Antigravity" } }] })
+  const quota = o => readQuotaDirect({ ...o, stored: async () => ({ ...STORED, id_token_email: "pro@example.com" }) })
+  // read first with time left, and read instead of agy -p with an ended token
+  for (const stored of [
+    { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false },
+    { state: "present", fp: "ended", canRenew: true, expiresAt: 1, expired: true },
+  ]) {
+    const f = await fixture(t, { TEST_MODE: "hang", CLOUD_CODE_URL: api.url })
+    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota, signIn: async () => stored })()
+    assert.equal(result.error, undefined)
+    assert.equal(result.signIn, "kept")
+    assert.equal(result.plan, "Google AI Pro")
+    assert.equal(result.user, "pro@example.com")
+    assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used]), [["Gemini", "7 days", 25], ["Gemini", "5 hours", 50]])
+    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+    await f.assertClean()
+  }
+})
+
+test("a quota read that gives the summary alone names no plan or account, whatever else it carries", async t => {
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  for (const summary of [SUMMARY, { ...SUMMARY, plan: "Google AI Pro", user: "pro@example.com" }]) {
+    const f = await fixture(t, { TEST_MODE: "hang" })
+    const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, quota: async () => summary, signIn: async () => stored })()
+    assert.equal(result.error, undefined)
+    assert.equal(result.windows.length, 2)
+    assert.equal(result.plan, undefined)
+    assert.equal(result.user, undefined)
+  }
+})
+
 // plugins#1234 (qiankun229): agy run for usage with an ended access token
 // renews it first, and when that failed for a moment (a DNS miss at
 // Windows startup, a 10s keyring timeout) it opened Google's sign-in in the
@@ -1107,6 +1205,28 @@ test("a stored sign-in with time left is read directly first, so a slow agy -p d
   assert.equal(result.windows.length, 2)
   assert.equal(asked, 1)
   assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+  await f.assertClean()
+})
+
+// plugins#1522: a direct read that can't connect hung until the deadline,
+// and agy -p, run after it with a second left, timed the card out.
+test("a direct read that hangs leaves agy -p the time it needs", async t => {
+  const f = await fixture(t)
+  const deadlines = []
+  const quota = async o => {
+    deadlines.push(o.deadline - Date.now())
+    await new Promise(r => setTimeout(r, Math.max(0, o.deadline - Date.now())))
+    throw new Error("The operation timed out.")
+  }
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 9000, quota, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.windows.length, 1)
+  assert.equal(deadlines.length, 1)
+  assert.ok(deadlines[0] <= 5000, `the direct read had ${deadlines[0]}ms`)
+  const p = (await f.logs()).find(l => l.args[0] === "-p")
+  assert.ok(Number(p.args.at(-1).replace(/s$/, "")) >= 3, `agy -p had ${p.args.at(-1)}`)
   await f.assertClean()
 })
 

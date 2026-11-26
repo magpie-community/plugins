@@ -489,3 +489,75 @@ test("a token host the sign-in named is where the token is renewed", async () =>
   const g = await signIn({ UserID: "u-e", ScreenName: "Acme" }, { authHost: "https://auth.trae.ai" })
   expect(g.authHost).toBeUndefined()
 })
+
+// plugins#1516 (a real Trae CN SaaS seat, 0.2.53): the console's callback
+// names its host bare, "console.enterprise.trae.cn", and the sign-in was
+// kept with neither api nor host, so every chat went to the consumer
+// gateway (no c-* model, glm-5.4 answered 1005) and the seat pool was never
+// read. The callback's fields below are that report's.
+const saasJwt = (over = {}) => ["x", Buffer.from(JSON.stringify({ scope: "saas", tenant_id: "tob_online", tob_tenant_id: "t-9", type: "user", exp: Math.floor(Date.now() / 1000) + 7200, ...over })).toString("base64url"), "sig"].join(".")
+
+test("a console callback naming its host bare signs the seat in on its console", async () => {
+  f = fakeTrae()
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  for (const bare of [{ host: "console.enterprise.trae.cn" }, { consoleHost: "console.enterprise.trae.cn" }, {}]) {
+    const a = await hooks.auth.methods[1].authorize()
+    const url = new URL(new URL(a.url).searchParams.get("auth_callback_url"))
+    for (const [k, v] of Object.entries(bare)) url.searchParams.set(k, v)
+    url.searchParams.set("userJwt", JSON.stringify({ Token: saasJwt(), TokenExpireAt: Math.floor(Date.now() / 1000) + 7200 }))
+    url.searchParams.set("userInfo", JSON.stringify({ UserID: "u-e", ScreenName: "Seat", IsSetTenant: true, IsAllowLogin: true, LastLoginType: 2 }))
+    url.searchParams.set("refreshToken", "r-e")
+    await fetch(url)
+    const got = await a.callback()
+    expect(got.type).toBe("success")
+    expect(got.host).toBe(ENT)
+    expect(got.api).toBe(ENT)
+    expect(_internal.isEnterprise(got, CN)).toBe(true)
+    expect(CN.apiOf(got)).toBe(CN.hosts.console)
+  }
+  // a bare host is read as https only: one off Trae's domains, or another
+  // scheme, is still refused
+  const { cb } = await start()
+  for (const bad of ["trae-api-cn.evil.com", "http://console.enterprise.trae.cn"]) {
+    const { a, cb } = await start()
+    const url = new URL(cb)
+    url.searchParams.set("host", bad)
+    url.searchParams.set("userJwt", JSON.stringify({ Token: "jwt-p", RefreshToken: "r-p", TokenExpireAt: Math.floor(Date.now() / 1000) + 7200 }))
+    await fetch(url)
+    const got = await a.callback()
+    expect(got.host).toBeUndefined()
+    expect(got.api).toBeUndefined()
+  }
+  await fetch(cb + "?error=x")
+})
+
+test("a seat kept with no host before 0.2.54 is read as its console's, a personal sign-in as before", async () => {
+  // the reporter's plugin-auth.json: no api, no host, a SaaS token
+  const { client } = consoleApart()
+  const ent = { ...signedIn({ access: saasJwt() }), account: { IsSetTenant: true, IsAllowLogin: true, LastLoginType: 2 } }
+  f.route("POST /console/api/agent/v3/llm_utils_chat", ok)
+  f.route("POST /api/agent/v3/llm_utils_chat", ok)
+  expect((await chat(client, ent)).status).toBe(200)
+  expect(chats()).toEqual(["/console/api/agent/v3/llm_utils_chat"])
+  // a personal token, or a seat that named its own host, is not moved
+  f.seen.length = 0
+  expect((await chat(client, signedIn({ access: saasJwt({ scope: "personal" }) }))).status).toBe(200)
+  expect((await chat(client, signedIn())).status).toBe(200)
+  expect(chats()).toEqual(["/api/agent/v3/llm_utils_chat", "/api/agent/v3/llm_utils_chat"])
+})
+
+test("a seat whose token holds its claims under data is read as its console's too", async () => {
+  // the reporter's second seat token (plugins#1516, 0.2.54): every claim
+  // under data, none at the top
+  const nested = (data) => ["x", Buffer.from(JSON.stringify({ data, exp: Math.floor(Date.now() / 1000) + 7200, iat: Math.floor(Date.now() / 1000) })).toString("base64url"), "sig"].join(".")
+  const { client } = consoleApart()
+  f.route("POST /console/api/agent/v3/llm_utils_chat", ok)
+  f.route("POST /api/agent/v3/llm_utils_chat", ok)
+  const seat = { ...signedIn({ access: nested({ email: "s@example.com", scope: "saas", tenant_id: "tob_online", tob_tenant_id: "t-9", type: "user" }) }), account: { IsSetTenant: true, IsAllowLogin: true, LastLoginType: 2 } }
+  expect((await chat(client, seat)).status).toBe(200)
+  expect(chats()).toEqual(["/console/api/agent/v3/llm_utils_chat"])
+  // the same shape with a personal scope stays on the gateway
+  f.seen.length = 0
+  expect((await chat(client, signedIn({ access: nested({ scope: "personal", type: "user" }) }))).status).toBe(200)
+  expect(chats()).toEqual(["/api/agent/v3/llm_utils_chat"])
+})

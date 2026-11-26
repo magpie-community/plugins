@@ -283,7 +283,11 @@ CN 3.4.22's own agent task puts it — read from the binary, **not verified
 with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
 after using every token it was let have — the `max_tokens` sent, or 2000
 for an enterprise model — ends with `finish_reason: "length"`, so an agent
-knows it was cut. Since 0.2.48 a tool call such a reply was cut in (its
+knows it was cut. Trae's `completion_tokens` count the reasoning, which
+`max_tokens` doesn't bound, so since 0.2.54 a reply is taken as cut at
+`max_tokens` only when the count is that limit exactly or what it said past
+its reasoning reached it (plugins#1503: GLM-5.3's whole "OK" to
+`max_tokens` 16, 55 tokens of them 52 reasoning, went out as `length`). Since 0.2.48 a tool call such a reply was cut in (its
 arguments not whole JSON) is not sent as a call: the reply ends with
 `length` and the text before the call (plugins#1366, a call cut at 2000
 went out as `tool_calls` and the agent stopped on it). A whole call in a
@@ -308,7 +312,25 @@ stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
 sent, so the agent doesn't take the pause for a dead stream; with
 `MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
 `wait_ms=`. **Not verified with a real enterprise seat**,
-nor how cleanly a model goes on from where it stopped. A model with a `__max` model and
+nor how cleanly a model goes on from where it stopped.
+
+Since 0.2.53 an enterprise custom model whose detail carries a usable
+`custom_config` (provider `custom_openai_compatible`, `status` true,
+`auth_type` 0, an `ak`, and a `base_url` ending in `/chat/completions`) is
+not asked through `llm_utils_chat` at all: its chat goes straight to that
+`base_url`, as Trae CN 3.4.22's own client sends it (plugins#1366, the
+reporter's captures: 8274 and 12182 output tokens with `stop` on the
+same model that `llm_utils_chat` cuts at 2000). The request carries
+`Authorization: Bearer <ak>`, `X-Model-Provider`, `User-Agent: hertz`,
+the detail's `model_name` as `model`, the agent's `max_tokens` held to the
+detail's (the detail's when none is asked), the messages and tools as the
+agent sent them, and is always a stream with its usage; tool calls come
+back in OpenAI form. If the endpoint isn't reached, answers an error
+status, isn't a stream or a completion, or fails before writing anything,
+the request goes through `llm_utils_chat` as before; a 401 or 403 there
+keeps that model on `llm_utils_chat` until its list gives another `ak`.
+Any other `auth_type`, or a field missing, is `llm_utils_chat` too.
+**Not tried on a real enterprise seat.** A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -426,6 +448,7 @@ IDE may therefore ask you to sign in again after magpie renews.
 | --- | --- |
 | 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
+| code 1005 naming a plan (`extra` `{"plan":2}`), from any function | 403 "the model is not available to this account's plan", naming the plan, the model and the functions tried |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
 
 ### Seeing what is sent
@@ -444,8 +467,11 @@ terminal or `docker logs` when magpie runs as `magpie serve`):
   Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
   finish the agent was sent.
 
-The request goes to Trae, not to an enterprise model's own gateway: Trae's
-cloud makes that request, so its body is not in magpie's log.
+An enterprise model asked at its own endpoint (0.2.53) writes
+`trae debug: request <id> POST <base_url> direct ak_chars=<n> <body>`: the
+`ak`'s length only, never the `ak`. Any other request goes to Trae, whose
+cloud asks the enterprise model's gateway, so that body is not in magpie's
+log.
 
 ## Usage
 
@@ -462,7 +488,12 @@ page the realm bills on:
   WorkBuddy's.
 
 **Trae CN, an enterprise (SaaS) account** — Trae's enterprise console, which
-bills in yuan rather than in the credits the consumer page counts:
+bills in yuan rather than in the credits the consumer page counts. The
+console's callback names its host bare (`console.enterprise.trae.cn`);
+since 0.2.54 that is read as https, and an enterprise sign-in that names no
+usable host keeps its console. A seat kept with no host before then (its
+token's scope is `saas`, at its top or, since 0.2.55, under `data`) is read
+as its console's with no new sign-in (plugins#1516):
 
 - **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
   for the allowance and `…/get_user_model_usage` for the spend, both POST

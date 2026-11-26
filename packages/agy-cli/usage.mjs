@@ -9,6 +9,9 @@ import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./sig
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
 const MAX_OUTPUT_BYTES = 1024 * 1024
+// The direct read made before agy -p (fetchUsage's first) takes about 1.5
+// seconds; agy -p, 5 to 10. The first gets this long, agy -p the rest.
+const FIRST_READ_MS = 5_000
 
 // kind: "auth" (agy says it needs a sign-in), "timeout" (output: what agy
 // had printed by then, never shown), "cancel", or none.
@@ -183,6 +186,13 @@ function vendorOf(id, name) {
 // digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
 // card shows the pools, and "Every model" lists the models, as it did for
 // the antigravity plugin.
+//
+// A model's own window is not set aside: it is what routing weighs the
+// account by for that model, as the antigravity plugin's were, so a
+// routing group of Opus 5.5 reads the account's Claude & GPT share, not
+// "not known yet" behind every account known (will930128 on X). The
+// pool's own windows stay aside and hold their models at a cap the user
+// sets on the pool (magpie's PoolWindow), as the antigravity plugin's did.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
@@ -214,7 +224,7 @@ export function parseUsageReport(value) {
       const w = {
         name: period.name,
         pool,
-        // This feature displays quota only; it must not change model routing.
+        // the pool's own: its models' windows stop them (below)
         aside: true,
         ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
@@ -234,7 +244,6 @@ export function parseUsageReport(value) {
         model: f.id,
         family: vendorOf(f.id, f.name),
         pool,
-        aside: true,
         models: f.ids,
         used: tightest.used,
         ...(tightest.span ? { span: tightest.span } : {}),
@@ -245,13 +254,29 @@ export function parseUsageReport(value) {
   if (!windows.some(w => w.used !== undefined)) {
     throw new UsageError("Limits not available: agy returned no enabled, measured quota buckets.")
   }
-  // /usage has no verified account or plan identity. Do not borrow one elsewhere.
+  // /usage has no verified account or plan identity: none is made up from
+  // it. Only the direct read (readQuotaDirect, fromQuota) adds one: the plan
+  // its loadCodeAssist names and the email agy's stored sign-in names.
   return { windows: [...[...models.values()].sort((a, b) => a.name.localeCompare(b.name)), ...windows] }
 }
 
 function timeout(value) {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_TIMEOUT_MS) : DEFAULT_TIMEOUT_MS
+}
+
+// What agy --version said, by the binary that said it: its real path, size
+// and modification time, so an updated agy is asked again.
+const versionCache = new Map()
+
+async function binaryKey(file) {
+  try {
+    const real = await fs.realpath(file)
+    const st = await fs.stat(real)
+    return `${real}\0${st.size}\0${st.mtimeMs}`
+  } catch {
+    return ""
+  }
 }
 
 function run(file, args, { cwd, env, deadline, signal, maxOutputBytes, onTreeKill }) {
@@ -419,8 +444,19 @@ const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p
 // project, the same account's quota answers 200.
 export const CONSUMER_PROJECT = "aicode-consumers"
 
+// planOf is the plan a loadCodeAssist reply names, as the retired
+// antigravity plugin read it: the paid tier's name, else the current
+// tier's, else that tier's id; "" when it names no tier.
+export function planOf(load) {
+  let t = load?.paidTier
+  if (!text(t?.name)) t = load?.currentTier ?? t
+  return text(t?.name) || text(t?.id)
+}
+
 // readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
-// sign-in, as agy asks it. An access token with under two minutes left is
+// sign-in, as agy asks it (quota), with the plan loadCodeAssist named
+// (planOf) and the account the sign-in names (user, its id_token_email),
+// each "" when unnamed. An access token with under two minutes left is
 // renewed in memory only; agy's stored sign-in is never written.
 export async function readQuotaDirect({
   env = process.env, version, deadline, signal,
@@ -477,7 +513,23 @@ export async function readQuotaDirect({
     const why = text((load?.ineligibleTiers ?? []).find(x => text(x?.reasonMessage))?.reasonMessage)
     throw new UsageError(why ? `Antigravity names no project for this account (${why.slice(0, 300)})` : "Antigravity names no project for this account.")
   }
-  return call("retrieveUserQuotaSummary", { project })
+  const quota = await call("retrieveUserQuotaSummary", { project })
+  return { quota, plan: planOf(load), user: text(sign.id_token_email) }
+}
+
+// fromQuota is the usage a direct read gives: the windows of its quota,
+// with the plan and account readQuotaDirect named, when it named them. A
+// quota summary on its own (a quota read that returns just that) gives
+// the windows alone.
+function fromQuota(read) {
+  const named = read !== null && typeof read === "object" && Object.hasOwn(read, "quota")
+  const usage = parseUsageReport({ status: "SUCCESS", command: { name: "usage", data: named ? read.quota : read } })
+  if (!named) return usage
+  return {
+    ...usage,
+    ...(text(read.plan) ? { plan: text(read.plan) } : {}),
+    ...(text(read.user) ? { user: text(read.user) } : {}),
+  }
 }
 
 export async function fetchUsage(agy, {
@@ -519,13 +571,21 @@ export async function fetchUsage(agy, {
       BROWSER: path.join(directory, process.platform === "win32" ? "open.cmd" : "open"),
     })
     const options = { cwd: directory, env: childEnv, deadline, signal, maxOutputBytes, onTreeKill: p => { pendingTreeKill = p } }
-    // --version needs no sign-in, so its hang is never read as one
-    const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + 3000) }).catch((error) => {
-      if (error?.kind === "timeout") throw new UsageError(error.message)
-      throw error
-    })
-    if (version.code !== 0) throw commandFailure(version.stderr)
-    if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
+    // --version needs no sign-in, so its hang is never read as one. It gets
+    // the whole deadline, and its answer is kept for the binary it came from:
+    // a 266 MB agy on a one-CPU Linux host takes 5 to 17 seconds just to say
+    // its version (plugins#1544), which left no time for the quota read.
+    const binary = await binaryKey(agy)
+    let version = binary && versionCache.get(binary)
+    if (!version) {
+      version = await run(agy, ["--version"], options).catch((error) => {
+        if (error?.kind === "timeout") throw new UsageError(error.message)
+        throw error
+      })
+      if (version.code !== 0) throw commandFailure(version.stderr)
+      if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
+      if (binary) versionCache.set(binary, { code: 0, stdout: version.stdout, stderr: "" })
+    }
     // agy's access token has ended (or is about to): agy renews it when it
     // runs, and when that renewal fails, even for a moment (DNS at startup,
     // a slow keyring), agy starts its own Google sign-in, which on Windows
@@ -541,7 +601,7 @@ export async function fetchUsage(agy, {
         if (error instanceof UsageError) throw error
         throw new UsageError("agy's stored sign-in couldn't be renewed. Check the network or proxy.")
       }
-      return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      return fromQuota(data)
     }
     // With a stored sign-in to read it with, the quota is read first the
     // way agy's /usage reads it: loadCodeAssist, then
@@ -555,11 +615,16 @@ export async function fetchUsage(agy, {
     // seconds. When they can't answer (a sign-in that can't be read, a
     // refusal, a reply with no quota), agy -p is asked as before, in the
     // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    //
+    // It gets FIRST_READ_MS of the deadline, not all of it: a read that
+    // can't connect (a proxy down, a network that drops Google) hung until
+    // the deadline and left agy -p a second, so the card said "timed out"
+    // when agy -p alone would have answered (plugins#1522).
     let firstFailed = ""
     if (first) {
       try {
-        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
-        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+        const data = await quota({ env, version: version.stdout.trim(), deadline: Math.min(deadline, Date.now() + FIRST_READ_MS), signal })
+        return fromQuota(data)
       } catch (error) {
         if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
         firstFailed = error instanceof UsageError ? error.message : "a network request failed"
@@ -591,7 +656,7 @@ export async function fetchUsage(agy, {
         throw alsoFailed(error instanceof UsageError ? error.message : "a network request failed")
       }
       try {
-        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+        return fromQuota(data)
       } catch {
         throw alsoFailed("Google's reply had no quota in it")
       }
@@ -660,6 +725,8 @@ export function createUsageReader(resolveAgy, options = {}) {
     let stored
     try { stored = await signIn() } catch { stored = { state: "unknown" } }
     const why = cannotSignIn(stored)
+    // out of this process's reach, signing in again here mends nothing
+    if (why && stored?.state === "unreachable") return { windows: [], error: `${why}.`, signIn: "expired" }
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"

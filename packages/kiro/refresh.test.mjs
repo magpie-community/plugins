@@ -4,14 +4,15 @@
 // before a request.
 import { test, expect, afterAll, beforeAll, afterEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { realpathSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 
-let plugin
+let plugin, internal
 beforeAll(async () => {
   // Bun reads HOME once, at start: run as HOME=$(mktemp -d) bun test, so
   // no real sign-in (~/.kiro, ~/.aws, kiro-cli's) is ever read or written
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ KiroAuthPlugin: plugin } = await import("./index.mjs"))
+  ;({ KiroAuthPlugin: plugin, _internal: internal } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
@@ -110,4 +111,35 @@ test("nothing to renew with is nothing renewed", async () => {
   expect(await hooks.auth.refresh({ type: "oauth", access: "", refresh: "", expires: 0, source: "kiro-cli" })).toBeUndefined()
   expect(await hooks.auth.refresh({ type: "oauth", access: "a", refresh: "r", expires: 1, source: "kiro-ide" })).toBeUndefined()
   expect(seen.refreshes).toEqual([])
+})
+
+// plugins#1547: the Kiro IDE signed in through a company's own identity
+// provider (Entra ID) is renewed by that provider, with the client and
+// scopes the IDE keeps; Kiro's desktop service turns its refresh token down
+test("an external IdP sign-in from the Kiro IDE is renewed by the IdP, with its scopes, and written back", async () => {
+  const dir = join(homedir(), ".aws", "sso", "cache")
+  const file = join(dir, "kiro-auth-token.json")
+  const TOKEN = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, JSON.stringify({ accessToken: "old", refreshToken: "idp-r1", expiresAt: "2020-01-01T00:00:00Z",
+    authMethod: "external_idp", provider: "ExternalIdp", clientId: "entra-client", tokenEndpoint: TOKEN,
+    scopes: ["api://kiro/codewhisperer:completions", "offline_access"], profileArn: PROFILE, region: "us-east-1" }))
+  const sent = []
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url: String(url), type: new Headers(init.headers).get("Content-Type"), body: Object.fromEntries(new URLSearchParams(init.body)) })
+    return Response.json({ access_token: "idp-new", refresh_token: "idp-r2", expires_in: 3600 })
+  }
+  try {
+    const c = await internal.readIDE()
+    expect(c.method).toBe("external-idp")
+    const n = await internal.refresh(c)
+    expect(sent).toEqual([{ url: TOKEN, type: "application/x-www-form-urlencoded", body: { grant_type: "refresh_token",
+      client_id: "entra-client", refresh_token: "idp-r1", scope: "api://kiro/codewhisperer:completions offline_access" } }])
+    expect(n).toMatchObject({ access: "idp-new", refresh: "idp-r2", method: "external-idp" })
+    const saved = JSON.parse(readFileSync(file, "utf8"))
+    expect(saved).toMatchObject({ accessToken: "idp-new", refreshToken: "idp-r2", authMethod: "external_idp", tokenEndpoint: TOKEN })
+    expect(Date.parse(saved.expiresAt)).toBeGreaterThan(Date.now() + 50 * 60_000)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
