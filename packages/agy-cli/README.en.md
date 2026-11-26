@@ -48,6 +48,16 @@ channel: Antigravity's models over ACP. The differences:
   to be left out. When magpie's image-slim swaps an earlier image for its
   placeholder (on Codex, a whole view_image output for one line of text), or
   magpie leaves one out to fit a size or image limit, the session holds.
+  So does a Claude Code conversation whose Bash `cd` moved its working
+  folder, or whose ToolSearch loaded a tool in the middle of a turn: the
+  turn goes on in the same session with the new tool listed. A subagent
+  (Task) and Claude Code's own side requests (titles, summaries) are
+  conversations of their own and get sessions of their own. Each new
+  session writes an `agy_bridge_session` row with `"action":"session_new"`
+  and its `reason` to the plugin host's log; `park_miss` says why a
+  session kept from before a restart was not taken (`none`, `expired`,
+  `work_dir`, `instructions`, `history`, ...), and `resume_failed` why
+  agy's `session/resume` failed.
 - **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
   `tool_calls`. This plugin feeds the client's result back into the same agy
   turn (see "Tool bridge" below).
@@ -326,6 +336,7 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | How long a suspended tool turn whose client disconnected may keep its pool slot |
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for one prompt (agy cuts a prompt at 128 KiB) |
 | `AGY_BRIDGE_MAX_REPLAY_BYTES` | the model's window less its output and 32K tokens, at 2 bytes a token (384 KiB for a model the plugin doesn't know) | Byte budget for history replayed into a new session, over as many prompts as it takes (agy 1.5.17+); history past it is left out and the model is told |
+| `AGY_BRIDGE_STRICT_REPLAY` | off | Set to `1` to refuse a new session whose replay would leave out or cut any of the conversation: the request gets a 400 "prompt is too long" (`context_length_exceeded`, not retried) and nothing goes to agy, so the client can compact instead of the model answering from part of the history |
 | `AGY_BRIDGE_SEED_REPLAY` | on | Set to `0` to send a replay as one prompt of `AGY_BRIDGE_MAX_PROMPT_BYTES`, as before 0.1.139 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 45000 | Time agy gets for its own usage read, capped at 120000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading agy's stored sign-in |

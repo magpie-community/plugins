@@ -118,6 +118,23 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
         if (!u.windows.length) return fail("当前套餐没有额度限制数据")
         return u
       },
+      // Doubao's daily 签到, pressed through the app's page (doubao.mjs
+      // checkinOf) once a day by magpie, or by Check in now. A closed
+      // window is not opened for it (#1117): it fails, and magpie asks
+      // again later.
+      checkin: async () => {
+        try {
+          return await doubao.checkin({ signal: AbortSignal.timeout(25000) })
+        } catch (e) {
+          const code = String(e?.code ?? "")
+          if (code === "app_busy") return { outcome: "failed", message: BUSY(pick().app.name) }
+          if (code === "app_closed") return { outcome: "failed", message: "豆包工作窗口没有打开：签到在它打开时进行，magpie 稍后再试。" }
+          // the app or its window, not a request: said as it is; a request
+          // nothing answered is thrown
+          if (code.startsWith("app_") || (code.startsWith("doubao_") && code !== "doubao_network")) return { outcome: "failed", message: String(e?.message ?? e) }
+          throw e
+        }
+      },
       methods: [
         {
           type: "oauth",

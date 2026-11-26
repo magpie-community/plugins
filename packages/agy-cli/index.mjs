@@ -1583,6 +1583,21 @@ class UnsupportedContent extends Error {
   }
 }
 
+// A new session's replay that would leave out or cut some of the
+// conversation, refused under AGY_BRIDGE_STRICT_REPLAY. "prompt is too
+// long" is the wording clients compact on.
+class ReplayTooLarge extends Error {
+  constructor(stats, budget, agentVersion) {
+    const old = !seedsHistory(agentVersion) && !/^(?:0|false|off|no)$/i.test(process.env.AGY_BRIDGE_SEED_REPLAY || "")
+    super(`prompt is too long: this conversation (${stats.bytes_before + (stats.turn_bytes ?? 0)} bytes) does not fit a new agy session ` +
+      `(${budget} bytes), and AGY_BRIDGE_STRICT_REPLAY is on, so nothing was sent. Compact the conversation or start a new one` +
+      (old ? `; agy ${agentVersion || "of this version"} takes one prompt only, agy ${SEED_MIN_AGY_VERSION} or newer takes a longer conversation over several` : "") + ".")
+    this.statusCode = 400
+    this.code = "context_length_exceeded"
+    this.noRetry = true
+  }
+}
+
 // An upstream failure inside a healthy agy session. The process keeps its
 // conversation, so a client retry continues without replaying history.
 // streamErrorOf is the error event a failed turn ends its stream with. A
@@ -2763,9 +2778,13 @@ class Proc {
         this.resumed = true
         this.hasSentFirstTurn = true
         this.expectedMessages = this.resumeFrom.expectedMessages.map((message) => ({ ...message }))
-      } catch {
+      } catch (error) {
+        // the RPC's error code only, for the session row (plugins#1495)
+        this.resumeFailure = Number.isInteger(error?.acpError?.code) ? `rpc_${error.acpError.code}` : "rpc_failed"
         session = null
       }
+    } else if (this.resumeFrom) {
+      this.resumeFailure = "unsupported"
     }
     if (!this.resumed) {
       session = await this.conn.request("session/new", { cwd: this.workspace, mcpServers: [], ...meta })
@@ -2890,6 +2909,12 @@ class Proc {
   toolsGrew(tools) {
     const known = new Set(this.tools.map((tool) => tool.name))
     return tools.some((tool) => !known.has(tool.name))
+  }
+
+  // The names toolsGrew found: declared by the client, not yet given to agy.
+  grownToolNames(tools) {
+    const known = new Set(this.tools.map((tool) => tool.name))
+    return tools.filter((tool) => !known.has(tool.name)).map((tool) => tool.name)
   }
 
   // Swap the client tool catalog in place; agy re-lists on tools/list_changed.
@@ -4099,7 +4124,9 @@ function resumeWorkspace(workspace) {
   return /^magpie-agy-bridge-[A-Za-z0-9]{6}$/.test(path.basename(resolved)) ? resolved : null
 }
 
-function takeParked(convKey, opts) {
+// Why no parked session was taken goes in `miss.reason`: counts and names
+// only, never content (plugins#1495).
+function takeParked(convKey, opts, miss = {}) {
   loadParked()
   let key = convKey
   let legacy = false
@@ -4108,24 +4135,40 @@ function takeParked(convKey, opts) {
     legacy = true
   }
   const entry = parked.get(key)
-  if (!entry) return null
+  if (!entry) {
+    miss.reason = "none"
+    return null
+  }
   parked.delete(key)
   unparked.add(key)
   saveParked()
-  if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions, legacy)) ||
-    entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
+  miss.reason = Date.now() - entry.at > RESUME_TTL_MS ? "expired"
+    : (entry.workDir ?? null) !== (opts.workDir ?? null) ? "work_dir"
+    : entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions, legacy)) ? "instructions"
+    : entry.userCloak !== USER_CLOAK ? "user_cloak"
+    : entry.instructionsInSession !== (systemAppend() && !!opts.instructions) ? "instructions_place"
+    : null
+  if (miss.reason) return null
   const workspace = resumeWorkspace(entry.workspace)
   // A step parked mid-turn is taken only by its results: the request goes
   // on from the parked history with the model's calls and their results.
   if (entry.midTurn || opts.resumeStep) {
     if (!entry.midTurn || !opts.resumeStep || !Array.isArray(opts.messages) || !Number.isSafeInteger(entry.count) ||
-      entry.count < 1 || entry.count >= opts.messages.length || !answersStep(opts.messages.slice(entry.count))) return null
+      entry.count < 1 || entry.count >= opts.messages.length || !answersStep(opts.messages.slice(entry.count))) {
+      miss.reason = "step"
+      return null
+    }
     const prefix = opts.messages.slice(0, entry.count)
-    if (!sameParkedHistory(entry, prefix)) return null
+    if (!sameParkedHistory(entry, prefix)) {
+      miss.reason = "history"
+      return null
+    }
     return { sessionId: entry.sessionId, expectedMessages: prefix, workspace, step: true }
   }
-  if (!sameParkedHistory(entry, opts.history)) return null
+  if (!sameParkedHistory(entry, opts.history)) {
+    miss.reason = "history"
+    return null
+  }
   return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
 }
 
@@ -4474,7 +4517,8 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   }
   // a tool result whose live call is gone (a restarted host) may still go
   // on in the session parked at its step (parkStep)
-  const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts)
+  const parkMiss = { reason: isFreshConversation ? null : forceNew && !opts.resumeStep ? "forced" : null }
+  const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts, parkMiss)
   // a spare runs in a folder of its own, and a resumed session needs its own
   const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
@@ -4505,6 +4549,8 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   logSessionEvent(proc, why, {
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
+    ...parkMiss.reason ? { park_miss: parkMiss.reason } : {},
+    ...resume && !proc.resumed ? { resume_failed: proc.resumeFailure ?? "unknown" } : {},
     ...resume?.step ? { step: true } : {},
     ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
     ...proc.phases,
@@ -4742,7 +4788,9 @@ function replayHistoryProblem(body, resultBlocks) {
 // the client's history, ready for its next message. False when the session
 // can't take it as it is; the caller then replays, as for a fork.
 async function keepDroppedTurn(proc, turn, opts) {
-  if (proc.toolsGrew(opts.tools) || proc.workDir !== opts.workDir ||
+  // A grown catalog is no reason to leave: the next prompt starts after
+  // updateTools, where agy lists it.
+  if (proc.workDir !== opts.workDir ||
     !sameInstructions(proc.instructions, opts.instructions)) return false
   const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => {
     const result = { content: [{ type: "text", text: DROPPED_NOTE }], isError: true }
@@ -6854,6 +6902,28 @@ const REPLAY_ROOM_TOKENS = 32 * 1024
 const REPLAY_MAX_BYTES = 4 * 1024 * 1024
 const REPLAY_UNKNOWN_MODEL_BYTES = 384 * 1024
 
+// An agy too old to take a replay over several prompts cuts a long
+// conversation to one prompt's worth; say so once, where the user looks.
+let warnedSingleReplay = false
+function warnSingleReplay(agentVersion) {
+  if (warnedSingleReplay || /^(?:0|false|off|no)$/i.test(process.env.AGY_BRIDGE_SEED_REPLAY || "")) return
+  warnedSingleReplay = true
+  try {
+    process.stderr.write(`[agy-bridge] agy ${agentVersion || "(unknown version)"} takes a conversation into a new session in one prompt, ` +
+      `so a long one was cut; agy ${SEED_MIN_AGY_VERSION} or newer takes it over several prompts. Update agy (agy update).\n`)
+  } catch {}
+}
+
+function strictReplay() {
+  return /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_STRICT_REPLAY || "")
+}
+
+// Whether a replay's render left any of the conversation out or cut it.
+function replayLost(stats) {
+  return stats.messages_after < stats.messages_before || stats.clipped > 0 ||
+    stats.head_clipped || stats.turn_clipped || stats.prompt_clipped
+}
+
 function seedsHistory(version) {
   if (/^(?:0|false|off|no)$/i.test(process.env.AGY_BRIDGE_SEED_REPLAY || "")) return false
   const parse = (value) => {
@@ -7695,6 +7765,7 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
     head_clipped: promptTextBytes(headParts) < promptTextBytes(head),
     turn_bytes: promptTextBytes(turn),
     turn_clipped: promptTextBytes(turn) < promptTextBytes(currentSegments),
+    prompt_clipped: promptTextBytes(out) > budget,
   }
   return { parts: promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget), stats }
 }
@@ -8068,7 +8139,9 @@ function canReplayFollowUpAfterResults(body, rawResults) {
 function namedWorkDirectory(body, init) {
   const raw = new Headers(init.headers || {}).get("x-magpie-work-dir")
   if (raw) {
-    try { return decodeURIComponent(raw) } catch { return raw }
+    let named
+    try { named = decodeURIComponent(raw) } catch { named = raw }
+    return movedFromDirectory(body, named)
   }
   const firstAssistant = body.messages.findIndex((message) => message.role === "assistant")
   const opening = firstAssistant < 0 ? body.messages : body.messages.slice(0, firstAssistant)
@@ -8088,6 +8161,37 @@ function namedWorkDirectory(body, init) {
     }
   }
   return directory
+}
+
+// magpie names the folder the agent is in now. Claude Code says each move
+// in the conversation, "Primary working directory: /b (was /a)", so after a
+// `cd` the name changed while the conversation did not; the key, agy's
+// folder and the session's instructions all built on it, and every move
+// opened a new session and replayed the history (_paper_hands on X). The
+// conversation keeps the folder it began in, the first move's "was"; the
+// moves stay in its history, where the model reads where it is now.
+const MOVED_DIR_RE = /^(?: - )?Primary working directory: (.+) \(was (.+)\)$/gm
+
+function movedFromDirectory(body, named) {
+  let first = null
+  let last = null
+  const read = (text) => {
+    if (typeof text !== "string" || !text.includes(" (was ")) return
+    for (const match of text.matchAll(MOVED_DIR_RE)) {
+      first ??= match[2].trim()
+      last = match[1].trim()
+    }
+  }
+  const system = typeof body.system === "string" ? [body.system] : Array.isArray(body.system) ? body.system.map((block) => block?.text) : []
+  for (const text of system) read(text)
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
+    if (message?.role === "assistant") continue
+    if (typeof message?.content === "string") read(message.content)
+    else if (Array.isArray(message?.content)) {
+      for (const block of message.content) if (block?.type === "text") read(block.text)
+    }
+  }
+  return first && last === named ? first : named
 }
 
 // A directory as a prompt names it: bare, or quoted and ending a sentence
@@ -8957,6 +9061,11 @@ function bufferedAnthropicResponse(body, { msgId, model, content, stopReason }) 
 // when the user steered) are not sent again in the steer's prompt.
 // An answered result's images are the exception: the call got its text only
 // (textOnlyResult), so its images go in the prompt, under the result's id.
+// The prompt that goes on from a step ended for tools loaded mid-turn.
+function grownToolsNote(names) {
+  return `These tools were loaded and can be called now: ${names.join(", ")}. Continue the task.`
+}
+
 function withoutAnswered(messages, answered) {
   if (!answered?.size) return messages
   return messages.map((message) => message.role === "user" && Array.isArray(message.content)
@@ -8968,7 +9077,7 @@ function withoutAnswered(messages, answered) {
     : message)
 }
 
-async function beginTurn(proc, history, body, callerWorkDir, model, selection, answered) {
+async function beginTurn(proc, history, body, callerWorkDir, model, selection, answered, grownTools = null) {
   const reminder = outputFormatReminder(body)
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
@@ -8982,6 +9091,9 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
+    // a step ended for tools loaded mid-turn: its results are in, so the
+    // prompt says what can be called now and to go on
+    if (grownTools?.length) baseParts = mergePromptParts([{ type: "text", text: grownToolsNote(grownTools) }], baseParts)
   } else {
     // A history bigger than one prompt goes in over several (seedHistory),
     // up to the model's window, where agy can take them.
@@ -8990,6 +9102,16 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       reminder.length ? promptTextBytes(reminder) + 2 : 0, budget)
     baseParts = initial.parts
     if (initial.stats.messages_before) replay = { ...initial.stats, prompt_bytes: promptTextBytes(baseParts), budget_bytes: budget }
+    // AGY_BRIDGE_STRICT_REPLAY=1: a new session gets the whole conversation
+    // or nothing, never a shortened one the model answers from as if whole
+    // (plugins#1495)
+    if (strictReplay() && replayLost(initial.stats)) {
+      logSessionEvent(proc, proc.sessionReason ?? null, { ...replay ?? initial.stats, budget_bytes: budget,
+        seeded: seedsHistory(proc.agentVersion), agy_version: proc.agentVersion ?? null }, "replay_refused")
+      dropFromPool(proc)
+      await proc.stop().catch(() => {})
+      throw new ReplayTooLarge(initial.stats, budget, proc.agentVersion)
+    }
   }
   let contentParts = mergePromptParts(baseParts, reminder)
   let seeds = []
@@ -9000,7 +9122,12 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     contentParts = chunks.at(-1)
   }
   // what a replay into a new session kept, in counts (plugins#1401)
-  if (replay) logSessionEvent(proc, proc.sessionReason ?? null, { ...replay, prompts: seeds.length + 1 }, "replay")
+  if (replay) {
+    const seeded = seedsHistory(proc.agentVersion)
+    logSessionEvent(proc, proc.sessionReason ?? null, { ...replay, prompts: seeds.length + 1, seeded,
+      agy_version: proc.agentVersion ?? null }, "replay")
+    if (!seeded && replayLost(replay)) warnSingleReplay(proc.agentVersion)
+  }
   if ((promptHasImage(contentParts) || seeds.some(promptHasImage)) && !proc.supportsImages) {
     if (isFirstTurn) {
       dropFromPool(proc)
@@ -9423,7 +9550,9 @@ export const AntigravityBridgePlugin = async () => {
                 legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : "",
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
-              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
+              // tools the steered prompt names as callable now (grown mid-turn)
+              let grownTools = null
+              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds, grownTools)
               let keptSession = false
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks, sessionScope)
@@ -9515,10 +9644,21 @@ export const AntigravityBridgePlugin = async () => {
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
                   // cancelled, and the steer goes in as the next prompt.
-                  if (!prefillAfterResults && (interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                  //
+                  // A tool the client declares only now (ToolSearch loaded it)
+                  // takes the same way. agy checks a call against the tools it
+                  // listed before the prompt began (#942), so the step is ended
+                  // there and the next prompt, in the same session, starts after
+                  // agy has listed the grown catalog (acquireProcLocked's
+                  // updateTools). Before, the session was dropped and the whole
+                  // history replayed into a new one with no cache, once per
+                  // ToolSearch load (plugins#1371, _paper_hands on X).
+                  const grew = proc.toolsGrew(tools)
+                  if (!prefillAfterResults && (interrupted || imageResult || grew) && historyMatches && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
+                    if (grew && !interrupted) grownTools = proc.grownToolNames(tools)
                     answeredIds = new Set(
                       rawResults
                         .filter((item) => !item.call.deferred || item.call.lateDelivered)

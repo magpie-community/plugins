@@ -33,6 +33,12 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   分几条提示词发完，除最后一条外每条都在模型回答前取消，直到模型的窗口
   （`AGY_BRIDGE_MAX_REPLAY_BYTES`）；放不下的较早历史会明确告诉模型。magpie 的 image-slim 把较早的图片换成占位文字（Codex 上是整段
   view_image 结果换成一行字），或 magpie 为满足大小、图片数上限省去较早的图片时，会话照常复用。
+  Claude Code 用 Bash `cd` 换了工作目录，或 ToolSearch 在一轮中途加载了工具时也一样：这一轮
+  在同一个会话里接着做，新工具已列出。子 agent（Task）和 Claude Code 自己的附带请求（标题、
+  摘要）是各自独立的对话，各开各的会话。每开一个新会话，插件宿主的日志里会有一行
+  `agy_bridge_session`，`"action":"session_new"` 并带 `reason`；`park_miss` 说明为什么没接上
+  重启前留下的会话（`none`、`expired`、`work_dir`、`instructions`、`history` 等），
+  `resume_failed` 说明 agy 的 `session/resume` 为什么失败。
 - **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把
   客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。
 - **额度**：本插件读 agy 自己的 `/usage` 报告；Antigravity ACP 读每次回复带的配额。
@@ -235,6 +241,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | 客户端已断开的挂起工具回合，最多占用进程池槽位这么久 |
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 一条提示词的字节预算（agy 会把一条提示词截在 128 KiB） |
 | `AGY_BRIDGE_MAX_REPLAY_BYTES` | 模型窗口减去输出和 32K token，按每 token 2 字节算（插件不认识的模型为 384 KiB） | 新会话重放历史的字节预算，需要几条提示词就分几条发（agy 1.5.17 起）；超出的部分不发，并告诉模型 |
+| `AGY_BRIDGE_STRICT_REPLAY` | 关闭 | 设为 `1` 时，新会话的重放只要会省掉或截断对话的任何部分就拒绝：请求得到 400「prompt is too long」（`context_length_exceeded`，不重试），什么都不发给 agy，客户端可以先压缩，而不是让模型只看到一部分历史就回答 |
 | `AGY_BRIDGE_SEED_REPLAY` | 开启 | 设为 `0` 时重放只发一条 `AGY_BRIDGE_MAX_PROMPT_BYTES` 大小的提示词，即 0.1.139 之前的做法 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 45000 | agy 自己读额度的时间预算，最高 120000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | 未设置 | 设为 `skip` 时插件不读 agy 存的登录 |

@@ -14,6 +14,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { App, Page, sleep } from "./cdp.mjs"
 
 // isChat says whether a page is either app's chat page. The page reports
@@ -534,6 +535,95 @@ export const QUOTA = js(`
   } catch (e) { return { error: String(e && e.message || e) }; }
 `)
 
+// ALICE posts a JSON body to one of Doubao's /alice/ paths the way the
+// page's own calls go: with its cookies and the query its other /alice/
+// calls carry (version_code, aid, device_id...; msToken and a_bogus left
+// out, as LIST leaves them). It answers {status, body} or, when nothing
+// answered, {error}.
+export const ALICE = (path, body) => js(`
+  const urls = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/alice/") && u.includes("?"));
+  const q = new URL(urls.pop() || "https://www.doubao.com/alice/").searchParams;
+  q.delete("msToken"); q.delete("a_bogus");
+  const query = String(q);
+  try {
+    const r = await fetch("https://www.doubao.com" + ${JSON.stringify(path)} + (query ? "?" + query : ""), { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: ${JSON.stringify(JSON.stringify(body))} });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+    return { status: r.status, body: j };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+// Doubao's daily check-in (签到) belongs to its growth campaign
+// (豆包探索计划), read from the app's own bundle (UgCampaignApiService): the page
+// asks landing/get what to show, and a 签到 button there reports the press
+// (landing/report) and checks in (landing/checkin). Doubao decides per
+// account whether it offers one; it has no make-up check-in (补签).
+export const LANDING = "/alice/ug/campaign/landing/get"
+export const CHECKIN = "/alice/ug/campaign/landing/checkin"
+export const REPORT = "/alice/ug/campaign/landing/report"
+
+// landing/get's chosen_type: 1 the check-in page, 2 the page after it (today
+// is in), 3 cards. A button's type: button_type on the pages, interaction_type
+// on a card; 2 is 签到 on both.
+const MAIN_PAGE = 1, CHECKED_IN = 2, CARDS = 3, CHECK_IN = 2
+// reward_status 4 is a check-in whose reward failed
+const REWARD_FAILED = 4
+
+const words = (info) => [info?.title, info?.content].map((s) => String(s ?? "").trim()).filter(Boolean).join("，")
+
+// refusal is a reply that isn't Doubao's yes, as magpie's outcome: codes 0
+// and 200 (or none) are the page's yes.
+function refusal(read, what) {
+  if (read?.error) throw new DoubaoError(`${what}没有回复：${read.error}`, "doubao_network")
+  if (read?.status === 401 || read?.status === 403) return { outcome: "failed", message: "豆包登录已过期，请重新登录豆包工作窗口。" }
+  const b = read?.body
+  if (!b || typeof b !== "object") return { outcome: "failed", message: `${what}的回复不是 JSON（HTTP ${read?.status ?? "?"}）` }
+  if (b.code != null && !["0", "200"].includes(String(b.code))) return { outcome: "failed", message: `${what}失败：${b.msg || "code " + b.code}` }
+  return null
+}
+
+// offerOf is the 签到 button landing/get offers: on the check-in page, or
+// on a card (whose press is reported with the card's id).
+function offerOf(d) {
+  const type = Number(d?.chosen_type)
+  if (type === MAIN_PAGE && (d.main_page_info?.buttons ?? []).some((b) => Number(b?.button_type) === CHECK_IN)) return {}
+  if (type === CARDS)
+    for (const c of d.landing_cards ?? []) {
+      const b = (c?.buttons ?? []).find((b) => Number(b?.interaction_type) === CHECK_IN)
+      if (b && c.card_id) return { card: { card_id: String(c.card_id), ...(b.button_id ? { button_id: String(b.button_id) } : {}) } }
+    }
+  return null
+}
+
+// checkinOf checks the account in as the page's 签到 button does, through
+// call(path, body) ({status, body} or {error}), and says it as magpie's
+// check-in outcome. A request nothing answered is thrown.
+export async function checkinOf(call, { newId = randomUUID } = {}) {
+  const landing = await call(LANDING, {})
+  const no = refusal(landing, "读取豆包签到")
+  if (no) return no
+  const d = landing.body.data ?? {}
+  if (Number(d.chosen_type) === CHECKED_IN) return { outcome: "done", ...(words(d.complete_page_info) ? { message: words(d.complete_page_info) } : {}) }
+  const offer = offerOf(d)
+  if (!offer) return { outcome: "inactive", message: "豆包现在没有给这个账号签到入口（签到是豆包探索计划的活动，由豆包按账号推送）" }
+  // the page reports the press beside the check-in and doesn't wait for it
+  const report = call(REPORT, { event_type: "user_operate", biz_event_name: "check_in", ...(offer.card ? { card_event: { ...offer.card, event_id: newId() } } : {}) }).catch(() => {})
+  let got
+  try {
+    got = await call(CHECKIN, {})
+  } finally {
+    await report
+  }
+  const refused = refusal(got, "豆包签到")
+  if (refused) return refused
+  const r = got.body.data ?? {}
+  if (!r.checked_in) return { outcome: "failed", message: got.body.msg || "豆包没有完成签到" }
+  const streak = Number(r.continuous_days)
+  const said = Number(r.reward_status) === REWARD_FAILED ? "已签到，但豆包这次没有发放签到奖励" : words(d.complete_page_info)
+  return { outcome: "claimed", ...(streak > 0 ? { streak } : {}), ...(said ? { message: said } : {}) }
+}
+
 // BOT_ID is the bot Doubao's page names when it asks for its action bar
 // (the app's code has it as a constant); without it brief_list answers
 // 710010202.
@@ -841,6 +931,18 @@ export class Doubao {
     }
     const page = await this.connect(signal, { launch: false })
     return page.eval(QUOTA)
+  }
+
+  // checkin presses Doubao's daily 签到 through the app's page, from a
+  // window already open only, as quota reads: a check-in never brings
+  // Doubao up (#1117).
+  async checkin({ signal } = {}) {
+    if (!(this.page && !this.page.closed)) {
+      if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
+      if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
+    }
+    const page = await this.connect(signal, { launch: false })
+    return checkinOf((p, body) => page.eval(ALICE(p, body)))
   }
 
   // connect gives the page of the app's chat window, starting the app

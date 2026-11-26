@@ -76,6 +76,28 @@ served here: the plugin lists only what the app's model menu offers from
 Doubao's side, and a model that runs on your own key is a direct call to that
 vendor, not a Doubao task. Add that API to magpie as its own provider instead.
 
+## Daily check-in (签到)
+
+Doubao's daily 签到 belongs to its growth campaign (豆包探索计划), and Doubao
+decides per account whether it offers one. The plugin presses it the way the
+app's own 签到 button does, through the app's page: it asks
+`/alice/ug/campaign/landing/get` what Doubao shows, and when that is the
+check-in page or a card with a 签到 button, reports the press
+(`landing/report`) and checks in (`landing/checkin`).
+
+- Turn it on in magpie: Settings → Usage → Plugins → 豆包工作 → Daily check-in
+  (off by default). magpie then checks each account in once a Beijing day;
+  *Check in now* on the account's Usage card does it at once.
+- Answers: `claimed` with the streak (连续签到天数), `done` when Doubao already
+  shows today's check-in, `inactive` when Doubao offers this account no 签到
+  now, `failed` with Doubao's own words.
+- Like usage, it runs only in a window already open: a check-in never starts
+  the app. With the window closed it fails and magpie asks again later.
+- Doubao has no make-up check-in (补签): its app has no such request, so
+  there is nothing to press for a missed day.
+- The reward is Doubao's to set (its incentive allowance, 激励额度); the
+  check-in's reply doesn't say how much, so magpie shows none.
+
 ## What it costs
 
 - **Unofficial.** It uses Doubao the way its own window does, but ByteDance
