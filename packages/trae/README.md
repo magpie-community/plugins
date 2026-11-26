@@ -270,9 +270,14 @@ put them under `user_message_context.model_info`, and an enterprise seat got
 config, where Trae's list doesn't carry it, sent no `model_name`, and got
 4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
 the model, the functions tried and the host, and says when the account's
-list doesn't have the model. Context is the list's `context_window_tokens.dev`,
-output the `__dev` model's `max_tokens` (an enterprise model's own detail's,
-since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
+list doesn't have the model. Context is the list's
+`context_window_tokens.max` for a model measured to serve a prompt past its
+`dev` budget on the base entry (yetone/magpie#5809 and the measurements in
+its follow-up, all on Trae CN; the models are listed in `WIDENED`, and
+Trae Global's keep `dev`), else `dev`; `dev` is
+the budget Trae's own agent asks with, and on a model with that evidence a
+request past it is served rather than refused. Output the `__dev` model's
+`max_tokens` (an enterprise model's own detail's, since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
 held to it and it sent when the agent names none, as Trae's own client
 sends the model's `max_tokens` with each model: asked with none, an
 enterprise seat's replies stopped at exactly 2000 output tokens (0.2.43).
