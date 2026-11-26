@@ -160,10 +160,12 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     (`/api/v1/commercial/get_session_usage`). That record is the
     conversation's, since `session_id` is (above), and it holds all of its
     turns' charges and cache reads together, so a turn reports its share of
-    it: the record now, less the record last read for that conversation. The
-    conversation's first turn has no baseline to take and reports only what
-    Trae's own stream said; the reading it takes is the baseline of the turns
-    after it. A record that hasn't moved past that baseline is one still being
+    it: the record now, less the record last read for that conversation. A
+    turn with no baseline yet — the conversation's first one here, or a
+    caller that names each request's own session — is reported as it is when
+    the record holds only that turn's own prompt and reply; one that holds
+    more is the conversation's, and is only the baseline of the turns after
+    it. A record that hasn't moved past that baseline is one still being
     written — it holds the earlier turns already — so it is read again within
     the wait; a turn whose record never moves reports nothing, no `credit`
     and no `cached_tokens`, rather than a false 0, and the next turn's share

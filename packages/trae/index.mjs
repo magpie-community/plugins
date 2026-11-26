@@ -2191,6 +2191,18 @@ function remember(key, record) {
   readings.set(key, record)
 }
 
+// ownCharge says a reading is this turn's own charge: its prompt is the one
+// this turn sent, no earlier turn's added, and its reply no more than this
+// one's. Trae counts a session's turns into one record, so only a record with
+// just this turn's prompt in it can be reported without a baseline.
+function ownCharge(record, usage) {
+  const asked = Number(usage?.prompt_tokens) || 0
+  const wrote = Number(usage?.completion_tokens) || 0
+  if (!(asked > 0) || record.input == null) return false
+  if (Math.abs(record.input - asked) > Math.max(64, asked * 0.02)) return false
+  return record.output == null || record.output <= wrote + 64
+}
+
 // turnBilling is one turn's share of the conversation's record. wait bounds
 // how long the answer's end waits for it, so a slow settlement costs the
 // answer a bounded delay at most, never an open connection. A record that
@@ -2199,7 +2211,7 @@ function remember(key, record) {
 // is asked again within the wait, and a turn that never moved reports nothing
 // rather than a false 0: its share is then taken with the next turn's, which
 // is what keeps a real cache hit from reading as a 0% miss.
-async function turnBilling(a, site, session, { signal = null, wait = BILLING_WAIT.body } = {}) {
+async function turnBilling(a, site, session, { usage = null, signal = null, wait = BILLING_WAIT.body } = {}) {
   if (!session) return null
   const key = (a.uid || a.accountId || "") + "|" + session
   const before = readings.get(key) ?? null
@@ -2221,9 +2233,17 @@ async function turnBilling(a, site, session, { signal = null, wait = BILLING_WAI
     if (!pause || Date.now() + pause >= deadline) break
     await new Promise((r) => setTimeout(r, pause))
   }
+  if (traeDebug()) console.error(`trae debug: billing ${String(session).slice(0, 8)} ${record ? `in=${record.input} out=${record.output} cache=${record.cacheRead} credits=${record.credits}` : "no settled record"}${before ? " (a baseline is held)" : ""}`)
   if (!record || (saw !== null && total(record) <= saw)) return null // never moved: keep the old baseline
   remember(key, record)
-  if (!before) return null // the conversation's first turn: this reading is its baseline
+  if (!before) {
+    // no baseline for this conversation: a record that holds only this turn's
+    // own prompt and reply is this turn's charge - a conversation this plugin
+    // has not read before, or one whose session names the turn (a caller that
+    // names no conversation) - and is reported as it is. One that holds more
+    // is the conversation's, and is only the baseline of the turns after it.
+    return ownCharge(record, usage) ? { credits: record.credits, cacheRead: record.cacheRead } : null
+  }
   const share = (now, then) => Math.max(0, (now ?? 0) - (then ?? 0))
   return { credits: share(record.credits, before.credits), cacheRead: share(record.cacheRead, before.cacheRead) }
 }
@@ -3718,7 +3738,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) 
       if (p.finish) finish = p.finish
     }
     const end = ending(calls, finish, usage, limit, cut)
-    if (usage && billing) withBilling(usage, await billing())
+    if (usage && billing) withBilling(usage, await billing(usage))
     const message = { role: "assistant", content: text || (end.calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
     if (end.calls.length) message.tool_calls = end.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
@@ -3784,7 +3804,7 @@ async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) 
           put(chunk({}, end.finish))
           // the settled charge is read after the finish, so a bill Trae
           // settles a moment later doesn't hold the answer's end back
-          if (usage && billing) withBilling(usage, await billing())
+          if (usage && billing) withBilling(usage, await billing(usage))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
       } catch (e) {
@@ -5144,7 +5164,7 @@ const makePlugin = (site) => async ({ client }) => {
                 // this turn's share of the conversation's record, read when the
                 // answer ends: a stream waits only a little for it, a body as
                 // long as the record may settle
-                const bill = () => turnBilling(a, site, sent.session_id, { signal: ac.signal, wait: req.stream ? BILLING_WAIT.stream : BILLING_WAIT.body })
+                const bill = (usage) => turnBilling(a, site, sent.session_id, { usage, signal: ac.signal, wait: req.stream ? BILLING_WAIT.stream : BILLING_WAIT.body })
                 const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more, req.model) : got, () => ac.abort(), site, sent.max_tokens || 0, cut, bill)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out

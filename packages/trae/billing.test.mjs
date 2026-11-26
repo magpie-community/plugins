@@ -64,11 +64,12 @@ const usageOf = async (res) => {
 for (const stream of [false, true]) {
   test(`a turn reports its own share of the conversation's record (${stream ? "streamed" : "one body"})`, async () => {
     const s = serve({ stream })
-    // the conversation's first turn: nothing to take a share from, so only
-    // what Trae's stream said goes on, and this reading is the baseline
+    // the conversation's first turn: a record holding just this turn's own
+    // prompt and reply is its charge, and is reported as it is
     const first = await usageOf(await s.turn())
-    expect(first.credit).toBeUndefined()
-    expect(first.magpie_cache_unknown).toBe(true)
+    expect(first.credit).toBe(0.12)
+    expect(first.prompt_tokens_details.cached_tokens).toBe(4096)
+    expect(first.magpie_cache_unknown).toBeUndefined()
     // its second turn: the record now less the reading above
     const usage = await usageOf(await s.turn())
     expect(usage.credit).toBe(0.12)
@@ -131,14 +132,44 @@ test("a record that hasn't moved yet is not this turn's 0", async () => {
   })
   const session = "ses_late"
   const turn = () => ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }, { session })
-  // the first turn's charge is not in the record yet: its reading is the
-  // baseline of the conversation, and it reports nothing
+  // the first turn's own charge lands on the second read: it is reported as
+  // it is once the record holds it
   const first = await usageOf(await turn())
-  expect(first.credit).toBeUndefined()
-  expect(first.magpie_cache_unknown).toBe(true)
+  expect(first.credit).toBe(0.12)
+  expect(first.magpie_cache_unknown).toBeUndefined()
   // its second turn: the record moved, so its share is the one turn's
   const second = await usageOf(await turn())
   expect(second.credit).toBe(0.12)
   expect(second.prompt_tokens_details.cached_tokens).toBe(4096)
   expect(second.magpie_cache_unknown).toBeUndefined()
+})
+
+// A caller that names no conversation gives each request a session of its
+// own (chatBody's random one), so every turn is the first of its record. The
+// record then holds just that turn, and reporting it is right: taking it for
+// a baseline only would leave every such turn with no cache and no credits.
+test("a turn whose session is its own still reports its charge", async () => {
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]]))
+  f.route("POST /api/v1/commercial/get_session_usage", () => json(record(1)))
+  const one = await usageOf(await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, { session: "ses_turn_a" }))
+  const two = await usageOf(await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, { session: "ses_turn_b" }))
+  for (const usage of [one, two]) {
+    expect(usage.credit).toBe(0.12)
+    expect(usage.prompt_tokens_details.cached_tokens).toBe(4096)
+    expect(usage.magpie_cache_unknown).toBeUndefined()
+  }
+})
+
+// The other side of it: a conversation this plugin has not read yet (a plugin
+// restarted mid-conversation) has a record holding several turns already, and
+// must not be reported as this turn's charge.
+test("a conversation this plugin hasn't read is a baseline, not this turn's", async () => {
+  f = fakeTrae()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]]))
+  // five turns of it: its prompt is far more than this turn's own
+  f.route("POST /api/v1/commercial/get_session_usage", () => json(record(5)))
+  const usage = await usageOf(await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, { session: "ses_seen" }))
+  expect(usage.credit).toBeUndefined()
+  expect(usage.magpie_cache_unknown).toBe(true)
 })
