@@ -409,13 +409,16 @@ async function prompt(params) {
     chunk("After tool search.\n")
     return finish("After tool search.\n")
   }
-  if (text.includes("TOOLSEARCHGROW")) {
+  if (text.includes("TOOLSEARCHGROW") || text.includes("can be called now: loaded_tool")) {
     // Like agy 1.5.3: a call is checked against the tools listed before this
     // prompt began; a tools/list_changed during the prompt does not reach it.
     const known = new Set(tools.map(tool => tool.name))
-    if (!text.includes("<conversation_history>")) {
+    if (text.includes("TOOLSEARCHGROW") && !text.includes("<conversation_history>")) {
       const result = await invoke("ToolSearch", { query: "select:loaded_tool" })
       if (result?.isError) return finish("ToolSearch failed")
+      // the bridge ended this step after the result: agy stops before its
+      // next model call
+      if (activePromptScope?.cancelled) return finish("")
     }
     if (!known.has("loaded_tool")) {
       log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
@@ -2283,7 +2286,9 @@ for (const location of ["inline", "system", "developer", "user"]) {
 
 {
   // #942: a tool ToolSearch loads mid-turn is unknown to agy for the rest of
-  // that prompt, so the bridge replays the round in a new session/prompt.
+  // that prompt. plugins#1371 (_paper_hands on X): the bridge ends that step
+  // and goes on in a new session/prompt of the same session, which starts
+  // after agy has listed the grown catalog; no new session, no replay.
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const loadedTool = { name: "loaded_tool", description: "Loaded by ToolSearch", input_schema: { type: "object", properties: { text: { type: "string" } } } }
   const ask = "TOOLSEARCHGROW load a deferred tool"
@@ -2291,16 +2296,23 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const events = (await readSSE(await callFetch(first))).events
   const old = inits().at(-1)
   const before = inits().length
+  const opened = lastOf("user")
   const second = continuation(first, events, [{ type: "tool_reference", tool_name: "loaded_tool" }])
   second.tools = [searchTool, loadedTool]
   const secondRes = await callFetch(second)
   const secondEvents = (await readSSE(secondRes)).events
-  const replay = lastOf("user")
-  check("a tool loaded mid-turn starts a new session/prompt",
-    secondRes.status === 200 && inits().length === before + 1 && replay.convId !== old.convId, `got ${secondRes.status}`)
-  check("the new prompt replays the ToolSearch round and sends the user's turn once",
-    replay.text.includes("<conversation_history>") && replay.text.includes("Loaded tool: loaded_tool") &&
-    replay.text.split(ask).length === 2, replay.text)
+  const next = lastOf("user")
+  check("a tool loaded mid-turn keeps the session and starts its next prompt",
+    secondRes.status === 200 && inits().length === before && next.convId === old.convId && opened.convId === old.convId &&
+    next.prompt === opened.prompt + 1,
+    `got ${secondRes.status} inits ${inits().length - before} prompt ${next.prompt}`)
+  check("the next prompt names the loaded tool and replays nothing",
+    next.text.includes("can be called now: loaded_tool") && !next.text.includes("<conversation_history>") &&
+    !next.text.includes(ask), next.text)
+  check("the ToolSearch result reached agy in the first prompt",
+    mcpResultText(old.convId).includes("Loaded tool: loaded_tool"))
+  check("agy listed the grown catalog before the next prompt",
+    logs().some(event => event.type === "toolsList" && event.convId === old.convId && event.tools.includes("loaded_tool")))
   check("no call to the loaded tool reaches agy's validator in the old prompt",
     !logs().some(event => event.type === "unknownTool"))
   const calls = toolCalls(secondEvents)
@@ -2309,11 +2321,16 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const third = continuation(second, secondEvents, "loaded-tool-result")
   const thirdRes = await callFetch(third)
   const final = (await readSSE(thirdRes)).events
-  const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === replay.convId).at(-1)
-  check("the loaded tool's result continues the new session with no second replay",
-    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before + 1 &&
-    lastOf("user").convId === replay.convId && delivered?.name === "loaded_tool" &&
+  const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === old.convId).at(-1)
+  check("the loaded tool's result continues the same session",
+    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
+    lastOf("user").convId === old.convId && delivered?.name === "loaded_tool" &&
     delivered?.result?.content?.[0]?.text === "loaded-tool-result")
+  const after = nextTurn(third, final, "MEMORY after the loaded tool")
+  const afterRes = await callFetch(after)
+  await readSSE(afterRes)
+  check("the next user turn stays in the same session",
+    afterRes.status === 200 && inits().length === before && lastOf("user").convId === old.convId)
 }
 
 {

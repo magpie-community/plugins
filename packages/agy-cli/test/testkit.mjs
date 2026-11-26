@@ -303,6 +303,8 @@ class FakeAgy {
     } else if (method === "session/new" && this.kit.sessionNewError) {
       // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
       this.send({ id, error: this.kit.sessionNewError })
+    } else if (method === "session/resume" && this.kit.sessionResume && this.kit.sessionResumeError) {
+      this.send({ id, error: this.kit.sessionResumeError })
     } else if (method === "session/resume" && this.kit.sessionResume && params?.sessionId) {
       this.sessionId = params.sessionId
       if (this.token && this.listsTools()) this.listAndWatch()
@@ -529,6 +531,7 @@ export async function createBridgeKit(options = {}) {
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    sessionResumeError: options.sessionResumeError ?? null,
     // agy 1.5.14 lists session/close, and boots its backend on a
     // process's first session/new only (~3s signed in; later ones ~10ms)
     sessionClose: options.sessionClose ?? false,
