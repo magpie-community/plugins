@@ -2172,6 +2172,199 @@ function unsaid(res) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers })
 }
 
+
+// WorkBuddy streams reasoning in 1-4 character deltas (measured: 40 chunks
+// for 63 characters). OpenCode 2 stores every delta as its own part, so one
+// answer becomes thousands of parts and the message JSON is rewritten once
+// per part. coalesced holds the deltas and emits them as one event, which
+// leaves the reasoning text intact while cutting the part count by orders of
+// magnitude.
+//
+// Size alone is not enough: this fetch serves every client of the provider,
+// and a client that shows thinking as it arrives would see nothing for a
+// whole 8k thought. So the buffer also flushes on a clock (FLUSH_MS), which
+// keeps other clients live and still turns 2,263 parts into a few dozen.
+const MERGE_CHARS = 8192
+const FLUSH_MS = 300
+
+// WorkBuddy sends the null and empty forms of every field it is not using
+// (content: "", tool_calls: [], refusal: "", function_call: null), so a key
+// counts as carrying something only when it holds a value.
+const filled = (v) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Object.keys(v).length)
+
+function coalesced(res, flushMs = FLUSH_MS) {
+  if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  let rest = ""
+  let held = null
+  let buf = ""
+  let field = "reasoning_content"
+  let queue = []
+  let ctl = null
+  let timer = null
+  let sentUsage = null
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+  const pump = () => {
+    if (!ctl || !queue.length) return
+    const text = queue.map((e) => e + "\n\n").join("")
+    queue = []
+    ctl.enqueue(enc.encode(text))
+  }
+  // flush writes the reasoning field, plus role and usage when the chunk that
+  // opened the block carried them. Anything else in that chunk goes out once,
+  // with the rest of it, not again here. It returns whether usage was written,
+  // so the caller can drop the duplicate copy.
+  const flush = () => {
+    clearTimer()
+    if (!buf || !held) return false
+    const v = JSON.parse(JSON.stringify(held))
+    const c = v.choices?.[0]
+    if (c) {
+      const delta = { [field]: buf }
+      if (c.delta?.role !== undefined) delta.role = c.delta.role
+      c.delta = delta
+      c.finish_reason = null
+    }
+    const hadUsage = filled(v.usage)
+    if (hadUsage) sentUsage = v.usage
+    queue.push("data: " + JSON.stringify(v))
+    held = null
+    buf = ""
+    return hadUsage
+  }
+  // A repeated usage is the one already written with the block; a different
+  // one is newer and must reach the client.
+  const sameUsage = (usage) => filled(usage) && sentUsage !== null && JSON.stringify(usage) === JSON.stringify(sentUsage)
+  const arm = () => {
+    if (timer !== null || !held) return
+    timer = setTimeout(() => {
+      timer = null
+      flush()
+      pump()
+    }, flushMs)
+  }
+
+  const event = (ev) => {
+    const m = /^data:\s?(.*)$/m.exec(ev)
+    if (!m) {
+      queue.push(ev)
+      return
+    }
+    if (m[1] === "[DONE]") {
+      flush()
+      queue.push(ev)
+      return
+    }
+    let v
+    try {
+      v = JSON.parse(m[1])
+    } catch {
+      flush()
+      queue.push(ev)
+      return
+    }
+    // Only a single choice is coalesced; anything else goes through whole
+    // rather than being rebuilt from choice 0.
+    if (!Array.isArray(v?.choices) || v.choices.length !== 1) {
+      flush()
+      queue.push(ev)
+      return
+    }
+    const c = v.choices[0]
+    const d = c?.delta
+    const next =
+      typeof d?.reasoning_content === "string" && d.reasoning_content
+        ? "reasoning_content"
+        : typeof d?.reasoning === "string" && d.reasoning
+          ? "reasoning"
+          : ""
+    const reason = next ? d[next] : ""
+    if (reason) {
+      // A block is one field: a switch mid-block starts a new one.
+      if (held && field !== next) flush()
+      field = next
+      if (!held) held = v
+      // usage rides on whichever chunk the provider puts it on, which is not
+      // necessarily the one that opened the block
+      if (filled(v.usage)) held.usage = v.usage
+      buf += reason
+      // Anything else in the delta ends the block and goes out after the
+      // reasoning, once. WorkBuddy sends finish_reason: "" on every delta,
+      // so only a named reason ends it.
+      const rest = { ...(d ?? {}) }
+      delete rest.reasoning_content
+      delete rest.reasoning
+      delete rest.role
+      const restKeys = Object.keys(rest).filter((k) => filled(rest[k]))
+      const named = c?.finish_reason
+      if (restKeys.length || (named != null && named !== "")) {
+        flush()
+        const w = JSON.parse(JSON.stringify(v))
+        w.choices[0].delta = {}
+        for (const k of restKeys) w.choices[0].delta[k] = rest[k]
+        if (sameUsage(w.usage)) delete w.usage
+        queue.push("data: " + JSON.stringify(w))
+        return
+      }
+      if (buf.length >= MERGE_CHARS) flush()
+      else arm()
+      return
+    }
+    flush()
+    if (d && (typeof d.reasoning_content === "string" || typeof d.reasoning === "string")) {
+      const w = JSON.parse(JSON.stringify(v))
+      const kept = { ...(w.choices[0].delta ?? {}) }
+      delete kept.reasoning_content
+      delete kept.reasoning
+      const keptKeys = Object.keys(kept).filter((k) => filled(kept[k]))
+      if (sameUsage(w.usage)) delete w.usage
+      if (!keptKeys.length && !w.choices[0].finish_reason && w.usage === undefined) return
+      w.choices[0].delta = {}
+      for (const k of keptKeys) w.choices[0].delta[k] = kept[k]
+      queue.push("data: " + JSON.stringify(w))
+      return
+    }
+    queue.push(ev)
+  }
+
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      start(controller) {
+        ctl = controller
+      },
+      transform(chunk) {
+        rest = (rest + dec.decode(chunk, { stream: true })).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+        const evs = rest.split("\n\n")
+        rest = evs.pop()
+        for (const ev of evs) event(ev)
+        pump()
+      },
+      flush() {
+        rest += dec.decode()
+        if (rest) event(rest)
+        flush()
+        pump()
+        ctl = null
+      },
+      cancel() {
+        clearTimer()
+        ctl = null
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
 // ---- signing in -------------------------------------------------------------
 
 // poll asks path until WorkBuddy answers with data, retrying the codes
@@ -4869,7 +5062,7 @@ function makePlugin(site) {
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
             if (res.status >= 400) return explained(res)
-            const told = native ? res : unsaid(await renamed(res, names))
+            const told = native ? res : coalesced(unsaid(await renamed(res, names)))
             // the ids are the ones the chat went with, after any renewal
             const conv = headers.get("X-Conversation-ID") ?? ""
             const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
@@ -5131,4 +5324,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, AHEAD_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, AHEAD_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
