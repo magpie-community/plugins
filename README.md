@@ -50,6 +50,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [sap-aicore](packages/sap-aicore) | SAP AI Core deployments for account-scoped GPT Responses and Claude Messages models | `sap-aicore` |
 | [sensenova](packages/sensenova) | SenseNova (商汤日日新) Token Plan: browser or password sign-in gives the credit pools, windows and grants, and the plan's models — the browser sign-in reuses or creates a Token Plan API key for you | `sensenova-token-plan` |
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
+| [verboo](packages/verboo) | Verboo Code subscription (code.verboo.ai), with browser PKCE OAuth sign-in, live per-account models, reasoning efforts, and subscription/Stamina usage (unofficial) | `verboo` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |

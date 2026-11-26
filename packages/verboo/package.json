@@ -1,0 +1,51 @@
+{
+  "name": "@magpie-community/opencode-verboo-auth",
+  "version": "0.1.0",
+  "description": "Verboo Code subscription provider plugin for Magpie and OpenCode: browser PKCE OAuth sign-in, live per-account models, reasoning effort mapping, and subscription/Stamina usage",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "opencode-provider",
+    "verboo"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/verboo"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/verboo#readme",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "name": "Verboo Code",
+    "icon": "https://code.verboo.ai/icon-192x192.png",
+    "summary": {
+      "en": "Verboo Code subscription for Magpie and OpenCode: browser PKCE OAuth sign-in, live per-account models, reasoning effort mapping, and subscription/Stamina usage.",
+      "zh": "将 Verboo Code 订阅接入 Magpie 与 OpenCode：浏览器 PKCE OAuth 登录、按账号发现模型、思考档位映射与订阅/Stamina 用量查询。"
+    }
+  }
+}
