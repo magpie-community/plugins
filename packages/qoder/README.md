@@ -592,7 +592,9 @@ Since **0.2.28** a queued request waits its turn as Qoder's own client
 model and the plan's `queueType`, at once and then every
 `retryAfterSeconds` (held to 0.5–30s, 30s when unsaid), and once
 `isQueued` is false it waits that state's `retryAfterSeconds` and sends the
-same request again (up to 10 times). Three failed status asks in a row, a
+same request again (up to 10 times). Since **0.2.74** `isQueued` false with
+`serviceAvailable` false is waited on too, as Qoder's client reads it
+(qoderclicn 1.1.98), rather than sent into the queue again. Three failed status asks in a row, a
 404, or a cancelled request end the wait early.
 
 Since **0.2.62** a streamed request (every agent's) waits as long as
@@ -614,9 +616,16 @@ keepalives); magpie can then rest the account or ask the next. A queue with
 others ahead is still waited out. Nothing needs setting. A request that isn't
 streamed has nothing to keep its client alive with, so it still waits 4
 minutes at most before the 503. Claude Code takes a ping as life only 30
-times in a row, about 35 minutes, so a longer wait still ends there. Qoder's client also reports the end
-of its turn to `/api/v2/service/ask/finish`; the plugin doesn't, and
-Qoder releases that lease on its own TTL. `queue.test.mjs` has the wait.
+times in a row, about 35 minutes, so a longer wait still ends there.
+
+A queued request holds a lease in Qoder's queue (its `request_set_id` and
+model) until Qoder hears `/api/v2/service/ask/finish`. Before **0.2.74** the
+plugin never told it, so each lease stayed until Qoder's own TTL let it go
+(plugins#1560). Now it tells finish as Qoder's client does: at once when a
+request gives up waiting (the 503 above, or a cancelled request), and
+otherwise when the task ends (the session's next prompt, or the task let go
+after 2 hours idle). A finish that fails changes nothing for the request.
+`queue.test.mjs` has the wait and the finish.
 
 Since **0.2.40** the wait is only for the last candidate: when magpie says
 another account, provider or routing group member follows this request

@@ -1427,7 +1427,8 @@ const TASK_IDLE = 2 * 60 * 60 * 1000
 const taskName = (prompt) => (prompt.length > 10 ? prompt.slice(0, 10) : prompt)
 
 // taskOf is the task chat's call belongs to, in session sid: made on its
-// first call, the same one on every call after.
+// first call, the same one on every call after. A task let go, or one of
+// the session's before a new prompt, ends (endTask).
 function taskOf(sid, chat, now = Date.now()) {
   const msgs = chat.messages ?? []
   const at = msgs.findLastIndex((x) => x?.role === "user")
@@ -1435,15 +1436,34 @@ function taskOf(sid, chat, now = Date.now()) {
   for (const [k, t] of TASKS) {
     if (now - t.used <= TASK_IDLE) break
     TASKS.delete(k)
+    endTask(t)
   }
   let t = TASKS.get(key)
-  if (t && now - t.used > TASK_IDLE) t = undefined
+  if (t && now - t.used > TASK_IDLE) {
+    endTask(t)
+    t = undefined
+  }
   TASKS.delete(key)
-  t ??= { id: randomUUID(), begin: now, answered: false, name: taskName(at < 0 ? "" : textOf(msgs[at].content)) }
+  if (!t) {
+    for (const o of TASKS.values()) if (o.sid === sid) endTask(o)
+    t = { id: randomUUID(), sid, begin: now, answered: false, name: taskName(at < 0 ? "" : textOf(msgs[at].content)) }
+  }
   t.used = now
   TASKS.set(key, t)
-  while (TASKS.size > TASK_MAX) TASKS.delete(TASKS.keys().next().value)
+  while (TASKS.size > TASK_MAX) {
+    const k = TASKS.keys().next().value
+    endTask(TASKS.get(k))
+    TASKS.delete(k)
+  }
   return t
+}
+
+// endTask ends task t: its queue leases are let go (release) now, or when
+// its last request in flight is done.
+function endTask(t) {
+  if (!t) return
+  if (t.inflight) t.ended = true
+  else void release(t)
 }
 
 // Qoder CN's kmodel (Kimi K3.1 Pro) fails a chat whose tools hold a oneOf
@@ -1741,10 +1761,18 @@ const errorResponse = ({ status, message, signIn = status === 401 ? "kept" : und
 // refusal as the stream's error. A request not streamed has nothing to
 // keep its client alive with, and waits QUEUE.budget at most, then the
 // 503 with Retry-After it was before, so magpie may ask another account.
-// Qoder's client also tells
-// /api/v2/service/ask/finish when its turn ends; that is left out, and its
-// own log says Qoder's TTL releases the lease when finish is not heard.
+// A queued request holds a lease in Qoder's queue, under its
+// request_set_id and model, until Qoder hears /api/v2/service/ask/finish
+// (queueFinish); unheard, only Qoder's TTL lets it go. Qoder's client
+// (qoderclicn 1.1.98 and Qoder.app's qoder-worker-runtime, "[ModelQueue]")
+// registers one on each 10605 and tells finish when its turn ends, when
+// its session ends, and at once when the request gives up waiting. The
+// plugin never told it (plugins#1560: a Qoder CN account queued in p2 and
+// p4 while its plan's credits went unused). Here a lease ends when the
+// request gives up the wait, and when its task does: the session's next
+// prompt, or the task let go for TASK_IDLE or TASK_MAX.
 const QUEUE_STATUS_PATH = "/algo/api/v2/service/ask/queue/status"
+const QUEUE_FINISH_PATH = "/algo/api/v2/service/ask/finish?Encode=1"
 const QUEUE = {
   budget: 4 * 60 * 1000, // the longest a request not streamed is held, its first answer's wait included
   held: 60 * 60 * 1000, // the longest a streamed one is, as Qoder's client waits
@@ -1755,6 +1783,7 @@ const QUEUE = {
   recoveries: 10, // the queue waited out this many times, at most, for one request
   failures: 3, // status asks failing in a row that end the wait
   ask: 30_000, // the longest one status ask may take
+  finish: 3_000, // the longest a finish may take, as Qoder's client gives it
   // the longest a call waits for Qoder's first event (headers included).
   // Qoder CN once held a call 15 minutes with nothing sent and nothing to
   // log (#1204); after this it is a 504 that says so, which magpie can
@@ -1855,6 +1884,49 @@ async function queueStatus(api, cred, { requestSetId, modelKey, queueType, reque
   return st
 }
 
+// queueReady: the queue lets the request through, as Qoder's client reads
+// a status (qoderclicn 1.1.98, qoder-worker-runtime: isQueued false and
+// serviceAvailable not false). isQueued false with the service unavailable
+// is waited on: sent then, the request is only queued again.
+const queueReady = (st) => st.isQueued === false && st.serviceAvailable !== false
+
+// queueFinish tells Qoder's queue a lease is done, as Qoder's client's
+// finish does: POST /api/v2/service/ask/finish?Encode=1, signed, its body
+// {payload, encodeVersion: "1"} encoded as a chat's is, the payload the
+// lease's model_key and request_set_id, the user's id and the
+// milliseconds since the lease began. Best effort: it waits QUEUE.finish
+// at most, and a failure leaves the lease to Qoder's TTL, as there.
+async function queueFinish(lease) {
+  const { api, cred, site, requestSetId, modelKey, began } = lease
+  if (!cred?.uid) return
+  try {
+    const url = api + QUEUE_FINISH_PATH
+    const payload = JSON.stringify({ model_key: modelKey, request_set_id: requestSetId, user_id: cred.uid, time_consumed: Math.max(0, Math.round(QUEUE.now() - began)) })
+    const wire = encodeBody(JSON.stringify({ payload, encodeVersion: "1" }))
+    const res = await fetch(url, { method: "POST", headers: cosyHeaders(url, cred, wire, site), body: wire, signal: AbortSignal.timeout(QUEUE.finish) })
+    await res.arrayBuffer()
+  } catch {}
+}
+
+// leaseOf registers the queue's lease for a request of task t, once for
+// its request_set_id and model, from the first 10605.
+function leaseOf(t, lease) {
+  t.leases ??= new Map()
+  const key = JSON.stringify([lease.requestSetId, lease.modelKey])
+  if (!t.leases.has(key)) t.leases.set(key, lease)
+  return key
+}
+
+// release tells finish for task t's leases (key's alone when given), and
+// forgets them.
+function release(t, key) {
+  if (!t?.leases?.size) return Promise.resolve()
+  const done = key === undefined ? [...t.leases.values()] : t.leases.has(key) ? [t.leases.get(key)] : []
+  if (key === undefined) t.leases.clear()
+  else t.leases.delete(key)
+  return Promise.all(done.map(queueFinish))
+}
+
 // stuckKey is what a queue's state says of the request's place in it, or
 // "" when others are ahead of it (a queue that moves while they are
 // served is waited out, QUEUE.stuck never ends it).
@@ -1896,11 +1968,11 @@ async function queueWait(api, cred, ask, first, signal, deadline, site) {
     if (!key || key !== same) {
       same = key
       since = QUEUE.now()
-    } else if (QUEUE.now() - since >= QUEUE.stuck && st.isQueued !== false) {
+    } else if (QUEUE.now() - since >= QUEUE.stuck && !queueReady(st)) {
       ask.stuck = true
       return false
     }
-    if (st.isQueued === false) {
+    if (queueReady(st)) {
       if (st.retryAfterSeconds > 0) await QUEUE.pause(Math.min(queuePause(st.retryAfterSeconds), Math.max(0, deadline - QUEUE.now())), signal)
       return QUEUE.now() < deadline
     }
@@ -3905,7 +3977,15 @@ const makePlugin = (site) => async ({ client }) => {
         // with another account, provider or group member after this one
         // (magpie's X-Magpie-Fallback), a queued request isn't waited out:
         // its 503 goes back at once, saying the queue, and the next is asked
-        if (!f?.queue || waited >= QUEUE.recoveries || fallback) return f ? errorResponse(f) : answer(open, chat, servedName)
+        if (!f?.queue) return f ? errorResponse(f) : answer(open, chat, servedName)
+        // queued: the lease Qoder's queue now holds for it, let go at once
+        // when the request gives up waiting, else when its task ends
+        const lease = leaseOf(task, { api, cred, site: siteOf(site, cred), requestSetId: ask.requestSetId, modelKey: m.key, began: QUEUE.now() })
+        const giveUp = (r) => {
+          void release(task, lease)
+          return r
+        }
+        if (waited >= QUEUE.recoveries || fallback) return giveUp(errorResponse(f))
         if (chat.stream && !held) {
           held = holdQueued(f, init.signal)
           signal = held.signal
@@ -3914,14 +3994,19 @@ const makePlugin = (site) => async ({ client }) => {
         }
         try {
           if (!(await queueWait(api, cred, ask, f.queue, signal, deadline, siteOf(site, cred))))
-            return errorResponse(ask.stuck ? { ...f, message: `${f.message} (the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead)` } : f)
+            return giveUp(errorResponse(ask.stuck ? { ...f, message: `${f.message} (the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead)` } : f))
         } catch (e) {
-          return errorResponse({ status: 502, message: e?.message ?? String(e) })
+          return giveUp(errorResponse({ status: 502, message: e?.message ?? String(e) }))
         }
         waited++
       }
     }
-    const done = run().catch((e) => errorResponse({ status: 502, message: e?.message ?? String(e) }))
+    task.inflight = (task.inflight ?? 0) + 1
+    const done = run()
+      .catch((e) => errorResponse({ status: 502, message: e?.message ?? String(e) }))
+      .finally(() => {
+        if (--task.inflight === 0 && task.ended) void release(task)
+      })
     const res = await Promise.race([done, heard])
     if (res !== held?.response) return res
     held.follow(done)
@@ -4300,4 +4385,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
