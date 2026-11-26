@@ -22,6 +22,8 @@ import { processExists } from "./proc.mjs"
 import { fitTools } from "./tool-budget.mjs"
 import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
+import { IMAGE_MODEL_ID, handleImageFetch, imageModelEntry, imageRoute } from "./image.mjs"
+import { reapOneshotChildren } from "./oneshot-acp.mjs"
 
 const PROVIDER_ID = "agy-cli"
 const PROVIDER_NAME = "Antigravity (local agy CLI)"
@@ -149,6 +151,7 @@ const THIRD_PARTY_CORE = "⚠ Third-party quota reached"
 const QUOTA_CORES = [QUOTA_CORE, THIRD_PARTY_CORE]
 const QUOTA_MARKERS = QUOTA_CORES.map((core) => "\n" + core)
 const quotaReached = (detail) => /\b(?:individual|third-party) quota reached\b/i.test(detail || "")
+const QUOTA_DETAIL_RE = /QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
 const DISABLED_CORE = AGENT_ERROR_CORES[6]
@@ -3320,7 +3323,7 @@ class Proc {
         "invalid_request_error",
       )
     }
-    if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail) || quotaReached(detail)) {
+    if (QUOTA_DETAIL_RE.test(detail) || quotaReached(detail)) {
       return new AgentTurnError(
         `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}${refused429(detail) ? " — Antigravity answers this same bare 429 to a system prompt it turns away whatever quota is left, so if quota is left it is not a quota and waiting won't help: something in this agent's system prompt is being matched" : ""}`,
         "rate_limit_error",
@@ -9133,6 +9136,20 @@ export const AntigravityBridgePlugin = async () => {
             if (heldByAnother(stored, email)) {
               return jsonError(401, notHeldError(email), undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
             }
+            const imgKind = imageRoute(requestUrl)
+            if (imgKind) {
+              return handleImageFetch(imgKind, fetchInput, init, {
+                agyPath: agy,
+                agyTooOld,
+                clientInfo: CLIENT_INFO,
+                noDefaultCustomizationsArgs,
+                telemetryArgs,
+                geminiDirArgs,
+                refusalNow,
+                classifyAgyFailure,
+                jsonError,
+              })
+            }
             let body
             try {
               const raw = init.body != null
@@ -9461,6 +9478,7 @@ export const AntigravityBridgePlugin = async () => {
             } : {}),
           }
         }
+        out[IMAGE_MODEL_ID] = imageModelEntry(PROVIDER_ID)
         return out
       }),
     },
@@ -9482,9 +9500,68 @@ function jsonError(status, message, code, { extra, headers, noRetry = false } = 
   )
 }
 
+// Shared failure classification for one-shot agy ACP sessions (image.mjs),
+// built from the same refusal, busy, credit and quota wording that index.mjs's
+// own turn handling uses.
+function classifyAgyFailure(detail) {
+  const text = String(detail ?? "")
+  if (!text) return null
+  const hasCore = (core) => text.includes(core) || text.includes(core.replace(/^⚠\s*/, ""))
+  if (/\b(?:authentication required|not (?:logged|signed) in|please (?:log|sign) in|invalid_grant)\b/i.test(text)) {
+    return {
+      status: 401,
+      message: "Antigravity is not signed in: sign in again in magpie, or run `agy` in a terminal",
+      headers: { "X-Magpie-Sign-In": "expired" },
+      signIn: "expired",
+      noRetry: true,
+    }
+  }
+  if (hasCore(DISABLED_CORE) || hasCore(AGENT_ERROR_CORES[4])) {
+    return { status: 403, message: ACCOUNT_DISABLED_REFUSED, noRetry: true }
+  }
+  if (hasCore(VERIFY_CORE) || /\bverification required\b/i.test(text)) {
+    return { status: 403, message: verifyRefused(verifyLinkIn(text)), noRetry: true }
+  }
+  const refused = agyRefusal(text)
+  if (refused) {
+    return { status: 403, message: refused, noRetry: true }
+  }
+  if (hasCore(CREDITS_CORE)) {
+    return {
+      status: 429,
+      message: "agy bridge: Antigravity AI credits balance is too low to continue",
+      noRetry: true,
+    }
+  }
+  if (hasCore(BUSY_CORE) || noCapacity(text) || /\bUNAVAILABLE\s*\(code 503\)|\bcode 503\b/i.test(text)) {
+    return {
+      status: 503,
+      message: "agy bridge: Antigravity has no capacity for this model now (503). Retry shortly.",
+      noRetry: false,
+    }
+  }
+  const quotaCore = QUOTA_CORES.find((core) => hasCore(core))
+  if (quotaCore || quotaReached(text) || QUOTA_DETAIL_RE.test(text) || /You have exhausted your capacity|quota will reset after/i.test(text)) {
+    const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) =>
+      QUOTA_CORES.some((core) => l.includes(core) || l.includes(core.replace(/^⚠\s*/, ""))) ||
+      quotaReached(l) ||
+      /You have exhausted your capacity/i.test(l),
+    )
+    const resetMatch = /Resets in [0-9hms]+|Your quota will reset after [0-9hms]+/i.exec(text)?.[0]
+    const msg = line
+      ? `agy bridge: Antigravity quota reached: ${line}`
+      : resetMatch
+        ? `agy bridge: Antigravity quota or rate limit reached (${resetMatch})`
+        : "agy bridge: Antigravity quota or rate limit reached (429)"
+    return { status: 429, message: msg, noRetry: false }
+  }
+  return null
+}
+
 // On Windows child.kill() ends agy alone and leaves the cmd.exe and nc it
 // started, so one taskkill /T ends every tree before the workspaces go.
 function reapOnExit() {
+  reapOneshotChildren()
   const windows = process.platform === "win32"
   const pids = []
   for (const proc of allProcs) {
