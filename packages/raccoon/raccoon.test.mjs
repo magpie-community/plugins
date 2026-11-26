@@ -1031,9 +1031,9 @@ test("loader names the conversation and turn as the desktop client does", async 
   await send(next)
 
   expect(seen[0].session).toBe("sess-1")
-  expect(seen[0].kind).toBe("primary")
+  expect(seen[0].kind).toBe("session_turn")
   expect(seen[0].private).toBe(null)
-  expect(seen[0].turn).toBeTruthy()
+  expect(seen[0].turn).toMatch(/-turn-\d+$/)
   expect(seen[1].turn).toBe(seen[0].turn)
   expect(seen[2].turn).not.toBe(seen[0].turn)
 
@@ -1042,7 +1042,7 @@ test("loader names the conversation and turn as the desktop client does", async 
     method: "POST",
     body: JSON.stringify({ model: "sn-kimi-k3", messages: [{ role: "user", content: "a longer first message" }] }),
   })
-  expect(seen[3].session).toMatch(/^derived-[0-9a-f-]{36}$/)
+  expect(seen[3].session).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 })
 
 test("a host that names a new session on every send still reuses one conversation id", async () => {
@@ -1078,6 +1078,8 @@ test("a host that names a new session on every send still reuses one conversatio
     })
   }
   expect(seen.map((s) => s.session)).toEqual(["session-A", "session-A", "session-A"])
+  // the map keeps hashes, never the user's first message
+  expect([..._internal.conversationSessions.keys()].every((k) => /^[0-9a-f]{64}$/.test(k))).toBe(true)
 
   // magpie's synthetic session names no conversation: it is ignored, and the
   // id derived from the first user message is used instead

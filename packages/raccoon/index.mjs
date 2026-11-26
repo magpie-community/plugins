@@ -1245,8 +1245,9 @@ function sessionFromHeaders(headers) {
 }
 
 // conversationSessions keeps one upstream session id per conversation even
-// when the host names a new one on every send. An anchor is the account and
-// the conversation's first user message, which every later request repeats.
+// when the host names a new one on every send. Its key is a hash of the
+// account, the agent the host reports and the conversation's first user
+// message, which every later request repeats.
 const conversationSessions = new Map()
 const CONVERSATION_CAP = 512
 const CONVERSATION_TTL_MS = 2 * 60 * 60 * 1000
@@ -1273,47 +1274,49 @@ function sessionFor(headers, body, account) {
   const host = sessionFromHeaders(headers)
   const stamp = conversationStamp(headers, body, account)
   if (!stamp) return host || ""
+  const key = createHash("sha256").update(stamp).digest("hex")
   const now = Date.now()
-  const hit = conversationSessions.get(stamp)
+  const hit = conversationSessions.get(key)
   if (hit && now - hit.at < CONVERSATION_TTL_MS) {
     hit.at = now
     return hit.id
   }
   const id = host || derivedSessionOf(stamp)
-  conversationSessions.set(stamp, { id, at: now })
+  conversationSessions.set(key, { id, at: now })
   pruneConversations(now)
   return id
 }
 
-// derivedSessionOf names a conversation the host gave no session for, from its
-// account, workspace and first user message.
+// derivedSessionOf names a conversation the host gave no session for, in the
+// plain UUID shape the desktop client's fallback session id has.
 function derivedSessionOf(stamp) {
-  return `derived-${uuidish(`raccoon-session|${stamp}`)}`
+  return uuidish(`raccoon-session|${stamp}`)
 }
 
 // conversationStamp is what tells one conversation from another when no stable
-// host session names it: the account, the workspace the host reports, and the
-// first user message every later turn repeats.
+// host session names it: the account, the agent the host reports, and the first
+// user message every later turn repeats. It is hashed before use as a map key,
+// so the user's text is never kept in memory.
 function conversationStamp(headers, body, account) {
   const first = firstUserText(body)
   if (!account || !first) return ""
   let scope = ""
   try {
     const h = new Headers(headers ?? {})
-    scope = String(h.get("x-magpie-cwd") ?? h.get("x-magpie-agent") ?? "").trim().slice(0, 200)
+    scope = String(h.get("x-magpie-agent") ?? "").trim().slice(0, 200)
   } catch {}
   return `${account}\0${scope}\0${first}`
 }
 
-// turnOf is the message a request answers: the number of user messages and the
-// last one's words, so the tool-call steps of one turn share an id and the next
-// message the user sends gets a new one.
+// turnOf is the message a request answers: the user messages count, so the
+// tool-call steps of one turn share an id and the next message the user sends
+// gets a new one. The shape is the desktop client's fallback,
+// <session>-turn-<n>, used when the host sends no turn id.
 function turnOf(session, body) {
   const messages = Array.isArray(body?.messages) ? body.messages : []
   const users = messages.filter((message) => message?.role === "user")
   if (!users.length) return ""
-  const last = textOfContent(users[users.length - 1]?.content)
-  return uuidish(`raccoon-turn|${session}|${users.length}|${last}`)
+  return `${session}-turn-${users.length}`
 }
 
 // ---- Plugin export ----------------------------------------------------------
@@ -1432,8 +1435,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
               headers.set("Authorization", "Bearer " + cred.access)
               headers.set("Content-Type", "application/json")
               headers.set("Accept", "*/*")
-              // this loader carries the agent's own turns; title/summary calls never pass through it
-              headers.set("X-RACCOON-Call-Kind", "primary")
+              headers.set("X-RACCOON-Call-Kind", "session_turn")
               if (session) {
                 headers.set("X-RACCOON-Session-ID", session)
                 const turn = turnOf(session, parsedBody)
