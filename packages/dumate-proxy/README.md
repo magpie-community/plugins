@@ -19,6 +19,8 @@ DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
 - Browser login: sign in at Baidu, copy the DevTools Network request Cookie, and the plugin submits it to the proxy for validation.
 - Manual cookie: paste the full Cookie request header into the Magpie form.
 
+Every sign-in form accepts a reachable proxy URL and optional proxy API key. In Docker, use a host-reachable URL such as `http://host.docker.internal:8787/v1` and choose direct proxy for the sign-in.
+
 Cookies are stored only by the proxy in `runtime-cookie.json`; the Magpie account keeps only source, name and cookie tail.
 ## Setup
 
