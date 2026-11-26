@@ -17,7 +17,7 @@ magpie plugin login mclaw
 
 **登录前提**：浏览器登录由插件自己启动一个**有界面的 Chromium 内核浏览器窗口**（CDP `--remote-debugging-pipe` 驱动，收登录态），所以要求：
 
-- 本机安装了 **Google Chrome / Microsoft Edge / Chromium / Brave** 之一（macOS 上 Safari 不行：它不支持插件用的独立 `--user-data-dir` profile，也没有 CDP）；
+- 本机安装了 **Google Chrome / Microsoft Edge / Chromium / Brave** 之一（Edge 在 Windows 上会做兼容层重启并丢 CDP 管道，插件自动加 `--edge-skip-compat-layer-relaunch` 禁掉；macOS 上 Safari 不行：它不支持插件用的独立 `--user-data-dir` profile，也没有 CDP）；
 - magpie 运行在**有图形界面的本地会话**里。远程服务器、SSH、容器、纯 headless 环境弹不出窗口——Linux 上未设置 `DISPLAY` / `WAYLAND_DISPLAY` 时插件会在选登录方式时直接报明原因。
 
 浏览器装在非标准位置（或上述自动探测没找到）时，用 `MCLAW_CHROME_PATH` 指到可执行文件，例如 macOS：

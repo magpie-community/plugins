@@ -251,8 +251,19 @@ export class Browser {
 
 // Chrome answers CDP on descriptors 3 and 4 of the process started here. That
 // is a private pipe, not a port: nothing else on the machine can connect to it.
+//
+// Edge on Windows may relaunch itself through its compatibility layer
+// (msRelaunchNoCompatLayer); the new process does not inherit the CDP fds 3/4
+// the launcher handed to the first one, so the pipe closes at once. Playwright
+// carries the same switch for the same reason (chromiumSwitches.ts): the
+// relaunch is switched off and the fds stay valid, which makes Edge work over
+// the pipe exactly as Chrome does.
+const EDGE_RE = /msedge|microsoft[- ]edge/i
+export const edgeCompatArgs = (executable) =>
+  EDGE_RE.test(String(executable ?? "")) ? ["--edge-skip-compat-layer-relaunch"] : []
+
 export function launch(executable, args, { timeout = 30000 } = {}) {
-  const child = spawn(executable, [...args, "--remote-debugging-pipe"], {
+  const child = spawn(executable, [...args, ...edgeCompatArgs(executable), "--remote-debugging-pipe"], {
     stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
     detached: false,
   })

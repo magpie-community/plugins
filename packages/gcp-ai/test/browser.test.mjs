@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
-import { assertConsoleSession, chromeExecutable, closeKeptBrowsers as endKeptBrowsers, extractProjectId, extractAccount, extractConsoleIdentity, openBrowser, routeAll, withPage } from "../lib/browser.mjs"
+import { assertConsoleSession, chromeExecutable, closeKeptBrowsers as endKeptBrowsers, edgeCompatArgs, extractProjectId, extractAccount, extractConsoleIdentity, openBrowser, routeAll, withPage } from "../lib/browser.mjs"
 
 // A kept browser is meant to outlive one read; a test that opens several must
 // not leave them running behind it.
@@ -486,4 +486,13 @@ test("a pinned profile directory is the Chrome profile every read opens", { time
     await endKeptBrowsers()
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("Edge gets the compat-layer relaunch switch; Chrome does not", () => {
+  // Edge on Windows relaunches through its compat layer and the new process
+  // loses the CDP fds the launcher handed it; the switch stops that relaunch.
+  assert.deepEqual(edgeCompatArgs("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"), ["--edge-skip-compat-layer-relaunch"])
+  assert.deepEqual(edgeCompatArgs("/usr/bin/microsoft-edge"), ["--edge-skip-compat-layer-relaunch"])
+  assert.deepEqual(edgeCompatArgs("/usr/bin/google-chrome"), [])
+  assert.deepEqual(edgeCompatArgs("/usr/bin/chromium"), [])
 })

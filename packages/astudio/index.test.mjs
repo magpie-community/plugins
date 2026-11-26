@@ -1059,7 +1059,10 @@ test("web login is the recommended oauth method, listed first", () => {
   assert.equal(method.type, "oauth")
   assert.match(method.label, /推荐/)
   assert.match(method.label, /多账号/)
-  assert.equal(method.prompts, undefined)
+  // 浏览器登录方法带一个 select prompt（选浏览器）；本机无 pipe 可用浏览器时
+  // options 为空，仍允许直接登录（自动探测）。
+  assert.equal(Array.isArray(method.prompts), true)
+  assert.equal(method.prompts.some((p) => p.type === "select" && p.key === "browser"), true)
   assert.equal(plugin.auth.methods[0], method)
 })
 
@@ -1598,4 +1601,14 @@ test("a Spark window with no model to count is shown only", async () => {
   assert.equal(spark.aside, true)
   assert.equal(spark.models, undefined)
   assert.equal(exhaustedFor(out.windows, "xopdsv4flash0731in"), false)
+})
+
+test("Edge gets the compat-layer relaunch switch; Chrome does not", () => {
+  // Edge on Windows relaunches through its compat layer and the new process
+  // loses the CDP fds the launcher handed it; the switch stops that relaunch.
+  assert.deepEqual(astroBrowser.edgeCompatArgs("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"), ["--edge-skip-compat-layer-relaunch"])
+  assert.deepEqual(astroBrowser.edgeCompatArgs("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"), ["--edge-skip-compat-layer-relaunch"])
+  assert.deepEqual(astroBrowser.edgeCompatArgs("/usr/bin/microsoft-edge"), ["--edge-skip-compat-layer-relaunch"])
+  assert.deepEqual(astroBrowser.edgeCompatArgs("/usr/bin/google-chrome"), [])
+  assert.deepEqual(astroBrowser.edgeCompatArgs("C:\Program Files\Google\Chrome\Application\chrome.exe"), [])
 })

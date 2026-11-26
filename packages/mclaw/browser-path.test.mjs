@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'bun:test'
-import { browserCandidates, requireBrowser, assertBrowserSigninPrerequisites } from './browser.mjs'
+import { browserCandidates, edgeCompatArgs, requireBrowser, assertBrowserSigninPrerequisites } from './browser.mjs'
 
 const clean = (env = {}) => ({
   MCLAW_CHROME_PATH: undefined,
@@ -42,6 +42,19 @@ test('候选表覆盖三平台，且认 Edge / Chromium / Brave', () => {
   const linux = browserCandidates({ platform: 'linux', env: {} })
   expect(linux).toContain('/usr/bin/microsoft-edge')
   expect(linux).toContain('/usr/bin/chromium')
+})
+
+test('Edge gets --edge-skip-compat-layer-relaunch; other browsers do not', () => {
+  // Edge on Windows relaunches through its compat layer and the new process
+  // loses the CDP fds the launcher handed it; the switch stops that relaunch.
+  expect(edgeCompatArgs('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'))
+    .toEqual(['--edge-skip-compat-layer-relaunch'])
+  expect(edgeCompatArgs('/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'))
+    .toEqual(['--edge-skip-compat-layer-relaunch'])
+  expect(edgeCompatArgs('/usr/bin/microsoft-edge')).toEqual(['--edge-skip-compat-layer-relaunch'])
+  expect(edgeCompatArgs('/usr/bin/google-chrome')).toEqual([])
+  expect(edgeCompatArgs('/usr/bin/chromium')).toEqual([])
+  expect(edgeCompatArgs('')).toEqual([])
 })
 
 test('候选为空 → 报错且只此一份文案，不宣称窗口已弹出', async () => {
