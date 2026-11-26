@@ -297,12 +297,16 @@ async function quotaRefusal(res, ctx) {
   const { code, message } = said(d);
   if (!QUOTA_CODES.has(String(code)) && !(message && QUOTA_WORDS.test(message))) return null;
   try { res.body?.cancel?.(); } catch {}
-  // 记到「这个模型」名下：上游的免费额度门槛是按模型判的（GLM-5.4 用尽时
-  // GLM-5.3 / Flash 仍可服务）。不记模型，magpie 只能把整账号歇掉。
+  // 记到**这次被请求的那个模型**名下：上游的免费额度门槛是按模型判的
+  // （GLM-5.4 用尽时 GLM-5.3 / Flash 仍然 200）。不记模型，magpie 只能把
+  // 整个账号歇掉。
+  //
+  // 只认 ctx.model，**不认文案里点到的名字**：上游拒绝文案里的模型名不一定
+  // 是被拒的那个。Flash 自己的官方模板写的就是「GLM5.3 免费额度已用完…」
+  // （index.test.mjs 的 SPENT fixture 正是这句），照文案记账会把从没被问过的
+  // GLM-5.3 一起挡掉，而那条窗口是 100%，一次成功清不掉它。
   if (ctx?.accountKey && ctx?.model) {
     modelQuotaNote(ctx.accountKey, ctx.model, "exhausted", message, "upstream", undefined, ctx.providerId);
-    const named = quotaNamedModel(message, ctx.providerId);
-    if (named && named !== ctx.model) modelQuotaNote(ctx.accountKey, named, "exhausted", message, "named", undefined, ctx.providerId);
   }
   return new Response(JSON.stringify({ error: { message: `AutoClaw: ${message || "quota exhausted"}`, type: "rate_limit_error", code } }), {
     status: 429,
@@ -391,69 +395,21 @@ async function refusedNotSignIn(res, ctx) {
 // 上游**不下发**按模型的额度数值：wallets.v2 只有积分总额与细分钱包，
 // autoclaw-model-config 只有每个模型的积分倍率（creditCostFactor）和
 // 「额度用尽时给客户端看什么」（metadata.forbiddenNotice）。所以这里不编造
-// 上限数字，只如实上报三件事：
-//   ① 每个模型的积分倍率（官方读数，决定同样的积分能问多少次）；
-//   ② 上游明确说过「这个模型免费额度已用完」——按模型记，带官方文案；
-//   ③ 本地观察到的该模型最近一次成功/被拒时刻（事实，不是推算的配额）。
-// ② 用 magpie 的按模型窗口（windows[].models）表达：用尽只挡这个模型，
+// 上限数字，只如实上报两件事：
+//   ① 上游明确说过「这个模型免费额度已用完」——按模型记，带官方文案；
+//   ② 本地观察到的该模型最近一次成功/被拒时刻（事实，不是推算的配额）。
+// ① 用 magpie 的按模型窗口（windows[].models）表达：用尽只挡这个模型，
 // 同账号其它模型照常路由；恢复时刻只有上游明说「24 小时后重置」时才写
 // resetsAt（Auto-Fast 的官方文案），其余不编时间，靠下一次成功调用清掉。
-
-/** 官方 403 文案里点名的模型（「GLM-5.4 免费额度已用完」/「GLM 5.3 quota exhausted」）。 */
-const QUOTA_MODEL_RE = /\bGLM[-\s]?(\d+(?:\.\d+)*(?:-(?:flash|turbo|air|plus|x-preview|preview))?)\b/i;
-
-/** 模型名归一：小写、去空格与分隔符，「GLM-5.4」「glm5.4」「GLM 5.4」同一个键。 */
-function modelTag(value) {
-  return String(value ?? "").toLowerCase().replace(/[\s_\-.]/g, "");
-}
-
-/**
- * quotaNamedModel 把上游文案里的模型名映射回 routeModelId，认不出返回 ""。
- *
- * 关键：**显示名与 routeModelId 不是一回事**。上游说「GLM-5.4」，而它的
- * routeModelId 是 `zai_glm-x-preview`（id 里根本没有 5.4）；GLM-5.3 的 id 是
- * `zaicoding_glm-5.3`。所以先按官方目录给的 name 匹配（唯一可靠的一一对应），
- * 再退回 id 里含该名字的情形。候选取「静态表 ∪ 最近读到的目录 ∪ 调用方给的
- * 名单」；都没有就不认，绝不猜一个 id 去挡别的模型。
- */
-function quotaNamedModel(message, providerId = "", extra = []) {
-  const m = QUOTA_MODEL_RE.exec(String(message ?? ""));
-  if (!m) return "";
-  const said = modelTag(`glm-${m[1]}`);
-  const facts = catalogFactsOf(providerId, Date.now(), CATALOG_DISPLAY_TTL_MS) ?? {};
-  const staticTable = autoclawModels(providerId);
-  const extraRows = Array.isArray(extra) ? extra : [];
-  const candidates = new Map();
-  for (const id of Object.keys(staticTable)) candidates.set(id, staticTable[id]?.name ?? id);
-  for (const [id, fact] of Object.entries(facts)) candidates.set(id, fact?.name ?? id);
-  for (const row of extraRows) {
-    if (typeof row === "string" && row) candidates.set(row, candidates.get(row) ?? row);
-    else if (row && typeof row === "object" && typeof row.id === "string" && row.id) candidates.set(row.id, row.name ?? row.id);
-  }
-  // 官方显示名精确对上（GLM-5.4 → zai_glm-x-preview）；名字更长的优先，
-  // 免得 GLM-5.3 抢走 GLM-5.3-Flash。
-  const byName = [...candidates.entries()]
-    .filter(([, name]) => modelTag(name) === said)
-    .sort((a, b) => String(b[1]).length - String(a[1]).length)[0];
-  if (byName) return byName[0];
-  // 退路只认「id 尾巴正好是这个名字」：`includes` 会让 glm-5.3 抢走
-  // zai_glm-5.3-flash（两者 id 都含 glm53），宁可认不出也不认错。
-  const byId = [...candidates.keys()]
-    .filter((id) => modelTag(id).endsWith(said))
-    .sort((a, b) => a.length - b.length)[0];
-  return byId ?? "";
-}
 
 /** 目录条目里的官方积分倍率与「额度用尽」提示；读不到就是 undefined，不猜。 */
 function catalogQuotaFacts(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const factor = Number(raw.creditCostFactor);
   const md = raw.metadata && typeof raw.metadata === "object" ? raw.metadata : {};
   const notice = md.forbiddenNotice && typeof md.forbiddenNotice === "object" ? md.forbiddenNotice : null;
   const desc = notice ? String(notice.desc ?? "").trim() : "";
   const title = notice ? String(notice.title ?? "").trim() : "";
   return {
-    ...(Number.isFinite(factor) && factor > 0 ? { creditFactor: factor } : {}),
     ...(desc || title ? { forbiddenNotice: desc || title } : {}),
     // 官方文案明说 24 小时后重置（Auto-Fast），才认这个恢复周期。
     ...(desc && /24\s*(?:小时|hours?)/i.test(desc) ? { resetHours: 24 } : {}),
@@ -568,8 +524,15 @@ function modelQuotaNote(accountKey, model, kind, said, source, resetHours, provi
   const flush = marking || clearsLedger || !Number.isFinite(lastFlush) || now - lastFlush > MODEL_QUOTA_FLUSH_MS;
   return modelQuotaWrite(accountKey, model, {
     ...(kind === "exhausted"
-      ? { exhaustedAt: new Date(now).toISOString(), said: String(said ?? "").slice(0, 300), source: String(source ?? "upstream"), ...(resetAt ? { resetAt } : {}) }
-      : { lastOk: new Date(now).toISOString(), exhaustedAt: undefined, said: undefined, resetAt: undefined }),
+      ? {
+          exhaustedAt: new Date(now).toISOString(),
+          said: String(said ?? "").slice(0, 300),
+          source: String(source ?? "upstream"),
+          // 连续被拒次数：决定下一次复核间隔（见 modelQuotaHoldMs）。
+          refusals: (Number(prev.refusals) || 0) + 1,
+          ...(resetAt ? { resetAt } : {}),
+        }
+      : { lastOk: new Date(now).toISOString(), exhaustedAt: undefined, said: undefined, resetAt: undefined, refusals: undefined }),
   }, { flush });
 }
 
@@ -579,21 +542,34 @@ function modelQuotaNote(accountKey, model, kind, said, source, resetHours, provi
  * 时限是安全阀，不是配额推算：上游不给重置时刻时，**不能永久把模型当成用尽**
  * （zcode 上游同样只 rest 一个短窗口，plugins#817）。所以：
  *   · 官方明说周期（Auto-Fast 24h）→ 按该时刻放行；
- *   · 没说 → 按 MODEL_QUOTA_HOLD_MS 复核一次；
+ *   · 没说 → 按下面的间隔复核一次；
  *   · 期间任何一次成功调用立即清账。
+ *
+ * 复核间隔：第一次 15 分钟（与 magpie 自己的 quota rest 同一量级），之后每被
+ * 拒一次翻一倍，封顶 6 小时。本机 7 天 usage.jsonl 里，凡被判 429 的模型在
+ * 观察窗口内（最长约 28 小时）都没有再出现 200，没有可抄的真实恢复间隔；
+ * 所以取「先短后长」——刚开会员时最多等 15 分钟就能恢复，反复被同一句拒绝时
+ * 也不会变成每分钟一问（1 次/15m → 1 次/30m → … → 1 次/6h）。
  *
  * 只有窗口（magpie 的按模型 rest）用它，**不在 fetch 里短路请求**：那样会把
  * 401「登录失效」也盖成 429，账号真的掉线时反而看不到（上游 index.test.mjs
  * 的既有用例正是这么测的）。
  */
-const MODEL_QUOTA_HOLD_MS = 6 * 3600 * 1000;
+const MODEL_QUOTA_HOLD_MS = 15 * 60 * 1000;
+const MODEL_QUOTA_HOLD_MAX_MS = 6 * 3600 * 1000;
+
+/** 连续被拒次数 → 复核间隔（1→15m，2→30m，3→1h，…，封顶 6h）。 */
+function modelQuotaHoldMs(row) {
+  const n = Math.min(16, Math.max(1, Math.floor(Number(row?.refusals) || 1)));
+  return Math.min(MODEL_QUOTA_HOLD_MAX_MS, MODEL_QUOTA_HOLD_MS * 2 ** (n - 1));
+}
 
 function modelQuotaHoldUntil(row) {
   const at = Date.parse(row?.exhaustedAt ?? "");
   if (!Number.isFinite(at)) return 0;
   const stated = Date.parse(row?.resetAt ?? "");
   if (Number.isFinite(stated) && stated > at) return stated;
-  return at + MODEL_QUOTA_HOLD_MS;
+  return at + modelQuotaHoldMs(row);
 }
 
 function modelQuotaBlocked(accountKey, model, now = Date.now()) {
@@ -999,11 +975,6 @@ function catalogRow(entry, providerId, given, template) {
       input: { ...(base.capabilities?.input ?? {}), text: true, image },
     },
     variants,
-    // 官方积分倍率：magpie 的 rate（一次请求花多少积分的倍数）。原来一律 0，
-    // 于是「便宜/贵」在 routing=cheap 与卡片上完全看不出来。
-    ...(entry.creditFactor !== undefined ? { rate: entry.creditFactor } : {}),
-    ...(entry.forbiddenNotice ? { autoclawForbiddenNotice: entry.forbiddenNotice } : {}),
-    ...(entry.resetHours ? { autoclawResetHours: entry.resetHours } : {}),
   };
 }
 
@@ -1054,7 +1025,6 @@ async function catalogModels(providerId, accessToken, given = {}, signal) {
     rows[entry.id] = catalogRow(entry, providerId, given?.[entry.id], template);
     facts[entry.id] = {
       name: entry.name,
-      ...(entry.creditFactor !== undefined ? { creditFactor: entry.creditFactor } : {}),
       ...(entry.forbiddenNotice ? { forbiddenNotice: entry.forbiddenNotice } : {}),
       ...(entry.resetHours ? { resetHours: entry.resetHours } : {}),
     };
@@ -1065,7 +1035,7 @@ async function catalogModels(providerId, accessToken, given = {}, signal) {
   return rows;
 }
 
-// providerId → { at, models: { id → { name, creditFactor, forbiddenNotice, resetHours } } }
+// providerId → { at, models: { id → { name, forbiddenNotice, resetHours } } }
 // 最近一次成功读到的官方目录事实。usage() 与对话链路都读它，不再各自打一次网络。
 // 同时落盘：magpie 每次读额度会起一个**新的插件宿主进程**（CLI quota / GUI 刷新），
 // 只放内存的话新进程里 facts 为空，额度行就退化成「倍率未知」，按模型的用尽
@@ -2851,8 +2821,8 @@ export const _internal = {
   signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
   catalogModels, catalogEntry, catalogHeaders, catalogUrl, gatedOut, autoclawModels,
-  catalogQuotaFacts, catalogFactsOf, quotaNamedModel, noticeResetSeconds, beijingClock,
-  modelQuotaRead, modelQuotaNote, modelQuotaBlocked, modelQuotaWindows, modelQuotaHoldUntil,
+  catalogQuotaFacts, catalogFactsOf, noticeResetSeconds, beijingClock,
+  modelQuotaRead, modelQuotaNote, modelQuotaBlocked, modelQuotaWindows, modelQuotaHoldMs, modelQuotaHoldUntil,
   clearModelQuota: () => { modelQuotaMemo.clear(); catalogFacts.clear(); },
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,
