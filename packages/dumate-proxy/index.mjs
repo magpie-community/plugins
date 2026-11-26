@@ -1,13 +1,26 @@
 import { readFileSync } from "node:fs"
 import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
+import { buildCookieHeader, extractCsrfToken, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
+import { normalizeReasoningBody } from "./src/gateway.mjs"
+import {
+  buildImageUpstreamBody,
+  chatMessagesToPrompt,
+  isImageModel,
+  resolveImageModel,
+  toChatCompletion,
+  toChatSSE,
+  toOpenAIImages,
+} from "./src/image.mjs"
 
-const LOGIN_URL = "https://login.bce.baidu.com/?from=oa_dumate&redirect=https%3A%2F%2Fconsole.bce.baidu.com%2F"
 const PROVIDER_ID = "dumate"
-const PROVIDER_NAME = "DuMate Proxy"
-const KEEPALIVE_TTL_MS = 55 * 60 * 1000
-const REFRESH_LEAD_MS = 10 * 60 * 1000
-const KEEPALIVE_REFRESH = "dumate-proxy-keepalive"
+const PROVIDER_NAME = "百度搭子 DuMate"
+const CONSOLE_BASE = "https://console.bce.baidu.com"
+const LOGIN_URL = "https://login.bce.baidu.com/?from=oa_dumate&redirect=https%3A%2F%2Fconsole.bce.baidu.com%2F"
+const GATEWAY_BASE = "https://dumate-svc.baidu.com/gateway/apis/v1"
+const TOKEN_TTL_MS = 60 * 60 * 1000
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) DuMate/1.0.91 Chrome/130.0.0.0 Electron/33.0.0 Safari/537.36"
 
 const ICON = (() => {
   try {
@@ -17,22 +30,109 @@ const ICON = (() => {
   }
 })()
 
-const ALLOWED_PATHS = [
-  "/models",
-  "/v1/models",
-  "/chat/completions",
-  "/v1/chat/completions",
-  "/images/generations",
-  "/v1/images/generations",
-  "/images/edits",
-  "/v1/images/edits",
-]
+const tokenCache = new Map()
 
-function jsonResponse(status, value) {
+function jsonResponse(status, value, extraHeaders = {}) {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: { "Content-Type": "application/json; charset=utf-8", ...extraHeaders },
   })
+}
+
+function cookieHeaderOf(cookies) {
+  return (Array.isArray(cookies) ? cookies : []).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ")
+}
+
+function signInError(auth) {
+  const error = new Error(auth?.source === "desktop"
+    ? "DuMate 桌面端登录态已失效，请打开百度搭子重新登录后在此重新登录"
+    : "DuMate 登录态已失效，请重新登录")
+  error.signIn = "expired"
+  return error
+}
+
+function consoleError(payload, fallback) {
+  const message = typeof payload?.message === "string" && payload.message
+    ? payload.message
+    : typeof payload?.error?.message === "string" && payload.error.message
+      ? payload.error.message
+      : fallback
+  const error = new Error(`DuMate 接口错误: ${message}`)
+  if (/登录凭证|重新登录|login/i.test(message)) error.signIn = "expired"
+  return error
+}
+
+async function consoleGet(path, cookieStr, fetchImpl) {
+  const response = await fetchImpl(`${CONSOLE_BASE}${path}`, {
+    headers: { Cookie: cookieStr, "User-Agent": UA, Accept: "application/json", Referer: `${CONSOLE_BASE}/` },
+    redirect: "manual",
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (response.status >= 300 && response.status < 400) throw signInError()
+  const text = await response.text()
+  let payload
+  try { payload = JSON.parse(text) } catch {}
+  if (!payload || typeof payload !== "object") {
+    if (/登录|login|<!DOCTYPE|<html/i.test(text.slice(0, 500))) throw signInError()
+    throw new Error(`DuMate console HTTP ${response.status} 非 JSON 响应`)
+  }
+  if (!response.ok) throw new Error(`DuMate console HTTP ${response.status}`)
+  if (payload.code !== 0 || payload.success === false) throw consoleError(payload, `code=${payload.code}`)
+  return payload.result
+}
+
+async function gatewayToken(cookieStr, fetchImpl) {
+  const cached = tokenCache.get(cookieStr)
+  if (cached && Date.now() < cached.expiresAt - 5 * 60_000) return cached.token
+  let pending = tokenCache.get(`${cookieStr}\u0000pending`)
+  if (!pending) {
+    pending = (async () => {
+      const result = await consoleGet("/api/dumate/app/token/get", cookieStr, fetchImpl)
+      const token = String(result?.token ?? "")
+      if (!token) throw new Error("DuMate 未返回 gateway token")
+      const parsed = result?.expired_at ? Date.parse(result.expired_at) : Number.NaN
+      const expiresAt = Number.isFinite(parsed) && parsed > Date.now() ? parsed : Date.now() + TOKEN_TTL_MS
+      return { token, expiresAt }
+    })().finally(() => tokenCache.delete(`${cookieStr}\u0000pending`))
+    tokenCache.set(`${cookieStr}\u0000pending`, pending)
+  }
+  const next = await pending
+  tokenCache.set(cookieStr, next)
+  return next.token
+}
+
+async function gatewayFetch(body, cookies, fetchImpl, signal) {
+  const header = cookieHeaderOf(cookies)
+  const token = await gatewayToken(header, fetchImpl)
+  const response = await fetchImpl(`${GATEWAY_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "User-Agent": UA,
+    },
+    body,
+    redirect: "manual",
+    signal: signal ?? AbortSignal.timeout(180_000),
+  })
+  if ((response.status >= 300 && response.status < 400) || response.status === 401) {
+    tokenCache.delete(header)
+    throw signInError()
+  }
+  if (!response.ok) {
+    const text = await response.text()
+    let payload
+    try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 500) } } }
+    throw new Error(payload?.error?.message ?? payload?.message ?? `DuMate gateway HTTP ${response.status}`)
+  }
+  return response
+}
+
+async function gatewayJson(body, cookies, fetchImpl, signal) {
+  const response = await gatewayFetch(body, cookies, fetchImpl, signal)
+  const text = await response.text()
+  try { return JSON.parse(text) } catch { throw new Error("DuMate gateway 返回非 JSON 响应") }
 }
 
 function toMagpieModels(catalog) {
@@ -40,153 +140,67 @@ function toMagpieModels(catalog) {
   for (const [key, model] of Object.entries(catalog?.models ?? {})) {
     const image = model.kind === "image"
     models[key] = {
-      id: model.upstreamId || model.id,
       name: model.name,
       limit: { context: model.context, output: model.maxOutput },
       tool_call: image ? false : model.tool_call,
       reasoning: image ? false : model.reasoning,
       attachment: model.attachment,
-      modalities: {
-        input: [...model.modalities.input],
-        output: [...model.modalities.output],
-      },
+      modalities: { input: [...model.modalities.input], output: [...model.modalities.output] },
       ...(key === "deepseek-v41-flash" && !image ? { variants: { none: {}, low: {}, high: {}, max: {} } } : {}),
     }
   }
   return models
 }
 
-function normalizeCookie(value) {
-  return String(value ?? "").trim().replace(/^["']+|["']+$/g, "")
+function resolveCatalogModel(catalog, requested) {
+  if (!requested) return undefined
+  if (catalog?.models?.[requested]) return catalog.models[requested]
+  return Object.values(catalog?.models ?? {}).find((model) => model.upstreamId === requested || model.id === requested)
 }
 
-function hasRequiredCookie(raw) {
-  return String(raw ?? "").split(/;\s*/).some((part) => part.trim().toLowerCase().startsWith("bce-sessionid="))
+function normalizeCookie(raw) {
+  return String(raw ?? "").trim().replace(/^["']+|["']+$/g, "")
 }
 
-function normalizeProxyBase(value, fallback) {
-  const raw = String(value ?? "").trim().replace(/\/+$/, "")
-  if (!raw) return String(fallback ?? "").replace(/\/+$/, "")
-  try {
-    const url = new URL(raw)
-    if (!/^https?:$/.test(url.protocol)) return String(fallback ?? "").replace(/\/+$/, "")
-    return url.toString().replace(/\/+$/, "")
-  } catch {
-    return String(fallback ?? "").replace(/\/+$/, "")
+function validatePastedCookie(raw) {
+  const cookies = parseCookieString(raw)
+  if (!cookies.some((cookie) => cookie.name === "bce-sessionid")) {
+    throw new Error("Cookie 缺少 bce-sessionid，请复制 DevTools Network 请求头里的完整 Cookie")
   }
-}
-
-function proxyPrompt(defaultUrl) {
-  return {
-    type: "text",
-    key: "proxyUrl",
-    message: "DuMate 反代地址（Docker 请填宿主机可达地址，不要填容器内的 127.0.0.1）",
-    placeholder: defaultUrl || "http://host.docker.internal:8787/v1",
-    required: false,
-    validate: (value) => {
-      if (!String(value ?? "").trim()) return undefined
-      return /^https?:\/\//i.test(String(value).trim()) ? undefined : "需要 http:// 或 https:// 开头的地址"
-    },
-  }
-}
-
-const proxyKeyPrompt = {
-  type: "text",
-  key: "proxyKey",
-  message: "反代 API Key（可选；设置了 DUMATE_PROXY_API_KEY 时填写）",
-  placeholder: "",
-  required: false,
-}
-
-async function postAuth(url, body, fetchImpl, proxyKey) {
-  try {
-    const headers = { "Content-Type": "application/json" }
-    if (proxyKey) headers.Authorization = "Bearer " + proxyKey
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    })
-    const info = await response.json().catch(() => ({}))
-    if (!response.ok) return { failed: String(info?.error?.message || "HTTP " + response.status) }
-    return { info }
-  } catch (error) {
-    return { failed: String(error?.message ?? error) }
-  }
+  return cookies
 }
 
 export const DuMateProxyPlugin = async (input = {}) => {
   const config = input.config ?? defaultLoadConfig(input.env ?? process.env)
   const catalog = input.catalog ?? defaultLoadCatalog(config)
-  const proxyUrl = normalizeProxyBase(input.proxyUrl ?? config.proxyUrl ?? "http://127.0.0.1:8787/v1", "http://127.0.0.1:8787/v1")
-  const proxyKey = String(input.proxyKey ?? config.apiKey ?? "")
   const fetchImpl = input.fetchImpl ?? fetch
   const models = toMagpieModels(catalog)
-  const keepaliveUrl = new URL("/v1/keepalive", proxyUrl).toString()
 
-  const authFromInputs = (inputs) => ({
-    base: normalizeProxyBase(inputs?.proxyUrl, proxyUrl),
-    key: String(inputs?.proxyKey ?? proxyKey ?? ""),
+  const seat = (cookies, source, info = {}) => ({
+    type: "success",
+    access: `cookie:${cookieHeaderOf(cookies)}`,
+    refresh: "",
+    expires: 0,
+    source,
+    accountId: String(info.accountId || info.bceAccountId || PROVIDER_NAME),
+    name: String(info.displayName || info.name || ""),
+    cookies,
   })
 
-  const isAllowedTarget = (target, base) => {
-    const proxy = new URL(base)
-    const basePath = proxy.pathname.replace(/\/+$/, "")
-    if (target.origin !== proxy.origin) return false
-    if (basePath && !target.pathname.startsWith(basePath)) return false
-    return ALLOWED_PATHS.some((path) => target.pathname === path || target.pathname.endsWith(path))
-  }
-
-  const renewedSeat = (previous = {}, key = proxyKey) => ({
-    type: "oauth",
-    access: `api:${key}`,
-    refresh: KEEPALIVE_REFRESH,
-    expires: Date.now() + KEEPALIVE_TTL_MS,
-    source: previous.source || "proxy",
-    accountId: previous.accountId || "dumate-proxy",
-    name: previous.name || "DuMate Proxy",
-  })
-
-  const seatFromInfo = (info = {}, fallbackSource, base, key) => {
-    const source = String(info.source || fallbackSource || "proxy").slice(0, 32)
-    const accountId = String(info.accountId || "DuMate Proxy").slice(0, 160)
-    const name = String(info.name || "DuMate Proxy").slice(0, 160)
-    return {
-      ...renewedSeat(info, key),
-      type: "success",
-      source,
-      accountId,
-      name,
-      proxyUrl: base,
-      proxyKey: key,
-      metadata: { source, accountId, name, cookieTail: String(info.cookieTail || "").slice(-8), proxyUrl: base },
-    }
-  }
-
-  const loginWithCookie = async (base, key, raw, source) => {
-    const cookie = normalizeCookie(raw)
-    if (!cookie) return { type: "failed", error: "请粘贴完整 Cookie 请求头" }
-    if (!hasRequiredCookie(cookie)) return { type: "failed", error: "Cookie 缺少关键字段 bce-sessionid" }
-    const result = await postAuth(new URL("/v1/auth/login", base).toString(), { cookie, source }, fetchImpl, key)
-    if (result.failed) return { type: "failed", error: `Cookie 验证失败：${result.failed}；请检查反代地址、代理设置和 DUMATE_PROXY_API_KEY。` }
-    return seatFromInfo(result.info, source, base, key)
-  }
-
-  const checkHealth = async (base, key) => {
+  const validateCookie = async (raw, source) => {
+    let cookies
     try {
-      const response = await fetchImpl(new URL("/healthz", base).toString(), {
-        headers: key ? { Authorization: "Bearer " + key } : {},
-        signal: AbortSignal.timeout(5000),
-      })
-      const info = await response.json().catch(() => ({}))
-      if (!response.ok || (info?.login && info.login !== "ok")) {
-        return { type: "failed", error: "反代未报告可用登录态，请先配置 DuMate Cookie" }
-      }
-      return seatFromInfo(info, "proxy", base, key)
+      cookies = validatePastedCookie(normalizeCookie(raw))
     } catch (error) {
-      return { type: "failed", error: "连接 " + base + " 失败：" + String(error?.message ?? error) + "；Docker 请填宿主机可达地址，并把本页代理改为直连。" }
+      return { type: "failed", error: error.message }
     }
+    let info
+    try {
+      info = await consoleGet("/api/dumate/user/info", cookieHeaderOf(cookies), fetchImpl)
+    } catch (error) {
+      return { type: "failed", error: `Cookie 验证失败：${error?.message ?? error}` }
+    }
+    return seat(cookies, source, info)
   }
 
   return {
@@ -196,7 +210,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
       userConfig.provider[PROVIDER_ID] = {
         name: PROVIDER_NAME,
         npm: "@ai-sdk/openai-compatible",
-        api: proxyUrl,
+        api: GATEWAY_BASE,
         ...previous,
         models: { ...models, ...(previous.models ?? {}) },
       }
@@ -210,86 +224,42 @@ export const DuMateProxyPlugin = async (input = {}) => {
 
     auth: {
       provider: PROVIDER_ID,
-      single: true,
       icon: ICON,
-      refreshLead: REFRESH_LEAD_MS,
-      keepAlive: true,
-      rotating: false,
-      async refresh(previous) {
-        const base = normalizeProxyBase(previous?.proxyUrl, proxyUrl)
-        const key = String(previous?.proxyKey ?? proxyKey ?? "")
-        try {
-          const response = await fetchImpl(new URL("/v1/keepalive", base).toString(), {
-            method: "POST",
-            headers: key ? { Authorization: `Bearer ${key}` } : {},
-            signal: AbortSignal.timeout(15_000),
-          })
-          if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const info = await response.json()
-          if (info?.login && info.login !== "ok") {
-            const error = new Error("DuMate 代理登录态已失效，请重新登录")
-            error.signIn = "expired"
-            throw error
-          }
-          return renewedSeat(previous, key)
-        } catch (error) {
-          if (error?.signIn === "expired") throw error
-          throw new Error(`刷新 DuMate 代理保活失败：${error?.message ?? error}`)
-        }
+      async refresh(auth) {
+        if (auth?.source !== "desktop") return undefined
+        const current = readDesktopLogin({ userDataDir: config.userDataDir })
+        if (!current) return undefined
+        if (cookieHeaderOf(current.cookies) === cookieHeaderOf(auth.cookies)) return undefined
+        return seat(current.cookies, "desktop", current)
       },
       methods: [
         {
           type: "oauth",
-          label: "反代已配置登录态（环境变量 / Cookie 文件）",
-          prompts: [proxyPrompt(proxyUrl), proxyKeyPrompt],
-          authorize: async (inputs) => {
-            const { base, key } = authFromInputs(inputs)
-            return {
-              url: "",
-              instructions: `检查 ${base} 的 /healthz；登录态由反代进程持有。Docker 请填宿主机可达地址，本页代理建议选直连。`,
-              method: "auto",
-              opened: true,
-              async callback() { return checkHealth(base, key) },
-            }
-          },
+          label: "百度搭子桌面端登录态（本机 auth.json，只读复用）",
+          authorize: async () => ({
+            url: "",
+            instructions: "直接复用本机百度搭子客户端的登录态（读取 auth.json + .cookie-key，只读，不写任何文件）。",
+            method: "auto",
+            async callback() {
+              const login = readDesktopLogin({ userDataDir: config.userDataDir })
+              if (!login) return { type: "failed", error: "未检测到本机百度搭子登录态，请改用浏览器登录或手动粘贴 Cookie。" }
+              return seat(login.cookies, "desktop", login)
+            },
+          }),
         },
         {
           type: "oauth",
-          label: "服务器本机 DuMate 桌面端登录态（auth.json，只读复用）",
-          prompts: [proxyPrompt(proxyUrl), proxyKeyPrompt],
-          authorize: async (inputs) => {
-            const { base, key } = authFromInputs(inputs)
-            return {
-              url: "",
-              instructions: "从反代所在主机读取 qianfan-desktop-app/auth.json 与 .cookie-key，只读，不修改客户端文件。",
-              method: "auto",
-              opened: true,
-              async callback() {
-                const result = await postAuth(new URL("/v1/auth/desktop", base).toString(), {}, fetchImpl, key)
-                if (result.failed) return { type: "failed", error: "读取桌面端登录态失败：" + result.failed }
-                return seatFromInfo(result.info, "desktop", base, key)
-              },
-            }
-          },
-        },
-        {
-          type: "oauth",
-          label: "浏览器登录：粘贴 Network 请求头 Cookie",
-          prompts: [proxyPrompt(proxyUrl), proxyKeyPrompt],
-          authorize: async (inputs) => {
-            const { base, key } = authFromInputs(inputs)
-            return {
-              url: LOGIN_URL,
-              instructions:
-                "1. 打开上方链接登录百度账号。\n" +
-                "2. 登录成功后进入 console.bce.baidu.com，按 F12 打开 DevTools → Network。\n" +
-                "3. 刷新页面，点第一个请求，在 Request Headers 找到 Cookie，复制完整 value。\n" +
-                "4. 把 Cookie 粘贴到下方输入框。\n" +
-                "5. 第一个输入框填写反代地址：Docker 用 http://host.docker.internal:8787/v1 或宿主机 IP；本页代理选直连。",
-              method: "code",
-              async callback(input) { return loginWithCookie(base, key, input, "browser") },
-            }
-          },
+          label: "百度账号浏览器登录（无需安装百度搭子）",
+          authorize: async () => ({
+            url: LOGIN_URL,
+            instructions:
+              "1. 在浏览器打开上方链接登录百度账号。\n" +
+              "2. 成功后进入 console.bce.baidu.com，按 F12 → Network，刷新页面。\n" +
+              "3. 点第一个请求，在 Request Headers 找到 Cookie，复制完整 value。\n" +
+              "4. 粘贴到下方输入框。不要用 document.cookie，关键字段是 httpOnly。",
+            method: "code",
+            async callback(input) { return validateCookie(input, "browser") },
+          }),
         },
         {
           type: "oauth",
@@ -300,21 +270,22 @@ export const DuMateProxyPlugin = async (input = {}) => {
               key: "cookie",
               message: "完整 Cookie 请求头（name=value; name2=value2）",
               placeholder: "bce-sessionid=...; BDUSS=...",
-              validate: (value) => hasRequiredCookie(normalizeCookie(value)) ? undefined : "需要包含 bce-sessionid",
+              validate: (value) => {
+                try { validatePastedCookie(normalizeCookie(value)); return undefined }
+                catch (error) { return error.message }
+              },
             },
-            proxyPrompt(proxyUrl),
-            proxyKeyPrompt,
           ],
           authorize: async (inputs) => {
-            const { base, key } = authFromInputs(inputs)
             const raw = normalizeCookie(inputs?.cookie ?? inputs?.key)
-            if (!hasRequiredCookie(raw)) return { type: "failed", error: "请粘贴包含 bce-sessionid 的完整 Cookie" }
+            try { validatePastedCookie(raw) }
+            catch (error) { return { type: "failed", error: error.message } }
             return {
               url: "",
-              instructions: "正在验证 Cookie 并写入反代运行时登录态…",
+              instructions: "正在验证 Cookie…",
               method: "auto",
               opened: true,
-              async callback() { return loginWithCookie(base, key, raw, "manual") },
+              async callback() { return validateCookie(raw, "manual") },
             }
           },
         },
@@ -322,36 +293,99 @@ export const DuMateProxyPlugin = async (input = {}) => {
     },
 
     async loader(getAuth) {
-      let saved = {}
-      try { saved = (await getAuth?.()) || {} } catch {}
-      const base = normalizeProxyBase(saved.proxyUrl, proxyUrl)
-      const key = String(saved.proxyKey ?? proxyKey ?? "")
+      let auth
+      try { auth = await getAuth?.() } catch (error) { auth = undefined }
+      if (auth?.type !== "oauth" || !Array.isArray(auth.cookies) || !auth.cookies.length) {
+        return {
+          baseURL: GATEWAY_BASE,
+          apiKey: "dumate",
+          async fetch() {
+            return jsonResponse(401, { error: { message: "DuMate 未登录，请先在 Magpie 登录", type: "authentication_error" } }, { "X-Magpie-Sign-In": "expired" })
+          },
+        }
+      }
+      const cookies = auth.cookies
+      const consoleHostname = new URL(CONSOLE_BASE).hostname
+      const json = (status, value) => jsonResponse(status, value)
+
       return {
-        baseURL: base,
-        apiKey: key || "dumate-proxy",
+        baseURL: GATEWAY_BASE,
+        apiKey: "dumate",
         async fetch(input, init = {}) {
           const request = input instanceof Request ? input : undefined
           let target
-          try { target = new URL(request ? request.url : String(input)) }
-          catch { return jsonResponse(400, { error: { message: "invalid proxy url", type: "invalid_request_error" } }) }
-          if (!isAllowedTarget(target, base)) {
-            return jsonResponse(400, {
-              error: { message: "DuMate proxy loader 仅允许 models/chat/images 路径", type: "invalid_request_error" },
-            })
+          try { target = new URL(request ? request.url : String(input)) } catch { return json(400, { error: { message: "invalid gateway url", type: "invalid_request_error" } }) }
+          const path = target.pathname
+          const gatewayPath = new URL(GATEWAY_BASE).pathname.replace(/\/+$/, "")
+
+          try {
+            if (path === `${gatewayPath}/chat/completions` || path.endsWith("/chat/completions")) {
+              let text = init.body
+              if (text === undefined && request) text = await request.clone().text()
+              let body
+              try { body = typeof text === "string" ? JSON.parse(text) : {} } catch { return json(400, { error: { message: "body must be JSON", type: "invalid_request_error" } }) }
+              const requested = body.model || catalog.defaultChatModel
+              const model = resolveCatalogModel(catalog, requested)
+              if (model?.kind === "image" || isImageModel(catalog, requested)) {
+                const upstreamBody = buildImageUpstreamBody(
+                  { ...body, prompt: body.prompt ?? chatMessagesToPrompt(body.messages) },
+                  model ?? resolveImageModel(catalog, config, requested),
+                )
+                const payload = await gatewayJson(JSON.stringify(upstreamBody), cookies, fetchImpl)
+                const completion = toChatCompletion(payload, requested, { ...body, model: requested })
+                if (body.stream) return new Response(toChatSSE(completion, requested), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } })
+                return json(200, completion)
+              }
+              const upstreamBody = { ...body, model: model?.upstreamId || model?.id || requested }
+              return await gatewayFetch(normalizeReasoningBody(JSON.stringify(upstreamBody)), cookies, fetchImpl)
+            }
+
+            if (path === `${gatewayPath}/images/generations` || path.endsWith("/images/generations")) {
+              let text = init.body
+              if (text === undefined && request) text = await request.clone().text()
+              const body = typeof text === "string" ? JSON.parse(text) : {}
+              const model = resolveImageModel(catalog, config, body.model)
+              const payload = await gatewayJson(JSON.stringify(buildImageUpstreamBody(body, model)), cookies, fetchImpl)
+              const result = await toOpenAIImages(payload, { model: body.model || model.id, responseFormat: body.response_format || "url" }, config, fetchImpl)
+              return json(result.status, result.body)
+            }
+
+            if (path === `${gatewayPath}/images/edits` || path.endsWith("/images/edits")) {
+              const form = request ? await request.clone().formData() : (init.body instanceof FormData ? init.body : undefined)
+              if (!form) return json(400, { error: { message: "缺少 multipart 表单", type: "invalid_request_error" } })
+              const prompt = String(form.get("prompt") ?? "").trim()
+              if (!prompt) return json(400, { error: { message: "缺少 prompt", type: "invalid_request_error" } })
+              const images = []
+              for (const key of ["image", "image[]", "images", "image_url"]) {
+                for (const value of form.getAll(key)) {
+                  if (typeof value === "string") images.push(value)
+                  else if (typeof value?.arrayBuffer === "function") {
+                    const buffer = Buffer.from(await value.arrayBuffer())
+                    images.push(`data:${value.type || "application/octet-stream"};base64,${buffer.toString("base64")}`)
+                  }
+                }
+              }
+              const model = resolveImageModel(catalog, config, form.get("model") || undefined)
+              const upstreamBody = buildImageUpstreamBody({
+                prompt,
+                n: form.get("n") || 1,
+                size: form.get("size") || undefined,
+                response_format: form.get("response_format") || "url",
+                ...(images.length === 1 ? { image: images[0] } : {}),
+                ...(images.length > 1 ? { images } : {}),
+              }, model)
+              const payload = await gatewayJson(JSON.stringify(upstreamBody), cookies, fetchImpl)
+              const result = await toOpenAIImages(payload, { model: form.get("model") || model.id, responseFormat: form.get("response_format") || "url" }, config, fetchImpl)
+              return json(result.status, result.body)
+            }
+
+            return json(404, { error: { message: `unknown endpoint ${path}`, type: "invalid_request_error" } })
+          } catch (error) {
+            if (error?.signIn === "expired") {
+              return json(401, { error: { message: error.message, type: "authentication_error" } }, { "X-Magpie-Sign-In": "expired" })
+            }
+            return json(502, { error: { message: error?.message ?? String(error), type: "api_error" } }, { "X-Magpie-Sign-In": "kept" })
           }
-          const headers = new Headers(init.headers ?? request?.headers)
-          headers.delete("x-api-key")
-          if (key) headers.set("Authorization", `Bearer ${key}`)
-          let body = init.body
-          if (body === undefined && request) body = await request.clone().arrayBuffer()
-          return fetchImpl(target, {
-            ...init,
-            method: init.method ?? request?.method ?? "POST",
-            headers,
-            body,
-            redirect: "manual",
-            signal: init.signal ?? AbortSignal.timeout(180_000),
-          })
         },
       }
     },
@@ -360,4 +394,4 @@ export const DuMateProxyPlugin = async (input = {}) => {
 
 export default DuMateProxyPlugin
 
-export const _internal = { toMagpieModels, normalizeProxyBase, hasRequiredCookie }
+export const _internal = { toMagpieModels, validatePastedCookie, cookieHeaderOf }

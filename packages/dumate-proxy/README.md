@@ -14,14 +14,9 @@ DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
 
 ## Sign-in methods
 
-- Proxy-managed session: checks `/healthz` only.
-- Server-local desktop login: the proxy reads DuMate `auth.json` read-only.
-- Browser login: sign in at Baidu, copy the DevTools Network request Cookie, and the plugin submits it to the proxy for validation.
-- Manual cookie: paste the full Cookie request header into the Magpie form.
+Three methods follow the DuMate desktop/web login model: read-only desktop `auth.json`, browser sign-in with a DevTools Network Cookie, and manual Cookie paste. Browser/manual cookies are validated directly against Baidu console before the Magpie account is saved.
 
-Every sign-in form accepts a reachable proxy URL and optional proxy API key. In Docker, use a host-reachable URL such as `http://host.docker.internal:8787/v1` and choose direct proxy for the sign-in.
-
-Cookies are stored only by the proxy in `runtime-cookie.json`; the Magpie account keeps only source, name and cookie tail.
+Requests go directly to the official DuMate gateway with a short-lived gateway token; no local proxy URL is required.
 ## Setup
 
 Run the proxy from <https://github.com/EFate/dumate-proxy>, then add this plugin:
