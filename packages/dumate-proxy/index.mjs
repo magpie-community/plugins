@@ -64,9 +64,7 @@ function consoleError(payload, fallback) {
     : typeof payload?.error?.message === "string" && payload.error.message
       ? payload.error.message
       : fallback
-  const error = new Error(`DuMate 接口错误: ${message}`)
-  if (/登录凭证|重新登录|login/i.test(message)) error.signIn = "expired"
-  return error
+  return new Error(`DuMate 接口错误: ${message}`)
 }
 
 async function consoleGet(path, cookieStr, fetchImpl) {
@@ -213,16 +211,20 @@ export const DuMateProxyPlugin = async (input = {}) => {
   const fetchImpl = input.fetchImpl ?? fetch
   const models = toMagpieModels(catalog)
 
-  const seat = (cookies, source, info = {}) => ({
-    type: "success",
-    access: `cookie:${cookieHeaderOf(cookies)}`,
-    refresh: "",
-    expires: 0,
-    source,
-    accountId: String(info.accountId || info.bceAccountId || PROVIDER_NAME),
-    name: String(info.displayName || info.name || ""),
-    cookies,
-  })
+  const seat = (cookies, source, info = {}) => {
+    const label = String(info.displayName || info.name || info.bceAccountId || PROVIDER_NAME)
+    return {
+      type: "success",
+      access: `cookie:${cookieHeaderOf(cookies)}`,
+      refresh: "",
+      expires: 0,
+      source,
+      accountId: label,
+      uid: String(info.bceAccountId || info.accountId || ""),
+      name: label,
+      cookies,
+    }
+  }
 
   const validateCookie = async (raw, source) => {
     let cookies
@@ -261,6 +263,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
 
     auth: {
       provider: PROVIDER_ID,
+      single: false,
       icon: ICON,
       async refresh(auth) {
         if (auth?.source !== "desktop") return undefined
