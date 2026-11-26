@@ -37,9 +37,15 @@ magpie plugin add github:magpie-community/plugins             # 从仓库装（p
 | `ultra` | Ultra | 40 | 是 | 已移植 | 启发式 token 级剪枝，最激进的纯本地选项。 |
 | `ionizer` | Ionizer | 50 | 是 | 已移植 | 采样式压缩，故意有损。 |
 | `llm` | LLM Compressor | 60 | 是 | 可选后端 | 可信 Bun 宿主可接现有网关；未配置模型时 no-op，默认关闭。 |
-| `omniglyph` | OmniGlyph | 90 | 是 | 不可用 | 需要 omniglyph 包与支持图片直传的供应商。 |
+| `omniglyph` | OmniGlyph | 90 | 是 | 实验可选 | 纯 JS 把历史 ASCII 用户文本转为 1-bit PNG；仅原生 Anthropic 的 Claude Fable 5 系列，需确认原图直传及未缓存输入。 |
 
-不可用的 LLMLingua-2 / OmniGlyph 在面板上照常显示并写明缺什么。LLM Compressor 是可选后端：未配置模型时不工作，不会偷偷发请求。
+LLMLingua-2 在面板上显示为不可用并写明缺什么。LLM Compressor 是可选后端：未配置模型时不工作，不会偷偷发请求。
+
+OmniGlyph 默认关闭、无 npm 依赖。它只处理 8000–28080 字符、单页可容纳的 ASCII 历史用户段；system、assistant、工具输出与最新 user 保留原文。中文、其他 Unicode、控制字符、超页或图片比原文更大时整段跳过。当前只输出 Anthropic 原生 `image` 内容块，Chat/Responses/Gemini 原样放行。模型仅接受 `claude-fable-5` / `claude-fable-5-2`（及日期后缀）；模型名本身不证明路由直传。
+
+只有确认当前路线保留原始 PNG、不缩放或做 OCR 转写后，才设置 `"omniglyph": {"enabled": true, "imagePassthrough": true, "cachePolicy": "uncached", "dpi": 150}`；`imagePassthrough` 是操作者的显式声明，不是插件测得的事实。若宿主明确报告不支持视觉、非 direct 传输或非 byte-preserving 图像，声明不能越过该门控。`cachePolicy` 默认 `unknown`，未知或缓存命中一律不压；只有确认文本未缓存时才估算收益，不能仅凭开关声称省钱。估算使用字符数/6、28px 图像 patch、图片缓存写入 1.25 倍及 20% 余量，仍不是供应商实际计费。没有足够估算收益则保持原文。图片 OCR 本身有损，不能用于必须逐字恢复的资料；`safe` 预设不启用它。图片命中后总 token 估算留空，独立的图像估算记在策略记录中，不能把 base64 字节/4 当图像 token。
+
+每次最多尝试 4 个候选段，之后保持其余消息完整。`dpi` 限制在 72–300（非数值回到 150）；225 及以上使用双倍字形像素，单页仍不超过 1568×728，此时最多容纳 7020 字符，低于当前 8000 字符门槛，因此保留原文、不压缩。字体仅携带 Spleen 5×8 的 95 个 ASCII 字形，完整 BSD-2-Clause 许可见 `LICENSES/Spleen-BSD-2-Clause.txt`。
 
 安装默认就是下文的稳妥档：开启 `session-dedup`、`ccr`、`lite`、`headroom`，其余关闭。需要 RTK、Codex Tool Output、Read Lifecycle 或散文剪枝策略时单独开启。Read Lifecycle 只折叠被同路径后续 Read 或 Write 明确取代的旧结果，保留一行说明；它会改变历史前缀。RTK 不要与 Magpie 官方 RTK 同时开启。
 

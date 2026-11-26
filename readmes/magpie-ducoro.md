@@ -1,12 +1,14 @@
-<a href="https://opc.fish"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YE4IM/readme/main/project%20readme/assets/opc-fish-project-signature-web-dark.svg"><img src="https://raw.githubusercontent.com/YE4IM/readme/main/project%20readme/assets/opc-fish-project-signature.svg" alt="OPC.FISH Project" width="720"></picture></a>
+<p align="center">
+<a href="https://opc.fish" title="OPC.FISH Project."><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature-web-dark.svg"><img src="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature.svg" alt="OPC.FISH Project" width="720"></picture></a>
+</p>
 
 # magpie-ducoro
 
 [**English**](./README.md) | [中文](./README-zh-CN.md)
 
-Sync Magpie models, connectors, skills, instructions, and selected subagents to Ducoro from the Magpie plugin page.
+Configure Ducoro Bots in Magpie to follow the default model or use their own model, connectors, skills, and instructions.
 
-[![npm version](https://img.shields.io/npm/v/magpie-ducoro)](https://www.npmjs.com/package/magpie-ducoro) [![MIT license](https://img.shields.io/github/license/YE4IM/magpie-ducoro)](./LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/YE4IM/magpie-ducoro)](https://github.com/YE4IM/magpie-ducoro/releases/latest) [![MIT license](https://img.shields.io/github/license/YE4IM/magpie-ducoro)](./LICENSE)
 
 [Quick start](#quick-start)
 
@@ -14,9 +16,11 @@ Sync Magpie models, connectors, skills, instructions, and selected subagents to 
 
 *Ducoro’s Sync settings with example data.*
 
+[Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Changelog](#changelog)
+
 ## Overview
 
-Use Magpie's default model in Ducoro or configure individual Bots. Review the changes before saving and check which settings Ducoro wrote, read back, and loaded into a session.
+Manage synchronization from the Ducoro plugin page in Magpie. Review assignments and removals before saving, then check what Ducoro wrote, read back, and loaded into a session.
 
 ## Requirements
 
@@ -39,9 +43,10 @@ You can also download a source archive, extract it, and register the extracted f
 1. In Magpie, connect **Ducoro** from the **Agent** page and select a model. Then open **Ducoro** in the sidebar.
 2. Open **Sync settings** and review the connection slug, enabled resource types, and target Bots. Use **Bot resources** for individual assignments.
 3. Select **Preview changes** to review additions and removal reasons. The preview also flags first-time gateway connection creation. Select **Preview and save** and confirm to save the settings and start synchronization.
-4. Open **Sync status** to check whether settings were saved, written, read back, and loaded into a session. Review any unverified items there.
+4. Open **Sync status** to check writes and read-back. To confirm that Ducoro loaded the new settings, start a new session with a target Bot and check its session load status.
 
-Installation and end-to-end sync in a configured Magpie and Ducoro environment were unverified for this release.
+> [!NOTE]
+> The diagnostics command was verified during this update. The plugin’s live diagnostics service was unavailable in this environment, so installation, first sync, and session loading remain unverified.
 
 ## Usage
 
@@ -96,7 +101,7 @@ npm run state:compact -- /absolute/path/to/state.json
 
 ## Changelog
 
-[Version history](./docs/CHANGELOG.md) · [Latest release notes](./docs/RELEASE-NOTES.md) · [GitHub Releases](https://github.com/YE4IM/magpie-ducoro/releases)
+[Version history and release notes](./docs/CHANGELOG.md) · [Latest release notes](./docs/RELEASE-NOTES.md) · [GitHub Releases](https://github.com/YE4IM/magpie-ducoro/releases)
 
 ## License
 

@@ -4,18 +4,20 @@
 
 **A quick, low-cost first look at a language model's capabilities.**
 
-Run 12 focused tasks to compare models, accounts, and Thinking settings, with full answers, tool traces, and estimated costs ready to inspect. Works inside Magpie or standalone.
+Run 12 focused tasks per bank (**2.0** and **1.0**, switchable in the header with isolated charts, baselines, and task records) to compare models, accounts, and Thinking settings, with full answers, tool traces, and estimated costs ready to inspect. Works inside Magpie or standalone.
 
 ## What it tests
 
-| Area | Tasks (12 total) |
-| --- | --- |
-| Knowledge | HTTP conditional caching, IEEE 754 floating-point & SQL three-valued logic |
-| Reasoning | Algebraic morphism induction, conservation law & state tracking |
-| Code semantics | Async generator `finally` overrides, MVCC savepoints & serializable snapshots |
-| Evidence synthesis | Multi-track audit reconciliation, tight-budget document audit |
-| Instruction following | Multi-agent DAG scheduling rules, contextual polysemy translation audit |
-| Tool use | Adaptive fault diagnosis, delegated authority release |
+Switch between **2.0** (default; minimal unguided prompts, neutral answer schemas, and evidence-gated tool grading) and **1.0** in the top bar:
+
+| Area | 2.0 Tasks (12 total) | 1.0 Tasks (12 total) |
+| --- | --- | --- |
+| Knowledge | IPv4-disguised bit-reversed ASCII abduction, FIDE chess legal/checking move edge cases | HTTP conditional caching, IEEE 754 floating-point & SQL three-valued logic |
+| Reasoning | Keypad-offset pinyin abduction, camouflaged inverted ITU Morse abduction | Algebraic morphism induction, conservation law & state tracking |
+| Code semantics | Four-slot ring checkpoint/rollback torn readback, Clock cache Belady anomaly | Async generator `finally` overrides, MVCC savepoints & serializable snapshots |
+| Evidence synthesis | Cross-timezone checkout incident & retry-rate reconciliation, 5-fetch cold-chain tariff audit | Multi-track audit reconciliation, tight-budget document audit |
+| Instruction following | Five-valve interlock min-step startup protocol, bilingual custody discrepancy audit | Multi-agent DAG scheduling rules, contextual polysemy translation audit |
+| Tool use | Worst-case-safe 4-probe deceptive relay isolation, zero-rejection delegated manifest dispatch | Adaptive fault diagnosis, delegated authority release |
 
 Built for quick screening rather than a leaderboard. All answers are submitted through a fixed tool schema and graded as data; model code is never executed, and tools run only in local simulators.
 

@@ -43,7 +43,7 @@ magpie plugin add magpie-agent-paseo
 
 ### 2. Enable in Magpie
 
-Turn on **Paseo** on Magpie's **Agents** page.
+Turn on **Paseo (Magpie)** on Magpie's **Agents** page.
 
 ### 3. Reload and Use in Paseo
 

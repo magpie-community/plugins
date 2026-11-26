@@ -2,7 +2,7 @@
 
 面向 **magpie** 的 AnyRouter（`https://anyrouter.top`）供应商插件：六种登录入口、余额与北京时间今日消耗、由宿主调度的每日签到，以及 Claude / GPT / Gemini 模型分派。
 
-**当前版本：0.2.1，通过独立 GitHub 仓库发布，不发布同名 npm 包。** 源码更新或 GitHub Release 不等于你的生产网关已升级。主要验证宿主为 Magpie 0.1.4720 + Bun 1.4.5；使用 OpenCode 风格的 hooks，但未独立验证原版 OpenCode 的加载器及专有扩展兼容性。
+**当前版本：0.2.3，通过独立 GitHub 仓库发布，不发布同名 npm 包。** 源码更新或 GitHub Release 不等于你的生产网关已升级。主要验证宿主为 Magpie 0.1.4795 + Bun 1.4.5；使用 OpenCode 风格的 hooks，但未独立验证原版 OpenCode 的加载器及专有扩展兼容性。
 
 运行时依赖 `tough-cookie` 6；本项目的 [锁文件](<pnpm-lock.yaml>) 固定了实际依赖。插件不执行远端 JavaScript，不启动代理／保活服务，不建立自己的账号池，不创建或轮换站点 Key，也不在推理 fetch 内自动重试。
 
@@ -13,12 +13,12 @@
 按 [Magpie 官方发布说明](<https://usemagpie.ai/docs/zh/plugins#发布与上架>)，此仓库根目录提交可直接加载的入口，不依赖发布时才生成的 dist。可以固定 Release 对应标签：
 
 ```sh
-magpie plugin add github:Guardinary/opencode-anyrouter-auth#v0.2.1
+magpie plugin add github:Guardinary/opencode-anyrouter-auth#v0.2.3
 magpie plugin login anyrouter
 magpie quota anyrouter --json
 ```
 
-不写 `#v0.2.1` 时安装默认分支代码。仓库的 `magpie-plugin` topic 用于“非官方插件 · GitHub”发现，**不代表官方审核或推荐列表收录**。本仓库没有把同名上游 npm 包当作自己的发布物。
+不写 `#v0.2.3` 时安装默认分支代码。仓库的 `magpie-plugin` topic 用于“非官方插件 · GitHub”发现，**不代表官方审核或推荐列表收录**。本仓库没有把同名上游 npm 包当作自己的发布物。
 
 ### 本地源码
 
@@ -116,16 +116,29 @@ GET /api/user/self（被拒绝）→ GET /api/status → 一次 POST /api/user/l
 - 今日失败只影响今日窗口；控制台会话过期不把独立模型 Key 标成失效，返回 `signIn: kept`。
 - 业务接口只读，但收到的 Cookie 轮换可以经宿主保存；不能把“只读余额接口”误解为“绝不更新本地会话”。
 
+### 站外用量同步（显式开启）
+
+Magpie `auth.calls` 默认返回空列表，不发送请求。要同步外部客户端消费，需在 `provider.anyrouter` 配置 `externalUsageKeyIds`，例如 `{"externalUsageKeyIds":[12345]}`；示例 ID 需替换为你已有的、**只用于外部客户端、不用于任何 Magpie 账号**的 Key ID。最多十个，不创建或轮换 Key。
+
+- 仅本站会话／系统令牌账号可读；先核对当前 UID，再只读取得目标 Key 元数据，拒绝当前 Magpie Key ID／同一模型 Key、掩码或不明确的 Key。
+- 本站没有可靠的客户端来源字段，**同一 Key 的 Magpie 与外部流量不能自动区分**。ID 配置是你的外部专用用途声明，不是站点来源证明；不能填入共用 Key。
+- 固定游标时间窗口内完整读取 100 条／页、最多 20 页，按 `token_id` 筛选；重复 ID、总数变化、身份／时间不符、未知缓存用量、取消或 Cookie 保存失败都会使读取失败，不推进宿主游标、不返回部分消费。
+- `rid` 为 UID 作用域的稳定站点日志 ID；秒级日志转为毫秒，不编造毫秒精度。缓存读／写与普通输入分开，消费 `cost` 使用既有 `quotaPerUnit` 换算；缺失费用不猜零。
+- 不导出日志正文、用户名、Key、Cookie 或任意 `other` 字段。Cookie 轮换只按既有队列和凭据快照安全保存。同步调度与去重由 Magpie 控制，插件不新建后台定时器。
+
 ## 模型与协议
 
 | 模型／形态 | 默认 SDK | 网关路径 |
 | --- | --- | --- |
 | `claude-*` 与 `*-cc-format` | `@ai-sdk/anthropic` | `/v1/messages`，兼容开关开启且请求可识别时加 `beta=true` |
-| GPT / Codex / Gemini | `@ai-sdk/openai` | `/v1/responses` |
+| GPT / Codex | `@ai-sdk/openai` | `/v1/responses` |
+| `gemini-*`（非 `*-cc-format`） | `@ai-sdk/google` | `/v1beta/models/{model}:generateContent` 或 `:streamGenerateContent?alt=sse` |
 
-历史真实探测中 Chat Completions 返回 404；Gemini 名称不意味着该站提供 Google 原生协议。用户选择其他 SDK 不会让不存在的上游接口变得可用。
+2026-11-26 实测 `gemini-4-neon` 经本插件原生 Google 路径返回 200 SSE 并以 `STOP` 结束。旧版本把 Gemini 误分派到 Responses，会出现图示 404；0.2.2 修正默认 SDK／路径，并保留显式用户 SDK 与端点声明。carbon 原生路径当时返回负载上限，2.5-pro 原生路径返回 404；协议正确不保证所有上游模型当前可用。模型列表发现仍走 `/v1/models`，不会改为 `/v1beta/models`。
 
-[内置声明](<lib/declared-models.mjs>)提供 16 个登录前展示／临时兜底模型，不默认启用它们。**成功的账号 `/v1/models` 列表是权威，包括空列表**；公开定价、models.dev 和手工配置不向成功列表添加未发现的模型。临时发现失败使用插件自己的保守兜底并带 `fellBack`，不把宿主缓存模型无条件并入。
+更新后在模型页点击“重新获取模型”。如果你曾手动固定某个 Gemini 的 Responses API，请恢复默认，或将 SDK 设为 `@ai-sdk/google`、基础地址设为 `https://anyrouter.top/v1beta`；插件不会偷偷覆盖明确的用户配置。无需重新登录或轮换 Key。历史 Chat Completions 探测仍为 404，不通过自动改协议重发来掩盖错误。
+
+[内置声明](<lib/declared-models.mjs>)提供 18 个登录前展示／临时兜底模型，不默认启用它们。**成功的账号 `/v1/models` 列表是权威，包括空列表**；公开定价、models.dev 和手工配置不向成功列表添加未发现的模型。临时发现失败使用插件自己的保守兜底并带 `fellBack`，不把宿主缓存模型无条件并入。
 
 配置与运行时是不同形状。配置模型覆盖使用：
 
@@ -149,6 +162,18 @@ GET /api/user/self（被拒绝）→ GET /api/status → 一次 POST /api/user/l
 ```
 
 运行时才转换为 `api.{id,npm,url}` 和 `capabilities`。用户的显式 `false`、SDK、别名和上限受到尊重；`context`／`input`／`output` 独立处理，不把模型厂商上限伪装成本站明确给出的 input 上限。
+
+### 价格元数据
+
+模型 `cost` 单位为 USD／百万 token，优先保留明确用户配置（包括零）：
+
+```json
+{"provider":{"anyrouter":{"models":{"gemini-4-neon":{"cost":{"input":2,"output":10}}}}}}
+```
+
+如已确认要使用某个站点分组的公开参考价，可在 `provider.anyrouter` 配置 `"pricingGroup":"default"`。仅在本次公开价格响应包含该分组倍率、模型允许该分组且为按 token 计费时，插件填充 `cost`；未选择分组时不假定账号属于 default。输入价为 `model_ratio * 2 * group_ratio`，输出再乘 `completion_ratio`。这是公开分组参考价，不是实际账单、充值汇率或“官方价格的几倍”。
+
+未确认的价格／缓存价格保持缺失；按次计费不能转换成 token 单价。不从厂商 models.dev 价格或宿主占位零值补齐，不猜测 Magpie `rate`。显式用户 `cost` 对象优先，缺失字段不自动填站点价；宿主如何显示缺失价格由宿主决定。无需修改账号凭据。
 
 ## 开关、请求头和参数
 
@@ -188,6 +213,8 @@ GET /api/user/self（被拒绝）→ GET /api/status → 一次 POST /api/user/l
 细节见[安全说明](<SECURITY.md>)与[实现契约](<DESIGN.md>)。
 
 ## 已验证与未验证
+
+0.2.3 本地优化验收（2026-11-26）：Node 527 项中 524 通过、Bun 503 项中 500 通过，均零失败；各有三项普通运行下的宿主 opt-in 跳过，这三项在 Magpie 0.1.4795 的隔离宿主／CLI 中另跑全部通过、零跳过。包图、私有哨兵排除和实际归档离线导入通过。执行细节与未验证的线上条件见[优化验收记录](<docs/validation/optimization-plan.md#L63-L69>)。
 
 2026-11-24 的本地验收：Node 26.5.0、Bun 1.4.5 的全套离线回归，以及 Magpie 0.1.4720 的真实宿主／CLI 隔离测试通过。它们使用合成凭据和本机模拟服务，不是对线上 Claude／Gemini 可用性、真实奖励金额或真实登录端到端的证明。
 

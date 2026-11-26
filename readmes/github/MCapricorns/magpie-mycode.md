@@ -14,8 +14,8 @@ magpie plugin add github:MCapricorns/magpie-mycode
 Or open **Plugins → Add a plugin** in the magpie app and paste the same
 `github:MCapricorns/magpie-mycode` value.
 
-Then open **Agents**, pick **MYCode**, and pick a model. MYCode reads the
-binding when a session starts, so start a new session after switching.
+Then open **Agents**, pick **MYCode**, and pick a model. MYCode reloads the
+gateway binding when settings change. Start a new task to use the selected model.
 
 Remove it with `magpie plugin rm magpie-agent-mycode`; that disconnects MYCode
 and restores the keys it had before.
@@ -26,18 +26,18 @@ and restores the keys it had before.
 | --- | --- |
 | `magpie.enabled` | `true` while magpie serves the model |
 | `magpie.baseUrl` | the gateway, ending in `/v1` (`http://127.0.0.1:3425/v1`) |
-| `magpie.apiKey` | the key magpie made for MYCode (`magpie-mycode`) |
+| `magpie.apiKey` | the gateway key magpie issued for MYCode |
 | `magpie.model` | the model picked in magpie (`provider/model`) |
 
-Nothing else in `settings.json` is touched. Picking MYCode's own model again (or
-switching the row off) restores the three keys and removes `magpie.model`.
+Magpie writes the four paths in place. Switching the row off restores their
+previous values and removes any of the four keys it originally added.
 
 ## About `settings.json`
 
 MYCode reads the file as a **strict** document:
 
-- The `formatVersion`, `kind` and `revision` keys are part of the format.
-  magpie's surgical edit keeps them; a hand-written replacement must too.
+- MYCode imports a fresh gateway binding and adds `formatVersion`, `kind` and
+  `revision`. Magpie preserves those fields when editing an existing document.
 - Keys MYCode's build does not know — `providers`, `web` from older versions —
   make the file read as damaged. MYCode then repairs it on the next start:
   the previous bytes are kept beside it as `settings.json.broken-<nanos>` and
@@ -90,8 +90,13 @@ same data URI, so the row has it without magpie's market having answered yet.
 
 ## Requirements
 
-- MYCode on `PATH` as `mycode`, or `~/.mycode` present.
+- MYCode on `PATH` as `mycode-desktop`, or the default `~/.mycode` directory from its first run.
 - magpie running: the app, `magpie tray`, or `magpie serve`.
+- The adapter uses the agent plugin API verified with Magpie `v0.1.4845`. [Agent plugin documentation](https://usemagpie.ai/docs/plugins#agents)
+
+## Development
+
+Run `npm test` to check the executable name and gateway binding contract.
 
 ## Layout
 

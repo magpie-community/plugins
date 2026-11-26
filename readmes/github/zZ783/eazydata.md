@@ -11,14 +11,18 @@ What the plugin adds beyond a plain `providers.json` entry:
   exactly what that key may call. A model added upstream works without a new
   release; a model the plugin has never seen gets a generous generic shape
   (text + image in, tools on, 128K context) rather than being dropped.
-- **The allowance, when there is one.** The relay reports usage in `x-quota-*`
-  response headers. `usage` reads one response and turns it into the window
-  magpie shows and routes on. Nothing is made up: when the headers are absent,
-  the window shows a descriptive line and no percentage instead of 0%.
-- **A working reset time.** When the allowance is spent and the relay answers
-  429 without a `Retry-After`, the plugin writes one from the reset instant so
-  the key sits out until it is topped up — while a plain concurrency 429 keeps
-  the relay's own short `Retry-After`.
+- **The dollar balance, read for real.** The relay reports no usage headers;
+  what it exposes to a key is the OpenAI-style billing pair,
+  `GET /v1/dashboard/billing/subscription` (`hard_limit_usd`) and
+  `GET /v1/dashboard/billing/usage` (`total_usage`, in cents), so `usage`
+  calls them and shows a **USD balance** window ("$99.96 left of $100"). It is
+  a cumulative balance, not a daily token bucket, so there is no reset time.
+  Nothing is made up: when the routes cannot be read, the window shows a
+  descriptive line and no percentage instead of 0%.
+- **A working rest on a spent balance.** When the balance is out and the relay
+  answers 429 without a `Retry-After`, the plugin adds a moderate one so the
+  key is not hammered; a plain concurrency 429 keeps the relay's own short
+  `Retry-After`.
 
 ## Install
 
@@ -90,7 +94,7 @@ opencode.mjs       the OpenCode 1.x face
 opencode2.mjs      the OpenCode 2.x face (byte-identical to the community copy)
 src/index.mjs      the plugin: config, auth, provider.models
 src/models.mjs     the generic model shape + the account's live listing
-src/quota.mjs      x-quota-* headers → a usage window
+src/quota.mjs      billing routes → a dollar balance window
 test/              the tests, run by `npm test`
 ```
 

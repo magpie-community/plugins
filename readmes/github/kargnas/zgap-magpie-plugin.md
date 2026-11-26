@@ -55,6 +55,17 @@ on the same computer, and signing in here again updates the same session.
   An agent on Claude's Messages API, such as Claude Code, can only ask for Fast, so Ultrafast runs as Fast there.
 - **Requests**: ZGAP serves every model on Chat Completions, Messages and Responses, so magpie relays each
   agent's request in the protocol the agent sent it in. The plugin adds the current access token.
+- **Quota**: `magpie quota`, magpie's usage views and Quota first routing read ZGAP's remaining usage, the same
+  gateway-wide figures **Live activity** shows: per upstream (Claude, Codex, Kimi and the rest), the mean share
+  used of each window over ZGAP's accounts. A window ZGAP marks as the upstream's whole account (Session, Weekly,
+  Kimi's 5h, xAI's credits) counts every model that upstream serves, and a window named after a model (Claude's
+  Fable) counts only that model. Other windows (Codex's code review, xAI's on-demand cap) are shown but never hold
+  back routing. ZGAP says how long each window runs but not when its pooled windows reset, so magpie takes each
+  window to renew a full span from now, and Quota first spends accounts that renew sooner first. A 5-hour window at 90% used, or any
+  window at 98%, still puts ZGAP behind the others. A window no ZGAP account measured is left out, and a failed read
+  shows as an error, never as 0% used. While the app or `magpie serve` runs, each sign-in reads it at most once
+  every 3 minutes, so the figures there can be up to 3 minutes old; each `magpie quota` run reads it afresh. A failed
+  read is not kept, and magpie's next read asks ZGAP again.
 - **Tokens**: the access token lasts 24 hours. magpie renews it before it runs out with the refresh token,
   which ZGAP replaces on every renewal and keeps valid for 30 days.
 
@@ -82,8 +93,8 @@ npm run test:ui
 The sidebar entry opens the plugin’s loopback service through magpie’s page-service support. The
 service reads ZGAP entries from `plugin-auth.json` inside the config directory supplied by magpie;
 magpie owns token renewal and writes. It binds only to `127.0.0.1`, checks Host and Origin, and requires
-a random page token for its read-only APIs. It serves the JS and CSS built by the ZGAP console and forwards only the three personal dashboard
-reads (live events, usage statistics and weekly report). The asset requests carry no credentials.
+a random page token for its read-only APIs. It serves the JS and CSS built by the ZGAP console and forwards only four dashboard reads: the
+account's live events, usage statistics and weekly report, and ZGAP's remaining usage. The asset requests carry no credentials.
 No OAuth token is sent to the page or placed in a URL; the stream closes on sign-out or renewal.
 The service’s default port is declared by `scripts/build-ui.mjs`. When the port is taken, ZGAP still
 signs in and serves requests, and the page waits for the port: magpie keeps a plugin host it replaced

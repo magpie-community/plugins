@@ -8,7 +8,7 @@
 
 这是一个非官方的 **Magpie Agent 插件 + Windows 本地适配器 + IDE 扩展**。连接器不要求为每个第三方模型重复填 API Key。Magpie 继续管理供应商、账号和模型；IDE 使用 Magpie 提供的本机网关。
 
-> 当前版本 **0.3.1**，仅支持下面列出的 **Windows Antigravity IDE 2.7.0 精确构建**。本项目会修改两处 IDE 程序文件并保存回退基线。它不是仅在 Magpie 点击安装就自动完成的插件，必须执行一次本地安装。
+> 当前版本 **0.4.0**，仅支持下面列出的 **Windows Antigravity IDE 2.7.0 精确构建**。本项目会修改两处 IDE 程序文件并保存回退基线。它不是仅在 Magpie 点击安装就自动完成的插件，必须执行一次本地安装。
 
 **English:** Use the models you manage in Magpie inside Antigravity IDE's native chat sidebar, switch back to your Google account, and choose Google or Magpie independently for CLI sessions. This unofficial connector supports one exact Windows IDE build. Installing the Magpie Agent alone is insufficient: clone this repository and run the local setup below. Licensed under GPL-3.0-or-later.
 
@@ -16,6 +16,7 @@
 
 - 原生聊天下拉框列出 Magpie **Antigravity IDE** 条目允许显示的模型，包括可见路由组。
 - 在下拉框切换模型后，下一条请求发送到所选模型。
+- 在模型选择器旁调整当前模型的推理强度，只列出 Magpie 为该模型声明的档位。
 - 临时 IDE 选择不改写 Magpie 默认；重开 IDE或重新加载窗口恢复 Magpie 的启动默认。
 - Magpie 显示或隐藏模型、分组后，状态栏提示“待刷新”；刷新窗口或重开 IDE 后应用目录变化。
 - 在 Magpie 断开 **Antigravity IDE**，刷新后恢复 Google 账号模式。
@@ -98,6 +99,7 @@ $ideCli = Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE\bin\antigravity-
 | 侧栏使用 Magpie | 在 Magpie 连接 **Antigravity IDE**，刷新或重开 IDE |
 | 侧栏使用 Google 账号 | 在 Magpie 断开 **Antigravity IDE**，刷新或重开 IDE |
 | 临时使用另一个第三方模型 | 直接在原生聊天下拉框选择，下一条消息生效 |
+| 调整当前模型推理强度 | 点击模型选择器旁的 **推理：默认**，选择可用档位，下一条请求生效 |
 | 更新模型显隐或分组 | 修改 Magpie 后运行 **Magpie: 刷新原生模型列表（重新加载窗口）** |
 | CLI 使用 Google 账号 | 命令面板运行 **Magpie: 打开 Antigravity CLI（Google 账号）** |
 | CLI 使用 Magpie | 在 Magpie 连接 **Antigravity CLI**，运行 **Magpie: 打开 Antigravity CLI（Magpie）** |
@@ -105,6 +107,14 @@ $ideCli = Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE\bin\antigravity-
 命令面板快捷键为 `Ctrl+Shift+P`。刷新前等待回复完成；模型目录不会在正在生成的对话中强制刷新。切换模型后，现有上下文会随下一条消息交给所选服务，需要分开上下文时请新建对话。
 
 启动默认只自动选择一次；若你已开始操作，自动选择会让出控制。CLI 会话维持启动时的来源，切换后请新开对应会话。普通终端直接输入 `agy` 仍由你已有的 shell/PATH/Magpie 包装控制，不等同于这两个明确选择来源的命令。
+
+### 推理强度的默认与生效范围
+
+**默认**表示连接器保留客户端请求中的原参数，不额外指定推理档位。客户端、Magpie 和供应商仍可能采用各自默认值；Magpie 显示“中”等级，不等于你曾手动选择“中”。例如 Gemini 自动思考预算 `-1` 在 Magpie 中会被归为 `medium`。
+
+手动选择后，连接器在本 IDE 的下一条请求中设置 `reasoning_effort`。各模型分别记住本次后台会话中的选择，切换模型不会把 A 的强度套给 B；重开 IDE 或重新加载窗口后回到“默认”。正在生成的回复继续沿用发送时的参数。设置不改写 Magpie 启动默认，不影响独立 CLI 或 Google 账号模式。
+
+选项来自 Magpie 的模型能力元数据，可能包括关闭、最低、低、中、高、很高、最高、极致中的一部分；没有声明档位时显示“推理：随模型”。供应商是否接受和实际执行这些参数，仍取决于该模型的接口。连接器暂不提供温度、输出长度或任意思考 Token 预算编辑。
 
 ### 为什么 Magpie 中还有另一个 Antigravity？
 
@@ -124,6 +134,8 @@ $ideCli = Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE\bin\antigravity-
 - 已有 `~/.gemini/antigravity` 账号和会话目录通过目录 junction 共享；不复制账号令牌，不记录聊天正文。配置隔离不等于账号或会话隔离。
 - 内置扩展有一处后台启动点适配，`out/main.js` 末尾增加一次启动默认选择钩子。安装时的程序文件备份保存在本仓库 `.local/checkpoints/`，原来已存在的汉化入口也会作为基线保留。
 - 状态记录只含来源和模型 ID。模型显隐用于目录展示，不是网关访问控制。
+- Magpie 模式下额外启动随机端口的本机推理设置网关，向固定的 Magpie 本机地址转发 OpenAI 请求。未手动指定强度时保留原始请求字节；指定后只覆盖所选模型的推理字段。流式响应和取消继续转发。
+- 原生面板通过独立随机令牌及精确的后台页面 Origin 读写推理设置，不接收 Magpie 网关密钥。临时控制信息保存在 `%LOCALAPPDATA%/MagpieAntigravityIDE/effort-control.json`，也不要将此文件上传。
 
 本机 Agent 配置、私有配置和环境变量可能含密钥；提交问题时请只附脱敏状态，不上传这些文件。仓库和发行包不包含 Google/Magpie 凭据、IDE/agy 二进制、用户对话或本机备份。独立汉化工具不包含在本仓库内。
 
@@ -160,9 +172,9 @@ node manage-native.cjs status
 .\start-native.ps1 -Check
 ```
 
-12 项单元检查覆盖 Agent 模型目录、配置隔离、断开、路径/junction 校验、原子写入和 CLI 来源。GitHub Actions 在 Windows 上运行单元检查、打包和 PowerShell 语法检查。
+19 项单元检查覆盖 Agent 模型目录、推理档位元数据、按模型实时覆盖与默认原字节转发、控制鉴权、SSE 与取消、配置隔离、断开、路径/junction 校验、原子写入和 CLI 来源。GitHub Actions 在 Windows 上运行单元检查、打包和 PowerShell 语法检查。
 
-可选集成测试 `node test/native-picker.cjs` 需要本机的受支持 IDE、已安装原生适配、官方 `agy` 和该 IDE 随附的 Playwright。它创建隔离 profile，以本地合成的 Alpha/Beta 服务验证目录、请求模型切换、重开默认、隐藏模型和断开；不使用真实模型 Key。临时文件保存在 `.local/tmp/`，结果保存在 `.local/artifacts/`。
+可选集成测试 `node test/native-picker.cjs` 需要本机的受支持 IDE、已安装原生适配、官方 `agy` 和该 IDE 随附的 Playwright。它创建隔离 profile，以本地合成的 Alpha/Beta 服务验证目录、请求模型切换、低/高推理字段、模型间强度隔离、重开默认、隐藏模型和断开；不使用真实模型 Key。临时文件保存在 `.local/tmp/`，结果保存在 `.local/artifacts/`。
 
 `test/run-host.ps1` 仅验证旧终端模式，需要实际已连接的本机 Agent 配置和至少两个模型，不是默认测试或 CI 检查。当前发布的主要入口是原生侧栏模式。
 

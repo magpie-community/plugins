@@ -35,7 +35,7 @@ magpie plugin login autocompact
 magpie models
 ```
 
-上游设置保存在 Magpie 账号的 `metadata.autocompact` 中，API Key 单独保存在账号凭据字段，不写入插件选项或会话状态。重新登录可以更新该账号的配置。安装修改后的本地版本，在 Magpie“插件”中关闭再打开以重载；已有显式 `provider` 配置继续使用下述兼容方式。
+上游设置保存在 Magpie 账号的 `metadata.autocompact` 中，表单输入的 API Key 单独保存在账号凭据字段，不写入插件选项或会话状态。重新登录可以更新该账号的配置。安装修改后的本地版本，在 Magpie“插件”中关闭再打开以重载；已有显式 `provider` 配置继续使用下述兼容方式。
 
 如果之前已经设置过固定供应商 JSON，要切换到表单模式，先在插件选项中将 `provider` 改为 `null`，或运行：
 
@@ -44,6 +44,53 @@ magpie plugin options magpie-autocompact '{"provider":null}'
 ```
 
 切换后通过新入口添加账号，并在客户端重新选择 `autocompact/<模型 ID>`；旧配置使用的供应商 ID 不会继续注册。
+
+### 多供应商与配置中的 API Key
+
+显式配置支持顶层 `providers` 对象，以供应商 ID 为键。每个供应商有独立的地址、模型、密钥及压缩策略：
+
+```json
+{
+  "providers": {
+    "compact-a": {
+      "name": "供应商 A",
+      "baseURL": "https://upstream-a.example/v1",
+      "key": "your-provider-a-key",
+      "models": ["model-a"],
+      "maxMessages": 80,
+      "maxTurns": 40,
+      "mode": "responses"
+    },
+    "compact-b": {
+      "name": "供应商 B",
+      "baseURL": "https://upstream-b.example/v1",
+      "key": "your-provider-b-key",
+      "models": ["model-b"],
+      "maxMessages": 40,
+      "mode": "pack"
+    }
+  }
+}
+```
+
+编辑 `examples/multi-provider-options.json` 后运行：
+
+```sh
+magpie plugin options magpie-autocompact "$(cat examples/multi-provider-options.json)"
+magpie models
+```
+
+提供 `key` 后无需 `plugin login`。插件加载时使用 Magpie 的 `client.auth.set` 为该供应商建立或更新默认 API 账号，请求始终使用配置中的 key。更新 key 并重新设置插件选项即可轮换凭据。`apiKey` 是 `key` 的别名；两者同时填写时必须一致。旧的单供应商 `provider` 对象也支持这两个字段。
+
+`models` 可以省略：插件启动时会使用该供应商的 `baseURL`、`key`（或 `apiKey`）及 `headers` 请求 `GET /models`，从 OpenAI 格式的 `data[].id` 注册模型。若未在配置中提供 key，则在 Magpie 读取已登录账号的模型时使用该账号凭据获取。显式填写 `models` 时完全使用手动列表；空数组或空对象仍视为配置错误。
+
+自动获取的列表在本次插件宿主生命周期内按账号密钥缓存；重启宿主或重新应用插件选项后重新获取。获取请求限时 8 秒，不跟随重定向。失败时保留供应商注册、报告获取错误，后续模型刷新可重试；也可以手动填写 `models`。
+
+客户端分别选择 `compact-a/model-a`、`compact-b/model-b`。各供应商的 key、压缩阈值、上游地址和会话状态互相隔离。某个供应商省略 key 时，可运行 `magpie plugin login <供应商 ID>`，通过 Magpie 保存其登录凭据。
+
+`providers` 与非空的 `provider` 不能同时设置；从单供应商切换时，请替换整个插件选项对象。当前支持最多 64 个显式供应商，每个通过独立的标准 Provider 导出注册；`enabled:false` 可禁用其中一个，空 `providers:{}` 不注册任何供应商。默认无显式配置时仍使用图形化表单。删除或禁用配置只停止注册，不删除 Magpie 已保存的账号和历史会话。
+
+直接填写的 key 会保存在插件选项中，并同步至 Magpie 的默认账号凭据；拥有插件选项读取权限的人可以看到它。压缩策略和会话状态不保存该字段。若需要仅由 Magpie 凭据库管理 key，省略此字段并使用登录流程。
 
 ### 显式配置与高级选项
 
@@ -78,7 +125,7 @@ magpie models
 
 在客户端或 Magpie 的 Agent 设置里选择 `limited-compact/your-model-id`。客户端继续使用原来的 Magpie 地址；Magpie 自己负责转换客户端协议，上游 Provider 使用 Responses。显式配置模式下先配置再登录；未配置 `provider` 时默认注册带原生表单的 `autocompact` 供应商。
 
-一个安装实例注册一个 Provider，表单模式可在其下添加多个上游账号，模型可以有多个。使用新的供应商 ID；已有同名供应商时 Magpie 可能给插件供应商加 `-plugin` 后缀，实际名称以 `magpie models` 为准。原来的供应商配置仍可独立使用。插件仅使用顶层 `provider` 配置；旧的 `providers`、`gatewayTimeoutMs` 等 Middleware / Hook 选项已移除。
+单个 `provider` 配置注册一个 Provider；`providers` 配置可以注册多个。表单模式可在 `autocompact` 下添加多个上游账号，模型可以有多个。使用新的供应商 ID；已有同名供应商时 Magpie 可能给插件供应商加 `-plugin` 后缀，实际名称以 `magpie models` 为准。原来的供应商配置仍可独立使用。顶层 `providers` 现在表示多个原生 Provider 的显式配置，不兼容旧 Middleware / Hook 的策略映射；`gatewayTimeoutMs` 等旧选项已移除。
 
 ## 阈值与压缩方式
 
@@ -162,7 +209,7 @@ npm pack --dry-run
 
 单元测试使用 Node 22.13+ 的内置 SQLite；生产由 Magpie 的 Bun 使用内置 `bun:sqlite`，无 npm 运行时依赖、无构建步骤。集成测试使用已安装的 `magpie`，在临时 HOME / XDG 目录中安装、配置和登录插件，实际启动 Magpie + Bun，并连接本地模拟上游；不会修改正在使用的 Magpie 配置。
 
-覆盖原生表单注册与验证、自动获取模型、凭据保存及账号配置隔离、完整历史压缩、工具调用边界、摘要回退、原生配置补回、账号隔离、响应分叉、previous ID、conversation 映射、JSON / SSE、流取消与恢复、跨进程锁和宿主重启。测试证明协议和状态管理行为；摘要质量及真实上游是否按预期重置轮数，需要以实际供应商验证。
+覆盖多个显式供应商及配置 key、密钥轮换、供应商顺序变更、启动时自动获取模型及失败重试、原生表单注册与验证、自动获取模型、凭据保存及账号配置隔离、完整历史压缩、工具调用边界、摘要回退、原生配置补回、账号隔离、响应分叉、previous ID、conversation 映射、JSON / SSE、流取消与恢复、跨进程锁和宿主重启。测试证明协议和状态管理行为；摘要质量及真实上游是否按预期重置轮数，需要以实际供应商验证。
 
 主要文件：`autocompact.provider.js`（Provider 注册与登录）、`lib/session-transport.js`（Fetch 请求 / SSE / 会话控制）、`lib/session-store.js`（持久化与跨进程锁）、`lib/session-compaction.js`（三种压缩方式）、`lib/core.js`（计数与安全切点）。`responses-suggestion.md` 保留为用户提供的设计参考。
 

@@ -56,15 +56,15 @@ Responses 返回的消息、推理项等对象可能带有上游生成的 `id`�
 
 ### 会话 ID 如何处理
 
-启用 `rotateSessionOnChange` 时，插件依次从 `client_metadata.session_id`、`client_metadata.thread_id`、`prompt_cache_key` 中取第一个可用标识，再结合当前渠道 ID、账号、上游模型及请求模型计算哈希，派生新的会话 ID。相同原标识和上游范围得到相同结果；范围变化后得到不同结果，首次匹配的请求也会进行派生。
+插件依次从 `client_metadata.session_id`、`client_metadata.thread_id`、`prompt_cache_key`、顶层 `session_id`、顶层 `thread_id` 中取第一个非空字符串。启用 `rotateSessionOnChange` 时，插件再结合当前渠道 ID、账号、上游模型及请求模型计算哈希，派生新的会话 ID。相同原标识和上游范围得到相同结果；范围变化后得到不同结果，首次匹配的请求也会进行派生。
 
-派生结果写入 `prompt_cache_key`，并同步更新请求中已有的 `client_metadata.session_id`、`client_metadata.thread_id` 和顶层 `session_id`。已经带有当前范围前缀的标识会直接保留，避免在同一范围重复改写。如果上述三个来源都没有可用标识，则不进行会话 ID 派生；仅有顶层 `session_id` 不会触发它。
+派生结果写入 `prompt_cache_key`，并同步更新已有的 `client_metadata.session_id`、`client_metadata.thread_id` 和顶层 `session_id`。会话标识已带有当前范围前缀或关闭轮换时，插件只在缓存键缺失或为空时用已有标识补上。请求体没有可用标识时，插件不会编造会话 ID。
 
 ### 处理边界与可选清理
 
 `previous_response_id` 和 `conversation` 也是恢复历史的引用入口，默认保留。若客户端只发送最新一句话，过去的上下文可能只存在于上游；删除这些指针无法凭空恢复历史。
 
-`item_reference` 则只引用旧对象，不携带完整内容。默认安全模式下，只要请求含有这种引用且未开启 `dropItemReferences`，插件就让整个请求保持原样，连普通对象 ID 和会话 ID 也不改写，避免把无法还原的引用误当作可重放历史。
+`item_reference` 则只引用旧对象，不携带完整内容。默认安全模式下，只要请求含有这种引用且未开启 `dropItemReferences`，插件就保留历史项、会话指针和现有会话标识。若缓存键缺失或为空，仍可用已有会话标识补上，避免误删无法还原的引用。
 
 需要进一步清理时，可手动启用相应选项：
 
@@ -198,6 +198,16 @@ magpie plugin add .
 ## 注意
 
 默认处理会清理普通历史项的对象 ID，并在存在可用标识时派生上游会话 ID。聊天正文和加密推理内容会保留；额外的引用项或会话指针清理需要手动开启。
+
+如果上游报告 `prompt_cache_key is required`，而会话标识只在 HTTP 请求头里，插件无法从请求体取到它。可以在 Magpie 中编辑报错渠道的「额外请求体」，添加：
+
+```json
+{
+  "prompt_cache_key": "${sessionId}"
+}
+```
+
+Magpie 会在转发时填入当前会话 ID，并保留请求中已有的缓存键。只给明确要求该字段的渠道添加这项设置，避免为其他渠道发送不需要的字段。
 
 如果上游必须依赖会话指针才能恢复历史，请不要开启：
 

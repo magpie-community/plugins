@@ -2,6 +2,8 @@
 
 <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square" alt="LINUX DO 社区" /></a>
 
+> 感谢所有人的反馈和建议，名单见 [CREDITS.md](CREDITS.md)。
+
 **无需登录豆包客户端，本机无需下载豆包工作。** 把豆包工作（Doubao Work）的订阅额度接成 [magpie](https://usemagpie.ai) 网关上的一组模型：登录一次之后，Claude Code、Codex、OpenCode 或任何走 OpenAI 兼容接口的客户端都能直接调用，消耗的是这个豆包工作账号的积分。
 
 - **不用装客户端。** 模型调用、积分查询、签到状态全走 HTTP。登录用浏览器扫码或粘贴 Cookie 即可。
@@ -13,9 +15,9 @@
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
-- **流式输出修好了**（`0.4.6`）。带工具的请求之前一律整段缓冲，纯文本回复也要等全部生成完才吐字（issue #9 的「首字 15-25 秒」、#14 的「看不到工作过程」）。现在先收一小段判断形态：是工具 JSON 就继续缓冲，是正文就边收边转发。顺带修了 `tool_calls` 组装后没发出去的 bug。
+- **短回复也能流式了**（`0.4.7`）。0.4.6 判断输出形态要攒 200 字符，短回复永远攒不够，只能等整段生成完才吐字（6-12 秒）。现在只看首字符。同时修了 `/responses` 路径不解析工具调用的问题。感谢 [@WeeZHnMin](https://github.com/WeeZHnMin) 在 [#17](https://github.com/miaocell/magpie-doubao-work-auth/issues/17) 指出。
+- **流式输出修好了**（`0.4.6`）。带工具的请求之前一律整段缓冲，纯文本回复也要等全部生成完才吐字（issue #9 的「首字 15-25 秒」、#14 的「看不到工作过程」）。顺带修了 `tool_calls` 组装后没发出去的 bug。
 - **客户端断开时不再空跑**（`0.4.5`）。`/responses` 链路（Codex 走这条）之前没有取消处理，用户中断后上游还会把回复生成完，白花额度。
-- **「从客户端读取」修好了**（`0.4.4`）。这个登录方式之前完全失效：SQLite 内部页的子页号读错导致解析出 0 行、profile 路径认不出客户端的 `aha/users/<hash>/profile_explorer` 布局、v10 Cookie 的 host 摘要算错导致值变成垃圾串。三处都修了，感谢 [@kunxiang1](https://github.com/kunxiang1) 在 [#16](https://github.com/miaocell/magpie-doubao-work-auth/issues/16) 定位到行。
 
 ## 拿到的模型
 

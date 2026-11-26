@@ -47,6 +47,19 @@ MCP 使用 `mcpServers` 配置格式。资源由 Magpie Library 管理；通过 
 
 插件使用 Vetta 默认目录 `~/.vetta/agent`。旧目录和自定义目录需要由用户自行迁移或管理。Magpie 插件加载和 Vetta Library 资源分发已在 Windows 上验证，Agents 页开关与模型接入已在 macOS 上验证；Linux 和其他 Vetta 启动配置尚未验证。
 
+## 发布
+
+由 GitHub Actions 发布到 npm（`.github/workflows/publish.yml`），走 npm 的 trusted publishing，不存 token，并附带 provenance，可在 npm 页面核对包来自本仓库的哪次提交。
+
+1. 改 `package.json` 的 `version`，运行 `pnpm build` 并把 `dist/` 一起提交（Magpie 从 GitHub 发现插件时读的是仓库里的 `dist/`）。
+2. 打与版本号一致的 tag 并推送，例如 `git tag v0.2.1 && git push origin main v0.2.1`。
+
+首次启用需要包的 npm 维护者执行一次：
+
+```sh
+npm trust github magpie-vetta --file publish.yml --repo openvetta/magpie-vetta --allow-publish
+```
+
 ## 鸣谢
 
 本插件基于 [wshiqyuan](https://github.com/wshiqyuan) 的 [magpie-agent-vetta](https://github.com/wshiqyuan/magpie-agent-vetta) 发展而来，并保留了其完整提交历史。Vetta 的 Agent 身份、Library 资源分发（全局指令、MCP、Skills）以及最初的 Magpie 接入都出自他的工作，感谢他为 Vetta 社区做的贡献。为了跟上 Vetta 的发版节奏，现由 Vetta 团队在这里维护，也欢迎他继续一起参与。

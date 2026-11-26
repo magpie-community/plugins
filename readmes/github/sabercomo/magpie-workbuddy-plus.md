@@ -610,6 +610,10 @@ README 截图由 `sh docs/screenshots.sh` 生成：`docs/demo-data.mjs` 写入�
 
 仓库使用 `magpie-plugin` GitHub 主题供 Magpie 非官方发现区检索；这不代表 Magpie 维护者审核或推荐。
 
+## 致谢
+
+特别感谢 [@aiqujuni](https://github.com/aiqujuni) 一直在 Issue 里提问、提建议，也常帮我给其他用户答疑。谢谢你帮我一起照看这个项目！
+
 ## 许可与来源
 
 MIT。多机账号同步复用了 [NotoChen 的 Magpie WorkBuddy Sync](https://github.com/NotoChen/magpie-workbuddy-sync) 的加密模块，并改编了其 GitHub 同步客户端、文件锁和主机租约逻辑。感谢 NotoChen 在 [#20](https://github.com/sabercomo/magpie-workbuddy-plus/issues/20) 分享实现。
