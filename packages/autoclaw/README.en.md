@@ -63,7 +63,7 @@ State is kept per account (keyed by `signinAccountKey`, #254: uid, or a hash of 
 | Reading | Available | Notes |
 |---|---|---|
 | Per-model "quota exhausted" notice `metadata.forbiddenNotice` | **yes** | Auto-Fast says "resets in 24 hours"; the GLM ones only offer membership, no time |
-| Per-model credit factor `creditCostFactor` | **yes** | "What one request costs in points"; not the same thing as the free quota — separate PR |
+| Per-model credit factor `creditCostFactor` | **yes** | "What one request costs in points"; not the same thing as the free quota. It becomes the row's `rate` (see "Models" above) |
 | Per-model numeric **cap / used / reset time** | **no** | wallets.v2 carries only the point total and its sub-wallets; the catalog has no quota numbers |
 
 So the plugin **invents no cap numbers**; it reports only what is true:
