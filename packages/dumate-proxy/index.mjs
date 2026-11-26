@@ -30,7 +30,7 @@ function jsonResponse(status, value) {
   })
 }
 
-export function toMagpieModels(catalog) {
+function toMagpieModels(catalog) {
   const models = Object.create(null)
   for (const [key, model] of Object.entries(catalog?.models ?? {})) {
     const image = model.kind === "image"
@@ -111,6 +111,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
 
     auth: {
       provider: PROVIDER_ID,
+      single: true,
       icon: ICON,
       // Magpie renews OAuth sign-ins through auth.refresh before expiry and,
       // unless keepAlive is false, while nothing uses the account.
@@ -155,10 +156,17 @@ export const DuMateProxyPlugin = async (input = {}) => {
                 })
                 if (!response.ok) throw new Error(`HTTP ${response.status}`)
                 const info = await response.json()
+                if (info?.login && info.login !== "ok") {
+                  return {
+                    type: "failed",
+                    error: "DuMate 代理登录态缺失，请先启动反代并配置 DuMate Cookie。",
+                  }
+                }
                 return {
                   ...renewedSeat(),
                   type: "success",
-                  name: info?.login === "ok" ? "DuMate Proxy（已登录）" : "DuMate Proxy（登录态缺失）",
+                  name: "DuMate Proxy（已登录）",
+                  accountId: "DuMate Proxy",
                 }
               } catch (error) {
                 return {
@@ -212,3 +220,5 @@ export const DuMateProxyPlugin = async (input = {}) => {
 }
 
 export default DuMateProxyPlugin
+
+export const _internal = { toMagpieModels }

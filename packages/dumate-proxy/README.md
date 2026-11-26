@@ -9,6 +9,7 @@ DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
 - Registers chat models with `modalities.output: ["text"]`.
 - Registers `dumate-image0.1` with `modalities.output: ["image"]`, so magpie treats it as an image model.
 - Keeps the sign-in alive through `auth.refresh`, `refreshLead: 10min` and `auth.keepAlive: true`.
+- Shows a usable DuMate sign-in method in magpie; it checks `/healthz` and refuses to save an account while proxy login is missing.
 - Allows plugin fetch for `/models`, `/chat/completions`, `/images/generations` and `/images/edits`.
 
 ## Setup
