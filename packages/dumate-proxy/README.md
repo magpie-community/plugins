@@ -45,3 +45,5 @@ owns the DuMate desktop session and gateway token renewal.
 - `DUMATE_USER_DATA_DIR`, `DUMATE_OPENCODE_CONFIG` — optional model-catalog overrides
 
 Unofficial; requires a local DuMate desktop session with personal points.
+
+See [docs/image-generation.md](docs/image-generation.md) for the full image-generation tutorial.

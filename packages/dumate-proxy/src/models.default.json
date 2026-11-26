@@ -445,7 +445,64 @@
         },
         "dumate-image0.1": {
           "id": "dumate-image0.1",
-          "name": "DuMate Image",
+          "name": "DuMate Image 0.1",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": false,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ]
+          }
+        },
+        "dumate-image2.2": {
+          "id": "dumate-image2.2",
+          "name": "DuMate Image 2.2",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": false,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ]
+          }
+        },
+        "dumate-image2.1": {
+          "id": "dumate-image2.1",
+          "name": "DuMate Image 2.1",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "tool_call": false,
+          "reasoning": false,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ]
+          }
+        },
+        "dumate-image1.2": {
+          "id": "dumate-image1.2",
+          "name": "DuMate Image 1.2",
           "limit": {
             "context": 200000,
             "output": 32000

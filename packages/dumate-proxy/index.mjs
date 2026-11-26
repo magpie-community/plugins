@@ -3,7 +3,7 @@ import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 import { buildCookieHeader, extractCsrfToken, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
 import { normalizeReasoningBody } from "./src/gateway.mjs"
-import { generateImage } from "./src/media.mjs"
+import { generateImage, KNOWN_IMAGE_MODELS } from "./src/media.mjs"
 import {
   buildImageUpstreamBody,
   chatMessagesToPrompt,
@@ -192,7 +192,21 @@ async function gatewayJson(body, cookies, fetchImpl, signal) {
 
 function toMagpieModels(catalog) {
   const models = Object.create(null)
-  for (const [key, model] of Object.entries(catalog?.models ?? {})) {
+  const source = { ...(catalog?.models ?? {}) }
+  for (const id of KNOWN_IMAGE_MODELS) {
+    source[id] ??= {
+      id,
+      name: `DuMate Image ${id.replace(/^dumate-image/, "")}`,
+      kind: "image",
+      context: 200000,
+      maxOutput: 32000,
+      tool_call: false,
+      reasoning: false,
+      attachment: true,
+      modalities: { input: ["text"], output: ["image"] },
+    }
+  }
+  for (const [key, model] of Object.entries(source)) {
     const image = model.kind === "image"
     models[key] = {
       name: model.name,
@@ -205,7 +219,7 @@ function toMagpieModels(catalog) {
     }
   }
   const firstImage = Object.values(models).find((model) => model.modalities?.output?.includes("image"))
-  if (firstImage && !models["group/image"]) models["group/image"] = { ...firstImage, name: "DuMate Image" }
+  if (firstImage && !models["group/image"]) models["group/image"] = { ...firstImage, name: "DuMate Image (compatibility alias)" }
   return models
 }
 
