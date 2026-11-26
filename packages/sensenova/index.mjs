@@ -390,14 +390,15 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
            * opened:true with url:"" so magpie does not open a second page.
            */
           async authorize() {
-            if (!browserAvailable()) {
+            // through _internal so a test can stand in for the browser
+            if (!_internal.browserAvailable()) {
               throw new Error(
                 "No Chromium browser was found (or no display is available). Use the account password method or an API key instead.",
               );
             }
             const pkce = createPkce();
             const authorizeUrl = buildAuthorizeUrl(pkce);
-            const session = await startLoginCapture({
+            const session = await _internal.startLoginCapture({
               authorizeUrl,
               expectedState: pkce.state,
               timeoutMs: loginTimeoutMs,
