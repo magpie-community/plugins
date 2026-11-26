@@ -456,3 +456,83 @@ test("preserves latest reply and <available_skills> when history[0] is oversized
   assert.ok(text.includes("FINAL_ASSISTANT_TURN"))
   assert.ok(text.includes("`megrez-db-map`: db lookup"))
 })
+
+test("recognizes marker-only compact-budget notice as a baseline", () => {
+  const markerOnly = "Workspace instruction budget 128 bytes: omitted ~/.dsh/AGENTS.md; truncated ./AGENTS.md from 400 to 0 bytes"
+
+  // Marker-only budget notice in history supersedes earlier baseline and changes.
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Start under ultra-tight budget" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_MARKER_ONLY" }]),
+    { role: "assistant", content: [{ type: "text", text: "Loaded." }] },
+    changesMsg([{ action: "add", path: "sub/AGENTS.md", scope: "sub", content: "STALE_CHANGE_BEFORE_MARKER_ONLY" }]),
+    reminderMsg(markerOnly),
+  ]
+  pushFillerTurns(messages)
+  messages.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const text = joinText(renderInitialPrompt({ system: "You are DSH.", messages }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
+  assert.ok(text.includes(markerOnly))
+  assert.ok(!text.includes("STALE_BEFORE_MARKER_ONLY"))
+  assert.ok(!text.includes("STALE_CHANGE_BEFORE_MARKER_ONLY"))
+
+  // Standalone compact intro without paths supersedes earlier baseline too.
+  const compactOnly = [
+    { role: "user", content: [{ type: "text", text: "Start" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_COMPACT_ONLY" }]),
+    reminderMsg(COMPACT_INTRO),
+  ]
+  pushFillerTurns(compactOnly)
+  compactOnly.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const compactOnlyText = joinText(renderInitialPrompt({ system: "You are DSH.", messages: compactOnly }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(compactOnlyText, "utf8") <= LIMIT)
+  assert.ok(compactOnlyText.includes(COMPACT_INTRO))
+  assert.ok(!compactOnlyText.includes("STALE_BEFORE_COMPACT_ONLY"))
+
+  // Marker-only budget notice arriving in <current_turn> drops stale history baseline.
+  const inCurrent = [
+    { role: "user", content: [{ type: "text", text: "Start" }] },
+    baselineMsg([{ path: "~/.dsh/AGENTS.md", content: "STALE_BEFORE_CURRENT_MARKER_ONLY" }]),
+  ]
+  pushFillerTurns(inCurrent)
+  inCurrent.push(reminderMsg(markerOnly))
+  inCurrent.push({ role: "user", content: [{ type: "text", text: "Proceed" }] })
+
+  const inCurrentText = joinText(renderInitialPrompt({ system: "You are DSH.", messages: inCurrent }, "/repo", false, 0))
+  assert.ok(Buffer.byteLength(inCurrentText, "utf8") <= LIMIT)
+  assert.ok(inCurrentText.includes(markerOnly))
+  assert.ok(!inCurrentText.includes("STALE_BEFORE_CURRENT_MARKER_ONLY"))
+})
+
+test("preserves middle of >12 KiB anchored state reminders via clipHistoryMessage preserveMeta", () => {
+  const bigSkills = []
+  for (let i = 0; i < 40; i++) {
+    if (i === 20) {
+      bigSkills.push(["middle-skill-sentinel", "MIDDLE_SKILL_MARKER_MUST_SURVIVE " + "m".repeat(450)])
+    } else {
+      bigSkills.push([`skill-${String(i).padStart(2, "0")}`, `entry ${i} ` + "s".repeat(480)])
+    }
+  }
+  const bigAgents = "A".repeat(9500) + "\nMIDDLE_AGENTS_RULE_MUST_SURVIVE\n" + "B".repeat(9500)
+  const skillsMessage = skillCatalogMsg(bigSkills)
+  const agentsMessage = baselineMsg([{ path: "~/.dsh/AGENTS.md", content: bigAgents }])
+  assert.ok(Buffer.byteLength(skillsMessage.content[0].text, "utf8") > 16 * 1024)
+  assert.ok(Buffer.byteLength(agentsMessage.content[0].text, "utf8") > 16 * 1024)
+
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "Run workflow using skills and workspace rules" }] },
+    agentsMessage,
+    skillsMessage,
+    { role: "assistant", content: [{ type: "text", text: "Ready." }] },
+  ]
+  pushFillerTurns(messages, 45, 2400)
+  messages.push({ role: "user", content: [{ type: "text", text: "Use the middle skill and follow the middle rule" }] })
+
+  const text = joinText(renderInitialPrompt({ system: "You are DSH.", messages }, "/repo", false, 0))
+
+  assert.ok(Buffer.byteLength(text, "utf8") <= LIMIT)
+  assert.ok(text.includes("MIDDLE_SKILL_MARKER_MUST_SURVIVE"))
+  assert.ok(text.includes("MIDDLE_AGENTS_RULE_MUST_SURVIVE"))
+})
