@@ -25,6 +25,38 @@ async function startServer(handler) {
   return { server, origin: `http://127.0.0.1:${server.address().port}` }
 }
 
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  return { status: res.status, body: await res.json().catch(() => ({})) }
+}
+
+// 假的 BFF：校验 origin / x-platform / client_id，否则拒；成功回 000000 + access_token。
+async function fakeBff({ token, seen = [] }) {
+  const server = createServer((req, res) => {
+    let raw = ""
+    req.on("data", (c) => (raw += String(c)))
+    req.on("end", () => {
+      const body = JSON.parse(raw || "{}")
+      seen.push({ method: req.method, url: req.url, headers: req.headers, body })
+      const reply = (status, payload) => {
+        res.writeHead(status, { "content-type": "application/json" })
+        res.end(JSON.stringify(payload))
+      }
+      if (req.method !== "POST" || req.url !== "/api/v1/code/auth/exchange-code") return reply(404, { code: "404" })
+      if (req.headers["x-platform"] !== "1") return reply(400, { code: "40001", message: "缺少 x-platform" })
+      if (!["agnes-cli", "agnes-code"].includes(body.client_id)) return reply(400, { code: "40002", message: "client_id 不对" })
+      if (typeof body.code !== "string" || !body.code) return reply(400, { code: "40003", message: "缺少 code" })
+      return reply(200, { code: "000000", message: "ok", data: { access_token: token } })
+    })
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  return { server, base: `http://127.0.0.1:${server.address().port}`, seen }
+}
+
 test("两个 provider id 各自钉在自己那一端的 host", () => {
   assert.equal(SITES.intl.id, "agnes-code")
   assert.equal(SITES.cn.id, "agnes-code-cn")
@@ -60,21 +92,21 @@ test("config / loader 按站点走各自的 baseURL", async () => {
   assert.equal(cfg.provider["agnes-code"].api, "https://api-agnes-code.agnes-ai.com/v1")
   assert.equal(cfg.provider["agnes-code-cn"].api, "https://api-agnes-code.agnes-ai.cn/v1")
 
-  assert.equal(intl.auth.methods.length, 2)
+  assert.equal(intl.auth.methods.length, 3)
   assert.deepEqual(
     intl.auth.methods.map((m) => m.type),
-    ["oauth", "api"],
+    ["oauth", "oauth", "api"],
   )
   // 两个 provider 的按钮文案必须互相区分：只靠弹窗标题说明站点，列表里两张卡会一模一样。
   assert.deepEqual(
     intl.auth.methods.map((m) => m.label),
-    ["读取桌面端登录态 · 国际站", "粘贴 accessToken · 国际站"],
+    ["浏览器登录 · 国际站", "读取桌面端登录态 · 国际站", "粘贴 accessToken · 国际站"],
   )
   assert.deepEqual(
     cn.auth.methods.map((m) => m.label),
-    ["读取桌面端登录态 · 国内站", "粘贴 accessToken · 国内站"],
+    ["浏览器登录 · 国内站", "读取桌面端登录态 · 国内站", "粘贴 accessToken · 国内站"],
   )
-  for (let i = 0; i < 2; i += 1) assert.notEqual(intl.auth.methods[i].label, cn.auth.methods[i].label)
+  for (let i = 0; i < 3; i += 1) assert.notEqual(intl.auth.methods[i].label, cn.auth.methods[i].label)
   assert.equal(cfg.provider["agnes-code"].name, "Agnes Code · 国际站")
   assert.equal(cfg.provider["agnes-code-cn"].name, "Agnes Code · 国内站")
   // 官网链接必须落在应用页：营销页 agnes-ai.com/agnescode 被 Defender SmartScreen 举报过，会红屏。
@@ -86,6 +118,96 @@ test("config / loader 按站点走各自的 baseURL", async () => {
   assert.deepEqual(loader, { baseURL: "https://api-agnes-code.agnes-ai.cn/v1", apiKey: "k" })
   const empty = await cn.auth.loader(async () => ({ type: "oauth" }))
   assert.deepEqual(empty, {})
+})
+
+test("浏览器登录：回调 POST {code,state} → 换票 → 成功（含 CORS 预检）", async () => {
+  const token = makeJwt()
+  const bff = await fakeBff({ token })
+  const site = { ...SITES.cn, bffBase: bff.base, loginUrl: `${bff.base}/login`, origin: "https://app.agnes-ai.cn" }
+
+  try {
+    const plugin = createPlugin(site, { fetchImpl: globalThis.fetch, platform: "linux" })
+    const auth = await plugin.auth.methods[0].authorize(undefined, {})
+    const url = new URL(auth.url)
+    const redirect = url.searchParams.get("redirect_uri")
+    const state = url.searchParams.get("state")
+    assert.equal(url.searchParams.get("client"), "agnes-cli")
+    assert.match(redirect, /^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/)
+    assert.ok(state.length > 10)
+
+    // 预检：登录页是 https，回本地 http，浏览器一定先发 OPTIONS。
+    const preflight = await fetch(redirect, {
+      method: "OPTIONS",
+      headers: { origin: "https://app.agnes-ai.cn", "access-control-request-method": "POST" },
+    })
+    assert.equal(preflight.status, 204)
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "https://app.agnes-ai.cn")
+
+    // 错误的 state 必须被拒，且不能把这一次登录弄坏。
+    const wrong = await postJson(redirect, { code: "c-1", state: "not-my-state" })
+    assert.equal(wrong.status, 400)
+    assert.equal(wrong.body.error, "bad state")
+
+    const resultPromise = auth.callback()
+    const ok = await postJson(redirect, { code: "c-1", state })
+    assert.equal(ok.status, 200)
+
+    const result = await resultPromise
+    assert.equal(result.type, "success")
+    assert.equal(result.key, token)
+    assert.equal(result.metadata.method, "browser")
+    assert.equal(result.metadata.bffBase, bff.base)
+
+    // 换票请求长什么样：origin 头 + x-platform + client_id 缺一不可。
+    assert.equal(bff.seen.length, 1)
+    // 回环登录必须用 agnes-cli 前缀（agnes-code 只配 agnes:// 深链），换票先按它发。
+    assert.equal(bff.seen[0].body.client_id, "agnes-cli")
+    assert.equal(bff.seen[0].headers.origin, "https://app.agnes-ai.cn")
+    assert.equal(bff.seen[0].headers["x-platform"], "1")
+    assert.equal(bff.seen[0].body.redirect_uri, redirect)
+    assert.equal(bff.seen[0].body.state, state)
+  } finally {
+    bff.server.close()
+  }
+})
+
+test("换票被拒时登录结果是失败而不是静默成功", async () => {
+  const bff = await fakeBff({ token: "" })
+  const site = { ...SITES.cn, bffBase: bff.base, loginUrl: `${bff.base}/login` }
+  try {
+    const plugin = createPlugin(site)
+    const auth = await plugin.auth.methods[0].authorize(undefined, {})
+    const redirect = new URL(auth.url).searchParams.get("redirect_uri")
+    const state = new URL(auth.url).searchParams.get("state")
+    const pending = auth.callback()
+    await postJson(redirect, { code: "c-2", state })
+    const result = await pending
+    // fake BFF 的 token 为空 → 应该明确失败
+    assert.equal(result.type, "failed")
+    assert.match(result.error, /access_token/)
+  } finally {
+    bff.server.close()
+  }
+})
+
+test("取消登录会关掉监听端口", async () => {
+  const bff = await fakeBff({ token: makeJwt() })
+  const site = { ...SITES.cn, bffBase: bff.base, loginUrl: `${bff.base}/login` }
+  try {
+    const plugin = createPlugin(site)
+    const controller = new AbortController()
+    const auth = await plugin.auth.methods[0].authorize(undefined, { signal: controller.signal })
+    const redirect = new URL(auth.url).searchParams.get("redirect_uri")
+    const pending = auth.callback()
+    controller.abort()
+    const result = await pending
+    assert.equal(result.type, "failed")
+    assert.match(result.error, /取消/)
+    // 端口已关：再连一次应当失败
+    await assert.rejects(fetch(redirect, { method: "OPTIONS" }))
+  } finally {
+    bff.server.close()
+  }
 })
 
 test("桌面端会话：读出 bffPublicBaseUrl 并分清国内站/国际站", async () => {
@@ -158,6 +280,43 @@ test("桌面端会话：读出 bffPublicBaseUrl 并分清国内站/国际站", a
       return true
     },
   )
+})
+
+test("0.1.2 升级路径：原 agnes-code 的会话与粘贴 token 继续可用，不用重登", async () => {
+  // provider id 不能改名：老用户 plugin-auth.json 里的键就是 agnes-code，改了等于把人踢下线。
+  const plugin = await AgnesPlugin()
+  assert.equal(plugin.auth.provider, "agnes-code")
+
+  // 已存的粘贴 token（type: api）升级后照样走 .com 源站。
+  const loader = await plugin.auth.loader(async () => ({ type: "api", key: "old-token" }))
+  assert.deepEqual(loader, { baseURL: "https://api-agnes-code.agnes-ai.com/v1", apiKey: "old-token" })
+
+  // 老版本桌面端只有无后缀的 code-auth-session.v1，必须仍被判成国际站并读出用户名。
+  const key = randomBytes(32)
+  const session = { accessToken: makeJwt(), userInfo: { username: "old-user" }, bffPublicBaseUrl: "https://api-agnes-code.agnes-ai.com" }
+  const nonce = randomBytes(12)
+  const cipher = createCipheriv("aes-256-gcm", key, nonce)
+  const blob = Buffer.concat([Buffer.from("v10", "latin1"), nonce, Buffer.concat([cipher.update(Buffer.from(JSON.stringify(session), "utf8")), cipher.final()]), cipher.getAuthTag()])
+  const dir = "C:\\fake\\AgnesCode"
+  const files = {
+    [join(dir, "Local State")]: Buffer.from(JSON.stringify({ os_crypt: { encrypted_key: Buffer.concat([Buffer.from("DPAPI", "latin1"), Buffer.from("wrapped")]).toString("base64") } })),
+    [join(dir, "code-auth-session.v1")]: blob,
+  }
+  const cred = await _internal.readDesktopCredential({
+    site: SITES.intl,
+    platform: "win32",
+    env: { APPDATA: "C:\\fake" },
+    readFileImpl: (path) => {
+      if (!files[path]) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" })
+      return files[path]
+    },
+    readDirImpl: () => ["code-auth-session.v1"],
+    dpapiImpl: async () => key,
+    nowMs: Date.now(),
+  })
+  assert.equal(cred.domain, "intl")
+  assert.equal(cred.bffBase, "https://api-agnes-code.agnes-ai.com")
+  assert.equal(cred.username, "old-user")
 })
 
 test("usage 先打 bff 域，404 才回落到 api 域", async () => {

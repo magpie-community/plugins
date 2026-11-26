@@ -6,11 +6,15 @@
 //      两站的账号体系与 BFF 都不互通：国内站 token 打国际站一律 401，所以不做
 //      「按账号猜域名」，而是让账号天生落在自己那一端。
 //
-//   ② 登录方式：读桌面端登录态（Windows，DPAPI 解密会话文件）或粘贴 accessToken。
-//      网页端不支持第三方回环登录：登录页只把授权码交给固定白名单里的 redirect_uri
-//      （agnes-code→agnes://、agh-code→aghcode://、agnes-cli*→127.0.0.1），且已登录会话
-//      访问 /login?client=… 会被服务端直接弹回首页、查询参数丢失，取码分支不会执行。
-//      实测三次（普通窗口/干净配置窗口）都拿不到回调，故不再提供浏览器登录按钮。
+//   ② 浏览器 loopback 登录（协议取自 dsh-connect-agnes-token-plan 的实测，三平台可用，
+//      不再依赖 Windows 与桌面端）：
+//
+//        打开  {loginUrl}?client=agnes-cli&redirect_uri=http://127.0.0.1:<port>/auth/callback&state=<uuid>
+//        页面  POST {code,state} 回本地（跨域，OPTIONS 预检必须回 CORS 头；GET query 兜底）
+//        换票  POST {bffBase}/api/v1/code/auth/exchange-code
+//              headers: origin=<登录页 origin>、x-platform: 1、content-type: json
+//              body:    {code, redirect_uri, state, client_id:"agnes-cli"}（被拒则再试 agnes-code）
+//              成功 = body.code 为 "000000" 或 "0"，token 在 data.access_token
 //
 // 桌面端会话（Windows DPAPI）保留，但会把会话里的 bffPublicBaseUrl 读出来并钉死域名：
 // 原版丢掉了这个字段，于是国内站桌面端的 token 被拿去打 .com，必然失败。
@@ -21,8 +25,9 @@
 //   积分余额  GET  {bffBase}/api/v2/subscription/credits-balance（旧版打的是 api 域，兜底保留）
 
 import { spawn } from "node:child_process"
-import { createDecipheriv } from "node:crypto"
+import { createDecipheriv, randomUUID } from "node:crypto"
 import { readdirSync, readFileSync } from "node:fs"
+import { createServer } from "node:http"
 import { homedir as osHomedir } from "node:os"
 import { join } from "node:path"
 
@@ -58,14 +63,18 @@ export const SITES = {
   },
 }
 
-// Web 登录页只放行固定的 client/redirect 组合（见 page-*.js 的 s(client, redirect_uri)）：
+// 登录页的 s(client, redirect_uri) 只放行这三种固定组合：
 //   agnes-code → 只认 agnes://auth/callback（桌面端深链）
 //   agh-code   → 只认 aghcode://auth/callback
 //   agnes-cli* → 只认 http://127.0.0.1:<port>/auth/callback
-// 所以回环登录必须用 agnes-cli 前缀；用 agnes-code + 127.0.0.1 会被判 invalidRedirect，
-// 页面直接跳首页、永不回调（这正是之前看不到回调的原因）。
+// 回环登录必须用 agnes-cli 前缀；用 agnes-code + 127.0.0.1 会被判 invalidRedirect，
+// 页面当普通网页登录直接跳首页，永不回调。
+const CLIENT_ID = "agnes-cli"
+const CB_PATH = "/auth/callback"
 // 等用户在浏览器里登完的上限。magpie 自己的 signInTimeout 可能更短，超时文案要能重试。
+const LOGIN_WAIT_MS = 3 * 60 * 1000
 // 换票请求本身的上限：别让一个挂住的请求把整个登录卡死。
+const EXCHANGE_TIMEOUT_MS = 30 * 1000
 const DESKTOP_POLL_MS = 2000
 const DESKTOP_WAIT_MS = 5 * 60 * 1000
 const DPAPI_TIMEOUT_MS = 15000
@@ -197,7 +206,7 @@ function decryptSessionWithKey(keyBuf, rawBuf) {
 
 async function dpapiUnprotect(blob, spawnImpl = spawn, { timeoutMs = DPAPI_TIMEOUT_MS, platform = process.platform } = {}) {
   if (platform !== "win32") {
-    throw new Error("桌面端会话解密目前仅支持 Windows；请改用「粘贴 accessToken」")
+    throw new Error("桌面端会话解密目前仅支持 Windows；请改用「浏览器登录」或「粘贴 accessToken」")
   }
   const b64 = blob.toString("base64")
   const result = await new Promise((resolve, reject) => {
@@ -249,7 +258,7 @@ function isExpiredJwt(token, nowMs = Date.now()) {
 // site 传入时，会话属于另一端会明确报错，而不是拿着 token 去打错的域名。
 async function readDesktopCredential({ site, homedir = osHomedir(), platform = process.platform, env = process.env, readFileImpl, readDirImpl, dpapiImpl, nowMs, keyCache } = {}) {
   if (platform !== "win32") {
-    throw new Error("桌面端会话解密目前仅支持 Windows；请改用「粘贴 accessToken」")
+    throw new Error("桌面端会话解密目前仅支持 Windows；请改用「浏览器登录」或「粘贴 accessToken」")
   }
   const readFile = readFileImpl ?? ((path) => readFileSync(path))
   const readDir = readDirImpl ?? ((path) => readdirSync(path))
@@ -348,9 +357,170 @@ async function readDesktopCredential({ site, homedir = osHomedir(), platform = p
 
   const detail = problems.length ? `：${problems.join("；")}` : ""
   const message = problems.length
-    ? `Agnes Code 桌面端登录态读不出来${detail}。请先启动 Agnes Code 并登录，或改用「粘贴 accessToken」。`
-    : "未找到 Agnes Code 桌面端登录态。请先启动 Agnes Code 并登录，或改用「粘贴 accessToken」。"
+    ? `Agnes Code 桌面端登录态读不出来${detail}。请先启动 Agnes Code 并登录，或改用「浏览器登录」。`
+    : "未找到 Agnes Code 桌面端登录态。请先启动 Agnes Code 并登录，或改用「浏览器登录」。"
   throw Object.assign(new Error(message), { code: problems.length ? "unreadable" : "missing" })
+}
+
+// --- 浏览器 loopback 登录 -----------------------------------------------------
+
+function listenLoopback(createServerImpl = createServer) {
+  return new Promise((resolve, reject) => {
+    const server = createServerImpl()
+    const onError = (error) => reject(error)
+    server.once("error", onError)
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onError)
+      resolve(server)
+    })
+  })
+}
+
+function corsHeaders(origin) {
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-credentials": "false",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "Content-Type",
+    "cache-control": "no-store",
+  }
+}
+
+// waitForCallback 等登录页 POST {code,state} 回来。三件事不能少：
+//   · OPTIONS 预检必须应答（否则浏览器的跨域 POST 在预检就被拒，界面表现为「扫码成功但一直转圈」）
+//   · state 必须校验（否则任何页面都能往这个端口塞一个 code）
+//   · 超时/取消都要关掉监听，别把随机端口留到进程结束
+function waitForCallback(server, { state, origin, timeoutMs = LOGIN_WAIT_MS, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (settle, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (signal) signal.removeEventListener?.("abort", onAbort)
+      try {
+        server.close()
+      } catch {}
+      settle(value)
+    }
+    const send = (res, status, body) => {
+      res.writeHead(status, { "content-type": "application/json", ...corsHeaders(origin) })
+      res.end(JSON.stringify(body))
+    }
+    const onAbort = () => finish(reject, new Error("登录已取消"))
+    if (signal) {
+      if (signal.aborted) return onAbort()
+      signal.addEventListener?.("abort", onAbort, { once: true })
+    }
+    const timer = setTimeout(() => finish(reject, new Error(`等待浏览器登录超过 ${Math.round(timeoutMs / 1000)} 秒`)), timeoutMs)
+
+    server.on("request", (req, res) => {
+      if (req.method === "OPTIONS") return send(res, 204, { ok: true })
+      const url = new URL(req.url ?? "/", "http://127.0.0.1")
+      if (url.pathname !== CB_PATH) return send(res, 200, { ok: true })
+      const accept = (code, gotState) => {
+        if (gotState !== state) return send(res, 400, { ok: false, error: "bad state" })
+        if (!code) return send(res, 400, { ok: false, error: "missing code" })
+        send(res, 200, { ok: true })
+        finish(resolve, code)
+      }
+      if (req.method === "POST") {
+        let buf = ""
+        req.on("data", (chunk) => (buf += String(chunk)))
+        req.on("end", () => {
+          let code = ""
+          let gotState = ""
+          try {
+            const body = JSON.parse(buf || "{}")
+            code = String(body?.code ?? "")
+            gotState = String(body?.state ?? "")
+          } catch {
+            code = url.searchParams.get("code") ?? ""
+            gotState = url.searchParams.get("state") ?? ""
+          }
+          accept(code, gotState)
+        })
+        return
+      }
+      accept(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "")
+    })
+    server.on("error", (error) => finish(reject, error))
+  })
+}
+
+async function exchangeCode(code, { redirectUri, state, site, fetchImpl = globalThis.fetch, timeoutMs = EXCHANGE_TIMEOUT_MS } = {}) {
+  const url = `${site.bffBase}/api/v1/code/auth/exchange-code`
+  // 码是登录页用 client_id=agnes-cli 签发的；换票端按历史约定还可能只认 agnes-code，两种都试。
+  let lastError
+  for (const clientId of [CLIENT_ID, "agnes-code"]) {
+    // 手写 AbortController 而不是 AbortSignal.timeout：后者会留下一个 30s 定时器把进程吊住。
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    timer.unref?.()
+    try {
+      const res = await fetchImpl(url, {
+        method: "POST",
+        // origin 头由 BFF 校验：不带它、或带成别站的 origin，换票都会被拒。
+        headers: {
+          "content-type": "application/json",
+          origin: site.origin,
+          "x-platform": "1",
+        },
+        body: JSON.stringify({ code, redirect_uri: redirectUri, state, client_id: clientId }),
+        signal: controller.signal,
+        redirect: "error",
+      })
+      let body = {}
+      try {
+        body = await res.json()
+      } catch {}
+      const codeStr = String(body?.code ?? "")
+      if (res.ok && (codeStr === "000000" || codeStr === "0")) {
+        const token = String(body?.data?.access_token ?? "").trim()
+        if (!token) throw new Error("授权码兑换没有返回 access_token")
+        return token
+      }
+      const message = String(body?.message ?? "").trim()
+      lastError = new Error(`授权码兑换失败：${message || `HTTP ${res.status} / code ${codeStr || "无"}`}`)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  throw lastError
+}
+
+// authResultFromToken 把换来的 token 变成 magpie 的登录结果（metadata 留给 loader / usage）。
+function authResultFromToken(token, site, method = "browser") {
+  const claims = decodeJwtPayload(token) ?? {}
+  const username = typeof claims.name === "string" && claims.name.trim() ? claims.name.trim() : undefined
+  const accountId = username || (typeof claims.sub === "string" && claims.sub.trim() ? claims.sub.trim() : undefined)
+  return {
+    type: "success",
+    key: token,
+    accountId,
+    metadata: { username, source: method, method, bffBase: site.bffBase, domain: site.domain },
+  }
+}
+
+// browserLogin 起本地监听 → 返回要打开的登录页 → waitCode 拿 code → exchange 换票。
+async function browserLogin(site, { fetchImpl = globalThis.fetch, waitMs = LOGIN_WAIT_MS, signal, listenImpl } = {}) {
+  const state = randomUUID()
+  const server = await (listenImpl ?? listenLoopback)()
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("本地回调端口没有绑定成功")
+  const redirectUri = `http://127.0.0.1:${address.port}${CB_PATH}`
+  const url = `${site.loginUrl}?client=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`
+  // 监听器必须在返回 url 之前就挂上：用户可能比宿主先完成登录，晚挂的 request 监听会收不到
+  // 已经到达的那一发 POST（Node 只在有监听者时才派发 request 事件）。
+  const codePromise = waitForCallback(server, { state, origin: site.origin, timeoutMs: waitMs, signal })
+  return {
+    url,
+    redirectUri,
+    state,
+    server,
+    exchange: (code) => exchangeCode(code, { redirectUri, state, site, fetchImpl }),
+    waitCode: () => codePromise,
+  }
 }
 
 function authResult(cred, site) {
@@ -388,7 +558,7 @@ function reasonOf(error) {
 
 // --- 插件工厂 -----------------------------------------------------------------
 
-export function createPlugin(site, { fetchImpl = globalThis.fetch, env = process.env, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl, nowMsImpl = () => Date.now() } = {}) {
+export function createPlugin(site, { fetchImpl = globalThis.fetch, env = process.env, readFileImpl, dpapiImpl, homedir = osHomedir(), platform = process.platform, sleepImpl, nowMsImpl = () => Date.now(), listenImpl } = {}) {
   const sleep = sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   const ID = site.id
 
@@ -445,12 +615,38 @@ export function createPlugin(site, { fetchImpl = globalThis.fetch, env = process
       provider: ID,
       methods: [
         {
+          // 浏览器 loopback 登录：三平台可用、不需要桌面端、也不需要密码（因此没有锁号风险）。
+          type: "oauth",
+          label: `浏览器登录 · ${site.short}`,
+          async authorize(_inputs, { signal } = {}) {
+            const login = await browserLogin(site, { fetchImpl, listenImpl, signal })
+            return {
+              url: login.url,
+              instructions: `在打开的登录页完成登录（${site.loginHint}）。完成后这里会自动结束；窗口没弹出就手动把上面的链接粘到浏览器地址栏打开（别经过命令行拼接，链接里的 & 容易被截断，只传过去前一段就等于没有 client/state）。`,
+              method: "auto",
+              callback: async () => {
+                try {
+                  const code = await login.waitCode()
+                  const token = await login.exchange(code)
+                  return authResultFromToken(token, site)
+                } catch (error) {
+                  return { type: "failed", error: error?.message ?? "浏览器登录失败" }
+                } finally {
+                  try {
+                    login.server.close()
+                  } catch {}
+                }
+              },
+            }
+          },
+        },
+        {
           // 桌面端会话：解得出就立刻完成（url 留空）；解不出给官网链接，边等边让用户去装。
           type: "oauth",
           label: `读取桌面端登录态 · ${site.short}`,
           async authorize(_inputs, { signal } = {}) {
             if (platform !== "win32") {
-              throw new Error("桌面端会话解密仅支持 Windows；本机请改用「粘贴 accessToken」")
+              throw new Error("桌面端会话解密仅支持 Windows；本机请改用「浏览器登录」或「粘贴 accessToken」")
             }
             const keyCache = new Map()
             const read = () => probeDesktopCredential(site, { readFileImpl, dpapiImpl, homedir, platform, env, nowMs: nowMsImpl(), keyCache })
@@ -465,10 +661,10 @@ export function createPlugin(site, { fetchImpl = globalThis.fetch, env = process
             }
             const desktopHint = ["domain_mismatch", "untrusted", "unreadable", "expired"].includes(probe.error?.code)
               ? probe.error.message
-              : `本机没有读到 Agnes Code 桌面端登录态。装上或打开 Agnes Code 桌面端并登录就好；也可以改用「粘贴 accessToken」。`
+              : `本机没有读到 Agnes Code 桌面端登录态。装上或打开 Agnes Code 桌面端并登录就好；也可以改用「浏览器登录 · ${site.short}」。`
             // 营销页 agnes-ai.com/agnescode 被 Defender SmartScreen 举报过会红屏拦下，所以这里给的是应用页；
             // 万一还是被拦，文案里说明怎么过（不改用户的浏览器安全策略）。
-            const smartScreenHint = `若浏览器弹出「此网站已被人举报不安全」（SmartScreen 误报），点「详细信息 → 仍要继续」，或换一个浏览器，或直接用「粘贴 accessToken」。`
+            const smartScreenHint = `若浏览器弹出「此网站已被人举报不安全」（SmartScreen 误报），点「详细信息 → 仍要继续」，或换一个浏览器，或直接用「浏览器登录 · ${site.short}」。`
             return {
               url: site.officialSite,
               instructions: `${desktopHint}。${smartScreenHint}`,
@@ -479,7 +675,7 @@ export function createPlugin(site, { fetchImpl = globalThis.fetch, env = process
                 if (waited.status === "aborted") return { type: "failed", error: "登录已取消" }
                 return {
                   type: "failed",
-                  error: `仍未读到桌面端登录态（最后一次：${reasonOf(waited.error)}）。登录 Agnes Code 后重试，或改用「粘贴 accessToken」。`,
+                  error: `仍未读到桌面端登录态（最后一次：${reasonOf(waited.error)}）。登录 Agnes Code 后重试，或改用「浏览器登录」。`,
                 }
               },
             }
@@ -589,6 +785,8 @@ export const AgnesCNPlugin = async () => createPlugin(SITES.cn)
 
 export const _internal = {
   SITES,
+  CLIENT_ID,
+  CB_PATH,
   createPlugin,
   chatBase,
   modelsUrl,
@@ -605,9 +803,15 @@ export const _internal = {
   readDesktopCredential,
   probeDesktopCredential,
   waitForDesktopCredential,
-
+  listenLoopback,
+  waitForCallback,
+  exchangeCode,
+  browserLogin,
+  authResultFromToken,
   reasonOf,
   BOOTSTRAP,
+  LOGIN_WAIT_MS,
+  EXCHANGE_TIMEOUT_MS,
   DESKTOP_WAIT_MS,
   DPAPI_TIMEOUT_MS,
   BALANCE_PATH,
