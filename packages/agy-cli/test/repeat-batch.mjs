@@ -1849,6 +1849,42 @@ test("#1165: with agy's sign-in in a file under ~/.gemini (no keyring, Docker), 
   })
 })
 
+// plugins#1591: magpie's Antigravity takeover writes the app's gateway into
+// ~/.gemini/config/config.json, which agy reads too. An agy kept on ~/.gemini
+// for its file sign-in gets that folder without the gateway: the sign-in
+// linked where it is, the user's other config kept, the gateway left out.
+test("#1591: a file sign-in under ~/.gemini with the app's gateway on runs agy on ~/.gemini without the gateway", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const gemini = path.join(kit.env.HOME, ".gemini")
+    const token = path.join(gemini, "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}", { mode: 0o600 })
+    fs.mkdirSync(path.join(gemini, "config"), { recursive: true })
+    fs.writeFileSync(path.join(gemini, "config", "config.json"), JSON.stringify({
+      gateway: { enabled: true, url: "http://127.0.0.1:3425", apiKey: "mk", wireProtocol: "openai" },
+      models: { defaultModelId: "rg/gpt-6-astra", listSource: "gateway" },
+      plugins: { swarm: true },
+    }))
+    fs.writeFileSync(path.join(gemini, "config", "mcp_config.json"), "{\"mcpServers\":{}}")
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token-gateway" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-own")
+    const at = kit.acpSpawns[0].args.indexOf("--gemini-dir")
+    assert.ok(at >= 0 && kit.acpSpawns[0].args[at + 1] === own, kit.acpSpawns[0].args.join(" "))
+    // the sign-in is agy's own file, read and renewed where it is
+    assert.ok(fs.lstatSync(path.join(own, "antigravity-cli")).isSymbolicLink())
+    assert.equal(fs.realpathSync(path.join(own, "antigravity-cli", "antigravity-oauth-token")), fs.realpathSync(token))
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(own, "config", "config.json"), "utf8")), { plugins: { swarm: true } })
+    assert.equal(fs.readFileSync(path.join(own, "config", "mcp_config.json"), "utf8"), "{\"mcpServers\":{}}")
+    // the user's own file is left as it was
+    assert.equal(JSON.parse(fs.readFileSync(path.join(gemini, "config", "config.json"), "utf8")).gateway.enabled, true)
+    // the gateway turned off in the app: agy stays on ~/.gemini as before
+    fs.writeFileSync(path.join(gemini, "config", "config.json"), JSON.stringify({ gateway: { enabled: false } }))
+    assert.deepEqual(await kit.module.geminiDirArgs(kit.agyPath, kit.env), { args: [], dir: null })
+  })
+})
+
 test("assistant tail with thinking+text blocks is accepted while thinking+tool_use is still rejected", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)

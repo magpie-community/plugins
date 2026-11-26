@@ -205,6 +205,13 @@ agy 存的登录令牌去直接请求 Google 的额度接口，也不替 agy 续
 agy 因地区拒绝 `/usage`（"not currently available in your location"）时，账号显示 agy 的拒绝原因，
 不显示数字。
 
+Antigravity 应用的网关打开时（`~/.gemini/config/config.json` 里 `gateway.enabled`，例如 Magpie
+接管了 Antigravity），agy 读同一个文件，会走网关而不是你的 Google 账号，`/usage` 只得到
+`groups: []`。从 0.1.148 起，插件启动的每个 agy（对话和额度）都用不带网关的目录：登录在系统钥匙串里时
+用 bridge 自己的目录；登录在 `~/.gemini` 的文件里时（没有钥匙串，或在 SSH 里）用
+`~/.local/state/magpie-agy-bridge/agy-own`，它链接 `~/.gemini` 的每一项，只有 `config/config.json`
+去掉了 `gateway` 和 `models`。你的 `~/.gemini` 不会被改动（plugins#1591）。
+
 agy 的访问令牌已到期或两分钟内到期（有刷新令牌）时，插件不为额度运行 agy：agy 续期失败时
 可能在浏览器里打开 Google 登录页（#1234）。账号显示「agy 的登录待续期」，agy 在这个账号下次对话时
 自己续期，之后再读额度；在此之前显示上次读到的额度。

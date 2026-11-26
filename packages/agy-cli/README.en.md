@@ -292,6 +292,17 @@ slow network or proxy as the usual cause, and is tried again a minute later.
 When agy refuses `/usage` for the account's region ("not currently available
 in your location"), the account shows agy's refusal and no numbers.
 
+While Antigravity's app has its gateway on (`gateway.enabled` in
+`~/.gemini/config/config.json`, as when magpie takes over Antigravity), agy
+reads the same file and goes to that gateway instead of your Google account,
+so `/usage` gets only `groups: []`. Since 0.1.148 every agy the plugin starts
+(turns and usage) gets a folder without the gateway: the bridge's own when
+the sign-in is in the system keyring, and
+`~/.local/state/magpie-agy-bridge/agy-own` when it is a file in `~/.gemini`
+(no keyring, or over SSH). That folder links every entry of `~/.gemini`;
+only `config/config.json` differs, without `gateway` and `models`. Your
+`~/.gemini` is not changed (plugins#1591).
+
 While agy's access token has ended or ends within two minutes (with a refresh
 token to renew it), agy isn't run for usage: a renewal that fails there can
 open a Google sign-in in the browser (#1234). The account says agy's sign-in is

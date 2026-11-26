@@ -1216,6 +1216,45 @@ test("canlee886 app 的 gateway 关着、读不成 JSON 时各按关、开处理
   })
 })
 
+// plugins#1591 (I-am-c, Windows, agy 1.5.18): with the app wired to magpie,
+// agy -p /usage on ~/.gemini reads the app's gateway, which asks Google
+// nothing and lists no quota ({"groups": []}), so the card said "agy
+// returned no enabled, measured quota buckets". The read goes to the folder
+// a turn's agy acp gets, which has no gateway.
+test("#1591 app 接到 magpie 时，额度读的是 Google 账号的，不是 gateway 的空列表", async () => {
+  const keyring = "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29.a", refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "a@example.com",
+  })).toString("base64") + "\n"
+  const reads = []
+  const onSpawn = (_file, args) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.18\n" }
+    if (!args.includes("/usage")) return 1
+    reads.push(args)
+    // agy on a gateway answers SUCCESS with no groups (agy 1.5.18)
+    const groups = args.includes("--gemini_dir") ? [{
+      name: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ id: "w", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: 0.75 }],
+    }] : []
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups } } }) }
+  }
+  const net = noFetch()
+  try {
+    await withKit(appGatewayKit({ platform: "darwin", storedSignIn: keyring, onSpawn }), async (kit) => {
+      wireAppGateway(kit.home)
+      const usage = await kit.plugin.auth.usage(async () => ({ type: "oauth", key: "agy", metadata: { email: "a@example.com" } }), {})
+      assert.equal(usage.error, undefined, JSON.stringify(usage))
+      assert.equal(usage.windows.find(w => !w.model)?.used, 25)
+      const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+      assert.deepEqual(reads.at(-1).slice(0, 4), ["--gemini_dir", own, "-p", "/usage"])
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
 // The provider is named as the plugin's row is, not by its id (agy-cli), on
 // magpie's Providers row; a name the user gave it stays.
 test("config names the provider, keeping the user's own name", async () => {

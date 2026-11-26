@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
+import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, GATEWAY_NO_FOLDER, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
@@ -458,6 +458,49 @@ test("with nothing set, usage children run with auto-update off", async t => {
   assert.equal(logs.length, 2)
   for (const log of logs) assert.equal(log.update, "true")
   assert.equal("AGY_CLI_DISABLE_AUTO_UPDATE" in env, false)
+})
+
+// plugins#1591 (I-am-c, agy 1.5.18): with magpie's Antigravity takeover on,
+// ~/.gemini/config/config.json holds the app's gateway, agy reads it, and on
+// a gateway its /usage answers SUCCESS with no groups: "agy returned no
+// enabled, measured quota buckets". The read goes to a folder without it.
+test("with the app's gateway on, /usage reads a folder without it (--gemini_dir), and the reader passes it on", async t => {
+  const f = await fixture(t)
+  const folder = path.join(path.dirname(f.env.TEST_LOG), "agy-own")
+  const asked = []
+  const geminiDir = async (agy) => { asked.push(agy); return { gateway: true, dir: folder } }
+  const result = await fetchUsage(f.executable, { ...f.options, geminiDir })
+  assert.equal(result.windows[0].used, 25)
+  const logs = await f.logs()
+  assert.deepEqual(logs[0].args, ["--version"])
+  assert.deepEqual(logs[1].args.slice(0, 8), ["--gemini_dir", folder, "-p", "/usage", "--output-format", "json", "--agent", "magpie-usage"])
+  assert.deepEqual(asked, [f.executable])
+  // createUsageReader hands the folder to the read it runs
+  const read = createUsageReader(async () => f.executable, { ...f.options, geminiDir })
+  await read()
+  const again = await f.logs()
+  assert.deepEqual(again.at(-1).args.slice(0, 3), ["--gemini_dir", folder, "-p"])
+})
+
+test("with the app's gateway off, /usage runs on agy's own folder as before", async t => {
+  const f = await fixture(t)
+  await fetchUsage(f.executable, { ...f.options, geminiDir: async () => ({ gateway: false, dir: null }) })
+  const logs = await f.logs()
+  assert.deepEqual(logs[1].args.slice(0, 2), ["-p", "/usage"])
+  assert.ok(!logs[1].args.some(arg => /gemini[-_]dir/.test(arg)))
+})
+
+test("a gateway agy can't be pointed past says why and runs no agy", async t => {
+  const f = await fixture(t)
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, geminiDir: async () => ({ gateway: true, dir: null }) }), error => error.message === GATEWAY_NO_FOLDER)
+  await assert.rejects(f.logs(), { code: "ENOENT" })
+  await f.assertClean()
+})
+
+test("an agy that doesn't know --gemini_dir is asked to update, not read as signed out", async t => {
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "flags provided but not defined: -gemini_dir\nUsage of agy:" })
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, geminiDir: async () => ({ gateway: true, dir: path.join(path.dirname(f.env.TEST_LOG), "agy-own") }) }), error => error.message === GATEWAY_NO_FOLDER)
+  await f.assertClean()
 })
 
 test("simulated Windows fetches usage with hidden, attached children and a cmd browser guard", { skip: process.platform === "win32" }, async t => {

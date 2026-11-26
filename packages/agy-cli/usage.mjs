@@ -388,14 +388,30 @@ function supportedVersion(output) {
   return major > 1 || major === 1 && (minor > 1 || minor === 1 && patch >= 11)
 }
 
+// What usage says while Antigravity's app has a gateway on in agy's folder
+// and this agy can't be given another (plugins#1591): agy reads that file,
+// and on a gateway its /usage asks Google nothing and lists no quota.
+export const GATEWAY_NO_FOLDER = "Antigravity's app is set to a gateway (~/.gemini/config/config.json, magpie's Antigravity takeover writes one), " +
+  "which agy reads too, and on a gateway agy reads no Google quota. This agy can't be pointed past it: update agy (`agy update`)."
+
+// agy's flag parser naming --gemini_dir as one it doesn't know
+const NO_GEMINI_DIR_FLAG = /flags? provided but not defined:\s*-+gemini[-_]dir/i
+
 export async function fetchUsage(agy, {
   env = process.env,
   timeoutMs = env.AGY_BRIDGE_USAGE_TIMEOUT_MS,
   maxOutputBytes = MAX_OUTPUT_BYTES,
   signal,
   tempRoot = os.tmpdir(),
+  // the folder agy reads in place of ~/.gemini when the app's gateway is on
+  // there: { gateway, dir } (index.mjs's usageGeminiDir)
+  geminiDir = async () => ({ gateway: false, dir: null }),
 } = {}) {
   if (!agy) throw new UsageError(NO_AGY)
+  const folder = await geminiDir(agy)
+  if (folder?.gateway && !folder.dir) throw new UsageError(GATEWAY_NO_FOLDER)
+  // a hidden flag of agy's top level (agy 1.5.18), --gemini-dir's own on acp
+  const folderArgs = folder?.gateway ? ["--gemini_dir", folder.dir] : []
   const limit = timeout(timeoutMs)
   const deadline = Date.now() + limit
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
@@ -450,10 +466,11 @@ export async function fetchUsage(agy, {
     // the quota: 5 to 10 seconds on a quick network, 20 or more behind a
     // slow proxy (2 to 3 seconds a call, plugins#1255), or on agy's first
     // start. It gets the whole deadline.
-    const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options).catch((error) => {
+    const result = await run(agy, [...folderArgs, "-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options).catch((error) => {
       if (error?.kind !== "timeout") throw error
       throw new UsageError(`agy's own usage read didn't finish in ${limit / 1000}s. agy asks Google about twelve times, one after another, before it has the quota, which takes longer behind a slow network or proxy. It's asked again in a minute; if this stays, check agy's network or proxy.`, { kind: "timeout", output: error.output })
     })
+    if (folderArgs.length && result.code !== 0 && NO_GEMINI_DIR_FLAG.test(result.stderr + "\n" + result.stdout)) throw new UsageError(GATEWAY_NO_FOLDER)
     let report
     try { report = JSON.parse(result.stdout) } catch {}
     if (result.code === 0 && report?.status === "SUCCESS") return parseUsageReport(report)

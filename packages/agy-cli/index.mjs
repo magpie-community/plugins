@@ -24,6 +24,7 @@ import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 import { IMAGE_MODEL_ID, handleImageFetch, imageModelEntry, imageRoute } from "./image.mjs"
 import { reapOneshotChildren } from "./oneshot-acp.mjs"
+import { appGatewayOn as gatewayIn, gatewayFreeDir } from "./gateway-free.mjs"
 
 const PROVIDER_ID = "agy-cli"
 const PROVIDER_NAME = "Antigravity (local agy CLI)"
@@ -427,8 +428,15 @@ export async function geminiDirArgs(agyPath, env = process.env) {
   // an account with a home of its own (account.mjs) keeps its sign-in in
   // a file under that home's .gemini, which agy reads only as its own
   if (currentHome()) return { args: [], dir: null }
-  const dir = bridgeGeminiDir(env)
-  if (!dir || (!env.AGY_BRIDGE_GEMINI_DIR && fileSignIn())) return { args: [], dir: null }
+  let dir = bridgeGeminiDir(env)
+  if (!dir || (!env.AGY_BRIDGE_GEMINI_DIR && fileSignIn())) {
+    // agy stays on its own ~/.gemini, unless the app's gateway is on there:
+    // then it gets that folder without the gateway (plugins#1591), or a
+    // turn, its listing and its quota would all be the gateway's
+    if (!appGatewayOn(os.homedir()) || !/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
+    dir = gatewayFreeDir(os.homedir(), env)
+    return dir ? { args: ["--gemini-dir", dir], dir } : { args: [], dir: null }
+  }
   if (!/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
   try {
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
@@ -484,29 +492,17 @@ function execOnce(file, args, opts = {}) {
   })
 }
 
-// Antigravity's desktop app keeps its gateway in ~/.gemini/config/config.json
-// ({"gateway":{"enabled":true,"url":…}}), and agy reads the same file: an agy
-// on ~/.gemini lists and serves the gateway's models, not the Google
-// account's. When magpie has wired the app to itself, that gateway is
-// magpie, so this provider listed magpie's own models and a turn would go
-// back into magpie (canlee886 on X, agy 1.5.10). agy acp on the bridge's own
-// folder (geminiDirArgs) reads no such file; `agy models` takes no
-// --gemini-dir, so with the app's gateway on, the catalog and the sign-in
-// check come from an agy acp session on that folder instead. A file that
-// can't be read as JSON counts as on: the session route is right either way.
+// Antigravity's desktop app keeps its gateway in ~/.gemini/config/config.json,
+// and agy reads the same file (gateway-free.mjs): an agy on ~/.gemini lists
+// and serves the gateway's models, not the Google account's. When magpie has
+// wired the app to itself, that gateway is magpie, so this provider listed
+// magpie's own models and a turn would go back into magpie (canlee886 on X,
+// agy 1.5.10). agy acp on the bridge's own folder (geminiDirArgs) reads no
+// such file; `agy models` takes no --gemini-dir, so with the app's gateway
+// on, the catalog and the sign-in check come from an agy acp session on that
+// folder instead.
 export function appGatewayOn(home = currentHome() ?? os.homedir()) {
-  let text
-  try {
-    text = fs.readFileSync(path.join(home, ".gemini", "config", "config.json"), "utf8")
-  } catch {
-    return false
-  }
-  try {
-    const gateway = JSON.parse(text)?.gateway
-    return gateway?.enabled === true
-  } catch {
-    return true
-  }
+  return gatewayIn(home)
 }
 
 // gatewayListed: `agy models` would answer from the app's gateway, and a
@@ -9323,6 +9319,14 @@ async function accountOfAuth(getAuth) {
   return { home, email }
 }
 
+// usageGeminiDir is the folder agy -p /usage reads in place of ~/.gemini:
+// none while the app's gateway is off there, else the one a turn's agy acp
+// gets (geminiDirArgs), with no gateway in it (plugins#1591).
+async function usageGeminiDir(agy) {
+  if (!appGatewayOn()) return { gateway: false, dir: null }
+  return { gateway: true, dir: (await geminiDirArgs(agy)).dir }
+}
+
 // One usage reader per account: each holds its own last report.
 const usageReaders = new Map()
 // The accounts of agy's own told agy holds another (by email, lower case):
@@ -9331,7 +9335,7 @@ const toldNotHeld = new Set()
 function readUsageOf(home, email = "") {
   const key = home ?? ""
   let read = usageReaders.get(key)
-  if (!read) usageReaders.set(key, (read = createUsageReader(findAgy)))
+  if (!read) usageReaders.set(key, (read = createUsageReader(findAgy, { geminiDir: usageGeminiDir })))
   return inAccount(home, async () => {
     if (email) {
       let stored = null
