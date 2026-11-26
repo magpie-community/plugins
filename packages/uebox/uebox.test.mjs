@@ -111,6 +111,16 @@ test("it does nothing to a computer without UEBox, or to a file it cannot read",
   expect(readFileSync(settingsPath(), "utf8")).toBe("{ not json")
 })
 
+test("a file whose providers isn't a list is left alone", () => {
+  writeLink(link)
+  for (const body of [{ version: 3, roles: { chat: { providerId: "deepseek" } } }, { version: 3, providers: { deepseek: {} } }]) {
+    writeSettings(body)
+    const stamp = readFileSync(settingsPath(), "utf8")
+    expect(sync({ env, log: () => {} })).toMatchObject({ changed: false, reason: "unreadable" })
+    expect(readFileSync(settingsPath(), "utf8")).toBe(stamp)
+  }
+})
+
 test("with no UEBox provider and no link it leaves a file alone", () => {
   writeSettings(uebox())
   const stamp = readFileSync(settingsPath(), "utf8")

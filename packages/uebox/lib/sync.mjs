@@ -85,7 +85,9 @@ export function sync({ env = process.env, log = () => {} } = {}) {
   const file = join(dir, "models.json")
   if (!existsSync(file)) return { changed: false, reason: "no-uebox" }
   const current = readJSON(file)
-  if (!current) return { changed: false, reason: "unreadable" }
+  // a file whose providers isn't a list is one we can't read as UEBox's:
+  // merge would start it over and drop the user's roles and the rest
+  if (!current || !Array.isArray(current.providers)) return { changed: false, reason: "unreadable" }
   const link = readJSON(link_path(env))
   const had = current.providers.some((p) => p && p.id === PROVIDER_ID)
   if (!linkReady(link) && !had) return { changed: false, reason: "idle" }
