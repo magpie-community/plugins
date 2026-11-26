@@ -1027,14 +1027,16 @@ test("plugin is its own gcp-ai row, not Magpie's built-in Vertex provider", { ti
   // Fetch models, so the config hook hands over Google's current catalog. The
   // provider hook replaces it with what the signed-in project can call.
   const seeded = config.provider["gcp-ai"].models
+  assert.equal(seeded["gemini-4-neon"].name, "Gemini 4 Neon")
+  assert.deepEqual(seeded["gemini-4-neon"].variants, { low: { reasoning_effort: "low" }, medium: { reasoning_effort: "medium" }, high: { reasoning_effort: "high" }, xhigh: { reasoning_effort: "xhigh" } })
   assert.equal(seeded["gemini-4-argon"].name, "Gemini 4 Argon")
   assert.deepEqual(seeded["gemini-4-argon"].variants, { low: { reasoning_effort: "low" }, medium: { reasoning_effort: "medium" }, high: { reasoning_effort: "high" } })
   assert.equal(seeded["gemini-2.5-pro"].reasoning, false)
   // Retired models are in no list: the catalog still names them and calling one
   // answers 404, so a seed carrying them would offer models that cannot load.
   for (const gone of ["gemini-1.5-pro-002", "gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-exp-03-25"]) assert.equal(seeded[gone], undefined)
-  // Twelve chat models, and no speech, image, transcription or embedding model.
-  assert.equal(Object.keys(seeded).length, 12)
+  // Thirteen chat models, and no speech, image, transcription or embedding model.
+  assert.equal(Object.keys(seeded).length, 13)
   assert.equal(Object.keys(seeded).filter((id) => /tts|embedding|transcribe|image|live|translate|nano-banana|omni/.test(id)).length, 0)
   // The provider hook is handed the whole provider info, not its models. A
   // failure must give back provider.models: handing back the object made

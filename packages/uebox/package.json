@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/agent-uebox",
+  "version": "0.1.0",
+  "description": "UEBox (Unreal Box) as a magpie agent: pick one of magpie's models for it on the Agents page, and UEBox gets magpie as a provider",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["uebox.agent.js", "index.mjs", "lib", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "uebox", "unreal-box", "unreal-engine", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/uebox" },
+  "magpie": { "agent": "./uebox.agent.js" }
+}
