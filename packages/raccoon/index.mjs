@@ -1193,6 +1193,129 @@ function desktopSignIn() {
   }
 }
 
+// ---- conversation identity --------------------------------------------------
+//
+// Raccoon's own desktop client names every chat request by its conversation and
+// its turn: X-RACCOON-Session-ID stays the same across a conversation, and
+// X-RACCOON-Turn-ID is new for each message the user sends. Without them the
+// upstream cannot tie a conversation's requests together. The session comes
+// from the host through the chat.headers hook (magpie and OpenCode 1.x) or a
+// session header magpie already sends; when neither names one, it is derived
+// from the conversation's first user message, which later turns repeat.
+
+const RACCOON_SESSION_HEADER = "x-magpie-raccoon-session"
+const INBOUND_SESSION_HEADERS = [
+  RACCOON_SESSION_HEADER,
+  "x-magpie-session",
+  "x-opencode-session",
+  "x-session-id",
+  "session_id",
+  "session-id",
+  "x-session-affinity",
+  "x-conversation-id",
+]
+
+// uuidish is a version 4 UUID made of a hash's first 16 bytes, the shape the
+// desktop client's ids have.
+function uuidish(seed) {
+  const b = Buffer.from(createHash("sha256").update(seed).digest().subarray(0, 16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = b.toString("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
+function textOfContent(content) {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("")
+}
+
+function sessionFromHeaders(headers) {
+  try {
+    const h = new Headers(headers ?? {})
+    for (const name of INBOUND_SESSION_HEADERS) {
+      const value = String(h.get(name) ?? "").trim()
+      // magpie's synthetic session (a hash of the first user message) names no
+      // conversation: it is skipped, as the built-in clients skip it.
+      if (value && !/^magpie-[0-9a-f]{24}$/.test(value)) return value.slice(0, 128)
+    }
+  } catch {}
+  return ""
+}
+
+// conversationSessions keeps one upstream session id per conversation even
+// when the host names a new one on every send. An anchor is the account and
+// the conversation's first user message, which every later request repeats.
+const conversationSessions = new Map()
+const CONVERSATION_CAP = 512
+const CONVERSATION_TTL_MS = 2 * 60 * 60 * 1000
+
+function firstUserText(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  return textOfContent(messages.find((message) => message?.role === "user")?.content).trim()
+}
+
+function pruneConversations(now) {
+  for (const [key, hit] of conversationSessions) {
+    if (now - hit.at < CONVERSATION_TTL_MS) break
+    conversationSessions.delete(key)
+  }
+  while (conversationSessions.size > CONVERSATION_CAP) {
+    conversationSessions.delete(conversationSessions.keys().next().value)
+  }
+}
+
+// sessionFor is the conversation id one request goes out under: the session the
+// host named the first time it sent this conversation, even if a later send
+// names another, so every turn reuses the same id.
+function sessionFor(headers, body, account) {
+  const host = sessionFromHeaders(headers)
+  const stamp = conversationStamp(headers, body, account)
+  if (!stamp) return host || ""
+  const now = Date.now()
+  const hit = conversationSessions.get(stamp)
+  if (hit && now - hit.at < CONVERSATION_TTL_MS) {
+    hit.at = now
+    return hit.id
+  }
+  const id = host || derivedSessionOf(stamp)
+  conversationSessions.set(stamp, { id, at: now })
+  pruneConversations(now)
+  return id
+}
+
+// derivedSessionOf names a conversation the host gave no session for, from its
+// account, workspace and first user message.
+function derivedSessionOf(stamp) {
+  return `derived-${uuidish(`raccoon-session|${stamp}`)}`
+}
+
+// conversationStamp is what tells one conversation from another when no stable
+// host session names it: the account, the workspace the host reports, and the
+// first user message every later turn repeats.
+function conversationStamp(headers, body, account) {
+  const first = firstUserText(body)
+  if (!account || !first) return ""
+  let scope = ""
+  try {
+    const h = new Headers(headers ?? {})
+    scope = String(h.get("x-magpie-cwd") ?? h.get("x-magpie-agent") ?? "").trim().slice(0, 200)
+  } catch {}
+  return `${account}\0${scope}\0${first}`
+}
+
+// turnOf is the message a request answers: the number of user messages and the
+// last one's words, so the tool-call steps of one turn share an id and the next
+// message the user sends gets a new one.
+function turnOf(session, body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  const users = messages.filter((message) => message?.role === "user")
+  if (!users.length) return ""
+  const last = textOfContent(users[users.length - 1]?.content)
+  return uuidish(`raccoon-turn|${session}|${users.length}|${last}`)
+}
+
 // ---- Plugin export ----------------------------------------------------------
 
 export const RaccoonAuthPlugin = async ({ client }) => {
@@ -1203,6 +1326,15 @@ export const RaccoonAuthPlugin = async ({ client }) => {
   }
 
   return {
+    // the conversation a request belongs to, for the loader's fetch to name
+    // its session and turn with
+    "chat.headers": async (input, output) => {
+      const id = input?.model?.providerID ?? input?.provider?.info?.id
+      if (id !== PROVIDER_ID || !input?.sessionID || !output?.headers) return
+      const session = String(input.sessionID).trim()
+      if (!session || /^magpie-[0-9a-f]{24}$/.test(session)) return
+      output.headers[RACCOON_SESSION_HEADER] = session.slice(0, 128)
+    },
     config: async (config) => {
       config.provider ??= {}
       const was = config.provider[PROVIDER_ID] ?? {}
@@ -1263,11 +1395,11 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             const req = input instanceof Request ? input : null
             let bodyText = init?.body
             if (bodyText === undefined && req) bodyText = await req.clone().text()
-            let requestedModel = ""
+            let parsedBody = null
             try {
-              const parsed = typeof bodyText === "string" ? JSON.parse(bodyText) : null
-              if (typeof parsed?.model === "string") requestedModel = parsed.model
+              parsedBody = typeof bodyText === "string" ? JSON.parse(bodyText) : null
             } catch {}
+            const requestedModel = typeof parsedBody?.model === "string" ? parsedBody.model : ""
 
             let a
             let didRenew = false
@@ -1293,11 +1425,20 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             }
             const sendOnce = (cred) => {
               const headers = new Headers(init?.headers ?? req?.headers)
+              const session = sessionFor(headers, parsedBody, cred?.uid || cred?.accountId || "")
+              headers.delete(RACCOON_SESSION_HEADER)
               headers.delete("x-api-key")
               headers.delete("content-length")
               headers.set("Authorization", "Bearer " + cred.access)
               headers.set("Content-Type", "application/json")
               headers.set("Accept", "*/*")
+              // this loader carries the agent's own turns; title/summary calls never pass through it
+              headers.set("X-RACCOON-Call-Kind", "primary")
+              if (session) {
+                headers.set("X-RACCOON-Session-ID", session)
+                const turn = turnOf(session, parsedBody)
+                if (turn) headers.set("X-RACCOON-Turn-ID", turn)
+              }
               return fetch(req ? req.url : input, {
                 ...init,
                 method: init?.method ?? req?.method ?? "POST",
@@ -1417,4 +1558,5 @@ export const _internal = {
   desktopOnboardingSettled,
   renewed,
   renewing,
+  conversationSessions,
 }

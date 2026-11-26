@@ -40,6 +40,7 @@ afterEach(() => {
   _internal.topBalance.clear()
   _internal.renewed.clear()
   _internal.renewing.clear()
+  _internal.conversationSessions.clear()
 })
 
 function startServer(routes) {
@@ -970,6 +971,119 @@ test("loader refreshes on 401, strips x-api-key, rewrites split SSE stream, and 
   })
   expect(res402.status).toBe(402)
   expect(res402.headers.get("x-magpie-sign-in")).toBe("kept")
+})
+
+test("loader names the conversation and turn as the desktop client does", async () => {
+  const tok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const seen = []
+  startServer({
+    "POST /api/web/llm/v2/chat/completions": (req) => {
+      seen.push({
+        session: req.headers.get("x-raccoon-session-id"),
+        turn: req.headers.get("x-raccoon-turn-id"),
+        kind: req.headers.get("x-raccoon-call-kind"),
+        private: req.headers.get("x-magpie-raccoon-session"),
+      })
+      return Response.json({ id: "1", choices: [{ message: { content: "ok" } }] })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const loaded = await hooks.auth.loader(async () => ({
+    type: "oauth",
+    access: tok,
+    refresh: "",
+    expires: Date.now() + 3600_000,
+    accountId: "Mason",
+  }))
+
+  const out = { headers: {} }
+  await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID: "sess-1" }, out)
+  expect(out.headers["x-magpie-raccoon-session"]).toBe("sess-1")
+
+  const send = (body) =>
+    loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify(body),
+    })
+
+  const first = { model: "sn-kimi-k3", messages: [{ role: "user", content: "hello there" }] }
+  await send(first)
+  // the tool steps answering one message repeat its user messages
+  const withTool = {
+    model: first.model,
+    messages: [
+      ...first.messages,
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "Read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "result" },
+    ],
+  }
+  await send(withTool)
+  const next = {
+    model: first.model,
+    messages: [
+      ...withTool.messages,
+      { role: "assistant", content: "answer" },
+      { role: "user", content: "second question" },
+    ],
+  }
+  await send(next)
+
+  expect(seen[0].session).toBe("sess-1")
+  expect(seen[0].kind).toBe("primary")
+  expect(seen[0].private).toBe(null)
+  expect(seen[0].turn).toBeTruthy()
+  expect(seen[1].turn).toBe(seen[0].turn)
+  expect(seen[2].turn).not.toBe(seen[0].turn)
+
+  // no session header: the first user message names the conversation
+  await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "sn-kimi-k3", messages: [{ role: "user", content: "a longer first message" }] }),
+  })
+  expect(seen[3].session).toMatch(/^derived-[0-9a-f-]{36}$/)
+})
+
+test("a host that names a new session on every send still reuses one conversation id", async () => {
+  const tok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const seen = []
+  startServer({
+    "POST /api/web/llm/v2/chat/completions": (req) => {
+      seen.push({
+        session: req.headers.get("x-raccoon-session-id"),
+        turn: req.headers.get("x-raccoon-turn-id"),
+      })
+      return Response.json({ id: "1", choices: [{ message: { content: "ok" } }] })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const loaded = await hooks.auth.loader(async () => ({
+    type: "oauth",
+    access: tok,
+    refresh: "",
+    expires: Date.now() + 3600_000,
+    accountId: "Mason",
+  }))
+
+  const conversation = { model: "sn-kimi-k3", messages: [{ role: "user", content: "write the parser module" }] }
+  for (const sessionID of ["session-A", "session-B", "session-C"]) {
+    const out = { headers: {} }
+    await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID }, out)
+    await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify(conversation),
+    })
+  }
+  expect(seen.map((s) => s.session)).toEqual(["session-A", "session-A", "session-A"])
+
+  // magpie's synthetic session names no conversation: it is ignored, and the
+  // id derived from the first user message is used instead
+  const out = { headers: {} }
+  await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID: "magpie-" + "0123456789abcdef01234567" }, out)
+  expect(out.headers["x-magpie-raccoon-session"]).toBeUndefined()
 })
 
 test("desktop sign-in marks expired when desktop app switches to another account", async () => {
