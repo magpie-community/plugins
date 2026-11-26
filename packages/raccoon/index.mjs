@@ -1197,13 +1197,11 @@ function desktopSignIn() {
 //
 // Raccoon's own desktop client names every chat request by its conversation and
 // its turn: X-RACCOON-Session-ID stays the same across a conversation, and
-// X-RACCOON-Turn-ID is new for each message the user sends. Without them the
-// upstream counts every send as a new conversation and rate-limits the account
-// as many new sessions at once (plugins#512). The session comes from the host
-// through the chat.headers hook (magpie and OpenCode 1.x) or a session header
-// magpie already sends; when neither names a stable one, it is derived from the
-// account, the agent the host reports and the conversation's first user message,
-// which later turns repeat.
+// X-RACCOON-Turn-ID is new for each message the user sends. The session comes
+// from the host through the chat.headers hook (magpie and OpenCode 1.x) or a
+// session header magpie already sends; when the host names none, it is derived
+// from the account and the conversation's first user message, which later turns
+// repeat.
 
 const RACCOON_SESSION_HEADER = "x-magpie-raccoon-session"
 const INBOUND_SESSION_HEADERS = [
@@ -1246,47 +1244,20 @@ function sessionFromHeaders(headers) {
   return ""
 }
 
-// conversationSessions keeps one upstream session id per conversation even
-// when the host names a new one on every send. Its key is a hash of the
-// account, the agent the host reports and the conversation's first user
-// message, which every later request repeats.
-const conversationSessions = new Map()
-const CONVERSATION_CAP = 512
-const CONVERSATION_TTL_MS = 2 * 60 * 60 * 1000
-
 function firstUserText(body) {
   const messages = Array.isArray(body?.messages) ? body.messages : []
   return textOfContent(messages.find((message) => message?.role === "user")?.content).trim()
 }
 
-function pruneConversations(now) {
-  for (const [key, hit] of conversationSessions) {
-    if (now - hit.at < CONVERSATION_TTL_MS) break
-    conversationSessions.delete(key)
-  }
-  while (conversationSessions.size > CONVERSATION_CAP) {
-    conversationSessions.delete(conversationSessions.keys().next().value)
-  }
-}
-
 // sessionFor is the conversation id one request goes out under: the session the
-// host named the first time it sent this conversation, even if a later send
-// names another, so every turn reuses the same id.
+// host names, or, when it names none, one derived from the account and the
+// conversation's first user message so every turn of that conversation reuses
+// the same id.
 function sessionFor(headers, body, account) {
   const host = sessionFromHeaders(headers)
-  const stamp = conversationStamp(headers, body, account)
-  if (!stamp) return host || ""
-  const key = createHash("sha256").update(stamp).digest("hex")
-  const now = Date.now()
-  const hit = conversationSessions.get(key)
-  if (hit && now - hit.at < CONVERSATION_TTL_MS) {
-    hit.at = now
-    return hit.id
-  }
-  const id = host || derivedSessionOf(stamp)
-  conversationSessions.set(key, { id, at: now })
-  pruneConversations(now)
-  return id
+  if (host) return host
+  const stamp = conversationStamp(body, account)
+  return stamp ? derivedSessionOf(stamp) : ""
 }
 
 // derivedSessionOf names a conversation the host gave no session for, in the
@@ -1295,19 +1266,13 @@ function derivedSessionOf(stamp) {
   return uuidish(`raccoon-session|${stamp}`)
 }
 
-// conversationStamp is what tells one conversation from another when no stable
-// host session names it: the account, the agent the host reports, and the first
-// user message every later turn repeats. It is hashed before use as a map key,
-// so the user's text is never kept in memory.
-function conversationStamp(headers, body, account) {
+// conversationStamp is what a conversation's session id is derived from when
+// the host names none: the account and the first user message every later turn
+// repeats.
+function conversationStamp(body, account) {
   const first = firstUserText(body)
   if (!account || !first) return ""
-  let scope = ""
-  try {
-    const h = new Headers(headers ?? {})
-    scope = String(h.get("x-magpie-agent") ?? "").trim().slice(0, 200)
-  } catch {}
-  return `${account}\0${scope}\0${first}`
+  return `${account}\0${first}`
 }
 
 // turnOf is the message a request answers: the user messages count, so the
@@ -1562,5 +1527,4 @@ export const _internal = {
   desktopOnboardingSettled,
   renewed,
   renewing,
-  conversationSessions,
 }

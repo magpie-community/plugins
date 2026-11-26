@@ -40,7 +40,6 @@ afterEach(() => {
   _internal.topBalance.clear()
   _internal.renewed.clear()
   _internal.renewing.clear()
-  _internal.conversationSessions.clear()
 })
 
 function startServer(routes) {
@@ -1045,7 +1044,7 @@ test("loader names the conversation and turn as the desktop client does", async 
   expect(seen[3].session).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 })
 
-test("a host that names a new session on every send still reuses one conversation id", async () => {
+test("two host sessions with the same first user message stay apart", async () => {
   const tok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
   const seen = []
   startServer({
@@ -1067,19 +1066,39 @@ test("a host that names a new session on every send still reuses one conversatio
     accountId: "Mason",
   }))
 
-  const conversation = { model: "sn-kimi-k3", messages: [{ role: "user", content: "write the parser module" }] }
-  for (const sessionID of ["session-A", "session-B", "session-C"]) {
+  // Codex opens every conversation with the same first user message (# AGENTS.md
+  // instructions for the repo): the host's own session id keeps them apart.
+  const agents = "# AGENTS.md instructions for /home/u/repo\n\n<INSTRUCTIONS>be brief</INSTRUCTIONS>"
+  for (const [sessionID, ask] of [["codex-conv-1", "fix the parser"], ["codex-conv-2", "write the README"]]) {
     const out = { headers: {} }
     await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID }, out)
     await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
       method: "POST",
       headers: out.headers,
-      body: JSON.stringify(conversation),
+      body: JSON.stringify({ model: "m", messages: [{ role: "user", content: agents }, { role: "user", content: ask }] }),
     })
   }
-  expect(seen.map((s) => s.session)).toEqual(["session-A", "session-A", "session-A"])
-  // the map keeps hashes, never the user's first message
-  expect([..._internal.conversationSessions.keys()].every((k) => /^[0-9a-f]{64}$/.test(k))).toBe(true)
+  expect(seen.map((s) => s.session)).toEqual(["codex-conv-1", "codex-conv-2"])
+  expect(seen.map((s) => s.turn)).toEqual(["codex-conv-1-turn-2", "codex-conv-2-turn-2"])
+
+  // no host session: derived from the first user message, so the same first
+  // message yields the same id on every send and a different one differs
+  const derive = async (sessionID, first) => {
+    const out = { headers: {} }
+    await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID }, out)
+    await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify({ model: "m", messages: [{ role: "user", content: first }] }),
+    })
+    return seen.at(-1).session
+  }
+  const one = await derive(undefined, "hello there")
+  const again = await derive(undefined, "hello there")
+  const other = await derive(undefined, "a different first message")
+  expect(one).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(again).toBe(one)
+  expect(other).not.toBe(one)
 
   // magpie's synthetic session names no conversation: it is ignored, and the
   // id derived from the first user message is used instead
