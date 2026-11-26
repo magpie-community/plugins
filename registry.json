@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
+    {   "package": "@magpie-community/opencode-clixad-auth",   "name": "Clixad",   "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzExNjFkNiIvPjxwYXRoIGQ9Ik0xMCAyMmg0di00aDR2LTRoNHY0aDR2NGg0djRoLTR2NGgtNHY0aC00di00aC00eiIgZmlsbD0iIzY0ZDhmZiIvPjwvc3ZnPg==",   "providers": [     "clixad"   ],   "community": true,   "summary": {     "en": "Clixad's 15 models through its OpenAI-compatible gateway on your own Clixad account: reuse the Clixad CLI sign-in or paste its token, with the live model list, the daily free-credit window and the credit balance.",     "zh": "用自己的 Clixad 账号经其 OpenAI 兼容网关使用全部 15 个模型：复用本机 Clixad CLI 登录或粘贴 token，显示实时模型列表、每日免费额度窗口与积分余额。"   } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
@@ -314,3 +315,5 @@
       "summary": { "en": "Unofficial JetBrains Junie Lite (GPT-6 Luna) in magpie: direct Responses API with no local CLI, multi-account switching, browser PKCE / CLI login reuse / perm-* key, streaming and quota display. Distinct from agent-junie, which points Junie CLI at magpie’s models (the opposite direction).", "zh": "非官方接入 JetBrains Junie 免费模型（GPT-6 Luna）：直连 Responses API，无需本地 CLI，支持多账号切换、浏览器登录 / 复用本机 CLI 登录态 / perm-* key、流式与额度显示。与 agent-junie 方向相反——后者是把 magpie 的模型喂给 Junie CLI。" } }
   ]
 }
+
+
