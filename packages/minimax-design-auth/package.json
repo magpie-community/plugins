@@ -1,0 +1,37 @@
+{
+  "name": "@magpie-community/opencode-minimax-design-auth",
+  "version": "0.1.0",
+  "description": "OpenCode and magpie provider plugins for local MiniMax Design desktop subscriptions: China (minimax-design) and Global (minimax-design-global), with read-only AES-256-GCM session reuse, live Anthropic and OpenAI Responses models, and credit wallet usage",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "minimax",
+    "minimax-design"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "https://design.minimax.io/favicon.ico",
+    "maxConcurrency": 4
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/minimax-design-auth"
+  }
+}
