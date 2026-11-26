@@ -109,16 +109,16 @@ test("a Max window is the model's context, not Trae's dev budget (yetone/magpie#
 })
 
 test("a model without evidence keeps its dev budget on the base entry (yetone/magpie#5809)", async () => {
-  // only deepseek-v4.1-flash was measured serving a prompt past its dev
+  // only the models in WIDENED were measured serving a prompt past their dev
   // budget; a model with no such evidence keeps dev, which cannot overstate
-  const m = { config_name: "glm-5.4", usage: "chat_completion",
-    display_config: { display_name: "GLM-5.4" },
+  const m = { config_name: "glm-5.5", usage: "chat_completion",
+    display_config: { display_name: "GLM-5.5" },
     context_window_tokens: { dev: 116000, max: 1_000_000 },
-    model_detail_list: [{ model_name: "glm-5.4__dev", max_tokens: 16000 },
-      { model_name: "glm-5.4__max", max_tokens: 64000 }] }
+    model_detail_list: [{ model_name: "glm-5.5__dev", max_tokens: 16000 },
+      { model_name: "glm-5.5__max", max_tokens: 64000 }] }
   const ms = await live([m])
-  expect(ms["glm-5.4"].limit).toEqual({ context: 116000, output: 16000 })
-  expect(ms["glm-5.4-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
+  expect(ms["glm-5.5"].limit).toEqual({ context: 116000, output: 16000 })
+  expect(ms["glm-5.5-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
 })
 
 // The two realms share the machinery, so the fix is one: Trae Global's

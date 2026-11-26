@@ -3738,7 +3738,17 @@ const MAX = "-max"
 // its dev budget: only these advertise the Max window on the base entry
 // (yetone/magpie#5809). A model without that evidence keeps its dev budget,
 // which can only make an agent compact early. Extend it as models are tested.
-const WIDENED = new Set(["deepseek-v4.1-flash"])
+const WIDENED = new Set([
+  "deepseek-v4.1-flash",
+  "deepseek-v4-flash",
+  "glm-5.4",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "glm-5.3-flashx",
+  "glm-5.2",
+  "doubao-seed-2.1-pro",
+  "doubao-seed-evolving",
+])
 
   // traeRateOf is a model's consumption multiplier, from the account's list:
   // display_contact_config is a JSON string naming the rate now and the full
