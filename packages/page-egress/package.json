@@ -1,0 +1,28 @@
+{
+  "name": "@magpie-community/page-egress",
+  "version": "0.1.0",
+  "description": "Manage Magpie provider and account proxy bindings and monitor exit IP changes.",
+  "type": "module",
+  "main": "./index.mjs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-egress"
+  },
+  "engines": {"magpie": ">=0.1.4260"},
+  "files": ["index.mjs", "server.mjs", "model.mjs", "page", "ui", "README.md"],
+  "magpie": {
+    "options": {"port": 3479, "intervalSeconds": 300},
+    "page": {
+      "title": "Exit IPs",
+      "titles": {"zh": "出口 IP", "zh-TW": "出口 IP"},
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {"port": 3479, "option": "port"}
+    },
+    "actions": [
+      {"id": "egress", "menu": "provider", "title": "Manage exit IP", "titles": {"zh": "管理出口 IP"}}
+    ]
+  }
+}

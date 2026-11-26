@@ -188,6 +188,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 
 | Package | Page | Reads |
 |---|---|---|
+| [page-egress](packages/page-egress) | Saved proxy exits, per-provider/account/key bindings and persistent exit-IP change/failure history for self-hosted Magpie web | none through the bridge; its privileged loopback service uses the server's web management key to read native settings and provider config and save proxy bindings |
 | [feishu-sidebar](packages/feishu-sidebar) | Generate an AppLink to open Magpie Web in Feishu desktop’s left sidebar | none |
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 | [free-tokens](packages/free-tokens) | AIHOT's Token freebies in three tiers (already configured and usable / needs one more plugin / no plugin yet), with the plugin to install or the exact login step for each | none; its host part reads magpie's folder (providers/checkin) and fetches aihot.news/free-tokens.data once each time the plugin host starts |
