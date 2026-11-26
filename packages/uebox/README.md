@@ -63,7 +63,9 @@ folder (`uebox_dir()` on Windows, macOS, and Linux):
   folder, leaving user-owned skills untouched, so skills work with magpie's
   default link mode without manual configuration. If you edit a copied skill
   inside UEBox, the plugin detects the content change and leaves your edited
-  copy alone on both updates and unticks.
+  copy alone on both updates and unticks—future magpie updates will no longer
+  overwrite it; delete that folder in UEBox's `skills/` directory to resume
+  syncing from magpie.
 
 **Cleanup & sync state**: Before uninstalling this plugin, untick UEBox under
 Library → Instructions / MCP servers / Skills so the host removes its managed

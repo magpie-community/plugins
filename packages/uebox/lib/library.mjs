@@ -17,11 +17,13 @@ import { createHash, randomUUID } from "node:crypto"
 import { uebox_dir } from "./sync.mjs"
 
 export const VALID_MCP_SERVER_ID = /^[a-zA-Z0-9_-]{1,32}$/
+const MAGPIE_MCP_KEYS = new Set(["type", "url", "headers", "command", "args", "env"])
 
 const BLOCK_BEGIN = "<!-- magpie:begin · written by magpie from its Library -->"
 const BLOCK_END = "<!-- magpie:end -->"
 const BLOCK_RE = /<!-- magpie:begin[^\n]*-->[\s\S]*?<!-- magpie:end -->/
 const STATE_FILE = ".uebox-sync-state.json"
+const loggedCorruptStates = new Set()
 
 export function library_staging_dir(env = process.env) {
   if (env.MAGPIE_UEBOX_LIBRARY) return env.MAGPIE_UEBOX_LIBRARY
@@ -98,12 +100,26 @@ function normalizeWarned(rawWarned) {
   }
 }
 
-function readState(stagingDir) {
-  const raw = readJSON(join(stagingDir, STATE_FILE))
+function emptyState() {
   return {
-    mcp: Array.isArray(raw?.mcp) ? raw.mcp.filter((x) => typeof x === "string").sort() : [],
-    skills: normalizeSkillsState(raw?.skills),
-    warned: normalizeWarned(raw?.warned),
+    mcp: [],
+    skills: {},
+    warned: { skippedMcp: [], keptMcp: [], keptSkills: [], modifiedSkills: [] },
+  }
+}
+
+function readState(stagingDir) {
+  const file = join(stagingDir, STATE_FILE)
+  if (!existsSync(file)) return { ok: true, state: emptyState() }
+  const raw = readJSON(file)
+  if (!isPlainObject(raw)) return { ok: false, file }
+  return {
+    ok: true,
+    state: {
+      mcp: Array.isArray(raw.mcp) ? raw.mcp.filter((x) => typeof x === "string").sort() : [],
+      skills: normalizeSkillsState(raw.skills),
+      warned: normalizeWarned(raw.warned),
+    },
   }
 }
 
@@ -130,7 +146,7 @@ function mergeInstructions(existing, block) {
         .trim()
       return cleaned ? `${cleaned}\n` : ""
     }
-    return norm.replace(BLOCK_RE, block).replace(/\n*$/, "\n")
+    return norm.replace(BLOCK_RE, () => block).replace(/\n*$/, "\n")
   }
   if (!block) return norm
   const trimmed = norm.trimEnd()
@@ -272,8 +288,12 @@ export function syncMcp({
       continue
     }
     // Preserve user-set UEBox fields (trusted, allowedTools, readOnlyTools, disabled, etc.)
+    // while letting magpie's own keys (type, url, headers, command, args, env) disappear when removed
     const prevEntry = prevSet.has(id) && isPlainObject(curServers[id]) ? curServers[id] : null
-    nextServers[id] = prevEntry && isPlainObject(cfg) ? { ...prevEntry, ...cfg } : cfg
+    const theirs = prevEntry
+      ? Object.fromEntries(Object.entries(prevEntry).filter(([k]) => !MAGPIE_MCP_KEYS.has(k)))
+      : {}
+    nextServers[id] = isPlainObject(cfg) ? { ...theirs, ...cfg } : cfg
     nextManaged.push(id)
   }
 
@@ -310,7 +330,7 @@ function statSignature(dir) {
       const childFull = join(dir, childRel)
       let st
       try {
-        st = statSync(childFull)
+        st = statSync(childFull, { bigint: true })
       } catch {
         continue
       }
@@ -318,7 +338,7 @@ function statSignature(dir) {
         parts.push(`D:${childRel}`)
         walk(childRel)
       } else if (st.isFile()) {
-        parts.push(`F:${childRel}:${st.size}:${Math.trunc(st.mtimeMs)}`)
+        parts.push(`F:${childRel}:${st.size}:${st.mtimeNs}:${st.ctimeNs}:${st.ino}`)
       }
     }
   }
@@ -529,7 +549,16 @@ export function syncLibrary({ env = process.env, platform = process.platform, lo
   const targetDir = uebox_dir(env, platform)
   if (!existsSync(targetDir)) return { changed: false, reason: "no-uebox" }
   const stagingDir = library_staging_dir(env)
-  const prev = readState(stagingDir)
+  const loaded = readState(stagingDir)
+  if (!loaded.ok) {
+    if (!loggedCorruptStates.has(loaded.file)) {
+      loggedCorruptStates.add(loaded.file)
+      log(`uebox: skipping library sync: unreadable state file "${loaded.file}"`)
+    }
+    return { changed: false, reason: "unreadable-state" }
+  }
+  loggedCorruptStates.delete(join(stagingDir, STATE_FILE))
+  const prev = loaded.state
 
   const instructions = syncInstructions({ stagingDir, targetDir, log })
   const mcp = syncMcp({

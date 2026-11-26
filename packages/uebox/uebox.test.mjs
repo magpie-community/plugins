@@ -451,3 +451,130 @@ test("index.mjs syncOnce runs both models sync and library sync", () => {
   expect(res.library.changed).toBe(true)
   expect(readFileSync(join(env.UEBOX_USER_DATA, "instructions.md"), "utf8")).toContain("Use spaces.")
 })
+
+test("syncLibrary drops removed magpie MCP keys (http↔stdio switch and removed headers) while keeping user fields", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  const dstMcp = join(env.UEBOX_USER_DATA, "mcp.json")
+
+  // Start as http server with Authorization header, and user marks it trusted in UEBox
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        svc: { type: "http", url: "https://old.example/mcp", headers: { Authorization: "Bearer old" } },
+      },
+    }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+  const doc = JSON.parse(readFileSync(dstMcp, "utf8"))
+  doc.mcpServers.svc.trusted = true
+  writeFileSync(dstMcp, JSON.stringify(doc, null, 2) + "\n", "utf8")
+
+  // R8: removing headers in magpie removes headers in UEBox while keeping trusted
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        svc: { type: "http", url: "https://x.example/mcp" },
+      },
+    }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+  let after = JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.svc
+  expect(after.headers).toBeUndefined()
+  expect(after.url).toBe("https://x.example/mcp")
+  expect(after.trusted).toBe(true)
+
+  // R7: switching http -> stdio removes url and headers while keeping trusted
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        svc: { type: "stdio", command: "svc-mcp", args: [], env: {} },
+      },
+    }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+  after = JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.svc
+  expect(after.url).toBeUndefined()
+  expect(after.headers).toBeUndefined()
+  expect(after.command).toBe("svc-mcp")
+  expect(after.trusted).toBe(true)
+
+  // Switching stdio -> http removes command/args/env while keeping trusted
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        svc: { type: "http", url: "https://new.example/mcp" },
+      },
+    }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+  after = JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.svc
+  expect(after.command).toBeUndefined()
+  expect(after.args).toBeUndefined()
+  expect(after.env).toBeUndefined()
+  expect(after.url).toBe("https://new.example/mcp")
+  expect(after.trusted).toBe(true)
+})
+
+test("syncLibrary skips the tick without clobbering state or UEBox when state file is unreadable", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  const statePath = join(staging, ".uebox-sync-state.json")
+  const dstMcp = join(env.UEBOX_USER_DATA, "mcp.json")
+
+  writeFileSync(
+    join(staging, "mcp.json"),
+    JSON.stringify({ mcpServers: { fs: { type: "stdio", command: "npx", args: [], env: {} } } }),
+    "utf8",
+  )
+  syncLibrary({ env: libEnv, log: () => {} })
+  const validState = readFileSync(statePath, "utf8")
+
+  // Corrupt the state file (half-written)
+  const corrupt = '{"mcp":["fs"'
+  writeFileSync(statePath, corrupt, "utf8")
+  const logs = []
+  const r1 = syncLibrary({ env: libEnv, log: (m) => logs.push(m) })
+  expect(r1).toEqual({ changed: false, reason: "unreadable-state" })
+  expect(readFileSync(statePath, "utf8")).toBe(corrupt)
+  expect(logs).toHaveLength(1)
+
+  // A second tick while still corrupt logs nothing and still leaves UEBox & state untouched
+  writeFileSync(join(staging, "mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8")
+  const r2 = syncLibrary({ env: libEnv, log: (m) => logs.push(m) })
+  expect(r2).toEqual({ changed: false, reason: "unreadable-state" })
+  expect(readFileSync(statePath, "utf8")).toBe(corrupt)
+  expect(logs).toHaveLength(1)
+  expect(JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs).toBeDefined()
+
+  // Once the state file is valid again, fs is still managed and unticking removes it
+  writeFileSync(statePath, validState, "utf8")
+  const r3 = syncLibrary({ env: libEnv, log: () => {} })
+  expect(r3.changed).toBe(true)
+  expect(JSON.parse(readFileSync(dstMcp, "utf8")).mcpServers.fs).toBeUndefined()
+})
+
+test("syncLibrary preserves literal $& and $1 replacement patterns in instructions", () => {
+  const staging = join(dir, "uebox-library")
+  mkdirSync(staging, { recursive: true })
+  const libEnv = { ...env, MAGPIE_UEBOX_LIBRARY: staging }
+  const dstInstructions = join(env.UEBOX_USER_DATA, "instructions.md")
+
+  writeFileSync(join(staging, "instructions.md"), "Rule v1\n", "utf8")
+  syncLibrary({ env: libEnv, log: () => {} })
+  writeFileSync(join(staging, "instructions.md"), "Use $& and $1 literally.\n", "utf8")
+  syncLibrary({ env: libEnv, log: () => {} })
+  expect(readFileSync(dstInstructions, "utf8")).toBe(
+    "<!-- magpie:begin · written by magpie from its Library -->\nUse $& and $1 literally.\n<!-- magpie:end -->\n",
+  )
+})
