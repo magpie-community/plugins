@@ -413,8 +413,8 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
               method: "auto",
               async callback() {
                 try {
-                  const { code } = await session.result;
-                  const tokens = await exchangeCode({ code, verifier: pkce.verifier });
+                  const { code, state } = await session.result;
+                  const tokens = await exchangeCode({ code, verifier: pkce.verifier, state });
                   if (!tokens?.access_token) throw new Error("the token response has no access_token");
                   if (!tokens?.refresh_token) throw new Error("the token response has no refresh_token (offline scope missing)");
                   const { username, uid } = identityFromTokens(tokens);
