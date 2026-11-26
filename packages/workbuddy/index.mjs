@@ -21,6 +21,7 @@ const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before 
 const LEAD_MS = 5 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const AHEAD_MS = 10 * 86400 * 1000 // a sign-in this near its end is renewed before a request: its access token lives 28 days, its refresh token 30
 const LONG_MS = 2 * AHEAD_MS // a token minted to live this long takes AHEAD_MS; a shorter one keeps EARLY_MS, so a renewal never renews again at once
+const AGED_MS = 86400 * 1000 // and a long-lived sign-in whose access token is this old is renewed before a request too, as WorkBuddy's own app renews its sign-in each time it starts: each refresh gives a new refresh token with a new window, so a sign-in in use never comes near its end (plugins#1598)
 const AHEAD_RETRY_MS = 60 * 1000 // a failed ahead renewal waits this, doubled for each failure in a row
 const AHEAD_RETRY_MOST = 30 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000 // how long a refresh's result answers for the old refresh token
@@ -285,6 +286,14 @@ function merge(a, got) {
   else if (got.expiresIn > 0) out.expires = now + got.expiresIn * 1000
   if (got.refreshExpiresAt > 0) out.refreshExpiresAt = got.refreshExpiresAt
   else if (got.refreshExpiresIn > 0) out.refreshExpiresAt = now + got.refreshExpiresIn * 1000
+  else if (got.refreshToken) {
+    // a new refresh token whose end the answer doesn't say ends when its
+    // own claims say, else is unknown: never the old token's end, which
+    // would have it taken for ended while WorkBuddy still takes it
+    const exp = claimsOf(got.refreshToken)?.exp
+    if (exp > 0) out.refreshExpiresAt = exp * 1000
+    else delete out.refreshExpiresAt
+  }
   return out
 }
 
@@ -296,20 +305,33 @@ function stale(a) {
 // claims (WorkBuddy's tokens are RS256 JWTs with iat and exp): 0 when it
 // isn't one, or names no pair.
 function lifeOf(a) {
-  const seg = String(a?.access ?? "").split(".")[1]
-  if (!seg) return 0
+  const c = claimsOf(a?.access)
+  const iat = Number(c?.iat)
+  const exp = Number(c?.exp)
+  return iat > 0 && exp > iat ? (exp - iat) * 1000 : 0
+}
+
+// ageOf is how long ago a's access token was issued (its iat): 0 when
+// it names none.
+function ageOf(a) {
+  const iat = Number(claimsOf(a?.access)?.iat)
+  return iat > 0 ? Math.max(0, Date.now() - iat * 1000) : 0
+}
+
+// claimsOf is a JWT's claims, null when it isn't one.
+function claimsOf(token) {
+  const seg = String(token ?? "").split(".")[1]
+  if (!seg) return null
   try {
     const c = JSON.parse(Buffer.from(seg, "base64url").toString("utf8"))
-    const iat = Number(c?.iat)
-    const exp = Number(c?.exp)
-    return iat > 0 && exp > iat ? (exp - iat) * 1000 : 0
+    return c && typeof c === "object" ? c : null
   } catch {
-    return 0
+    return null
   }
 }
 
 // ahead is whether a is renewed before a request while its access token
-// still has AHEAD_MS left. magpie renews only within refreshLead of the
+// still has AHEAD_MS left, or once it is AGED_MS old. magpie renews only within refreshLead of the
 // end, and its host clamps that to a day (host.js leadOf), by when the
 // 30-day refresh token can already have ended. Desktop's sign-in is never
 // renewed ahead: its refresh token is the app's too, and spending it early
@@ -317,7 +339,7 @@ function lifeOf(a) {
 function ahead(a) {
   if (!refreshable(a) || a.source === "desktop") return false
   const left = (a.expires ?? 0) - Date.now()
-  return left > 0 && left <= AHEAD_MS && lifeOf(a) >= LONG_MS
+  return left > 0 && lifeOf(a) >= LONG_MS && (left <= AHEAD_MS || ageOf(a) >= AGED_MS)
 }
 
 // renewing is each refresh under way, by site and the refresh token it
@@ -5324,4 +5346,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, AHEAD_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

@@ -54,7 +54,14 @@ marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode k
 refreshed a minute before it ends, and the new one is saved; one minted to
 live long (the browser sign-in's access token lasts 28 days, its refresh
 token 30) is instead renewed before a request while it still has 10 days
-left, so a sign-in used every so often never runs out of refresh token. If
+left, or once it is a day old. WorkBuddy's own app renews its sign-in each
+time it starts, and each renewal gives a new refresh token with a new
+window (30 days or more), so since 0.2.42 a sign-in used at least once
+a month is never signed out; up to 0.2.41 one used only while its token
+still had more than 10 days left was, every month (plugins#1598). A renewal that
+names no end for its new refresh token takes the token's own, else
+leaves it unknown rather than keeping the old one's. WorkBuddy AI's
+sign-in ends a year after it was made, renewed or not. If
 the refresh fails, the old token is used while it lasts; an early renewal
 that fails is tried again after a minute, and after twice as long for each
 failure in a row.
