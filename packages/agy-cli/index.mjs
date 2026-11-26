@@ -3142,7 +3142,9 @@ class Proc {
   }
 
   recordToolResults(turn, messages) {
-    if (this.turn === turn) this.expectedMessages = messages.map((message) => ({ ...message }))
+    if (this.turn !== turn) return
+    this.expectedMessages = messages.map((message) => ({ ...message }))
+    parkStep(this)
   }
 
   recordAssistantResponse(turn, content) {
@@ -3189,8 +3191,10 @@ class Proc {
           return
         }
         turn.arm()
-        unpark(this.convKey)
         this.hasSentFirstTurn = true
+        // the session is about to hold this turn's messages: a restart from
+        // here resumes at them (parkStep), never at the turn before
+        if (!parkStep(this)) unpark(this.convKey)
         // agy hands Antigravity the prompt as a user's turn, where Codex's
         // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY)
         promptParts = userTurnParts(promptParts)
@@ -3618,6 +3622,7 @@ class Proc {
   finalizeTurn(turn) {
     if (turn.finalized) return
     turn.finalized = true
+    const keepStep = this.keepsParkedStep(turn)
     turn.notifyAcpTools()
     for (const socket of turn.cancelledMcpSockets) {
       try { socket.destroy() } catch {}
@@ -3650,7 +3655,10 @@ class Proc {
     }
     if (this.turn === turn) {
       this.turn = null
-      if (!this.stopping && !this.retiring) park(this)
+      if (!this.stopping && !this.retiring) {
+        if (this.canPark()) park(this)
+        else if (!keepStep && this.sessionId) unparkSession(this.convKey, this.sessionId)
+      }
     }
   }
 
@@ -3687,7 +3695,16 @@ class Proc {
     return this.stopPromise
   }
 
+  // The step parked mid-turn (parkStep) is gone with its turn: a turn the
+  // bridge ends answers its open calls with an error, and agy goes on past
+  // the step. Only an agy that died waiting for the client's results left
+  // its session as the step did, and their results go on in it.
+  keepsParkedStep(turn) {
+    return this.dead && !!turn?.hasPendingMcp()
+  }
+
   async #stop() {
+    if (this.turn && this.sessionId && !this.keepsParkedStep(this.turn)) unparkSession(this.convKey, this.sessionId)
     this.stopping = true
     this.turn?.fail(new Error("stopped"))
     this.#markDead(new Error("stopped"))
@@ -4023,6 +4040,35 @@ function unpark(convKey) {
 // instead of replaying history. Called after every completed turn and on retire.
 function park(proc) {
   if (!proc.canPark()) return
+  writeParked(proc, false)
+}
+
+// A turn in progress is parked too, at the history its session holds now:
+// the request's messages, once its prompt or a step's results went in.
+// magpie ends a plugin host in the middle of a tool loop (a recycle of a
+// host holding too much memory, an update), and the step's results then
+// reach a bridge with no live session. Before, nothing was parked during
+// a turn, so they opened a new session and the whole conversation went
+// in again, up to the model's window (chet030714 on X: a 5-hour window
+// gone in an hour); resumed, only the results go (renderResumedStepParts).
+// False when the session can't be continued from here.
+function parkStep(proc) {
+  if (!proc.sessionId || !proc.hasSentFirstTurn || proc.historyInvalid || proc.dead || proc.stopping ||
+    proc.retiring || !proc.turn || !Array.isArray(proc.expectedMessages) || !proc.expectedMessages.length) return false
+  writeParked(proc, true)
+  return true
+}
+
+// Drop the conversation's parked entry when it is this session's: a turn
+// the bridge ends with a call still open answers it with an error, and agy
+// goes on from that in the session, past the step that was parked.
+function unparkSession(convKey, sessionId) {
+  loadParked()
+  const own = (entry) => entry?.key === convKey && entry.sessionId === sessionId
+  if (own(parked.get(convKey)) || readStateFile().some(own)) unpark(convKey)
+}
+
+function writeParked(proc, midTurn) {
   loadParked()
   parked.delete(proc.convKey)
   unparked.delete(proc.convKey)
@@ -4037,6 +4083,7 @@ function park(proc) {
     instructionsInSession: !!proc.instructionsInSession,
     workDir: proc.workDir,
     workspace: proc.workspace,
+    ...midTurn ? { midTurn: true, count: proc.expectedMessages.length } : {},
     at: Date.now(),
   })
   while (parked.size > MAX_PARKED) parked.delete(parked.keys().next().value)
@@ -4062,17 +4109,51 @@ function takeParked(convKey, opts) {
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
     entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
     entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
-  const incoming = digest(historyKey(opts.history))
   const workspace = resumeWorkspace(entry.workspace)
-  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+  // A step parked mid-turn is taken only by its results: the request goes
+  // on from the parked history with the model's calls and their results.
+  if (entry.midTurn || opts.resumeStep) {
+    if (!entry.midTurn || !opts.resumeStep || !Array.isArray(opts.messages) || !Number.isSafeInteger(entry.count) ||
+      entry.count < 1 || entry.count >= opts.messages.length || !answersStep(opts.messages.slice(entry.count))) return null
+    const prefix = opts.messages.slice(0, entry.count)
+    if (!sameParkedHistory(entry, prefix)) return null
+    return { sessionId: entry.sessionId, expectedMessages: prefix, workspace, step: true }
+  }
+  if (!sameParkedHistory(entry, opts.history)) return null
+  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+}
+
+function sameParkedHistory(entry, history) {
+  if (entry.historyHash === digest(historyKey(history))) return true
   // Sans-inputs resume needs the hashes written by current park(). Old
   // entries without them still resume on an exact historyHash match only.
-  const incomingSans = digest(historyKey(stripToolUseInputs(opts.history)))
-  const incomingIds = toolUseIdentitiesKey(opts.history)
+  const incomingSans = digest(historyKey(stripToolUseInputs(history)))
+  const incomingIds = toolUseIdentitiesKey(history)
   const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
   const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
-  if (!idsOk || !sansOk) return null
-  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+  return idsOk && sansOk
+}
+
+// What follows a parked step: the model's calls (in the session already)
+// and the client's results for every one of them, nothing more.
+function answersStep(messages) {
+  let start = 0
+  while (start < messages.length && messages[start].role === "assistant") start++
+  if (start === 0 || start === messages.length) return false
+  if (messages.slice(start).some((message) => message.role === "assistant")) return false
+  const calls = new Set()
+  for (const message of messages.slice(0, start)) {
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block?.type === "tool_use" && block.id) calls.add(block.id)
+    }
+  }
+  const answered = new Set()
+  for (const message of messages.slice(start)) {
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block?.type === "tool_result" && block.tool_use_id) answered.add(block.tool_use_id)
+    }
+  }
+  return calls.size > 0 && [...calls].every((id) => answered.has(id))
 }
 
 async function retire(key, proc) {
@@ -4385,7 +4466,9 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const donor = findStatelessDonor(opts, launch)
     if (donor && lockedKeys.has(donor.convKey) && key === convKey) return await reuseStateless(donor, key, opts, "stateless_reuse")
   }
-  const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
+  // a tool result whose live call is gone (a restarted host) may still go
+  // on in the session parked at its step (parkStep)
+  const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
   const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
@@ -4412,13 +4495,15 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // Why this request got a new agy session, so a cache that never hits can be
   // traced to the check that failed (#1058). Counts only, never content.
   proc.sessionReason = why
+  proc.resumedStep = !!(proc.resumed && resume?.step)
   logSessionEvent(proc, why, {
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
+    ...resume?.step ? { step: true } : {},
     ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
     ...proc.phases,
   })
-  return { proc, history: opts.history }
+  return { proc, history: proc.resumedStep ? resume.expectedMessages : opts.history }
 }
 
 // Open a stateless request's session in an idle agy that answered one
@@ -7517,6 +7602,14 @@ function renderContinuedTurnParts(messages) {
   return renderTurnMessagesParts(messages)
 }
 
+// A session resumed at a parked step (parkStep): it has the model's calls
+// already, so the results go in as late results do (renderLateResults),
+// with whatever else the client said after them.
+function renderResumedStepParts(messages) {
+  return mergePromptParts([{ type: "text", text: "Client tool calls that were still running have finished. Their real results:\n\n" }],
+    renderTurnMessagesParts(messages.filter((message) => message.role !== "assistant")))
+}
+
 function validateBody(body) {
   if (!Array.isArray(body?.messages) || !body.messages.length) {
     throw new UnsupportedContent("a request without messages")
@@ -8782,7 +8875,10 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   const isFirstTurn = !proc.hasSentFirstTurn
   let baseParts
   let replay = null
-  if (!isFirstTurn) {
+  if (!isFirstTurn && proc.resumedStep) {
+    proc.resumedStep = false
+    baseParts = renderResumedStepParts(body.messages.slice(history.length))
+  } else if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
@@ -9409,6 +9505,9 @@ export const AntigravityBridgePlugin = async () => {
                 }
               }
 
+              // results no live call waits for: a host that ended mid-loop
+              // left the session parked at this step (parkStep)
+              acquireOpts.resumeStep = resultBlocks.length > 0 && !keptSession && !acquireOpts.dropReason
               const { proc, turn } = await acquireProc(
                 agy,
                 convKey,

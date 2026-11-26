@@ -95,9 +95,11 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.
-- **Session resume**: each finished turn is recorded. After a Magpie or plugin
-  restart, the session continues through `session/resume` as long as the history
-  and instruction hashes still match. agy's prompt cache follows the folder it
+- **Session resume**: each finished turn is recorded, and so is each step of a
+  tool loop in progress. After a Magpie or plugin restart, the session continues
+  through `session/resume` as long as the history and instruction hashes still
+  match; a restart in the middle of a tool loop sends only the step's tool
+  results, never the conversation again. agy's prompt cache follows the folder it
   runs in, so a resumed session runs in its own temporary folder again and its
   cache still hits. The state file stores session IDs, hashes and that folder,
   never message text.
