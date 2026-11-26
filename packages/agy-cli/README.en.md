@@ -41,8 +41,12 @@ channel: Antigravity's models over ACP. The differences:
 - **Sessions**: Antigravity ACP opens a new session per request and carries the
   history as context. This plugin keeps a pool of agy processes, reuses one agy
   session for one conversation, and picks it up again with `session/resume`
-  after a restart; only when that fails does it replay the history, within a
-  byte budget. When magpie's image-slim swaps an earlier image for its
+  after a restart; only when that fails does it replay the history. agy cuts
+  one prompt at 128 KiB, so with agy 1.5.17 or later a longer replay (or a
+  long paste) goes in over as many prompts as it takes, each but the last
+  cancelled before the model answers it, up to the model's window
+  (`AGY_BRIDGE_MAX_REPLAY_BYTES`); the model is told when older history had
+  to be left out. When magpie's image-slim swaps an earlier image for its
   placeholder (on Codex, a whole view_image output for one line of text), or
   magpie leaves one out to fit a size or image limit, the session holds.
 - **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
@@ -297,7 +301,9 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | After this long, a still-running client tool gets a "still running" reply |
 | `AGY_BRIDGE_START_TIMEOUT_MS` / `_TURN_TIMEOUT_MS` / `_TOOL_TIMEOUT_MS` | 60 s / 5 min / 30 min | Limits for process startup, agy silence, and waiting on a client tool result |
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | How long a suspended tool turn whose client disconnected may keep its pool slot |
-| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
+| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for one prompt (agy cuts a prompt at 128 KiB) |
+| `AGY_BRIDGE_MAX_REPLAY_BYTES` | the model's window less its output and 32K tokens, at 2 bytes a token (384 KiB for a model the plugin doesn't know) | Byte budget for history replayed into a new session, over as many prompts as it takes (agy 1.5.17+); history past it is left out and the model is told |
+| `AGY_BRIDGE_SEED_REPLAY` | on | Set to `0` to send a replay as one prompt of `AGY_BRIDGE_MAX_PROMPT_BYTES`, as before 0.1.139 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
 | `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading agy's stored sign-in |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
@@ -325,7 +331,7 @@ as "You're …"), while the same account answers with agy's prompt alone, so
 agy's `systemPrompt.append` is no longer used by default.
 `AGY_BRIDGE_SYSTEM_APPEND=1` goes back to it (in the session, when agy
 advertises it). The cost: the client's system prompt shares the first
-prompt's byte budget with replayed history (`AGY_BRIDGE_MAX_PROMPT_BYTES`),
+prompt's byte budget with replayed history (`AGY_BRIDGE_MAX_REPLAY_BYTES`),
 and agy's context compaction may summarise it.
 
 Antigravity answers a 429 "Resource has been exhausted" to a few system

@@ -47,6 +47,7 @@ for (const [name, mocks] of [
   ["duplicate-result-notice.mjs", false],
   ["image-slim.mjs", false],
   ["transient-history.mjs", false],
+  ["seed-replay.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests

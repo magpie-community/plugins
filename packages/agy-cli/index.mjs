@@ -2522,6 +2522,7 @@ class Proc {
     // of the bridge's events (initialize, session/new, the model's options)
     this.phases = {}
     this.sessionPrompts = 0
+    this.seeding = false
     allProcs.add(this)
   }
 
@@ -2918,7 +2919,7 @@ class Proc {
       // Anything that would run inside agy itself (shell, file edits,
       // questions, browser) is denied.
       const tool = ideToolOf(params?.toolCall)
-      if (tool && this.tools.some((t) => t.name === tool)) {
+      if (tool && !this.seeding && this.tools.some((t) => t.name === tool)) {
         const allow = (params?.options || []).find((option) => option?.kind === "allow_once")
         if (allow) return { outcome: { outcome: "selected", optionId: allow.optionId } }
       }
@@ -2940,6 +2941,8 @@ class Proc {
       inAccount(this.home, () => noteOfferedModels(this.configOptions))
       return
     }
+    // a seed's prompt is history: whatever agy says to it goes nowhere
+    if (this.seeding) return
     const turn = this.turn
     if (!turn || turn.done || turn.finalized) return
     const update = params.update ?? {}
@@ -2978,7 +2981,7 @@ class Proc {
     return Math.max(1, estimateInputTokens(body) - this.omittedHistoryTokens)
   }
 
-  startTurn(content, messages, model, selection) {
+  startTurn(content, messages, model, selection, seeds = []) {
     if (this.dead) throw this.deadError
     if (this.retiring) throw new BusyError("agy bridge: this conversation's process is being retired")
     if (this.turn) throw new BusyError("agy bridge: this conversation still has an unfinished response")
@@ -2991,8 +2994,36 @@ class Proc {
     this.expectedMessages = messages.map((message) => ({ ...message }))
     this.historyInvalid = false
     this.lastUsed = Date.now()
-    this.#runTurn(turn, content, model, selection).catch(() => {})
+    this.#runTurn(turn, content, model, selection, seeds).catch(() => {})
     return turn
+  }
+
+  // A replay too big for one prompt: each part but the last goes in as a
+  // prompt of its own, cancelled before the model answers it. agy keeps it
+  // in the session, so the real prompt, the last part, is read with all of
+  // them (SEED_MIN_AGY_VERSION). False when the turn was cancelled first.
+  async #seedHistory(turn, seeds) {
+    this.seeding = true
+    this.hasSentFirstTurn = true
+    try {
+      for (const parts of seeds) {
+        if (turn.cancelRequested || this.dead || this.stopping) return false
+        turn.arm()
+        this.sessionPrompts++
+        let ended = false
+        const reply = this.conn.request("session/prompt", { sessionId: this.sessionId, prompt: userTurnParts(parts) })
+        reply.then(() => { ended = true }, () => { ended = true })
+        while (!ended) {
+          await new Promise((resolve) => setTimeout(resolve, SEED_CANCEL_EVERY_MS))
+          if (!ended && !this.dead) this.conn.notify("session/cancel", { sessionId: this.sessionId })
+        }
+        await reply
+      }
+      await new Promise((resolve) => setTimeout(resolve, SEED_SETTLE_MS))
+      return !turn.cancelRequested
+    } finally {
+      this.seeding = false
+    }
   }
 
   matchesHistory(messages) {
@@ -3117,10 +3148,23 @@ class Proc {
     }
   }
 
-  async #runTurn(turn, content, model, selection) {
+  async #runTurn(turn, content, model, selection, seeds = []) {
     try {
       turn.arm()
       if (model) await this.#setModel(model, selection)
+      if (seeds.length) {
+        let seeded = false
+        try {
+          seeded = await this.#seedHistory(turn, seeds)
+        } finally {
+          // a session holding part of the history is never continued
+          if (!seeded) this.historyInvalid = true
+        }
+        if (!seeded) {
+          turn.complete({ stopReason: "cancelled" })
+          return
+        }
+      }
       const stepUsageEnabled = this.stepUsageTrusted &&
         !/^(?:0|false|off|no|disabled)$/i.test(process.env.AGY_BRIDGE_STEP_USAGE || "")
       turn.stepsFile = stepUsageEnabled
@@ -6599,6 +6643,113 @@ function renderTurnMessagesParts(messages) {
 function maxInitialPromptBytes() {
   return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES, 112 * 1024)
 }
+// A replay bigger than one prompt goes in as several (Proc#seedHistory):
+// agy keeps a prompt it was told to cancel before the model answered in the
+// session, so the model reads the whole history with the real prompt, the
+// last one. Checked on agy 1.5.17 with gemini-3.8-flash-low: 200 KB of
+// history as two cancelled prompts and a question, every marker read back,
+// and the history billed once, as the question's input. Before, a replay
+// was cut to 112 KiB, the model saw the newest turns only, and the context
+// shown was what was sent, not the conversation (yayoi_no_yume on X).
+// The budget is the model's window less its output and room for agy's own
+// prompt and the tools, at 2 bytes a token (English runs ~3.5, CJK ~3);
+// history past it is still left out, and the model is told.
+const SEED_MIN_AGY_VERSION = "1.5.17"
+// agy ignores a cancel that reaches it before the prompt, so it is sent
+// again until the prompt ends; the settle keeps a late one off the real prompt.
+const SEED_CANCEL_EVERY_MS = 25
+const SEED_SETTLE_MS = 150
+const SEED_CONTINUES = "\n[This message continues in the next one.]"
+const SEED_CONTINUED = "[Continued from the previous message.]\n"
+const REPLAY_ROOM_TOKENS = 32 * 1024
+const REPLAY_MAX_BYTES = 4 * 1024 * 1024
+const REPLAY_UNKNOWN_MODEL_BYTES = 384 * 1024
+
+function seedsHistory(version) {
+  if (/^(?:0|false|off|no)$/i.test(process.env.AGY_BRIDGE_SEED_REPLAY || "")) return false
+  const parse = (value) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
+    return match ? match.slice(1).map(Number) : null
+  }
+  const have = parse(version)
+  const need = parse(SEED_MIN_AGY_VERSION)
+  if (!have) return false
+  for (let i = 0; i < 3; i++) {
+    if (have[i] !== need[i]) return have[i] > need[i]
+  }
+  return true
+}
+
+// How much of a cold replay's text goes to agy, over as many prompts as it takes.
+function maxReplayBytes(...models) {
+  const set = process.env.AGY_BRIDGE_MAX_REPLAY_BYTES
+  if (set != null && set !== "" && Number.isFinite(Number(set)) && Number(set) >= 0) {
+    return Math.min(Math.floor(Number(set)), REPLAY_MAX_BYTES)
+  }
+  const limits = models.map((id) => (id ? modelLimits(String(id)) : undefined)).find(Boolean)
+  if (!limits) return REPLAY_UNKNOWN_MODEL_BYTES
+  return Math.max(0, Math.min(REPLAY_MAX_BYTES, (limits.context - limits.output - REPLAY_ROOM_TOKENS) * 2))
+}
+
+// The longest prefix of `text` within `limit` UTF-8 bytes, ending at a line
+// when one is in the last quarter, and never inside a surrogate pair.
+function textPrefixWithin(text, limit) {
+  if (utf8Bytes(text) <= limit) return text
+  let lo = 0
+  // a character is a byte at least: no prefix past `limit` characters fits
+  let hi = Math.min(text.length, Math.max(0, limit))
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (utf8Bytes(text.slice(0, mid)) <= limit) lo = mid
+    else hi = mid - 1
+  }
+  let end = lo
+  const code = text.charCodeAt(end - 1)
+  if (end > 0 && code >= 0xd800 && code <= 0xdbff) end--
+  const line = end > 0 ? text.lastIndexOf("\n", end - 1) : -1
+  if (line >= 0 && line + 1 >= Math.floor(end * 3 / 4)) end = line + 1
+  return text.slice(0, end)
+}
+
+// A prompt cut into prompts of at most `limit` text bytes each, markers
+// included; the last is the real prompt. Images stay where they were.
+function splitPromptParts(parts, limit) {
+  const room = Math.max(1024, limit - utf8Bytes(SEED_CONTINUES) - utf8Bytes(SEED_CONTINUED))
+  const chunks = [[]]
+  let used = 0
+  for (const part of parts) {
+    if (part?.type !== "text") {
+      chunks.at(-1).push(part)
+      continue
+    }
+    let rest = part.text
+    while (rest) {
+      let piece = textPrefixWithin(rest, room - used)
+      // a part that won't end in this prompt starts the next one whole
+      if (used && piece.length < rest.length) {
+        chunks.push([])
+        used = 0
+        piece = textPrefixWithin(rest, room)
+      }
+      // a character bigger than the room, which a room of 1 KiB never is
+      if (!piece) piece = String.fromCodePoint(rest.codePointAt(0))
+      chunks.at(-1).push({ type: "text", text: piece })
+      used += utf8Bytes(piece)
+      rest = rest.slice(piece.length)
+      // what is left goes in the next prompt, so a cut stays at a line's end
+      if (rest) {
+        chunks.push([])
+        used = 0
+      }
+    }
+  }
+  return chunks.map((chunk, i) => toPromptParts([
+    ...(i ? [{ type: "text", text: SEED_CONTINUED }] : []),
+    ...chunk,
+    ...(i < chunks.length - 1 ? [{ type: "text", text: SEED_CONTINUES }] : []),
+  ]))
+}
+
 const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
 const PINNED_USER_TASKS_BYTES = 16 * 1024
@@ -6612,7 +6763,7 @@ const REPLAY_HEAD_SHARE = 1 / 4
 const REPLAY_TURN_SHARE = 1 / 2
 const NUDGE_MAX_BYTES = 280
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
-const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]\n"
+const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit the prompt budget ...]\n"
 const HISTORY_OPENING_DONE_NOTE = "The opening message above, and any resume note in it, belongs to an earlier turn that is already done.\n"
 const utf8 = new TextEncoder()
 
@@ -7117,9 +7268,11 @@ function replayStats(history, raw, kept, keptIndices) {
   }
 }
 
-function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
+// `budgetBytes` is the whole replay's text: one prompt's by default, more
+// when the history is seeded over several (maxReplayBytes).
+function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0, budgetBytes = maxInitialPromptBytes()) {
   const { history, messages: current } = trailingMessages(body)
-  const budget = Math.max(0, maxInitialPromptBytes() - reserveBytes)
+  const budget = Math.max(0, budgetBytes - reserveBytes)
   const head = []
   if (!instructionsInSession) {
     const system = systemText(body)
@@ -8625,21 +8778,31 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
   let baseParts
+  let replay = null
   if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
   } else {
+    // A history bigger than one prompt goes in over several (seedHistory),
+    // up to the model's window, where agy can take them.
+    const budget = seedsHistory(proc.agentVersion) ? Math.max(maxInitialPromptBytes(), maxReplayBytes(model, selection?.model)) : maxInitialPromptBytes()
     const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
-      reminder.length ? promptTextBytes(reminder) + 2 : 0)
+      reminder.length ? promptTextBytes(reminder) + 2 : 0, budget)
     baseParts = initial.parts
-    // what a replay into a new session kept, in counts (plugins#1401)
-    if (initial.stats.messages_before) {
-      logSessionEvent(proc, proc.sessionReason ?? null, { ...initial.stats, prompt_bytes: promptTextBytes(baseParts) }, "replay")
-    }
+    if (initial.stats.messages_before) replay = { ...initial.stats, prompt_bytes: promptTextBytes(baseParts), budget_bytes: budget }
   }
-  const contentParts = mergePromptParts(baseParts, reminder)
-  if (promptHasImage(contentParts) && !proc.supportsImages) {
+  let contentParts = mergePromptParts(baseParts, reminder)
+  let seeds = []
+  // a later turn too: a pasted log over 128 KiB was cut by agy
+  if (seedsHistory(proc.agentVersion) && promptTextBytes(contentParts) > maxInitialPromptBytes()) {
+    const chunks = splitPromptParts(contentParts, maxInitialPromptBytes())
+    seeds = chunks.slice(0, -1)
+    contentParts = chunks.at(-1)
+  }
+  // what a replay into a new session kept, in counts (plugins#1401)
+  if (replay) logSessionEvent(proc, proc.sessionReason ?? null, { ...replay, prompts: seeds.length + 1 }, "replay")
+  if ((promptHasImage(contentParts) || seeds.some(promptHasImage)) && !proc.supportsImages) {
     if (isFirstTurn) {
       dropFromPool(proc)
       await proc.stop().catch(() => {})
@@ -8651,13 +8814,14 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     const sessionOverhead = (proc.instructionsInSession && body.system
       ? estimateInputTokens({ system: body.system, messages: [] })
       : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
-    const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts))
+    const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts) +
+      seeds.reduce((sum, parts) => sum + estimatePromptPartsTokens(parts), 0))
     const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
     const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
       rawEstimate > sentEstimate + 64
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
   }
-  return proc.startTurn(contentParts, body.messages, model, selection)
+  return proc.startTurn(contentParts, body.messages, model, selection, seeds)
 }
 
 // A magpie that installs a plugin's CLI (auth.cli) installs agy before it
