@@ -392,6 +392,13 @@ sends its model requests (`RequestBodyGzip` in both builds' product.json).
 Claude's Messages route goes as it came, and so does anything that isn't a
 chat completion: magpie's drawings (`/v2/images/generations`,
 `/v2/images/edits`) go as plain JSON, which is all the images API reads.
+So do its videos (#1585): the models the config tags `text-to-video` or
+`image-to-video` (kling-video-v3, minimax-video-h3) are started at
+`/v2/videos/generations` and polled at `/v2/videos/tasks` as WorkBuddy's
+own CLI does, signed like a chat. magpie shapes those requests itself
+(magpie's `internal/gateway/video_workbuddy.go`); the plugin only signs and
+sends them. With "Free models only" on, a video is never started, since
+each costs credits.
 
 A model's price is its `credits` ("x0.29") and the config's
 `modelPromotions`. A discount for whole days (Step-5-Preview's 独家限免) is
