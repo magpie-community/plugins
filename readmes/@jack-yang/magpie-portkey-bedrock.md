@@ -25,7 +25,8 @@ The provider id is **`portkey-bedrock`**. Its models are available to every agen
 - Input, output, cache-read and cache-write token accounting with catalog prices.
 - Cancellation, request timeouts, payload inspection and response hooks.
 - HTTP status and retry headers forwarded to magpie for its routing and failover logic.
-- When Portkey refuses a request, the error says why in its own words (a budget exhausted, a key without the scope, an AWS principal missing an IAM action) and carries Portkey's trace id for the request.
+- When Portkey refuses a request, the error says why in its own words and what to change: a budget exhausted, a key without the scope, an AWS principal missing an IAM action, an organization that only accepts saved providers or configs (`inline_…_blocked`), or one whose guardrail requires request logging (`446`). It carries Portkey's trace id for the request.
+- A request that fails in a way that may pass (`429`, `408`, `5xx`) is sent again on the same account, so the account's prompt cache is read again rather than rewritten on another.
 
 ## Install in magpie
 
@@ -44,13 +45,13 @@ magpie plugin add "$PWD/magpie-portkey-bedrock"
 Then sign in with your **Portkey gateway account** (the Providers page, or `magpie plugin login portkey-bedrock`). The sign-in form asks its fields one after another and saves the account after the last — no browser, nothing else to confirm:
 
 1. **Base URL** — your Portkey gateway's Bedrock-compatible base URL. Requests go to `/model/{encoded model id}/converse-stream`.
-2. **Provider slug** — the `x-portkey-provider` route for this account, such as `@your-aws-provider`.
+2. **Provider slug** — the `x-portkey-provider` route for this account: your Bedrock provider's slug in Portkey's Model Catalog, written `@your-bedrock-provider`. Required.
 3. **API key** — the account's Portkey gateway key.
 4. **Account name** (optional) — what magpie lists the account as. Left empty, it is named by both ends of its key, like `API key AbCd…Yz12`; the rest of the key is never shown.
 
 Names identify accounts: signing in again under a name an account already has updates that account (new key, gateway or route) instead of adding another. Give each account its own name.
 
-An empty base URL or slug means Portkey's public default shown as the field's hint (`https://api.portkey.ai/v1`, `aws-bedrock`); the hints never show your own configuration. magpie keeps each sign-in in `plugin-auth.json` under its configuration directory. Sign in again for each further account: every account keeps its own key, gateway and provider route, and magpie's routing, failover and account limits apply per account. Requests send the selected account's key as both `Authorization: Bearer …` and `x-portkey-api-key`.
+An empty base URL means Portkey's public gateway, `https://api.portkey.ai/v1`. The slug has no default: it names a provider in your own Model Catalog. The hints never show your own configuration. magpie keeps each sign-in in `plugin-auth.json` under its configuration directory. Sign in again for each further account: every account keeps its own key, gateway and provider route, and magpie's routing, failover and account limits apply per account. Requests send the selected account's key as both `Authorization: Bearer …` and `x-portkey-api-key`.
 
 Select **Providers → Portkey Bedrock**, then choose a `portkey-bedrock/…` model for your agent:
 
@@ -86,7 +87,7 @@ Three settings apply to every account, each set in two places: a value set in ma
 
   > [!NOTE]
   > Portkey documents this header for its `/v1/chat/completions` route, and this provider sends it the same way on `/model/{id}/converse-stream`. Whether the managed gateway honours it there is not documented: check a request in Portkey's Logs page after enabling the provider, and turn `log` on only if you are fine with full content being stored. The switch never removes usage records (tokens, cost, latency), only the request and response content.
-- `retry`: how many more times **Portkey's gateway** asks the same account when Bedrock answers `429` or a `5xx`, from `0` to `5`. **`2` by default.** The retry stays on the account, so its prompt cache is kept; when magpie fails over to another account instead, that account starts with no cache and pays to write it again. It costs up to 3 seconds of waiting on a request that keeps failing (Portkey waits 1s, then 2s), and less when Bedrock says how long to wait: Portkey follows Bedrock's `Retry-After`, and gives up at once rather than wait a minute or more. Set `0` to hand every failure to magpie at once. Only `429` and `5xx` are retried; anything else (`400`, `403`, `412`) goes straight back. It is sent as an inline `x-portkey-config`, so it gives way when a `configId` is set or the header is in `headers`: put `retry` in that saved config instead.
+- `retry`: how many more times this provider sends a request again **on the same account** when Bedrock answers `429`, `408` or a `5xx`, from `0` to `5`. **`2` by default.** Staying on the account keeps its prompt cache; when magpie fails over to another account instead, that account starts with no cache and pays to write it again. It costs up to 3 seconds of waiting on a request that keeps failing (1s, then 2s), and less when Bedrock says how long to wait: its `Retry-After` is followed, and a wait of a minute or more is not waited at all, so magpie hears at once and can move on. When every try fails, magpie gets the last reply and its `Retry-After`, as before. Anything else (`400`, `403`, `412`) goes straight back. Set `0` to hand every failure to magpie at once. The retries are this provider's own, not Portkey's gateway's: asking the gateway would put an inline config on every request, which an organization blocking inline configs refuses and which would replace a default config set on your API key.
 - `cacheTtl1h`: keep Claude prompt-cache checkpoints for **one hour** instead of Bedrock's five-minute default, so a conversation you come back to still reads its cache. Off by default; Claude only (Nova caches on its own, for five minutes). Portkey documents the one-hour TTL for Claude Opus 4.5, Sonnet 4.5 and Haiku 4.5; whether your Bedrock models accept it is for you to confirm, as the catalog also lists later ones Portkey's table does not. A caller's own `cacheRetention` still stands: `none` sends no checkpoint and `long` asks for the hour whatever the switch says.
 
 The rest of the file:
@@ -115,6 +116,10 @@ When the gateway will not list its models, the catalog stays and the reason goes
 - An AWS refusal naming an IAM action (for example `bedrock:ListFoundationModels`): the AWS principal behind the route is not allowed that action. Chat is unaffected; either allow the action in AWS or list the models by hand in `config.json` (see `models` above).
 
 Any other failure (a `5xx`, a body that is no error the gateway owns) is reported with its status and what the gateway said, and nothing more: there is nothing in it you could act on.
+
+### Who can see your requests in Portkey
+
+With `log` off, Portkey stores no request or response content, so neither you nor your organization's admins can read it in the Logs page: admins' log permissions govern what was stored, and nothing was. What is kept is the metadata: when, which model, which key, how long. That is Portkey's own logs. Two things are outside them, and outside anything this provider can switch: an Enterprise or self-hosted gateway can export full prompts and replies to an OpenTelemetry endpoint of its operator's choosing, switched on in the gateway's environment, with no request header to turn it off and nothing in the documentation saying `log` keeps content out of it; and a guardrail that checks content reads the request either way. If your gateway is not `api.portkey.ai` but your organization's own, its operator decides what is exported, and is who to ask. An organization can also forbid turning logging off; its requests are then refused with a `446`, and the error says to turn `log` on. The details and their sources are in [docs/portkey-reference.md](docs/portkey-reference.md).
 
 | Name | Model id | Context | Max output |
 | --- | --- | ---: | ---: |
