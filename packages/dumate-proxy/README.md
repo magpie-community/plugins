@@ -1,49 +1,28 @@
 # magpie-dumate-proxy
 
-Provider plugin for [magpie](https://usemagpie.ai) and OpenCode that exposes a local
-DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
+Provider plugin for Magpie and OpenCode. Provider id: `dumate`.
 
-## What it does
+The plugin connects directly to the official DuMate gateway. No local reverse proxy URL is required.
 
-- Live model discovery from the active DuMate desktop account through the proxy.
-- Registers chat models with `modalities.output: ["text"]`.
-- Registers `dumate-image0.1` with `modalities.output: ["image"]`, so magpie treats it as an image model.
-- Keeps the sign-in alive through `auth.refresh`, `refreshLead: 10min` and `auth.keepAlive: true`.
-- Shows a usable DuMate sign-in method in magpie; it checks `/healthz` and refuses to save an account while proxy login is missing.
-- Allows plugin fetch for `/models`, `/chat/completions`, `/images/generations` and `/images/edits`.
+## Features
 
-## Sign-in methods
+- Three sign-in methods: read-only desktop login, browser Cookie paste, and manual Cookie paste.
+- Multiple independent accounts with display-name identity and upstream `uid`.
+- Enumerates all available chat and image models, including `dumate-image2.2`, `dumate-image2.1`, `dumate-image1.2`, `dumate-image0.1`, plus the `group/image` compatibility alias.
+- Always selects the strongest available `dumate-image*` model for generation. Current strongest: `dumate-image2.2`.
+- Native DuMate image tools (`image_generate_v3/async`) with task polling.
+- Reference images are converted to structured prompts by a vision model, avoiding unsupported upstream edit endpoints and oversized data URLs.
+- `auth.usage` exposes point balance and check-in days.
+- `auth.checkin` performs automatic daily check-in and reports the actual credit delta.
 
-Three methods follow the DuMate desktop/web login model: read-only desktop `auth.json`, browser sign-in with a DevTools Network Cookie, and manual Cookie paste. Browser/manual cookies are validated directly against Baidu console before the Magpie account is saved.
-
-Requests go directly to the official DuMate gateway with a short-lived gateway token; no local proxy URL is required.
-## Image model
-
-The plugin always selects the highest available `dumate-image*` version from the DuMate catalog and its built-in version floor. Currently that is `dumate-image2.2`; future backend versions are picked automatically.
-## Quota and check-in
-
-Implements Magpie `auth.usage` and `auth.checkin`: point balance, used points, soonest pack expiry, accumulated check-in days, automatic daily check-in and actual credit delta.
-
-## Model catalog
-
-Uses the active DuMate model metadata when available and a complete built-in catalog otherwise, including chat and image models.
-## Setup
-
-Run the proxy from <https://github.com/EFate/dumate-proxy>, then add this plugin:
+## Install
 
 ```sh
 magpie plugin add @magpie-community/magpie-dumate-proxy
 ```
 
-Sign in with **DuMate local reverse proxy**. The plugin verifies `/healthz`; the proxy
-owns the DuMate desktop session and gateway token renewal.
+Sign in with one of the DuMate methods, then refresh the model list.
 
-## Environment
-
-- `DUMATE_PROXY_URL` — proxy base URL, default `http://127.0.0.1:8787/v1`
-- `DUMATE_PROXY_API_KEY` — optional proxy API key
-- `DUMATE_USER_DATA_DIR`, `DUMATE_OPENCODE_CONFIG` — optional model-catalog overrides
-
-Unofficial; requires a local DuMate desktop session with personal points.
+## Documentation
 
 See [docs/image-generation.md](docs/image-generation.md) for the full image-generation tutorial.
