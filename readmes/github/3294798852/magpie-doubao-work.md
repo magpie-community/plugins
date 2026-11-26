@@ -36,6 +36,8 @@ magpie plugin login doubaowork
 
 图形桌面需要 Chrome 或 Edge，Linux 也可使用 Chromium。登录会打开独立临时浏览器窗口。完成扫码或手机验证后，插件核验账号身份并交给 Magpie 保存。
 
+0.6.4 使用浏览器分配的临时回环端口建立登录通信，兼容旧 Windows Bun 的管道问题。启动失败会显示具体阶段和错误码，并保存最近一份私有诊断到 `~/.cache/doubao-work/magpie-browser-startup.json`。[浏览器启动排查与验收范围](docs/browser-startup.md)
+
 无桌面的 Linux 可从 0.5.2 或更高版本的 [豆包工作独立网关](https://github.com/3294798852/doubao-work-gateway) 导出账号 JSON，再通过 Magpie 的账号导入入口导入。支持供应商账号导入的 Magpie 版本也可使用以下命令。
 
 ```sh

@@ -47,6 +47,17 @@ magpie plugin options magpie-bailucode '{"baseURL":"https://your-mirror.example.
 
 卡片会显示网关是否收下这枚 key；不接受时会直接给出重新生成 key 的链接。
 
+## 协议（三面同网关）
+
+同一个 base 下三种线协议，服务的都是同一批白鹿自研模型（`bailu-*` / `yuyu-*`），没有第三方厂商模型：
+
+| 面 | 路径 | 客户端包 |
+| --- | --- | --- |
+| OpenAI Chat Completions | `POST /openapi/v1/chat/completions` | `@ai-sdk/openai-compatible` |
+| Anthropic Messages | `POST /openapi/v1/messages` | `@ai-sdk/anthropic` |
+| OpenAI Responses | `POST /openapi/v1/responses` | — |
+
+门户里的「Anthropic 协议定向额度」是**按协议**划分的配额桶（走 `messages` 这一面时用），不是 Anthropic 的模型。
 ## 协议
 
 网关同一个 base 下同时说三种协议（见下表的实测结果）。默认走 OpenAI Chat Completions，白鹿的 Anthropic 风格（thinking / 工具调用）请切到 `anthropic`：
@@ -62,6 +73,8 @@ magpie plugin options magpie-bailucode '{"protocol":"anthropic"}'
 ## 模型列表从哪来
 
 1. 有 key：`GET {base}/models`，白鹿返回什么就用什么（`{data:[…]}`、`{models:[…]}`、裸数组都认）。
+
+   > 实测（2026-11-26）：这把 key 的清单是 **9 个 id，全部 `bailu-*` / `yuyu-*`**（`bailu-auto`、`bailu-2.6`、`bailu-2.7-free`、`bailu-2.8`、`bailu-2.8-nvfp8`、`bailu-apex-2.1`、`bailu-apex-2.5`、`bailu-apex-2.7`、`yuyu-air`）。当天早些时候同一个接口还返回过 27 个（多出 `bailu-image-*`、`bailu-video-*`、`bailu-ocr`、`bailu-edge` 等），数量由上游决定；出现 `503` 时插件保留上一次的列表。
 2. 拉不到（key 没配、网关 5xx、被 Cloudflare 拦）：回落到内置清单（`bailu-2.9-preview`、`bailu-2.8`、`bailu-2.7`、`bailu-apex-2.7`、`yuyu-air`），保证 provider 至少可用，不会把模型选择器清空。
 3. 你在 magpie 配置里自己写的 `models` 永远最优先，不会被覆盖。
 
@@ -87,11 +100,14 @@ magpie plugin options magpie-bailucode '{"protocol":"anthropic"}'
 
 不想手动复制 key，就走这条路：`magpie plugin login bailucode` 选「浏览器登录白鹿通行证」。
 
-- **已经有一份能用的通行证会话**（就是下面那个 `session.txt`）：不弹浏览器，1~3 秒内直接向门户 `POST /api/api_keys {"action":"get_keys"}` 取回你账号下的 key，顺手把额度读一遍。
+- **这个账号已经有一份能用的通行证会话**（存在该账号自己的 magpie 元数据里，随账号走）：不弹浏览器，1~3 秒内直接向门户 `POST /api/api_keys {"action":"get_keys"}` 取回你账号下的 key，顺手把额度读一遍。
 - **没有会话或已过期**：开一个独立 profile 的 Chrome（不动你日常浏览器），等你用邮箱验证码登录；它每 2 秒从 CDP 取一次 cookie，页面一变成已登录就收工，然后同样去取 key。
 - 账号下一个可用 key 都没有时，会用 `{"action":"create_key","key_name":"magpie"}` 建一枚再交给你。
 
-这条路径只读网关、只读门户的 `get_keys`；唯一的写操作是「你没有 key 时建一枚」，有 key 就绝不重复建。
+这条路径会写的东西只有两处，都是门户自己的接口：
+
+- `POST /api/api_keys {"action":"create_key"}` —— **只在你账号下一枚可用 key 都没有时**才建（有 key 绝不重复建）
+- `POST /api/api_keys {"action":"claim_*"}` —— 你主动点签到时才发（见「签到」一节）
 ## 签到（今日可领）
 
 门户的「今日可领」有白鹿编码签到、Anthropic 协议定向、白鹿 API 总额度补充。插件把它接成 magpie 的签到钩子（`auth.checkin`），magpie 按北京时间每天自动问一次：
@@ -132,18 +148,25 @@ magpie accounts checkin            # 立刻跑一次
 
 会话放一次就行，登录流程里一个点击都不多：
 
+浏览器登录会把会话**存进那个账号自己的 metadata**，不需要文件，也不会让另一个账号读到它。
+
+要手动指定（比如同机多账号、或 CI）：
+
 ```bash
-# Windows
-notepad %LOCALAPPDATA%\magpie-bailucode\session.txt   # 粘 Cookie 整行，保存
+magpie plugin options magpie-bailucode '{"session":"<Cookie 整行>"}'      # 显式给
+export BAILUCODE_SESSION='<Cookie 整行>'                                     # 或环境变量
+magpie plugin options magpie-bailucode '{"sessionFile":"C:/secure/s"}'     # 或指名文件（写入 0600、目录 0700）
 ```
+
+插件不再自动读任何默认路径下的会话文件 —— 那正是两个账号互相串额度的原因。
 
 其它放法（优先级从高到低）：插件选项 `{"session":"…"}`、环境变量 `BAILUCODE_SESSION`、`~/.config/magpie-bailucode/session`、`~/.magpie-bailucode/session`。
 
 拿 Cookie：在已登录的 bailucode 页面 F12 → Network → 刷新 → 第一条 `auth/` 请求 → Request Headers 的 `Cookie:` 整行。
 
-- **只读**：插件对门户只发 `GET /auth/`，不碰任何写接口（`/api/logout` 这种尤其不碰 — 它会直接登出账号）。
+- **读的是什么**：额度只来自 `GET /auth/`（只读页面）。会写门户的只有两处：没有可用 key 时 `create_key`，以及你主动签到时 `claim_daily_checkin` / `claim_anthropic_promo` / `claim_openclaw_promo`。`/api/logout` 这类登出接口永不调用。
 - 会话过期会明确报「通行证会话已过期」，并在提示里给出文件路径；重新贴一次即可。
-- Cookie 等同账号登录凭证，别提交到仓库。文件放在 `%LOCALAPPDATA%`，不进 git。
+- Cookie 等同账号登录凭证：默认只存在 magpie 的账号元数据里；如果你用 `sessionFile` 指名文件，插件按 0600 写、目录 0700。别提交到仓库。
 
 ## 已知限制
 
@@ -175,7 +198,7 @@ tail -f "$LOCALAPPDATA/Magpie/logs/app.log"   # 插件日志：service=bailucode
 - 模型列表空着：key 没配或网关拒绝，看卡片上的错误。
 - `403` + HTML：Cloudflare 拦截出口，见上。
 - `401 invalid_api_key`：key 失效/删除了，去 key 页面重新生成。
-- 额度显示「会话已过期」：`%LOCALAPPDATA%\magpie-bailucode\session.txt` 里的 Cookie 过期了，重新登录门户覆盖一次。
+- 额度显示「会话已过期」：这个账号的通行证会话过期了，重新跑一次「浏览器登录白鹿通行证」即可（会话按账号保存）。
 - 登录时报 `json: cannot unmarshal bool into Go struct field .error of type string`：0.1.0 的地址校验返回了 `true`，magpie 要的是字符串。0.1.1 已修；`magpie plugin update` 即可。
 
 ## 卸载

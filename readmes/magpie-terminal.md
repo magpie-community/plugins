@@ -31,11 +31,37 @@ magpie plugin list                 # 确认列表里出现 magpie-terminal
 
 装完在 magpie 侧栏点「终端」图标进入。依赖随包安装，不需要本地编译。
 
+### 三种安装方式
+
+| 方式 | 命令 | 更新方式 |
+|---|---|---|
+| npm registry（推荐） | `magpie plugin add magpie-terminal` | `magpie plugin update` |
+| GitHub 直装 | `magpie plugin add github:guofengli1214-cmd/magpie-terminal` | 重新 `add` 同一 spec |
+| 本地目录（开发用） | `magpie plugin add /绝对路径/magpie-terminal` | `cd` 进去 `git pull`，再重启 magpie |
+
+本地目录安装时设置页会写明「本地目录安装：在仓库里 `git pull` 后重启 magpie 即可」——插件自己**不会**发请求检查更新，因为它不知道你有没有拉过新代码。
+
+registry 安装时设置页的「检查更新」会去问 GitHub Releases 看有没有新版本；GitHub 直装同理（仓库地址是同一个），但它不会随 `magpie plugin update` 自动升级，要重新 `add` 同一 spec。
+
+### 从旧版本升级（0.1.x → 0.2.x）
+
+旧版是从裸目录或单文件 `add` 进来的，插件标识可能与现在的包名不同，所以**不能只 `update`**，要走一遍「先摘干净、再按新方式装」：
+
+1. 先记下现在是怎么装的：`magpie plugin list`，找到终端插件的 spec。
+2. 移除旧条目：`magpie plugin rm magpie-terminal`。如果你的旧条目是裸路径而不是包名，`rm` 时就用那个名称/路径；同名有多条时 `rm` 一次只删一条，重复执行直到 `list` 里没有为止。
+3. 按新方式装回去：`magpie plugin add magpie-terminal`（或上面表格里的另两种）。
+4. **完全退出 magpie 再打开**——不是关窗口，是退出进程。旧进程还占着端口，会和新宿主冲突。
+5. 打开终端面板确认能开出 shell；设置页「关于」里的版本应显示 `0.2.2`。
+
+升级会丢掉正在运行的终端会话（magpie 的插件宿主机制决定，非本插件可控），有正在跑的命令先跑完再升。
+
 ### 更新
 
 ```bash
 magpie plugin update               # 把每个插件升到最新版
 ```
+
+`magpie plugin update` 只对 registry / npm 安装生效；本地目录安装请用 `git pull`；想知道自己装的是哪种，看设置页「关于」里的「安装方式」。
 
 插件重启后终端会话会重建（这是 magpie 的插件宿主机制，非本插件控制）。
 

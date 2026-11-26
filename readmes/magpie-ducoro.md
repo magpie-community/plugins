@@ -6,94 +6,89 @@
 
 [**English**](./README.md) | [中文](./README-zh-CN.md)
 
-Configure Ducoro Bots in Magpie to follow the default model or use their own model, connectors, skills, and instructions.
+A Magpie plugin for setting up Ducoro Bots with models, connectors, skills, and instructions from Magpie.
 
-[![GitHub release](https://img.shields.io/github/v/release/YE4IM/magpie-ducoro)](https://github.com/YE4IM/magpie-ducoro/releases/latest) [![MIT license](https://img.shields.io/github/license/YE4IM/magpie-ducoro)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2359D1?style=flat&labelColor=382A26)](./LICENSE) [![Version: 0.4.11](https://img.shields.io/badge/Version-0.4.11-A34422?style=flat&labelColor=382A26)](./package.json) [![Language: JavaScript](https://img.shields.io/badge/Language-JavaScript-993D58?style=flat&labelColor=382A26)](./lib/)
 
-[Quick start](#quick-start)
+[Go to Quick Start](#quick-start)
 
-<img src="./assets/ducoro-plugin.png" alt="Ducoro plugin Sync settings showing the switches for the gateway connection, Bot models, connectors, skills, and instructions" width="720">
+<img src="./assets/ducoro-plugin.png" alt="Ducoro in Magpie, showing sync switches for the gateway connection, Bot models, connectors, skills, and instructions" width="640">
 
-*Ducoro’s Sync settings with example data.*
-
-[Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Changelog](#changelog)
+[Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Changelog](#changelog)
 
 ## Overview
 
-Manage synchronization from the Ducoro plugin page in Magpie. Review assignments and removals before saving, then check what Ducoro wrote, read back, and loaded into a session.
+Use Magpie’s default model across Bots or configure each Bot individually. Preview what sync will change, then check which settings Ducoro wrote and which it verified by reading them back.
 
 ## Requirements
 
-- Magpie with support for plugin agents and page services (`magpie.agent` and `magpie.page.service`). [Magpie](https://usemagpie.ai)
-- Ducoro installed and signed in, with its background service running and access to the local device and Bots you want to manage. [Ducoro](https://ducoro.ai)
-- `ducoro-cli` on the `PATH` used to launch Magpie. [Download the Ducoro CLI](https://ducoro.ai/download/cli)
+- A Magpie installation with support for plugin agents and page services. [Magpie](https://usemagpie.ai)
+- Ducoro installed and signed in, with its background service running and access to the device and Bots you want to manage. [Ducoro](https://ducoro.ai)
+- `ducoro-cli` available on the `PATH` Magpie uses. [Ducoro CLI download](https://ducoro.ai/download/cli)
 
 ## Installation
 
-In Magpie, open **Plugins → Add a plugin** and enter `github:YE4IM/magpie-ducoro#v0.4.11`, or use the Magpie CLI.
+In Magpie, open **Plugins → Add a plugin** and enter `github:YE4IM/magpie-ducoro#v0.4.11`. From a terminal, you can use the Magpie CLI.
 
 ```bash
 magpie plugin add github:YE4IM/magpie-ducoro#v0.4.11
 ```
 
-You can also download a source archive, extract it, and register the extracted folder by absolute path. [GitHub Release](https://github.com/YE4IM/magpie-ducoro/releases/tag/v0.4.11)
+To install from an archive, extract the release source and add the extracted folder by absolute path. Stop the current plugin host before switching versions. [Release v0.4.11](https://github.com/YE4IM/magpie-ducoro/releases/tag/v0.4.11)
 
-## Quick start
+## Quick Start
 
-1. In Magpie, connect **Ducoro** from the **Agent** page and select a model. Then open **Ducoro** in the sidebar.
-2. Open **Sync settings** and review the connection slug, enabled resource types, and target Bots. Use **Bot resources** for individual assignments.
-3. Select **Preview changes** to review additions and removal reasons. The preview also flags first-time gateway connection creation. Select **Preview and save** and confirm to save the settings and start synchronization.
-4. Open **Sync status** to check writes and read-back. To confirm that Ducoro loaded the new settings, start a new session with a target Bot and check its session load status.
+1. On Magpie’s **Agent** page, connect Ducoro and choose a model. Then open **Ducoro** from the sidebar.
+2. In **Sync settings**, check the connection slug, enabled resource types, and target Bots. Open **Bot resources** to assign resources to individual Bots.
+3. Select **Preview changes** to check additions, removals, and whether sync will create a gateway connection. To apply edited settings, select **Preview and save** and confirm.
+4. In **Sync status**, check the writes and readback results. Select **Retry sync** if you need to run sync again with the saved settings. To confirm that a Bot loads the settings, start a new session with that Bot in Ducoro and check the synced settings there.
 
 > [!NOTE]
-> The diagnostics command was verified during this update. The plugin’s live diagnostics service was unavailable in this environment, so installation, first sync, and session loading remain unverified.
+> Plugin installation and the first sync were unverified in the documentation environment. The read-only diagnostics command ran, but the plugin’s live service was unreachable there.
 
 ## Usage
 
-- **Models** can follow Magpie's default or be assigned per Bot. The plugin matches model capabilities against Ducoro's catalog, with manual overrides available.
-- **Connectors and skills** can be assigned globally or per Bot. An empty per-Bot list clears this plugin's assignments for that resource type, while resources from other sources stay available. For Ducoro account connectors, connect the service in Ducoro first and select the allowed tools for each Bot.
-- **Instructions and subagents** sync to the selected targets. Instructions are written to a plugin-managed block. Subagents require explicit selection.
-- **Plans** share model, connector, skill, and instruction settings across Bots. Individual overrides take precedence over inherited values.
-- **Find Bots by resource** shows which Bots receive a skill or library connector, where the assignment comes from, and the most recent verification.
-- **Compare two Bots** shows differences in model routes, resource assignments, account tool permissions, and verification. Open the corresponding settings from each result.
-- **Plan trials** start from **Try with one Bot** in the save preview for a shared plan. After saving, the selected Bot receives the trial plan and the other Bots keep the current plan. Use **Plan trial** to verify the Bot, roll out the changes, or restore the original plan. Start a new session in Ducoro to confirm loading.
-- **Backup and restore** provides management-record backups and configuration checkpoints. After restoring management records, select **Preview impact and resume sync** to review the changes and resume synchronization.
+| To | In Ducoro’s plugin page |
+| --- | --- |
+| Choose a model | Follow Magpie’s default or assign a model per Bot. Override the automatic capability match when needed. |
+| Assign connectors and skills | Choose global or per-Bot assignments. An empty per-Bot list clears the plugin’s assignments for that resource type. To assign tools from a Ducoro account connector, connect the account in Ducoro first. |
+| Sync instructions and subagents | Select the target Bots. The plugin updates its managed instruction block and syncs explicitly selected subagents. |
+| Share settings across Bots | Use a plan for models, connectors, skills, and instructions. Individual Bot choices take precedence. In the save preview, select **Try with one Bot** to verify a change before rolling it out. |
+| Audit assignments | Use **Find Bots by resource** to trace a skill or library connector. Use **Compare two Bots** to review differences in model routes, resources, account tool permissions, and verification. |
+| Restore saved records | Open **Backup and restore**. After restoring management records, select **Preview impact and resume sync** to review the changes and resume synchronization. |
 
-From the extracted source folder, run a read-only diagnostic. The `--doctor` flag checks the Ducoro background service. Use `--lang zh` for Chinese or `--json` for structured output.
+The plugin follows Magpie’s language setting. Simplified and Traditional Chinese use the Chinese interface. Other languages use English.
+
+## Configuration
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `connectionSlug` | `magpie-ducoro` | Ducoro model connection ID |
+| `servicePort` | `3487` | Plugin page-service port on `127.0.0.1` |
+| `modelScope`, `mcpScope`, `skillsScope` | `global` | Set to `agents` for per-Bot assignments |
+| `targetAgents` | `[]` | Limit models, instructions, subagents, and per-Bot library assignments to selected Bots |
+
+Management records default to `~/.config/magpie/ducoro-bridge/state.json`. `DUCORO_BRIDGE_STATE_DIR` takes precedence when set. Otherwise, the plugin uses `magpie/ducoro-bridge` under `XDG_CONFIG_HOME` when available.
+
+## Troubleshooting
+
+If the plugin page fails to load, check that Magpie can find `ducoro-cli`, the Ducoro background service is running, and the configured `servicePort` is available. Run this read-only diagnostic from a checkout or an extracted release directory.
 
 ```bash
 node diagnostics-cli.mjs --doctor
 ```
 
-The plugin page follows Magpie's language. Simplified and Traditional Chinese use Chinese. Other languages use English.
+If you changed `servicePort`, pass its value with `--port`. Use `--lang zh` for Chinese or `--json` for structured output.
 
-## Configuration
+If unreadable management records pause sync, keep the original `state.json` and its journal. Review a valid backup in **Backup and restore**, then preview the impact before resuming.
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `connectionSlug` | `magpie-ducoro` | ID of the Ducoro model connection |
-| `servicePort` | `3487` | Page-service port on `127.0.0.1` |
-| `modelScope`, `mcpScope`, `skillsScope` | `global` | Use `agents` for per-Bot assignments |
-| `targetAgents` | `[]` | Restrict model, instruction, subagent, and per-Bot library resource sync to selected Bots |
-| `botModels` | `{}` | Model selections by Bot ID |
-| `resourceAssignments` | `{}` | Library connector and skill selections by Bot ID |
-| `accountConnectors` | `{}` | Allowed and denied account connector tools by Bot ID and connector slug |
-| `modelCapabilityRefs` | `{}` | Manual references to model capabilities |
-| `subagentNames` | `[]` | Explicitly selected subagents |
-
-Management records default to `~/.config/magpie/ducoro-bridge/state.json`. The plugin uses `DUCORO_BRIDGE_STATE_DIR` when set, or the `magpie/ducoro-bridge` subdirectory of `XDG_CONFIG_HOME` when available.
-
-## Troubleshooting
-
-- **The page fails to load.** Check that Magpie can find `ducoro-cli`, the Ducoro service is running, and the configured `servicePort` is available.
-- **Sync pauses because management records are unreadable.** Keep the original `state.json` and its journal. Open **Backup and restore**, review a valid backup, and use the resume review after restoring.
-- **A sync lock remains after shutdown.** Stop all plugin hosts, then run the inspection command from a checkout. The command reports the lock owner and any available recovery instructions.
+If a sync lock remains after shutdown, stop all plugin hosts before inspecting the lock.
 
 ```bash
 npm run lock:inspect -- /absolute/path/to/ducoro-bridge
 ```
 
-Before switching versions, stop the current plugin host. If you are downgrading, merge the journal into the snapshot from the current version's directory before loading the older version.
+To downgrade, stop the current host and compact the existing state journal using the current version before loading the older version.
 
 ```bash
 npm run state:compact -- /absolute/path/to/state.json
@@ -101,8 +96,8 @@ npm run state:compact -- /absolute/path/to/state.json
 
 ## Changelog
 
-[Version history and release notes](./docs/CHANGELOG.md) · [Latest release notes](./docs/RELEASE-NOTES.md) · [GitHub Releases](https://github.com/YE4IM/magpie-ducoro/releases)
+[Version history](./docs/CHANGELOG.md) · [Latest release notes](./docs/RELEASE-NOTES.md) · [GitHub Releases](https://github.com/YE4IM/magpie-ducoro/releases)
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+[MIT License](./LICENSE).
