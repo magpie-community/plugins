@@ -1,0 +1,44 @@
+{
+  "name": "magpie-dumate-proxy",
+  "version": "0.1.0",
+  "description": "DuMate local reverse proxy provider for Magpie/OpenCode: OpenAI-compatible LLM chat and image-generation models with live model discovery and background keep-alive",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "src/config.mjs",
+    "src/catalog.mjs",
+    "src/paths.mjs",
+    "src/models.default.json",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "dumate",
+    "proxy",
+    "image-generation"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/dumate-proxy"
+  },
+  "magpie": {
+    "name": "DuMate Proxy",
+    "summary": {
+      "zh": "DuMate 本地反代：OpenAI 兼容 LLM 与生图模型，自动发现模型并在后台保活。",
+      "en": "DuMate local reverse proxy: OpenAI-compatible LLM and image-generation models, live discovery and background keep-alive."
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxYjZlZjMiLz48cGF0aCBkPSJNMTggNDJjOC0xOCAyMC0yNiAzMC0yOC0yIDEyLTEwIDI0LTIyIDMwbC04IDR6IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNSIgcj0iNSIgZmlsbD0iI2ZmZDE2NiIvPjwvc3ZnPg==",
+    "maxConcurrency": 4
+  }
+}
