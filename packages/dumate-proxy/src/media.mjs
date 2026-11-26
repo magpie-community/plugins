@@ -6,19 +6,44 @@ export const IMAGE_ENDPOINTS = {
   "dumate-image0.1": "/v2/tools/dumate/image_generate_v3/async",
 }
 export const DEFAULT_IMAGE_MODEL = "dumate-image2.2"
+export const KNOWN_IMAGE_MODELS = Object.keys(IMAGE_ENDPOINTS)
 const POLL_TIMEOUT_MS = Math.max(5000, Number(process.env?.DUMATE_MEDIA_POLL_TIMEOUT_MS) || 120000)
 const POLL_INTERVAL_MS = Math.max(500, Number(process.env?.DUMATE_MEDIA_POLL_INTERVAL_MS) || 1500)
 
-export function normalizeImageModel(model) {
-  const value = String(model ?? "").trim().toLowerCase()
-  if (IMAGE_ENDPOINTS[value]) return value
-  return DEFAULT_IMAGE_MODEL
+function versionParts(id) {
+  const match = /dumate-image(\d+(?:\.\d+)*)/i.exec(String(id ?? ""))
+  return match ? match[1].split(".").map((part) => Number(part) || 0) : [0]
+}
+
+export function compareImageModel(a, b) {
+  const left = versionParts(a)
+  const right = versionParts(b)
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0)
+    if (diff) return diff
+  }
+  return 0
+}
+
+export function selectStrongestImageModel(available = []) {
+  const ids = [...new Set([...KNOWN_IMAGE_MODELS, ...(Array.isArray(available) ? available : [])])]
+    .filter((id) => typeof id === "string" && /^dumate-image/i.test(id))
+  ids.sort(compareImageModel)
+  return ids.at(-1) || DEFAULT_IMAGE_MODEL
+}
+
+export function normalizeImageModel(model, available = []) {
+  return selectStrongestImageModel(available)
+}
+
+export function imageEndpointForModel(model) {
+  return IMAGE_ENDPOINTS[model] || IMAGE_ENDPOINTS[DEFAULT_IMAGE_MODEL]
 }
 
 export function buildImagePayload(options = {}) {
   const prompt = String(options.prompt ?? "").trim()
   if (!prompt) throw new Error("prompt 不能为空")
-  const model = normalizeImageModel(options.model)
+  const model = normalizeImageModel(options.model, options.availableModels)
   const payload = {
     query: prompt,
     model,
@@ -33,7 +58,7 @@ export function buildImagePayload(options = {}) {
   }
   const images = Array.isArray(options.imageUrls) ? options.imageUrls.filter((url) => typeof url === "string" && url) : []
   if (images.length) payload.imageUrls = images
-  return { model, path: IMAGE_ENDPOINTS[model], payload }
+  return { model, path: imageEndpointForModel(model), payload }
 }
 
 async function mediaRequest(token, method, path, body, fetchImpl, timeout = 30000) {

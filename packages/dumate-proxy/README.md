@@ -17,6 +17,9 @@ DuMate reverse proxy as an OpenAI-compatible provider. Provider id: `dumate`.
 Three methods follow the DuMate desktop/web login model: read-only desktop `auth.json`, browser sign-in with a DevTools Network Cookie, and manual Cookie paste. Browser/manual cookies are validated directly against Baidu console before the Magpie account is saved.
 
 Requests go directly to the official DuMate gateway with a short-lived gateway token; no local proxy URL is required.
+## Image model
+
+The plugin always selects the highest available `dumate-image*` version from the DuMate catalog and its built-in version floor. Currently that is `dumate-image2.2`; future backend versions are picked automatically.
 ## Quota and check-in
 
 Implements Magpie `auth.usage` and `auth.checkin`: point balance, used points, soonest pack expiry, accumulated check-in days, automatic daily check-in and actual credit delta.

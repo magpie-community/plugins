@@ -235,6 +235,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
   const catalog = input.catalog ?? defaultLoadCatalog(config)
   const fetchImpl = input.fetchImpl ?? fetch
   const models = toMagpieModels(catalog)
+  const imageModelIds = Object.keys(catalog?.models ?? {}).filter((id) => catalog.models[id]?.kind === "image" || /^dumate-image/i.test(id))
 
   const seat = (cookies, source, info = {}) => {
     const label = String(info.displayName || info.name || info.bceAccountId || PROVIDER_NAME)
@@ -493,6 +494,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
                   n: body.n,
                   size: body.size,
                   responseFormat: "url",
+                  availableModels: imageModelIds,
                 }, token, fetchImpl)
                 const completion = toChatCompletion({ data: generated.data }, requested, { ...body, model: requested })
                 if (body.stream) return new Response(toChatSSE(completion, requested), { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } })
@@ -517,6 +519,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
                 quality: body.quality,
                 responseFormat: body.response_format || "url",
                 imageUrls: described.imageUrls,
+                availableModels: imageModelIds,
               }, token, fetchImpl)
               return json(200, { created: generated.created, data: generated.data, model: generated.model })
             }
@@ -566,6 +569,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
                 size,
                 responseFormat,
                 imageUrls: described.imageUrls,
+                availableModels: imageModelIds,
               }, token, fetchImpl)
               return json(200, { created: generated.created, data: generated.data, model: generated.model })
             }
