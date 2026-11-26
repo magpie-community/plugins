@@ -568,6 +568,38 @@ function refusalOf() {
   return refusals.get(currentHome() ?? "") || ""
 }
 
+// An account Google disabled (agy's "This service has been disabled in
+// this account for violation of Terms of Service"), by the turn that said
+// so, and when: its requests are refused at once for a while, no agy
+// started, no session opened, nothing sent to Google. Each retry of a
+// request an account was refused on had started a new agy session, so
+// magpie's ten tries in a minute were ten new sessions at Google for a
+// suspended account (dmiedog, #1563). Ten minutes, not for good: an
+// account whose appeal is granted is asked again after them.
+const disabledHeld = new Map()
+const DISABLED_HOLD_MS = 10 * 60_000
+
+function holdDisabled(home) {
+  disabledHeld.set(home ?? "", Date.now())
+}
+
+// disabledNow is how long ago this account was found disabled, null when
+// it wasn't or the hold is over.
+function disabledNow(home) {
+  const at = disabledHeld.get(home ?? "")
+  if (at == null) return null
+  const ago = Date.now() - at
+  if (ago >= DISABLED_HOLD_MS) {
+    disabledHeld.delete(home ?? "")
+    return null
+  }
+  return ago
+}
+
+function isDisabledRefusal(error) {
+  return error?.statusCode === 403 && String(error.message ?? "").endsWith(ACCOUNT_DISABLED_REFUSED)
+}
+
 // refusalNow is the account's refusal, asking agy once when no listing of
 // it has said yet (a request before the first models()).
 async function refusalNow(agyPath) {
@@ -3288,9 +3320,13 @@ class Proc {
         turn.complete({ stopReason: "cancelled" })
         return
       }
+      if (isDisabledRefusal(error)) holdDisabled(this.home)
       if (error instanceof AgentTurnError && !this.dead && !turn.calls.length) {
         // agy kept the session; a retry of the same request continues in it.
         this.expectedMessages = turn.baseHistory
+        // the conversation's opening failed: its retry is that opening again,
+        // not a new conversation (#1563)
+        this.failedOpening = !turn.baseHistory.length
         turn.fail(error)
         return
       }
@@ -4473,10 +4509,17 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     }
     const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
       isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
+    // magpie trying again the opening whose turn failed: it goes on in the
+    // session that turn failed in, as a later turn's retry does, instead of
+    // a new session (and a new agy) per try. dmiedog's suspended account
+    // had five sessions a conversation in one failing minute (#1563). Only
+    // while the opening is unanswered: an answered one's session holds more
+    // than the empty history, so matchesHistory turns the next one away.
+    const retriedOpening = isFreshConversation && existing.failedOpening
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
       (existing.matchesHistory(matchedHistory) || continuedFresh)
-    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
+    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh || retriedOpening)) {
       if (continuedFresh) {
         const first = Array.isArray(opts.messages) ? opts.messages[0] : null
         // Snapshot the unsent tail before openingText advances to this turn.
@@ -9490,6 +9533,11 @@ export const AntigravityBridgePlugin = async () => {
             // would go out as the account agy holds now
             if (heldByAnother(stored, email)) {
               return jsonError(401, notHeldError(email), undefined, { headers: { "X-Magpie-Sign-In": "expired" } })
+            }
+            const disabledAgo = disabledNow(home)
+            if (disabledAgo != null) {
+              logBridgeEvent(null, null, "refuse_held", "account_disabled", {}, { held_ms: disabledAgo })
+              return jsonError(403, `agy bridge: ${ACCOUNT_DISABLED_REFUSED}`, undefined, { headers: NO_RETRY_HEADERS })
             }
             const imgKind = imageRoute(requestUrl)
             if (imgKind) {

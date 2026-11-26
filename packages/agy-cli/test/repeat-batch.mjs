@@ -12,7 +12,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import {
-  baseBody, continueWithToolResults, createBridgeKit, readSse, sleep, tick,
+  MESSAGES_URL, baseBody, continueWithToolResults, createBridgeKit, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 async function withKit(options, fn) {
@@ -1671,6 +1671,77 @@ test("agy 1.5.10's banned-account ending fails the turn as a no-retry 403, strea
     assert.equal(response.status, 403)
     assert.equal(response.headers.get("x-should-retry"), "false")
     assert.equal(body.error.type, "permission_error")
+  })
+})
+
+// dmiedog (#1563): a suspended account's request failed with the banned
+// ending, magpie read the stream's 403 as a 502 and tried again, ten
+// times in a minute, and each try started a new agy session that asked
+// Google again (session_new: 1 no_live + 4 fresh_after_first per
+// conversation). Once a turn says the account is disabled, its requests
+// are refused at once: no agy started, no prompt sent. Another account
+// is not held, and the hold ends.
+test("#1563: a disabled account's next requests are refused with no agy session, for a while", async () => {
+  for (const banned of [BANNED, BANNED_1510]) {
+    await withKit({}, async (kit) => {
+      const log = captureStderr()
+      try {
+        markerAgent(kit, [banned.slice(0, 20), banned.slice(20)])
+        const first = await kit.request(baseBody({ metadata: { user_id: "held-1" },
+          messages: [{ role: "user", content: "hello" }] }))
+        assert.equal(sseError(await first.text()).status, 403)
+        const spawns = kit.acpSpawns.length
+        const asked = prompts(kit).length
+        assert.equal(asked, 1)
+        // magpie's retry of the same request, streamed, and another
+        // conversation of the same account, not streamed
+        for (const body of [
+          baseBody({ metadata: { user_id: "held-1" }, messages: [{ role: "user", content: "hello" }] }),
+          baseBody({ metadata: { user_id: "held-2" }, messages: [{ role: "user", content: "another" }], stream: false }),
+        ]) {
+          const again = await kit.request(body)
+          assert.equal(again.status, 403)
+          assert.equal(again.headers.get("x-should-retry"), "false")
+          const error = (await again.json()).error
+          assert.equal(error.type, "permission_error")
+          assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+        }
+        assert.equal(kit.acpSpawns.length, spawns, "a held account started an agy")
+        assert.equal(prompts(kit).length, asked, "a held account's request reached Google")
+        assert.ok(log.lines.some((row) => row.action === "refuse_held" && row.reason === "account_disabled"))
+        // another account is asked as before
+        markerAgent(kit, ["fine"])
+        const b = await kit.plugin.auth.loader(async () => ({ type: "oauth", metadata: { agyHome: "accountb1" } }))
+        const other = await readSse(await b.fetch(MESSAGES_URL, { method: "POST",
+          body: JSON.stringify(baseBody({ metadata: { user_id: "held-b" }, messages: [{ role: "user", content: "hello" }] })) }))
+        assert.equal(other.error, null)
+        assert.equal(replyText(other), "fine")
+      } finally {
+        log.restore()
+      }
+    })
+  }
+})
+
+test("#1563: the disabled hold ends after ten minutes, and the account is asked again", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 20), BANNED.slice(20)])
+    await (await kit.request(baseBody({ metadata: { user_id: "hold-ends" },
+      messages: [{ role: "user", content: "hello" }] }))).text()
+    assert.equal(prompts(kit).length, 1)
+    markerAgent(kit, ["back"])
+    kit.clock.advance(10 * 60_000 - 1)
+    const held = await kit.request(baseBody({ metadata: { user_id: "hold-ends-2" },
+      messages: [{ role: "user", content: "hello" }] }))
+    assert.equal(held.status, 403)
+    await held.text()
+    assert.equal(prompts(kit).length, 1)
+    kit.clock.advance(1)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "hold-ends-3" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), "back")
+    assert.equal(prompts(kit).length, 2)
   })
 })
 

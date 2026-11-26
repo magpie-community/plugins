@@ -147,3 +147,53 @@ test("a history that really differs is still a history drop with its diff", asyn
   assert.ok(rows.at(-1).first_diff)
 })
 
+
+// plugins#1563 (dmiedog): each of magpie's tries of a request whose opening
+// turn failed opened a new agy session (1 no_live + 4 fresh_after_first per
+// conversation in one minute). A retry of a later turn goes on in the
+// session the turn failed in; the opening's retry now does too.
+const BUSY = "\n⚠ Our servers are experiencing high traffic right now, please try again in a minute. (UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server)\n"
+const promptsSent = (kit) => calls(kit, "session/prompt").map((entry) =>
+  (entry.params?.prompt || []).map((part) => (part.type === "text" ? part.text : "")).join(""))
+
+for (const [name, body] of [
+  ["no tools", single],
+  ["with tools", () => baseBody({ metadata: { user_id: "tools" }, messages: [{ role: "user", content: "with tools" }] })],
+]) {
+  test(`magpie's retries of an opening that failed go on in its session, not one session a try (${name})`, async () => {
+    const captured = captureStderr()
+    try {
+      await withKit({}, async (kit) => {
+        let fails = 3
+        const answer = kit.defaultPrompt
+        kit.defaultPrompt = async (agent) => {
+          if (fails-- > 0) {
+            await agent.text(BUSY)
+            return { stopReason: "end_turn" }
+          }
+          return answer(agent)
+        }
+        for (let i = 0; i < 3; i++) {
+          const out = await readSse(await kit.request(body()))
+          assert.equal(out.error?.type, "overloaded_error", JSON.stringify(out.error))
+        }
+        const out = await readSse(await kit.request(body()))
+        assert.equal(out.error, null)
+        assert.equal(out.content.find((block) => block.type === "text")?.text, "OK")
+        assert.equal(calls(kit, "session/new").length, 1, "a try opened a session of its own")
+        assert.equal(kit.acpSpawns.length, 1)
+        const sent = promptsSent(kit)
+        assert.equal(sent.length, 4)
+        const text = body().messages[0].content
+        for (const prompt of sent) assert.ok(prompt.includes(text), prompt)
+        // answered, the same opening sent again is a new conversation again
+        assert.equal((await readSse(await kit.request(body()))).error, null)
+        assert.equal(calls(kit, "session/new").length, 2)
+      })
+    } finally {
+      captured.restore()
+    }
+    const rows = sessionRows(captured.lines)
+    assert.deepEqual(rows.map((row) => row.reason), ["no_live", "fresh_after_first"])
+  })
+}
