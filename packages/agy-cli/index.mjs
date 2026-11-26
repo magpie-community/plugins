@@ -6859,7 +6859,7 @@ function parseWorkspaceInstructionReminder(inner) {
   if (INSTRUCTION_CHANGE_FIRST_LINE_RE.test(afterCompact)) {
     return { kind: "changes", paths: matchPaths(afterCompact, INSTRUCTION_CHANGE_PATH_RE) }
   }
-  if ((hadBudget || hadCompact) && /^Instructions from:\s*[^\r\n]+/.test(afterCompact)) {
+  if ((hadBudget || hadCompact) && (!afterCompact || /^Instructions from:\s*[^\r\n]+/.test(afterCompact))) {
     return { kind: "baseline", paths: matchPaths(afterCompact, BASELINE_INSTRUCTION_PATH_RE) }
   }
   return null
