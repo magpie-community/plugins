@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | 日本語
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.4-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.6-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 [OpenCode](https://opencode.ai) 1.x と [magpie](https://usemagpie.ai) 向けのプロバイダー
@@ -25,7 +25,7 @@
 つき、8 つのフロンティアモデルだけ Workers Paid または AI Gateway クレジットが必要です（下記の目印）。
 
 クォータカードは毎日の無料枠を数値と使用済み／残りの切り替え可能な割合で表示し、UTC 00:00 にリセットします。
-Paid または未確認のプランでは表示のみで、Free と確認できたプランだけ無料枠を使い切るとルーティングを停止します。
+Paid または未確認のプランでは表示のみで、Free と確認できたプランだけ無料枠を使い切るとルーティングを停止します。トークンへの応答がプランを示さない場合は、プラグインオプション `plan` に `free` か `paid` を宣言してください。
 
 ## magpie へのインストール
 
@@ -100,6 +100,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | `apiKey` | — | 既定トークン（サインインのキーが優先） |
 | `baseTemplate` | 下記参照 | 差し込み先の URL テンプレート |
 | `discoveryTTLMs` | `3600000` | カタログ再取得間隔 |
+| `plan` | — | Cloudflare の応答がプランを示さないとき `free` / `paid` を宣言：`free` は 1 日 Neurons 枠をルーティングに数え、`paid` は表示のみ |
 
 **`baseTemplate` のデフォルト**（差し込み先、Account ID はアカウント毎に注入）:
 
@@ -118,14 +119,14 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 | 400 `No route for that URI` | `plugin add` 再実行後も出るなら、古いプラグインが残っている可能性 — 最新版 URL 正規化で解決済み、要 issue |
 | `Model … absent from the current catalog` | models.dev の cloudflare-workers-ai セクションにない ID — 一覧から選ぶ |
 | (Paid) モデルで 400 | プランが Free：Workers Paid か AI Gateway クレジットが必要 |
-| quota 行がプラン名の代償テキスト | トークンに `Account Settings → Read` がない — 表示だけの問題で Neurons 枠は出る |
+| quota 行がプラン名の代償テキスト、またはルーティングが残量不明と言う | Cloudflare の応答にプランがない（またはトークンに `Account Settings → Read` がない）— Neurons 枠は表示される。プラグインオプション `plan` を `free`（または `paid`）にするとルーティングが数える |
 | quota 行が 10,000 / 10,000 残りと表示するのにリクエストが used up your daily free allocation で失敗する | トークンに `Account Analytics → Read` がなく使用量を取得できないため magpie が枠を未使用として描画する — スコープを追加して更新 |
 
 ## 開発
 
 ```sh
 node --check src/index.mjs       # パース検査（元リポジトリのバグ）
-node --test                     # 23 テスト、ネットワーク不要
+node --test                     # 26 テスト、ネットワーク不要
 sh scripts/sandbox.sh login      # magpie 0.1.1326 を使い捨て HOME で
 sh scripts/sandbox.sh test       # サンドボックス内で provider test
 sh scripts/sandbox.sh json       # サンドボックス内で plugin --json
