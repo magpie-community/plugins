@@ -286,6 +286,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
   const importPort = Number.isSafeInteger(Number(config.importPort ?? env.DUMATE_IMPORT_PORT)) ? Number(config.importPort ?? env.DUMATE_IMPORT_PORT) : 8788
   const importPublicUrl = String(config.importPublicUrl ?? env.DUMATE_IMPORT_PUBLIC_URL ?? "").replace(/\/+$/, "")
   let importUploader
+  let stagedImport = { authRaw: "", keyRaw: "" }
 
   const ensureImportUploadServer = async () => {
     if (!importUploader) {
@@ -337,10 +338,10 @@ export const DuMateProxyPlugin = async (input = {}) => {
       provider: PROVIDER_ID,
       single: false,
       icon: ICON,
-      importFrom: "上传两个文件：auth.json 和 .cookie-key 的 Base64 文本（.txt）",
+      importFrom: "从文件导入账号：分两次分别选 auth.json 和 cookie-key.txt，两个文件一次选完也可以",
       importFroms: {
-        zh: "选择两个文件：auth.json 和 .cookie-key 的 Base64 文本（.txt）。",
-        en: "Choose two files: DuMate auth.json and the Base64 text of .cookie-key (.txt).",
+        zh: "分两次选择 auth.json 和 cookie-key.txt；两个文件一次选完也可以。",
+        en: "Choose auth.json and cookie-key.txt one after the other, or both at once.",
       },
       async import(texts) {
         const files = (Array.isArray(texts) ? texts : []).filter((text) => typeof text === "string" && text.trim())
@@ -364,9 +365,23 @@ export const DuMateProxyPlugin = async (input = {}) => {
           if (!keyRaw && parseCookieKey(value)) keyRaw = value
         }
 
-        if (!authRaw) return { type: "failed", error: "没读到 auth.json，请选择 auth.json 文件" }
-        if (!keyRaw) return { type: "failed", error: "没读到 .cookie-key 的 Base64 文本，请先生成 .cookie-key.b64" }
+        authRaw = authRaw || stagedImport.authRaw
+        keyRaw = keyRaw || stagedImport.keyRaw
 
+        if (!authRaw && !keyRaw) {
+          stagedImport = { authRaw: "", keyRaw: "" }
+          return { type: "failed", error: "没读到登录文件，请选择 auth.json 或 .cookie-key 的 Base64 文本" }
+        }
+        if (!authRaw) {
+          stagedImport = { authRaw: "", keyRaw }
+          return { type: "failed", error: "已收到 cookie-key。请再次点“从文件导入账号”，这次选择 auth.json" }
+        }
+        if (!keyRaw) {
+          stagedImport = { authRaw, keyRaw: "" }
+          return { type: "failed", error: "已收到 auth.json。请再次点“从文件导入账号”，这次选择 cookie-key.txt（.cookie-key 的 Base64 文本）" }
+        }
+
+        stagedImport = { authRaw: "", keyRaw: "" }
         const login = decryptDesktopAuth(authRaw, keyRaw, "imported-auth")
         if (!login) return { type: "failed", error: "auth.json 与 .cookie-key 不匹配，或登录态已失效" }
 
@@ -503,15 +518,15 @@ export const DuMateProxyPlugin = async (input = {}) => {
       methods: [
         {
           type: "oauth",
-          label: "上传两个文件导入账号（auth.json + .cookie-key，服务器可用）",
+          label: "上传两个文件导入账号（auth.json + .cookie-key）",
           authorize: async () => {
             const uploader = await ensureImportUploadServer()
             const token = uploader.createSession()
             return {
               url: `${uploader.base}/dumate-import?token=${encodeURIComponent(token)}`,
-              instructions: "在打开的页面选择本机的 auth.json 与 .cookie-key；上传后 Magpie 会自动完成登录。",
+              instructions: "上传页有两个文件选择框，分别选 auth.json 和 .cookie-key；上传后 Magpie 自动完成登录。上传页不会自动跳转，点下方的打开链接即可。",
               method: "auto",
-              opened: false,
+              opened: true,
               async callback(_input, { signal } = {}) {
                 return uploader.wait(token, 10 * 60 * 1000, signal)
               },
