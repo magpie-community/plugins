@@ -44,7 +44,7 @@ function continuation(messages) {
     return { ...m, content }
   })
   if (results.size && ids.size && results.size !== ids.size) throw failure(400, "Return a result for every tool_use in the batch.")
-  return { prefix: messages.slice(0, end), results, extra: promptParts(companions, prefill) }
+  return { prefix: messages.slice(0, end), hasToolCalls: ids.size > 0, results, extra: promptParts(companions, prefill) }
 }
 
 const toolWait = 10 * 60_000
@@ -168,10 +168,13 @@ function nativeTurn(key, tools, restore) {
       if (effort != null && effort !== currentEffort) {
         const option = configOption(options, "thought_level")
         if (!option) throw failure(400, "This Droid CLI does not expose a reasoning effort setting.")
+        const offered = optionValues(option).some(o => o.value === effort)
         const changed = await rpc.request("session/set_config_option", { sessionId, configId: option.id, value: effort })
-        const applied = configOption(changed?.configOptions, "thought_level")?.currentValue
-        if (applied != null && applied !== effort) throw failure(502, "Droid did not apply the requested reasoning effort.")
-        currentEffort = effort
+        options = changed?.configOptions ?? options
+        currentEffort = configOption(changed?.configOptions, "thought_level")?.currentValue
+        if (offered && currentEffort != null && currentEffort !== effort) {
+          throw failure(502, "Droid did not apply the requested reasoning effort.")
+        }
       }
     },
     prompt(parts, required, fresh) {
@@ -233,10 +236,13 @@ export async function runMessages({ key, headers, body, prepared, signal }) {
   const system = Array.isArray(config.system) ? config.system.map(b => b?.type === "text" ? { ...b, text: stripModel(b.text) } : b) : stripModel(config.system)
   const scope = owner && digest([owner, session, headers.get("x-magpie-subagent"), headers.get("x-magpie-work-dir"), { ...config, system },
     { ...output_config, effort: undefined }, catalog, prepared.required, tool_choice?.disable_parallel_tool_use])
-  const { prefix, results, extra } = continuation(messages)
+  const { prefix, hasToolCalls, results, extra } = continuation(messages)
   const result = results.size > 0
   const toolScope = scope && digest([scope, selection, config.system])
-  const previous = scope && prefix.length ? digest([result ? toolScope : scope, history(prefix)]) : undefined
+  const prefixHash = scope && prefix.length ? history(prefix) : undefined
+  const previous = prefixHash ? digest([result ? toolScope : scope, prefixHash]) : undefined
+  // The step that returned the last tool calls, when this request brings no result for them.
+  const unanswered = prefixHash && !result ? digest([toolScope, prefixHash]) : undefined
   const requestKey = scope && (result || session || headers.has("idempotency-key")) ? digest([toolScope, history(messages), headers.get("idempotency-key")]) : undefined
   signal?.throwIfAborted()
   const pending = running.get(requestKey)
@@ -255,10 +261,21 @@ export async function runMessages({ key, headers, body, prepared, signal }) {
       return { ...cached.answer, usage }
     } })
   }
-  const receipt = result && delivered.get(previous)
-  if (receipt && !(receipt.failed && receipt.requestKey === requestKey)) throw failure(409, "This tool call has already received a result.")
   const match = suspended.get(previous)
+  // A late result can still resume or replay this step after the process closes.
+  if (unanswered) take(suspended, unanswered)?.turn.close()
   const canAnswer = result && match?.calls && match.calls.every(c => results.has(c.tool.id)) && (!extra.length || match.turn.canSteer)
+  const receiptKey = result && hasToolCalls && previous
+  const receipt = receiptKey && delivered.get(receiptKey)
+  // Older Droid versions replay accompanying instructions while the native callback
+  // is still waiting. It may later accept the same batch without those instructions.
+  const replayWithLiveCalls = result && match?.turn.alive && !canAnswer
+  const batch = replayWithLiveCalls || receipt?.liveBatch ? digest(Object.fromEntries(results)) : undefined
+  const retryFailure = receipt?.failed && receipt.requestKey === requestKey
+  const finishLiveBatch = canAnswer && receipt?.liveBatch && receipt.liveBatch === batch
+  if ((receiptKey && running.has(receiptKey)) || (receipt && !retryFailure && !finishLiveBatch)) {
+    throw failure(409, "This tool call has already received a result.")
+  }
   const canContinue = !result && session && extra.length && !match?.calls
   // A live MCP callback belongs to its process. A replacement process can
   // resume the saved conversation and submit the client's completed results.
@@ -270,13 +287,13 @@ export async function runMessages({ key, headers, body, prepared, signal }) {
     saved.pending.every(id => results.has(id))
   const reuse = match?.turn.alive && (canAnswer || canContinue && canSelect)
   let turn = reuse ? take(suspended, previous).turn : undefined
-  let finish, timer
+  let finish, timer, submittedResult = false
   const active = { disconnected: false, done: new Promise(resolve => { finish = resolve }) }
   const http = new AbortController()
   const disconnect = () => {
     if (http.signal.aborted) return
     http.abort(signal?.reason)
-    if (reuse && result) {
+    if (submittedResult) {
       // The tool already has its result. Let a retry collect the same answer.
       active.disconnected = true
       timer = setTimeout(() => turn.close(failure(504, "Droid timed out after disconnect.")), ttl)
@@ -285,19 +302,22 @@ export async function runMessages({ key, headers, body, prepared, signal }) {
   }
   signal?.addEventListener("abort", disconnect, { once: true })
   if (requestKey) running.set(requestKey, active)
+  if (receiptKey) running.set(receiptKey, active)
   const finishRequest = error => {
     clearTimeout(timer)
     signal?.removeEventListener("abort", disconnect)
     if (running.get(requestKey) === active) running.delete(requestKey)
-    const accepted = result && delivered.get(previous)
-    if (accepted && accepted.requestKey === requestKey) accepted.failed = !!error
+    if (receiptKey && running.get(receiptKey) === active) {
+      running.delete(receiptKey)
+      retain(delivered, receiptKey, { requestKey, failed: !!error, liveBatch: replayWithLiveCalls ? batch : undefined }, 64)
+    }
     finish(error)
   }
   try {
     if (reuse && result) {
       if (extra.length) turn.steer(extra)
-      retain(delivered, previous, { requestKey }, 64)
       for (const call of match.calls) call.deliver(results.get(call.tool.id))
+      submittedResult = true
     } else {
       let continued = !!reuse
       if (!turn && saved && canSelect && (!result || savedResults)) {
@@ -329,6 +349,7 @@ export async function runMessages({ key, headers, body, prepared, signal }) {
           ...promptParts(messages.slice(prefix.length - 1))]
       }
       turn.prompt(prompt, prepared.required, !continued)
+      submittedResult = !!receiptKey
     }
     const id = "msg_" + randomUUID()
     async function readStep(chunk) {

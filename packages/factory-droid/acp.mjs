@@ -152,8 +152,11 @@ export function connect({ key, signal, tools = [], restore, builtin, onUpdate = 
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
   lines.on("line", (line) => {
     if (ended || !line.trim()) return
+    // Droid may print a notice on stdout. Only its JSON-RPC lines are the protocol.
+    let msg
+    try { msg = JSON.parse(line) } catch { return }
+    if (!msg || typeof msg !== "object") return
     try {
-      const msg = JSON.parse(line)
       if (msg.method && msg.id != null) {
         if (msg.method === "session/request_permission") {
           const params = msg.params
@@ -163,6 +166,9 @@ export function connect({ key, signal, tools = [], restore, builtin, onUpdate = 
         }
         else write({ id: msg.id, error: { code: -32601, message: "Unsupported client method" } })
       } else if (msg.method === "session/update" && sessionId && msg.params?.sessionId === sessionId) {
+        // Output means Droid is still working, so a prompt's timeout starts again. A prompt
+        // that waits for the client's tool results has no timer, and gets none.
+        for (const p of pending.values()) if (p.method === "session/prompt" && p.timer) p.timer = (clearTimeout(p.timer), p.start())
         onUpdate(msg.params.update)
       } else if (pending.has(msg.id)) {
         const err = msg.error

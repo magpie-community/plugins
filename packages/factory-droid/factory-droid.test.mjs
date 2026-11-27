@@ -53,6 +53,68 @@ test("reasoning effort is set after selecting the requested model", async () => 
   const response = await send({ output_config: { effort: "low" }, messages: [{ role: "user", content: "check effort" }] })
   expect(response.status).toBe(200)
 })
+test("an effort level the model does not offer is left to Droid", async () => {
+  const response = await send({ output_config: { effort: "medium" }, messages: [{ role: "user", content: "unsupported effort" }] })
+  expect(response.status).toBe(200)
+  expect((await response.json()).content.at(-1).text).toContain("fake:")
+})
+test("an advertised effort must match the level Droid reports", async () => {
+  const saved = process.env.FAKE_DROID_IGNORE_EFFORT
+  process.env.FAKE_DROID_IGNORE_EFFORT = "1"
+  try {
+    const response = await send({ output_config: { effort: "low" } })
+    expect(response.status).toBe(502)
+    expect((await response.json()).error.message).toContain("did not apply the requested reasoning effort")
+  } finally {
+    if (saved === undefined) delete process.env.FAKE_DROID_IGNORE_EFFORT
+    else process.env.FAKE_DROID_IGNORE_EFFORT = saved
+  }
+})
+test("an effort level Droid does not know is reported as the client's error", async () => {
+  const response = await send({ output_config: { effort: "__bogus__" }, messages: [{ role: "user", content: "unknown effort" }] })
+  expect(response.status).toBe(400)
+  expect((await response.json()).error.message).toContain("Invalid reasoning effort value")
+})
+test("a line Droid prints on stdout outside ACP is ignored", async () => {
+  process.env.FAKE_DROID_NOTICE = "droid: a new version is available"
+  try {
+    const response = await send({ messages: [{ role: "user", content: "a notice on stdout" }] })
+    expect(response.status).toBe(200)
+    expect((await response.json()).content.at(-1).text).toContain("fake:")
+  } finally { delete process.env.FAKE_DROID_NOTICE }
+})
+test("a line Droid prints on stdout that is not a JSON object is ignored", async () => {
+  process.env.FAKE_DROID_NOTICE = "null"
+  try {
+    const response = await send({ messages: [{ role: "user", content: "a bare null on stdout" }] })
+    expect(response.status).toBe(200)
+  } finally { delete process.env.FAKE_DROID_NOTICE }
+})
+test("a prompt waits for Droid as long as Droid keeps sending output", async () => {
+  const { connect } = await import("./acp.mjs")
+  let chunks = 0
+  const rpc = connect({ onUpdate: update => { if (update.content?.type === "text") chunks++ } })
+  try {
+    await rpc.initialize()
+    const { sessionId } = await rpc.newSession()
+    const result = await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "stream-then-end" }] }, 600)
+    expect(result.stopReason).toBe("end_turn")
+    expect(chunks).toBe(30)
+  } finally { rpc.close() }
+}, 8_000)
+test("output while Droid waits for the client's tools does not start the prompt timeout", async () => {
+  const { connect } = await import("./acp.mjs")
+  const rpc = connect({})
+  try {
+    await rpc.initialize()
+    const { sessionId } = await rpc.newSession()
+    const prompt = rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "update-then-wait" }] }, 500).catch(error => error)
+    rpc.waitForTools(true)
+    await new Promise(resolve => setTimeout(resolve, 900))
+    rpc.close()
+    expect(await prompt).toMatchObject({ message: "Droid connection closed" })
+  } finally { rpc.close() }
+}, 8_000)
 test("Claude Code replays inline instructions in order, including a trailing system message", async () => {
   const response = await send({ stream: true, system: "top", messages: [
     { role: "system", content: [{ type: "text", text: "first" }] },
@@ -199,6 +261,67 @@ test("updated tool schemas replay with the new manifest", async () => {
   expect((await (await send({ tools: [report], messages })).json()).content[0].text).toContain("MCP returned")
 })
 
+for (const resume of [false, true]) {
+  test(`an abandoned tool releases its process and accepts one late result via ${resume ? "resume" : "replay"}`, async () => {
+    const { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+    const { basename, join } = await import("node:path")
+    const { workspaceReleased } = await import("./acp.mjs")
+    const variables = ["FAKE_DROID_RESUME", "FAKE_DROID_WORKSPACE", "XDG_CACHE_HOME", "FACTORY_HOME_OVERRIDE"]
+    const before = variables.map(k => process.env[k])
+    const root = mkdtempSync(join(tmpdir(), "droid-abandoned-"))
+    if (resume) process.env.FAKE_DROID_RESUME = "1"
+    else delete process.env.FAKE_DROID_RESUME
+    const marker = join(root, "workspace")
+    process.env.FAKE_DROID_WORKSPACE = marker
+    process.env.XDG_CACHE_HOME = process.env.FACTORY_HOME_OVERRIDE = root
+    const ledger = join(root, "magpie", "factory-droid", "sessions")
+    const entries = () => readdirSync(ledger).map(f => JSON.parse(readFileSync(join(ledger, f), "utf8")))
+    try {
+      const tools = [report], headers = { "x-magpie-session": "late-result" }
+      const messages = [{ role: "user", content: "original tool request" }]
+      const follow = (user, stream = false) => send({ tools, stream, messages: [...messages, user] }, undefined, headers)
+      const first = await (await send({ tools, messages }, undefined, headers)).json()
+      expect(first.stop_reason).toBe("tool_use")
+      const call = first.content[0]
+      const workspace = readFileSync(marker, "utf8")
+      expect(existsSync(workspace)).toBe(true)
+      const old = resume && entries().find(e => e.pending?.includes(call.id))
+      if (resume) expect(old.dir).toBe(basename(workspace))
+      messages.push({ role: "assistant", content: first.content })
+      const alternate = await follow({ role: "user", content: "Continue without the result." })
+      expect((await alternate.json()).stop_reason).toBe("tool_use")
+      await workspaceReleased(basename(workspace))
+      expect(existsSync(workspace)).toBe(false)
+
+      const attempts = ["first result", "different result"]
+      const responses = await Promise.all(attempts.map(value => follow(receipt(call, value), true)))
+      expect(responses.map(r => r.status).sort()).toEqual([200, 409])
+      const accepted = responses.findIndex(r => r.ok)
+      const reader = responses[accepted].body.getReader()
+      const [start] = events(new TextDecoder().decode((await reader.read()).value))
+      await reader.cancel()
+      const answer = await (await follow(receipt(call, attempts[accepted]))).json()
+      expect(answer.id).toBe(start.message.id)
+      expect(answer.stop_reason).toBe("end_turn")
+      expect(answer.content.at(-1).text).toContain(attempts[accepted])
+      const retry = await (await follow(receipt(call, attempts[accepted]))).json()
+      expect(retry.id).toBe(answer.id)
+      expect(retry.usage).toEqual({ input_tokens: 0, output_tokens: 0 })
+      expect((await follow(receipt(call, "another result"))).status).toBe(409)
+      if (resume) {
+        expect(entries().find(e => e.dir === old.dir)).toMatchObject({ id: old.id })
+        expect(entries().some(e => e.pending?.includes(call.id))).toBe(false)
+      } else {
+        expect(answer.content.at(-1).text).toContain('"tool_result":')
+      }
+    } finally {
+      variables.forEach((k, i) => { if (before[i] === undefined) delete process.env[k]; else process.env[k] = before[i] })
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 10_000)
+}
+
 test("a disconnected result is recovered once, with per-step session and cache counters", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")
@@ -275,6 +398,8 @@ test("older Droid versions replay the receipt and instructions in order", async 
     const end = await (await send(body)).json()
     expect(end.content.at(-1).text).toContain("orchid\ndeveloper:\nuppercase")
     messages.pop()
+    const conflict = [...messages.slice(0, -1), receipt(first.content[0], "different")]
+    expect((await send({ tools: [report], messages: conflict })).status).toBe(409)
     expect((await (await send(body)).json()).content[0].text).toContain("MCP returned")
   } finally {
     if (saved === undefined) delete process.env.FAKE_DROID_NO_STEER

@@ -36,15 +36,24 @@ const catalogFixture = process.env.FAKE_DROID_CATALOG
 const fixture = catalogFixture && JSON.parse(readFileSync(catalogFixture, "utf8"))
 const listing = fixture?.[process.env.FACTORY_API_KEY || "local"] ?? {}
 if (catalogFixture) appendFileSync(catalogFixture + ".calls", "spawn\n")
+// Droid 1.21.1 answers a level the model lacks by keeping its current one, and
+// refuses only a name it does not know. These are the levels of deepseek-v4.1-flash-1017.
+const levels = listing.picker ? ["low"] : ["off", "low", "high", "max"]
+const knownLevels = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
+const defaultEffort = listing.picker ? "low" : "high"
 function optionsFor(model) {
-  if (!listing.picker) return [{ id: "effort", category: "thought_level" }]
+  const effortOption = { id: listing.picker ? "effort-" + model : "effort", category: "thought_level", type: "select",
+    currentValue: effort ?? defaultEffort, options: levels.map(value => ({ value, name: value })) }
+  if (!listing.picker) return [effortOption]
   return [
     { id: "pick-model", category: "model", type: "select", currentValue: model,
       options: [{ group: "Offered", options: [{ value: "fake", name: "Picker model" }, { value: "denied", disabled: true }] }] },
-    { id: "effort-" + model, category: "thought_level", type: "select", options: [{ value: "low", name: "Low" }] },
+    effortOption,
   ]
 }
 let model = "start", effort, tools = [], promptId, waitingForTool = false, steer
+// A line on stdout that is not part of ACP, like an update notice.
+if (process.env.FAKE_DROID_NOTICE) console.log(process.env.FAKE_DROID_NOTICE)
 for await (const line of createInterface({ input: process.stdin })) {
   const { id, method, params, result } = JSON.parse(line)
   switch (method) {
@@ -66,6 +75,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       break
     case "session/new": {
       assert.equal(realpathSync(params.cwd), realpathSync(process.cwd()))
+      if (process.env.FAKE_DROID_WORKSPACE) writeFileSync(process.env.FAKE_DROID_WORKSPACE, params.cwd)
       if (process.env.FACTORY_API_KEY === "bad") {
         reply({ id, error: { code: -32000, message: "Authentication required" } })
         break
@@ -103,8 +113,12 @@ for await (const line of createInterface({ input: process.stdin })) {
       }
       assert.equal(model, "fake")
       assert.equal(params.configId, listing.picker ? "effort-" + model : "effort")
-      effort = params.value
-      reply({ id, result: {} })
+      if (!knownLevels.includes(params.value)) {
+        reply({ id, error: { code: -32602, message: "Invalid params: Invalid reasoning effort value: " + params.value, data: { configId: params.configId, value: params.value } } })
+        break
+      }
+      if (levels.includes(params.value) && !process.env.FAKE_DROID_IGNORE_EFFORT) effort = params.value
+      reply({ id, result: { configOptions: optionsFor(model) } })
       break
     case "session/prompt": {
       assert.equal(params.sessionId, "s")
@@ -129,6 +143,21 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (waitingForTool) { steer = { id, content }; break }
       promptId = id
       if (content.includes("check effort")) assert.equal(effort, "low")
+      if (content.includes("stream-then-end")) {
+        // Output keeps coming for 1.5 seconds before the turn ends.
+        void (async () => {
+          for (let i = 0; i < 30; i++) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } })
+          }
+          reply({ id, result: { stopReason: "end_turn" } })
+        })()
+        break
+      }
+      if (content.includes("update-then-wait")) {
+        void new Promise(resolve => setTimeout(resolve, 100)).then(() => update({ sessionUpdate: "usage_update", used: 1, size: 250000 }))
+        break
+      }
       if (content.includes("wait-until-abort")) break
       if (content.includes("crash-now")) process.exit(3)
       if (content.includes("fail-now")) { reply({ id, error: { code: -32603, message: "Prompt failed" } }); break }
