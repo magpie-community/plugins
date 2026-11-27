@@ -2,6 +2,7 @@ import { agyCandidates, childEnv, holdsHome, spawnAgy, windowsMcpShim, windowsNc
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { once } from "node:events"
+import { isDeepStrictEqual } from "node:util"
 import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
@@ -3134,9 +3135,7 @@ class Proc {
   matchesHistory(messages) {
     if (this.historyInvalid) return false
     if (this.expectedMessages == null) return !this.turn && !this.hasSentFirstTurn
-    const expectedKey = historyKey(this.expectedMessages)
-    const actualKey = historyKey(messages)
-    if (expectedKey === actualKey) return true
+    if (sameHistory(this.expectedMessages, messages)) return true
     // magpie's masking can mask a text the session already has differently
     // on a later request: the local model that missed it under load (the
     // rules masked it alone) reads it for a later one, and a value in an
@@ -3167,7 +3166,7 @@ class Proc {
     if (sameToolUseIdentities(this.expectedMessages, messages)) {
       const expectedStripped = stripToolUseInputs(this.expectedMessages)
       const actualStripped = stripToolUseInputs(messages)
-      if (historyKey(expectedStripped) === historyKey(actualStripped) ||
+      if (sameHistory(expectedStripped, actualStripped) ||
         sameHistoryUpToMasking(expectedStripped, actualStripped)) return true
     }
     // magpie's image-slim swaps an earlier image for its placeholder text; agy
@@ -3193,7 +3192,7 @@ class Proc {
     while (split > 0 && history[split - 1].role === "assistant") split--
     let expectedSplit = this.expectedMessages.length
     while (expectedSplit > 0 && this.expectedMessages[expectedSplit - 1].role === "assistant") expectedSplit--
-    if (historyKey(this.expectedMessages.slice(0, expectedSplit)) !== historyKey(history.slice(0, split))) return false
+    if (!sameHistory(this.expectedMessages.slice(0, expectedSplit), history.slice(0, split))) return false
     const actualAssistant = history.slice(split)
     const expectedAssistant = this.expectedMessages.slice(expectedSplit)
     const actualCalls = lastAssistantCalls(actualAssistant)
@@ -3203,7 +3202,7 @@ class Proc {
       !call.id || call.id !== expectedCalls[index].id || call.name !== expectedCalls[index].name)) {
       return false
     }
-    return historyKey(stripToolUseInputs(expectedAssistant)) === historyKey(stripToolUseInputs(actualAssistant))
+    return sameHistory(stripToolUseInputs(expectedAssistant), stripToolUseInputs(actualAssistant))
   }
 
   // Answers the pending calls with the results the client sent, waits for agy
@@ -4188,8 +4187,8 @@ function writeParked(proc, midTurn) {
   parked.set(proc.convKey, {
     key: proc.convKey,
     sessionId: proc.sessionId,
-    historyHash: digest(historyKey(proc.expectedMessages)),
-    historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
+    historyHash: historyDigest(proc.expectedMessages),
+    historyHashSansInputs: historyDigest(stripToolUseInputs(proc.expectedMessages)),
     toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
     instructionsHash: digest(sentInstructionsIdentity(proc.instructions)),
     userCloak: USER_CLOAK,
@@ -4269,10 +4268,10 @@ function takeParked(convKey, opts, miss = {}) {
 }
 
 function sameParkedHistory(entry, history) {
-  if (entry.historyHash === digest(historyKey(history))) return true
+  if (entry.historyHash === historyDigest(history)) return true
   // Sans-inputs resume needs the hashes written by current park(). Old
   // entries without them still resume on an exact historyHash match only.
-  const incomingSans = digest(historyKey(stripToolUseInputs(history)))
+  const incomingSans = historyDigest(stripToolUseInputs(history))
   const incomingIds = toolUseIdentitiesKey(history)
   const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
   const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
@@ -4811,7 +4810,7 @@ function lineageVerdict(proc, turn, opts) {
   // history, not the trailing (#1208). The round is settled on the client's
   // side: the turn is left behind, and the replay carries those results.
   if (carried && carriedAnswered(opts.messages, ids)) return "answered"
-  if (history.length < base.length || historyKey(history.slice(0, base.length)) !== historyKey(base)) {
+  if (history.length < base.length || !sameHistory(history.slice(0, base.length), base)) {
     // The client no longer continues this turn's base: it was shortened or its
     // prefix was rewritten (a compaction summary). A plain new request has left
     // the detached tool wait behind; one carrying its tool_use is still a conflict.
@@ -4821,7 +4820,7 @@ function lineageVerdict(proc, turn, opts) {
   const expected = proc.expectedMessages
   const recorded = Array.isArray(expected) && expected.length > base.length &&
     history.length >= expected.length &&
-    historyKey(history.slice(0, expected.length)) === historyKey(expected)
+    sameHistory(history.slice(0, expected.length), expected)
   // A renamed call with edited arguments still belongs to the old response.
   // Keep upstream's 409 and its live owner intact rather than replaying it as
   // a sibling conversation just because its inputs no longer compare equal.
@@ -4831,7 +4830,7 @@ function lineageVerdict(proc, turn, opts) {
   }))
   if (!carried && !recorded && Array.isArray(expected) && expected.length > base.length &&
     history.length === expected.length &&
-    historyKey(withoutInputs(history)) === historyKey(withoutInputs(expected))) return null
+    sameHistory(withoutInputs(history), withoutInputs(expected))) return null
   // Codex keeps the text of a reply it interrupts (a sub-agent's message at a
   // sampling boundary) but drops the reply's tool calls, then sends on (#1231).
   // The client's history is this session's with only the pending calls taken
@@ -4858,7 +4857,7 @@ function droppedPendingCalls(turn, expected, base, history) {
   const last = stripped.at(-1)
   if (last?.role !== "assistant" || !last.content.some((block) => block?.type === "text" && block.text?.trim())) return false
   if (stripped.slice(base.length).some((message) => Array.isArray(message.content) && !message.content.length)) return false
-  return historyKey(stripped) === historyKey(history)
+  return sameHistory(stripped, history)
 }
 
 // Every tool_use of the turn's calls in messages has a tool_result after it.
@@ -5129,9 +5128,9 @@ function compactedEarlierHistory(expected, actual) {
   const tail = actual.slice(last + 1)
   if (!tail.length || tail.length > expected.length) return false
   const mine = expected.slice(expected.length - tail.length)
-  if (historyKey(mine) === historyKey(tail)) return true
+  if (sameHistory(mine, tail)) return true
   return sameToolUseIdentities(mine, tail) &&
-    historyKey(stripToolUseInputs(mine)) === historyKey(stripToolUseInputs(tail))
+    sameHistory(stripToolUseInputs(mine), stripToolUseInputs(tail))
 }
 
 // Whether actual is expected but for text that was there for one request
@@ -6128,28 +6127,64 @@ function historyBlock(block, ids) {
 
 // The history as the key reads it: one row for each run of messages of one
 // role, its texts joined and trimmed.
-function historyRows(messages) {
-  const rows = []
+function* historyRowStream(messages) {
+  let row
+  const finish = (r) => {
+    r.content = r.content.filter(block => block.type !== "text" || (block.text = block.text.trim()) !== "")
+    return r.content.length > 0
+  }
   const ids = new Map()
   for (const message of messages) {
     const blocks = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content ?? "" }]
     for (const block of blocks) {
       const value = historyBlock(block, ids)
       if (!value) continue
-      let row = rows.at(-1)
       if (!row || row.role !== message.role) {
+        if (row && finish(row)) yield row
         row = { role: message.role, content: [] }
-        rows.push(row)
       }
       const last = row.content.at(-1)
       if (last?.type === "text" && value.type === "text") last.text += value.text
       else row.content.push(value)
     }
   }
-  for (const row of rows) {
-    row.content = row.content.filter(block => block.type !== "text" || (block.text = block.text.trim()) !== "")
+  if (row && finish(row)) yield row
+}
+
+function historyRows(messages) {
+  return Array.from(historyRowStream(messages))
+}
+
+// Compare one normalized row at a time. JSON equality is the fallback for
+// blocks with equivalent wire representations (e.g. omitted undefined fields).
+function sameHistory(expected, actual) {
+  const other = historyRowStream(actual)
+  for (const row of historyRowStream(expected)) {
+    const next = other.next()
+    if (next.done || row.role !== next.value.role || row.content.length !== next.value.content.length) return false
+    for (let i = 0; i < row.content.length; i++) {
+      const a = row.content[i], b = next.value.content[i]
+      if (!isDeepStrictEqual(a, b) && stableJSON(a) !== stableJSON(b)) return false
+    }
   }
-  return rows.filter(row => row.content.length)
+  return other.next().done
+}
+
+// Preserve the digest already on disk. stableJSON sorts "content" before
+// "role", and omits an undefined role, exactly as these fragments do.
+function historyDigest(messages) {
+  const hash = createHash("sha256").update("[")
+  let first = true
+  for (const row of historyRowStream(messages)) {
+    hash.update(first ? '{"content":[' : ',{"content":[')
+    first = false
+    for (let i = 0; i < row.content.length; i++) {
+      if (i) hash.update(",")
+      hash.update(stableJSON(row.content[i]) ?? "null")
+    }
+    hash.update(row.role === undefined ? "]}" : '],"role":' + stableJSON(row.role) + "}")
+  }
+  return hash.update("]").digest("hex")
 }
 
 function historyKey(messages) {
@@ -9274,11 +9309,22 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts) +
       seeds.reduce((sum, parts) => sum + estimatePromptPartsTokens(parts), 0))
     const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
-    const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
-      rawEstimate > sentEstimate + 64
+    const promptClipped = rawEstimate > sentEstimate + 64 &&
+      messagesExceedBytes(body.messages, clipThreshold)
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
   }
   return proc.startTurn(contentParts, body.messages, model, selection, seeds)
+}
+
+// Only a threshold is needed here. Stringifying all the history again
+// doubles the body at its peak and can exceed the JS runtime's string size.
+function messagesExceedBytes(messages, limit) {
+  let bytes = 1
+  for (const message of messages) {
+    bytes += 1 + utf8Bytes(JSON.stringify(message))
+    if (bytes > limit) return true
+  }
+  return Math.max(bytes, 2) > limit
 }
 
 // A magpie that installs a plugin's CLI (auth.cli) installs agy before it

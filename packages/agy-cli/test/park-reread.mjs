@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -112,4 +113,121 @@ test("the earliest conversation is still resumable after parking 40 conversation
     await assertResumes(b, history, first.sessionId)
     assert.equal(entries().length, 40)
   })
+})
+
+test("matching a long live history does not serialize all its rows at once", async () => {
+  // Count individual stringify results inside the bridge's isolated VM.
+  const kit = await createBridgeKit({ indexTransform: source => source + `
+    export function measureHistoryMatch(expected, actual) {
+      const stringify = JSON.stringify
+      let largest = 0
+      try {
+        JSON.stringify = (...args) => {
+          const s = stringify(...args)
+          largest = Math.max(largest, s?.length || 0)
+          return s
+        }
+        const matches = Proc.prototype.matchesHistory.call({ expectedMessages: expected }, actual)
+        return { matches, largest }
+      } finally {
+        JSON.stringify = stringify
+      }
+    }` })
+  try {
+    const text = "x".repeat(32 * 1024)
+    const rows = Array.from({ length: 128 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user", content: text + i,
+    }))
+    const { matches, largest } = kit.module.measureHistoryMatch(rows, structuredClone(rows))
+    assert.ok(matches)
+    assert.ok(largest < 2 * text.length, `materialized a ${largest}-character string for 128 rows`)
+  } finally {
+    await kit.dispose()
+  }
+})
+
+test("parked history digests keep the previous canonical JSON format", async () => {
+  await withSharedState(async (start, entries) => {
+    const kit = await start()
+    const text = 'quotes " and newline\n羽'
+    await complete(kit, opening(text), FIRST_REPLY)
+    const rows = [ [ "user", text ], [ "assistant", FIRST_REPLY ] ].map(([role, value]) => ({
+      content: [{ text: value, type: "text" }], role,
+    }))
+    const oldDigest = createHash("sha256").update(JSON.stringify(rows)).digest("hex")
+    assert.equal(entries()[0].historyHash, oldDigest)
+    assert.equal(entries()[0].historyHashSansInputs, oldDigest)
+  })
+})
+
+test("sameHistory and historyDigest agree with historyKey across shape and length cases", async () => {
+  const kit = await createBridgeKit({
+    indexTransform: (source) => source + "\nexport { sameHistory, historyKey, historyDigest }\n",
+  })
+  try {
+    const base = [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: [{ type: "text", text: "first answer" }] },
+      { role: "user", content: "second question" },
+      { role: "assistant", content: [{ type: "text", text: "second answer" }] },
+    ]
+    const cases = [
+      ["equal history", base, structuredClone(base), true],
+      [
+        "middle edit",
+        base,
+        [base[0], { role: "assistant", content: [{ type: "text", text: "edited answer" }] }, base[2], base[3]],
+        false,
+      ],
+      ["shorter history", base, base.slice(0, 2), false],
+      ["longer history", base, [...base, { role: "user", content: "extra trailing turn" }], false],
+      [
+        "fork",
+        base,
+        [...base.slice(0, 3), { role: "assistant", content: [{ type: "text", text: "different branch" }] }],
+        false,
+      ],
+      [
+        "same-role run split in two",
+        [{ role: "user", content: "hello world" }, { role: "assistant", content: "ok" }],
+        [{ role: "user", content: "hello " }, { role: "user", content: "world" }, { role: "assistant", content: "ok" }],
+        true,
+      ],
+      ["whitespace-only trailing row", base, [...base, { role: "user", content: " \n\t " }], true],
+      ["whitespace-only row alone matches empty", [{ role: "user", content: " \n\t " }], [], true],
+      [
+        "whitespace-only role switch splits same-role run",
+        [{ role: "user", content: "hello" }, { role: "assistant", content: "  " }, { role: "user", content: "world" }],
+        [{ role: "user", content: "hello" }, { role: "user", content: "world" }],
+        false,
+      ],
+      [
+        "tool_use and tool_result with renumbered ids and undefined field",
+        [
+          { role: "assistant", content: [{ type: "tool_use", id: "call_a", name: "Read", input: { path: "a.js" } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "call_a", content: "ok" }] },
+        ],
+        [
+          { role: "assistant", content: [{ type: "tool_use", id: "call_b", name: "Read", input: { path: "a.js", extra: undefined } }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "call_b", content: "ok" }] },
+        ],
+        true,
+      ],
+    ]
+    for (const [name, expected, actual, want] of cases) {
+      const got = kit.module.sameHistory(expected, actual)
+      const oracle = kit.module.historyKey(expected) === kit.module.historyKey(actual)
+      assert.equal(got, oracle, `${name}: sameHistory disagreed with historyKey`)
+      assert.equal(got, want, `${name}: unexpected match result`)
+      for (const msgs of [expected, actual]) {
+        assert.equal(
+          kit.module.historyDigest(msgs),
+          createHash("sha256").update(kit.module.historyKey(msgs)).digest("hex"),
+          `${name}: historyDigest disagreed with historyKey`,
+        )
+      }
+    }
+  } finally {
+    await kit.dispose()
+  }
 })
