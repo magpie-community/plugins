@@ -2195,6 +2195,216 @@ function unsaid(res) {
 }
 
 
+// ---- the reasoning signature (extra_fields) --------------------------------
+//
+// WorkBuddy signs a model's thinking on its chat endpoint the way Anthropic
+// signs a thinking block: a chunk's delta carries extra_fields
+// ({reasoning_detail: {content_signature, text}, _meta, …}), on any chunk of
+// the reply, a trailing one too. WorkBuddy's own client (WorkBuddy 5.5.6 and
+// WorkBuddy AI 5.6.2, convertChatCompletionsStreamToResponses and
+// itemsToMessages in app.asar) merges each chunk's into one object
+// (mergeExtraFields), keeps it with the reasoning and with the turn's tool
+// calls, and sends it back on that assistant message next turn, beside
+// `reasoning`: {role: "assistant", content, reasoning, extra_fields,
+// tool_calls}. The server reads it: measured 2026-11-27 on
+// www.workbuddy.ai, an extra_fields of the wrong type is turned away with
+// "cannot unmarshal … into Go struct field Message.messages.extra_fields of
+// type v2.ExtraFields", reasoning_detail is a v2.ReasoningDetail whose
+// content_signature and text are strings, and _meta is a v2.Meta.
+//
+// No client but WorkBuddy's own keeps it: OpenCode's AI SDK reads the
+// fields it knows off a delta and drops the rest, and magpie's translations
+// carry none they don't know, so the next turn went without its signature
+// (@Anotiaww on X: "Chat 协议会丢思考签名"). So the plugin keeps it: what a
+// reply carried is kept under the conversation, the account and the model
+// it was made for, found again by the turn's tool call ids (else its text,
+// else its reasoning), and set on that assistant message when a later chat
+// sends it without one, with the reasoning it was signed with when the
+// client sent none. A message that carries its own is sent as it is.
+//
+// Kept in memory: after a restart an earlier turn goes unsigned, as every
+// turn went before.
+
+// mergeExtraFields is WorkBuddy's own, word for word: a record merged into a
+// record one level deep, anything else replaced.
+function mergeExtraFields(previous, incoming) {
+  const isRecord = (v) => v && typeof v === "object" && !Array.isArray(v)
+  if (!isRecord(incoming)) return isRecord(previous) ? previous : undefined
+  const merged = isRecord(previous) ? { ...previous } : {}
+  for (const [key, next] of Object.entries(incoming)) {
+    const current = merged[key]
+    merged[key] = isRecord(current) && isRecord(next) ? { ...current, ...next } : next
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+// EXTRA_TURNS is how many replies' extra_fields are kept, EXTRA_CHARS how
+// much text (reasoning, mostly) they may hold together; the oldest go first,
+// and a turn sent again is the newest.
+const EXTRA_TURNS = 2048
+const EXTRA_CHARS = 64 << 20
+const extraTurns = new Map() // turn → {extra, reasoning, size, keys}
+const extraIndex = new Map() // scope + anchor → turn
+let extraSize = 0
+let extraTurnN = 0
+
+// extraConversation is what names a chat's conversation for the store:
+// magpie's (or OpenCode's) session when one is said, else the chat's first
+// user message (conversationParts); "" when neither is there.
+function extraConversation(chat, session) {
+  const parts = conversationParts(chat, session)
+  return parts.length ? idFor("extra-conversation", parts) : ""
+}
+
+// extraScope is the store's name for one conversation, account and model.
+function extraScope(site, a, model, conversation) {
+  if (!conversation || typeof model !== "string" || !model) return ""
+  return idFor("extra", [site.id, "|", scopeOf(a), "|", model, "|", conversation])
+}
+
+const textOfContent = (c) =>
+  typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => (typeof p === "string" ? p : typeof p?.text === "string" ? p.text : "")).join("") : ""
+
+// extraAnchors are the names a turn is found again by: its tool calls' ids,
+// else its text, else its reasoning.
+function extraAnchors(ids, text, reasoning) {
+  const out = ids.filter((id) => typeof id === "string" && id).map((id) => "c:" + id)
+  if (!out.length && text.trim()) out.push("t:" + idFor("extra-text", text.trim()))
+  if (!out.length && reasoning.trim()) out.push("r:" + idFor("extra-reasoning", reasoning.trim()))
+  return out
+}
+
+function forgetExtraTurn(turn) {
+  const t = extraTurns.get(turn)
+  if (!t) return
+  extraTurns.delete(turn)
+  extraSize -= t.size
+  for (const k of t.keys) if (extraIndex.get(k) === turn) extraIndex.delete(k)
+}
+
+// keepExtra keeps a reply's extra_fields under scope.
+function keepExtra(scope, extra, ids, text, reasoning) {
+  if (!scope || !extra) return
+  const anchors = extraAnchors(ids, text, reasoning)
+  if (!anchors.length) return
+  const keys = anchors.map((x) => scope + "\n" + x)
+  const size = reasoning.length + JSON.stringify(extra).length
+  if (size > EXTRA_CHARS) return
+  const turn = ++extraTurnN
+  for (const k of keys) {
+    const was = extraIndex.get(k)
+    if (was !== undefined) forgetExtraTurn(was)
+  }
+  extraTurns.set(turn, { extra, reasoning, size, keys })
+  extraSize += size
+  for (const k of keys) extraIndex.set(k, turn)
+  while (extraTurns.size > EXTRA_TURNS || extraSize > EXTRA_CHARS) forgetExtraTurn(extraTurns.keys().next().value)
+}
+
+// extraTap reads a reply's chunks (or its one message) for keepExtra: the
+// first choice's extra_fields merged as WorkBuddy's client merges them, its
+// tool call ids, text and reasoning. Nothing is kept for a reply that
+// carried no extra_fields.
+function extraTap(scope) {
+  if (!scope) return null
+  let extra
+  let reasoning = ""
+  let text = ""
+  const ids = []
+  const read = (d) => {
+    if (!d || typeof d !== "object") return
+    if (d.extra_fields && typeof d.extra_fields === "object") extra = mergeExtraFields(extra, d.extra_fields)
+    const r = typeof d.reasoning_content === "string" && d.reasoning_content ? d.reasoning_content : typeof d.reasoning === "string" ? d.reasoning : ""
+    if (r) reasoning += r
+    if (typeof d.content === "string") text += d.content
+    for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) {
+      if (typeof tc?.id === "string" && tc.id && !ids.includes(tc.id)) ids.push(tc.id)
+    }
+  }
+  let ended = false
+  return {
+    chunk(v) {
+      for (const c of Array.isArray(v?.choices) ? v.choices : []) {
+        if ((c?.index ?? 0) !== 0) continue
+        read(c?.delta)
+        read(c?.message)
+      }
+    },
+    end() {
+      if (ended) return
+      ended = true
+      if (extra) keepExtra(scope, extra, ids, text, reasoning)
+    },
+  }
+}
+
+// extraKept is res with what its reply carries kept (extraTap): a stream as
+// it passes (coalesced takes the tap), one JSON answer read here. A JSON
+// answer is parsed only when it holds an extra_fields with something in it.
+async function extraKept(res, scope) {
+  if (!scope || !res.body || /event-stream/i.test(res.headers.get("content-type") ?? "") || !/json/i.test(res.headers.get("content-type") ?? "")) return res
+  const text = await res.text()
+  if (/"extra_fields"\s*:\s*\{/.test(text)) {
+    try {
+      const tap = extraTap(scope)
+      tap.chunk(JSON.parse(text))
+      tap.end()
+    } catch {}
+  }
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  return new Response(text, { status: res.status, statusText: res.statusText, headers })
+}
+
+// extraFieldsOn sets on each assistant message of chat that carries no
+// extra_fields the ones kept for it under scope, and the reasoning they were
+// signed with when it carries none. It returns how many it set.
+function extraFieldsOn(chat, scope) {
+  if (!scope || !extraTurns.size || !Array.isArray(chat?.messages)) return 0
+  let n = 0
+  for (const m of chat.messages) {
+    if (m?.role !== "assistant" || (m.extra_fields && typeof m.extra_fields === "object")) continue
+    const ids = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => tc?.id)
+    const said = typeof m.reasoning === "string" ? m.reasoning : typeof m.reasoning_content === "string" ? m.reasoning_content : ""
+    let turn
+    for (const x of extraAnchors(ids, textOfContent(m.content), said)) {
+      turn = extraIndex.get(scope + "\n" + x)
+      if (turn !== undefined && extraTurns.has(turn)) break
+    }
+    const t = turn === undefined ? null : extraTurns.get(turn)
+    if (!t) continue
+    m.extra_fields = structuredClone(t.extra)
+    if (!said.trim() && t.reasoning) {
+      m.reasoning = t.reasoning
+      delete m.reasoning_content
+    }
+    // used again: the newest
+    extraTurns.delete(turn)
+    extraTurns.set(turn, t)
+    n++
+  }
+  return n
+}
+
+// withoutExtraFields is a chat body without the extra_fields extraFieldsOn
+// set, for a chat WorkBuddy turned away over a signature (BAD_SIGNATURE).
+function withoutExtraFields(body) {
+  try {
+    const chat = JSON.parse(body)
+    let changed = false
+    for (const m of Array.isArray(chat?.messages) ? chat.messages : []) {
+      if (m?.role === "assistant" && m.extra_fields !== undefined) {
+        delete m.extra_fields
+        changed = true
+      }
+    }
+    return changed ? JSON.stringify(chat) : null
+  } catch {
+    return null
+  }
+}
+
 // WorkBuddy streams reasoning in 1-4 character deltas (measured: 40 chunks
 // for 63 characters). OpenCode 2 stores every delta as its own part, so one
 // answer becomes thousands of parts and the message JSON is rewritten once
@@ -2214,7 +2424,7 @@ const FLUSH_MS = 300
 // counts as carrying something only when it holds a value.
 const filled = (v) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Object.keys(v).length)
 
-function coalesced(res, flushMs = FLUSH_MS) {
+function coalesced(res, flushMs = FLUSH_MS, tap = null) {
   if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
   const headers = new Headers(res.headers)
   headers.delete("content-length")
@@ -2295,6 +2505,9 @@ function coalesced(res, flushMs = FLUSH_MS) {
       queue.push(ev)
       return
     }
+    // what the chunk says, as WorkBuddy sent it (extraTap), before
+    // anything below takes it apart
+    tap?.chunk(v)
     // Only a single choice is coalesced; anything else goes through whole
     // rather than being rebuilt from choice 0.
     if (!Array.isArray(v?.choices) || v.choices.length !== 1) {
@@ -2377,6 +2590,8 @@ function coalesced(res, flushMs = FLUSH_MS) {
         flush()
         pump()
         ctl = null
+        // the reply is whole: what it carried is kept for the next turn
+        tap?.end()
       },
       cancel() {
         clearTimer()
@@ -5297,6 +5512,12 @@ function makePlugin(site) {
             // list to read (effortList) the chat goes as it came
             const completion = !native && isCompletion(req ? req.url : input, chat)
             if (completion && chat && !namesEffort(chat) && withDefaultEffort(chat, await effortList(a))) changed = true
+            // the signatures earlier replies of this conversation carried go
+            // back on their turns (extraFieldsOn), as WorkBuddy's client
+            // sends them; the reply's own are kept for the next (extraTap)
+            const extraConv = completion && chat ? extraConversation(chat, session) : ""
+            const signedWith = extraConv ? extraFieldsOn(chat, extraScope(site, a, chat.model, extraConv)) : 0
+            if (signedWith) changed = true
             chatHeaders(site, headers)
             let who = scopeOf(a)
             let ids = attendChat(headers, chat, session, who)
@@ -5407,7 +5628,18 @@ function makePlugin(site) {
               if (again) res = await send(again)
               else res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
             }
-            if (res.status === 400 && !native) {              let text = await res.text()
+            if (res.status === 400 && !native) {
+              let text = await res.text()
+              // a signature kept here that WorkBuddy no longer takes (one
+              // it made for another conversation reads the same way on
+              // Messages, BAD_SIGNATURE) goes no more: the chat is sent
+              // again without what extraFieldsOn set
+              const unsigned = signedWith && BAD_SIGNATURE.test(text) ? withoutExtraFields(typeof body === "string" ? body : bodyString(body)) : null
+              if (unsigned) {
+                body = unsigned
+                res = await send(shaped(body))
+                if (res.status === 400) text = await res.text()
+              }
               // the vendor may know a shape of the agent's opening that FLAGGED
               // doesn't: the same words said with one more comma pass it, and
               // that is tried before the system prompt is moved out of its slot.
@@ -5446,8 +5678,10 @@ function makePlugin(site) {
             }
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
-            if (res.status >= 400) return explained(res)
-            const told = native ? res : coalesced(unsaid(await renamed(res, names)))
+            if (res.status >= 400) return explained(res, native && !nativeOf(site, model) && [400, 404, 500].includes(res.status) ? messagesHint(site, model) : "")
+            // kept as the account it went as, after any renewal
+            const keptFor = extraConv ? extraScope(site, a, model, extraConv) : ""
+            const told = native ? res : coalesced(await extraKept(unsaid(await renamed(res, names)), keptFor), FLUSH_MS, extraTap(keptFor))
             // the ids are the ones the chat went with, after any renewal
             const conv = headers.get("X-Conversation-ID") ?? ""
             const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
@@ -5654,10 +5888,22 @@ function kept(res, said = "kept") {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }
 
+// messagesHint is what to do about a Messages request for a model site
+// doesn't serve on Messages (nativeOf): WorkBuddy's China build answers a
+// model that isn't Claude 400 or 500 there (measured 2026-10-24), WorkBuddy
+// AI has no such route at all (404). Such a request comes from a client set
+// to Anthropic's API for a model the plugin doesn't list (@Anotiaww on X,
+// "切 Messages：/v1/messages 仍报 400").
+function messagesHint(site, model) {
+  return `${site.name} serves ${model || "this model"} on chat completions only, not on Anthropic's Messages API (/v1/messages): send it as a chat completions request (in OpenCode, the provider's OpenAI-compatible API), where its reasoning signature goes back too`
+}
+
 // explained is res with REFUSED_HINT, RESTRICTED_HINT or EXHAUSTED_HINT added to that refusal's message.
 // Each refusal says the sign-in is kept: a 401 never comes here, it is
-// signedOut's.
-async function explained(res) {
+// signedOut's. elseHint (messagesHint) is added to any other failure, which
+// then goes as the client's own mistake (400), as it is: a 500 it was
+// answered isn't the account's.
+async function explained(res, elseHint = "") {
   const text = await res.text()
   const again = (b) => {
     const headers = new Headers(res.headers)
@@ -5680,7 +5926,7 @@ async function explained(res) {
   const isRefused = REFUSED.test(text)
   const isRestricted = !isRefused && (codes.includes(RESTRICTED_CODE) || RESTRICTED_TEXT.test(text))
   const isExhausted = !isRestricted && (codes.includes(14018) || EXHAUSTED_TEXT.test(text))
-  if (!isRefused && !isRestricted && !isExhausted) return again(text)
+  if (!isRefused && !isRestricted && !isExhausted && !elseHint) return again(text)
 
   let msg = text.trim()
   if (at && typeof at.message === "string") msg = at.message
@@ -5689,24 +5935,26 @@ async function explained(res) {
   else if (typeof v?.msg === "string" && v.msg) msg = v.msg // WorkBuddy's own {"code", "msg"}
   else if (typeof v?.data?.msg === "string") msg = v.data.msg
 
-  const hint = isRefused ? REFUSED_HINT : isRestricted ? RESTRICTED_HINT : EXHAUSTED_HINT
-  const type = isRefused || isRestricted ? "permission_error" : "insufficient_quota"
-  const errCode = isRefused ? null : isRestricted ? RESTRICTED_CODE : 14018
+  const other = !isRefused && !isRestricted && !isExhausted
+  const hint = isRefused ? REFUSED_HINT : isRestricted ? RESTRICTED_HINT : isExhausted ? EXHAUSTED_HINT : elseHint
+  const type = isRefused || isRestricted ? "permission_error" : isExhausted ? "insufficient_quota" : "invalid_request_error"
+  const errCode = isRefused || other ? null : isRestricted ? RESTRICTED_CODE : 14018
   // a refusal says where its fix is written down, so whoever holds the error
   // — the person, or the agent they paste it to — can go and read it. It goes
   // before the hint, never after: the hint is the message's end.
   const where = isRefused ? `${REFUSED_DOC} — ` : ""
-  msg = `${msg} — ${where}${hint}`
+  msg = `${msg || `HTTP ${res.status}`} — ${where}${hint}`
   const headers = new Headers(res.headers)
   headers.set("content-type", "application/json")
   headers.delete("content-length")
   headers.delete("content-encoding")
   headers.set("X-Magpie-Sign-In", "kept")
-  return new Response(JSON.stringify({ error: { message: msg, type, code: errCode } }), { status: res.status, statusText: res.statusText, headers })
+  const status = other && res.status >= 500 ? 400 : res.status
+  return new Response(JSON.stringify({ error: { message: msg, type, code: errCode } }), { status, statusText: status === res.status ? res.statusText : "Bad Request", headers })
 }
 
 export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { SPEAKER, LISTENER, speechRoute, speechHeaders, spokenParts, speechAsk, spokenPcm, resampled, wavOf, speechAnswer, hearAsk, heardAnswer, speechModels, speechConfig, callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { SPEAKER, LISTENER, speechRoute, speechHeaders, spokenParts, speechAsk, spokenPcm, resampled, wavOf, speechAnswer, hearAsk, heardAnswer, speechModels, speechConfig, callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, messagesHint, mergeExtraFields, extraTap, extraKept, extraFieldsOn, extraScope, extraConversation, keepExtra, withoutExtraFields, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
