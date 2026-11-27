@@ -1179,6 +1179,25 @@ test("a read or edit without DSH's parameters keeps its name (#632)", async (t) 
   assert.deepEqual(state.calls.at(-1).body.tools.slice(0, 2).map((tool) => tool.function.name), ["read", "edit"]);
 });
 
+// ZCode 3.18 sends Claude Code's capitalized Edit and Read with the same
+// parameter schemas DSH uses. Zen reads tool names in any case, so they get
+// the same renamed forms as DSH's lowercase edit and read.
+test("capitalized Edit and Read with DSH's parameters go as text_replace and file_view", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const tools = [
+    { type: "function", function: { name: "Edit", description: "Performs exact string replacement in a file.", parameters: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"] } } },
+    { type: "function", function: { name: "Read", description: "Reads a file from the local filesystem.", parameters: { type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["file_path"] } } },
+  ];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools }) });
+  await response.text();
+  const nameOf = (tool) => tool.function?.name ?? tool.name;
+  const names = state.calls.at(-1).body.tools.map(nameOf);
+  assert.deepEqual(names.slice(0, 2), ["text_replace", "file_view"]);
+  assert.ok(names.includes("edit") && names.includes("read"), names.join(","));
+});
+
 // Z.ai's ZCode 3.17.2 declares its dynamic-workflow tools, and Zen refuses
 // the whole request when two of them travel together: CreateWorkflow beside
 // GetWorkflowRun, and AmendWorkflow beside FillWorkflowHole. Either name
