@@ -12,7 +12,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import {
-  baseBody, continueWithToolResults, createBridgeKit, readSse, sleep, tick,
+  MESSAGES_URL, baseBody, continueWithToolResults, createBridgeKit, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 async function withKit(options, fn) {
@@ -508,7 +508,7 @@ test("A16: a replay of more than 128 KiB of history stays within 112 KiB and kee
     assert.ok(prompt.endsWith("</current_turn>"))
     assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
     assert.ok(prompt.includes("NEWEST assistant reply"), "the newest history is kept")
-    assert.ok(prompt.includes("[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"))
+    assert.ok(prompt.includes("[... earlier conversation history omitted to fit the prompt budget ...]"))
     assert.ok(!prompt.includes("belongs to an earlier turn that is already done"), "non-loop replay adds no loop handoff note")
     assert.ok(prompt.includes("bytes of this history block omitted"), "oversized history blocks keep only head and tail")
     assert.ok(prompt.includes('Never output "[tool call ...]" text'))
@@ -574,7 +574,7 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
     assert.ok(prompt.includes("Human: TASK START: rename parseConfig to loadConfig everywhere"), "the loop's prompt is kept")
     assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
-    const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
+    const note = "[... earlier conversation history omitted to fit the prompt budget ...]"
     // the turn before the loop (ANCHOR reply) takes room the steps left, so
     // the one gap is between the loop's prompt and its newest steps (plugins#1401)
     assert.ok(prompt.includes("ANCHOR reply"), "the turn before the loop is kept")
@@ -1494,6 +1494,49 @@ test("the model quoting the Individual quota reached ending with more text after
   }
 })
 
+// @Airan_FS on X (11-23): once the account's Claude quota was used up,
+// every Claude request's whole reply was agy's ending for the third-party
+// (Claude and GPT-OSS) pool, with Gemini's quota left.
+const THIRD_PARTY_LINE = "⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 3h22m19s."
+const THIRD_PARTY = "\n" + THIRD_PARTY_LINE + "\n"
+
+test("agy's Third-party quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [THIRD_PARTY],
+    [THIRD_PARTY.slice(0, 9), THIRD_PARTY.slice(9, 33), THIRD_PARTY.slice(33)],
+    [THIRD_PARTY_LINE],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "third-party-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error?.type, "rate_limit_error", text)
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + THIRD_PARTY_LINE.replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [THIRD_PARTY])
+    const response = await kit.request(baseBody({ metadata: { user_id: "third-party-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.match(body.error.message, /Third-party quota reached\. .*Resets in 3h22m19s\./)
+  })
+  // the model quoting it, with more text after, is the model's
+  await withKit({}, async (kit) => {
+    const chunks = ["agy said\n⚠ Third-party quota", " reached. Resets in 1h.\nThat line is agy's, not mine."]
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "third-party-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
 // ifccod (opencode-agy-cli-auth FORK.md, 11-18): when every retry met
 // Google's "no capacity" 503, agy ended the reply with this notice, and the
 // client got it as the whole answer, a 200 nothing behind magpie retried.
@@ -1520,6 +1563,58 @@ test("agy's high-traffic ending fails the turn as an overloaded 503, not a rate 
       assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
     })
   }
+})
+
+// plugins#1541: before that ending agy retries the 503 for minutes, saying
+// so only in its log. The first retry line ends the turn, so magpie can ask
+// another account at once.
+const CAPACITY_RETRY = "I1125 13:34:23.878000 6120 run.go:88] Run: attempt 1 failed (transport error (Unavailable, HTTP 503): No capacity available for model gemini-4-hydrogen-low on the server), retrying in 4s\n"
+
+test("agy's silent no-capacity retry ends the turn as an overloaded 503 before anything is streamed", async () => {
+  for (const stream of [false, true]) {
+    await withKit({}, async (kit) => {
+      // how agy's turn ended: cancelled by the bridge, or by its own give-up
+      let ended = null
+      kit.defaultPrompt = async (agent) => {
+        fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+        ended = await Promise.race([agent.waitCancel().then(() => "cancelled"),
+          new Promise((resolve) => setTimeout(() => resolve("gave up"), 20000).unref())])
+        return { stopReason: "end_turn" }
+      }
+      const started = Date.now()
+      const response = await kit.request(baseBody({ metadata: { user_id: `capacity-${stream}` },
+        messages: [{ role: "user", content: "hello" }], stream }))
+      if (stream) {
+        const error = sseError(await response.text())
+        assert.equal(error.type, "overloaded_error")
+        assert.notEqual(error.noRetry, true)
+        assert.match(error.message, /no capacity for this model now: .*No capacity available for model gemini-4-hydrogen-low/)
+      } else {
+        const body = await response.json()
+        assert.equal(response.status, 503)
+        assert.equal(body.error.type, "overloaded_error")
+      }
+      assert.ok(Date.now() - started < 10000, `ended after ${Date.now() - started}ms, not at agy's next retry`)
+      assert.notEqual(ended, "gave up", "the reply didn't wait for agy to give up")
+    })
+  }
+})
+
+test("a no-capacity retry after the reply began leaves the turn to agy", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("Working on it. ")
+      fs.appendFileSync(agyLogOf(kit), CAPACITY_RETRY)
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await agent.text("Done.")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "capacity-late" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(replyText(body), "Working on it. Done.")
+  })
 })
 
 test("agy's high-traffic ending fails a non-stream request as an HTTP 503", async () => {
@@ -1576,6 +1671,77 @@ test("agy 1.5.10's banned-account ending fails the turn as a no-retry 403, strea
     assert.equal(response.status, 403)
     assert.equal(response.headers.get("x-should-retry"), "false")
     assert.equal(body.error.type, "permission_error")
+  })
+})
+
+// dmiedog (#1563): a suspended account's request failed with the banned
+// ending, magpie read the stream's 403 as a 502 and tried again, ten
+// times in a minute, and each try started a new agy session that asked
+// Google again (session_new: 1 no_live + 4 fresh_after_first per
+// conversation). Once a turn says the account is disabled, its requests
+// are refused at once: no agy started, no prompt sent. Another account
+// is not held, and the hold ends.
+test("#1563: a disabled account's next requests are refused with no agy session, for a while", async () => {
+  for (const banned of [BANNED, BANNED_1510]) {
+    await withKit({}, async (kit) => {
+      const log = captureStderr()
+      try {
+        markerAgent(kit, [banned.slice(0, 20), banned.slice(20)])
+        const first = await kit.request(baseBody({ metadata: { user_id: "held-1" },
+          messages: [{ role: "user", content: "hello" }] }))
+        assert.equal(sseError(await first.text()).status, 403)
+        const spawns = kit.acpSpawns.length
+        const asked = prompts(kit).length
+        assert.equal(asked, 1)
+        // magpie's retry of the same request, streamed, and another
+        // conversation of the same account, not streamed
+        for (const body of [
+          baseBody({ metadata: { user_id: "held-1" }, messages: [{ role: "user", content: "hello" }] }),
+          baseBody({ metadata: { user_id: "held-2" }, messages: [{ role: "user", content: "another" }], stream: false }),
+        ]) {
+          const again = await kit.request(body)
+          assert.equal(again.status, 403)
+          assert.equal(again.headers.get("x-should-retry"), "false")
+          const error = (await again.json()).error
+          assert.equal(error.type, "permission_error")
+          assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+        }
+        assert.equal(kit.acpSpawns.length, spawns, "a held account started an agy")
+        assert.equal(prompts(kit).length, asked, "a held account's request reached Google")
+        assert.ok(log.lines.some((row) => row.action === "refuse_held" && row.reason === "account_disabled"))
+        // another account is asked as before
+        markerAgent(kit, ["fine"])
+        const b = await kit.plugin.auth.loader(async () => ({ type: "oauth", metadata: { agyHome: "accountb1" } }))
+        const other = await readSse(await b.fetch(MESSAGES_URL, { method: "POST",
+          body: JSON.stringify(baseBody({ metadata: { user_id: "held-b" }, messages: [{ role: "user", content: "hello" }] })) }))
+        assert.equal(other.error, null)
+        assert.equal(replyText(other), "fine")
+      } finally {
+        log.restore()
+      }
+    })
+  }
+})
+
+test("#1563: the disabled hold ends after ten minutes, and the account is asked again", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 20), BANNED.slice(20)])
+    await (await kit.request(baseBody({ metadata: { user_id: "hold-ends" },
+      messages: [{ role: "user", content: "hello" }] }))).text()
+    assert.equal(prompts(kit).length, 1)
+    markerAgent(kit, ["back"])
+    kit.clock.advance(10 * 60_000 - 1)
+    const held = await kit.request(baseBody({ metadata: { user_id: "hold-ends-2" },
+      messages: [{ role: "user", content: "hello" }] }))
+    assert.equal(held.status, 403)
+    await held.text()
+    assert.equal(prompts(kit).length, 1)
+    kit.clock.advance(1)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "hold-ends-3" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), "back")
+    assert.equal(prompts(kit).length, 2)
   })
 })
 
@@ -1751,6 +1917,42 @@ test("#1165: with agy's sign-in in a file under ~/.gemini (no keyring, Docker), 
     assert.equal(reply.stopReason, "end_turn")
     assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
     assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
+  })
+})
+
+// plugins#1591: magpie's Antigravity takeover writes the app's gateway into
+// ~/.gemini/config/config.json, which agy reads too. An agy kept on ~/.gemini
+// for its file sign-in gets that folder without the gateway: the sign-in
+// linked where it is, the user's other config kept, the gateway left out.
+test("#1591: a file sign-in under ~/.gemini with the app's gateway on runs agy on ~/.gemini without the gateway", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const gemini = path.join(kit.env.HOME, ".gemini")
+    const token = path.join(gemini, "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}", { mode: 0o600 })
+    fs.mkdirSync(path.join(gemini, "config"), { recursive: true })
+    fs.writeFileSync(path.join(gemini, "config", "config.json"), JSON.stringify({
+      gateway: { enabled: true, url: "http://127.0.0.1:3425", apiKey: "mk", wireProtocol: "openai" },
+      models: { defaultModelId: "rg/gpt-6-astra", listSource: "gateway" },
+      plugins: { swarm: true },
+    }))
+    fs.writeFileSync(path.join(gemini, "config", "mcp_config.json"), "{\"mcpServers\":{}}")
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token-gateway" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-own")
+    const at = kit.acpSpawns[0].args.indexOf("--gemini-dir")
+    assert.ok(at >= 0 && kit.acpSpawns[0].args[at + 1] === own, kit.acpSpawns[0].args.join(" "))
+    // the sign-in is agy's own file, read and renewed where it is
+    assert.ok(fs.lstatSync(path.join(own, "antigravity-cli")).isSymbolicLink())
+    assert.equal(fs.realpathSync(path.join(own, "antigravity-cli", "antigravity-oauth-token")), fs.realpathSync(token))
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(own, "config", "config.json"), "utf8")), { plugins: { swarm: true } })
+    assert.equal(fs.readFileSync(path.join(own, "config", "mcp_config.json"), "utf8"), "{\"mcpServers\":{}}")
+    // the user's own file is left as it was
+    assert.equal(JSON.parse(fs.readFileSync(path.join(gemini, "config", "config.json"), "utf8")).gateway.enabled, true)
+    // the gateway turned off in the app: agy stays on ~/.gemini as before
+    fs.writeFileSync(path.join(gemini, "config", "config.json"), JSON.stringify({ gateway: { enabled: false } }))
+    assert.deepEqual(await kit.module.geminiDirArgs(kit.agyPath, kit.env), { args: [], dir: null })
   })
 })
 
@@ -1976,6 +2178,83 @@ test("forked session or subagent carrying an ancestor tool_use does not hit conf
     const parentFinal = await readSse(await kit.request(continueWithToolResults(step2Body, turn2, () => "real-step-2"), { headers: parentHeaders }))
     assert.equal(parentFinal.stopReason, "end_turn")
     assert.ok(parentFinal.content.some((block) => block.text?.includes("parent done")))
+  })
+})
+
+// plugins#1545: Claude Code's AgentSummary sends the sub-agent's own
+// conversation again, its tool result and the ask for a few words, while the
+// worker's response still runs. In the worker's scope it got 503 "already
+// has an active response" seven times over.
+const SUMMARY_ASK = "Describe your most recent action in 3-5 words. Do not use tools."
+
+test("an AgentSummary beside a running worker is answered in a scope of its own", async () => {
+  await withKit({}, async (kit) => {
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    let workerReading = null
+    const reading = new Promise((resolve) => { workerReading = resolve })
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      if (text.includes(SUMMARY_ASK)) {
+        await agent.text("Reading the shared file")
+        return { stopReason: "end_turn" }
+      }
+      const result = await agent.tool("Read", { path: "/shared" })
+      workerReading()
+      await gate
+      await agent.text(`worker got:${result?.result?.content?.[0]?.text || ""}`)
+      return { stopReason: "end_turn" }
+    }
+    const headers = { "x-magpie-session": "claude:worker-1545", "x-magpie-subagent": "task-1" }
+    const opening = baseBody({ system: "worker system", messages: [{ role: "user", content: "WORK on it" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const resumed = continueWithToolResults(opening, turn1, () => "file body")
+    const workerDone = kit.request(resumed, { headers }).then(readSse)
+    await reading
+    const last = resumed.messages.at(-1)
+    const summary = { ...resumed, messages: [...resumed.messages.slice(0, -1),
+      { ...last, content: [...last.content, { type: "text", text: SUMMARY_ASK }] }] }
+    const summaryResponse = await kit.request(summary, { headers })
+    assert.equal(summaryResponse.status, 200, await summaryResponse.clone().text())
+    const parsed = await readSse(summaryResponse)
+    assert.ok(parsed.content.some((block) => block.text?.includes("Reading the shared file")), JSON.stringify(parsed.content))
+    release()
+    const worker = await workerDone
+    assert.equal(worker.stopReason, "end_turn")
+    assert.ok(worker.content.some((block) => block.text?.includes("worker got:file body")), JSON.stringify(worker.content))
+  })
+})
+
+test("a tool result whose text is the summary ask stays the worker's", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const result = await agent.tool("Read", { path: "/shared" })
+      await agent.text(`worker got:${result?.result?.content?.[0]?.text || ""}`)
+      return { stopReason: "end_turn" }
+    }
+    const headers = { "x-magpie-session": "claude:worker-1545b", "x-magpie-subagent": "task-2" }
+    const opening = baseBody({ system: "worker system", messages: [{ role: "user", content: "WORK on it" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers }))
+    const spawned = kit.acpSpawns.length
+    const done = await readSse(await kit.request(continueWithToolResults(opening, turn1, () => SUMMARY_ASK), { headers }))
+    assert.equal(done.stopReason, "end_turn")
+    assert.ok(done.content.some((block) => block.text?.includes(`worker got:${SUMMARY_ASK}`)))
+    assert.equal(kit.acpSpawns.length, spawned, "the result went to the worker's live session")
+  })
+})
+
+test("the summary ask from a main session, not a sub-agent, stays in its session", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "hello": "hi", "Describe your": "Said hello" })
+    const headers = { "x-magpie-session": "claude:main-1545" }
+    const first = baseBody({ system: "main system", messages: [{ role: "user", content: "hello" }] })
+    const done1 = await readSse(await kit.request(first, { headers }))
+    const spawned = kit.acpSpawns.length
+    const next = { ...first, messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: SUMMARY_ASK }] }
+    const done2 = await readSse(await kit.request(next, { headers }))
+    assert.equal(done2.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, spawned, "kept the main session")
   })
 })
 
@@ -2323,3 +2602,106 @@ for (const shape of ["big current turn", "big instructions"]) {
     assert.equal(replay[shape === "big current turn" ? "turn_clipped" : "head_clipped"], true)
   })
 }
+
+// plugins#1454 (@seven_7cx, agy 1.5.12 through agy-cli 0.1.109, DSH): agy's
+// retry after a malformed function call, byte for byte from the report.
+// agy writes each banner as "\n⚠ %s\n".
+const MALFORMED_HEAD = "\n⚠ Your previous response contained an improperly formatted function call: Malformed function call: call:...\n"
+const MALFORMED_TAIL = "Please retry with a properly formatted function call\n"
+const MALFORMED = MALFORMED_HEAD + MALFORMED_TAIL + "Retries remaining: 3\n"
+// agy 1.5.14's binary words the instruction "Please use a properly formatted function call".
+const MALFORMED_1514 = MALFORMED_HEAD + "Please use a properly formatted function call\nRetries remaining: 2\n"
+
+async function replyOf(chunks, user) {
+  let parsed
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const response = await kit.request(baseBody({ metadata: { user_id: user },
+      messages: [{ role: "user", content: "edit the file" }] }))
+    const text = await response.text()
+    parsed = { ...(await readSse(new Response(text))), raw: text }
+  })
+  return parsed
+}
+
+test("plugins#1454: agy's malformed-function-call retry notice never reaches the client, however it is split", async () => {
+  const answer = "Calling the tool again."
+  const cases = [
+    [[MALFORMED + answer], answer],
+    [[MALFORMED, answer], answer],
+    [[MALFORMED_1514 + answer], answer],
+    [["Let me edit it.", MALFORMED, answer], "Let me edit it." + answer],
+    [[MALFORMED_HEAD + MALFORMED_TAIL, "Retries remaining: 3\n" + answer], answer],
+    [[MALFORMED], ""],
+  ]
+  // every chunk boundary the notice can be split at, in the reporter's bytes
+  for (const at of [1, 2, 5, 14, 26, 60, MALFORMED_HEAD.length, MALFORMED_HEAD.length + 3, MALFORMED_HEAD.length + MALFORMED_TAIL.length + 9]) {
+    cases.push([[MALFORMED.slice(0, at), MALFORMED.slice(at) + answer], answer])
+  }
+  for (const [chunks, want] of cases) {
+    const parsed = await replyOf(chunks, "malformed-call")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+  }
+})
+
+test("plugins#1454: the model quoting the malformed-call notice mid-line keeps it", async () => {
+  const chunks = ["agy prints `⚠ Your previous response contained an improperly formatted function call`", " when it retries."]
+  const parsed = await replyOf(chunks, "malformed-quoted")
+  assert.equal(parsed.error, null)
+  assert.equal(replyText(parsed), chunks.join(""))
+})
+
+test("plugins#1454: a banner right after another is still agy's, once the first is cut out with its newlines", async () => {
+  const answer = "the retry's answer"
+  for (const chunks of [
+    ["Let me look." + EOF_ATTEMPT(1) + EOF_ATTEMPT(2) + "\n" + answer],
+    ["Let me look.", EOF_ATTEMPT(1) + "\n", EOF_ATTEMPT(2).slice(1) + "\n" + answer],
+    ["Let me look.\n⚠ Model produced invalid output.\n⚠ Model produced invalid output.\n" + answer],
+    ["Let me look.\n⚠ Model produced invalid output." + MALFORMED + answer],
+    ["Let me look.\n⚠ Model produced invalid output.\n", MALFORMED.slice(1, 20), MALFORMED.slice(20) + answer],
+  ]) {
+    const parsed = await replyOf(chunks, "banner-after-banner")
+    assert.equal(parsed.error, null, JSON.stringify(chunks))
+    assert.equal(replyText(parsed), "Let me look." + answer, JSON.stringify(chunks))
+  }
+})
+
+test("plugins#1454: agy's quota and high-traffic endings right after a banner still fail the turn", async () => {
+  for (const [chunks, type] of [
+    [["Let me look.\n⚠ Model produced invalid output.\n" + QUOTA_LINE + "\n"], "rate_limit_error"],
+    [["Let me look.\n⚠ Model produced invalid output.\n", "⚠ Individual", " quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."], "rate_limit_error"],
+    [["Let me look." + MALFORMED + BUSY_LINE + "\n"], "overloaded_error"],
+    [["Let me look." + EOF_ATTEMPT(1) + "\n" + QUOTA_LINE], "rate_limit_error"],
+  ]) {
+    const parsed = await replyOf(chunks, "ending-after-banner")
+    assert.equal(replyText(parsed), "Let me look.", JSON.stringify(chunks))
+    assert.equal(sseError(parsed.raw).type, type, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), "no banner reaches the client")
+  }
+})
+
+test("plugins#1454: a reply that starts with agy's line split before its end is held, not sent", async () => {
+  for (const [chunks, want, type] of [
+    [["⚠ Individual", " quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."], "", "rate_limit_error"],
+    [["⚠ Our servers", " are experiencing high traffic right now, please try again in a minute."], "", "overloaded_error"],
+    [["⚠ Your previous", MALFORMED.slice(16) + "Calling the tool again."], "Calling the tool again.", null],
+    [["⚠ Model produced", " invalid output.\n", "the retry's answer"], "the retry's answer", null],
+    [["⚠", " API error (attempt 1): EOF\n", "the retry's answer"], "the retry's answer", null],
+  ]) {
+    const parsed = await replyOf(chunks, "split-at-start")
+    assert.equal(replyText(parsed), want, JSON.stringify(chunks))
+    assert.ok(!parsed.raw.includes("⚠"), `no banner reaches the client: ${JSON.stringify(chunks)}`)
+    if (type) assert.equal(sseError(parsed.raw).type, type)
+    else assert.equal(parsed.error, null)
+  }
+})
+
+test("plugins#1454: a reply that only starts with ⚠ is still sent whole", async () => {
+  for (const chunks of [["⚠", " careful: this deletes the branch."], ["⚠ Your previous", " answer was right."]]) {
+    const parsed = await replyOf(chunks, "warning-sign")
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  }
+})

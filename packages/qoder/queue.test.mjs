@@ -13,6 +13,7 @@
 // The clock and the pauses are the test's own (QUEUE.now, QUEUE.pause): a
 // pause moves the clock on at once, and says how long it was asked to be.
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { QoderAuthPlugin, _internal } from "./index.mjs"
 
 const { QUEUE } = _internal
@@ -37,6 +38,7 @@ beforeEach(() => {
   pauses = []
   timers = []
   QUEUE.now = () => clock
+  QUEUE.log = () => {}
   QUEUE.pause = async (ms, signal) => {
     if (signal?.aborted) throw signal.reason
     pauses.push(ms)
@@ -51,6 +53,8 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = real
   Object.assign(QUEUE, saved)
+  // a lease left by one test is not told finish in the next one's fetch
+  _internal.TASKS.clear()
 })
 
 const API_CHAT = "https://api3.qoder.sh/v1/chat/completions"
@@ -68,15 +72,19 @@ const status = (st) => json({ success: true, data: st })
 
 // a loader whose chats are answered by chats(), in turn, and status asks by
 // statuses(); what was sent is kept
-async function loader({ chats, statuses }) {
+async function loader({ chats, statuses, finishes }) {
   const auth = { type: "oauth", access: "jt", refresh: "rt", expires: Date.now() + 3_600_000, accountId: "one@x", uid: "u1", machineId: "m1" }
-  const sent = { chats: [], statuses: [] }
+  const sent = { chats: [], statuses: [], finishes: [] }
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
     if (u.pathname.endsWith("/model/list")) return json(LISTING)
     if (u.pathname.endsWith("/queue/status")) {
       sent.statuses.push({ url: u, headers: init.headers, signal: init.signal })
       return statuses(sent.statuses.length)
+    }
+    if (u.pathname.endsWith("/ask/finish")) {
+      sent.finishes.push({ url: u, method: init.method, headers: init.headers, wire: init.body, body: JSON.parse(_internal.decodeBody(init.body)) })
+      return finishes ? finishes(sent.finishes.length) : json({ success: true })
     }
     sent.chats.push(JSON.parse(_internal.decodeBody(init.body)))
     return chats(sent.chats.length)
@@ -207,9 +215,13 @@ test("service unavailable keeps waiting; the queue saying nothing of itself, or 
     chats: (n) => (n === 1 ? refused() : answered()),
     statuses: (n) => status(n === 1 ? { isQueued: false, serviceAvailable: false, retryAfterSeconds: 5 } : { isQueued: false }),
   })
-  // isQueued false comes first, as in Qoder's client: through, after 5s
+  // isQueued false with the service unavailable isn't through, as Qoder's
+  // client reads it (qoderclicn 1.1.98, qoder-worker-runtime: isQueued
+  // false and serviceAvailable not false): asked again after its 5s
   expect((await r.fetch(API_CHAT, ask())).status).toBe(200)
   expect(pauses).toEqual([5_000])
+  expect(r.sent.statuses.length).toBe(2)
+  expect(r.sent.chats.length).toBe(2)
 
   pauses = []
   r = await loader({
@@ -248,6 +260,66 @@ test("the queue is waited out 10 times for one request at most", async () => {
   const res = await fetch(API_CHAT, ask())
   expect(res.status).toBe(503)
   expect(sent.chats.length).toBe(11)
+})
+
+// plugins#1560 (Rhymeyoung): ZCode's request to Qoder CN's fast ended after
+// 5m26s with "Qoder queued the request for fast (this plan's queue: p2);
+// try again in 30s", which read as a wait that ran out. It was the queue
+// saying "through" ten times, 30s after each, and each resend queued
+// again; nothing anywhere said so, or what the queue had said.
+const P2 = { isQueued: true, modelKey: "fast", queueCount: 0, queueType: "p2", retryAfterSeconds: 30, serviceAvailable: true, waitTime: 0 }
+const THROUGH = { isQueued: false, modelKey: "fast", queueCount: 0, queueType: "p2", retryAfterSeconds: 30, serviceAvailable: true, waitTime: 0 }
+
+test("#1560 a request queued again after every wait the queue said was over says so, with the queue's last status", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(P2), statuses: () => status(THROUGH) })
+  const res = await fetch(API_CHAT, streamed())
+  const { lines } = await read(res)
+  const err = JSON.parse(lines.find((l) => l.line.startsWith("data:")).line.slice(5)).error
+  expect(err).toEqual({
+    message:
+      "Qoder queued the request for fast (this plan's queue: p2); try again in 30s (Qoder's queue let it through 10 times and queued each resend again; its last status: isQueued false, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast)",
+    code: 503,
+  })
+  expect(sent.chats.length).toBe(11)
+  // ten 30s pauses, as long as the reporter's 5m26s less the calls
+  expect(pauses).toEqual(Array(10).fill(30_000))
+})
+
+test("#1560 each step of a queued request's wait goes to magpie's log with what the queue said", async () => {
+  const logged = []
+  QUEUE.log = (l) => logged.push(l)
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused(P2) : answered()),
+    statuses: (n) => status(n === 1 ? { ...P2, queueCount: 2, waitTime: 40, subCode: "RESOURCE_LIMIT" } : THROUGH),
+  })
+  expect((await fetch(API_CHAT, ask())).status).toBe(200)
+  const set = sent.chats[0].request_set_id.slice(0, 8)
+  expect(logged).toEqual([
+    `qoder: dfmodel in request set ${set}: queued (10605) on send 1: isQueued true, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast`,
+    `qoder: dfmodel in request set ${set}: queue status: isQueued true, serviceAvailable true, queueType p2, queueCount 2, retryAfterSeconds 30, waitTime 40, subCode RESOURCE_LIMIT, modelKey fast`,
+    `qoder: dfmodel in request set ${set}: queue status: isQueued false, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast; through, sending it again`,
+  ])
+})
+
+test("#1560 a wait that ends says why in magpie's log", async () => {
+  const logged = []
+  QUEUE.log = (l) => logged.push(l)
+  let r = await loader({ chats: () => refused(), statuses: () => new Response("not found", { status: 404 }) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": the wait ends: Qoder has no queue status here")
+
+  r = await loader({ chats: () => refused(), statuses: () => new Response("boom", { status: 500 }) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": the wait ends: 3 status asks failed in a row")
+  expect(logged.at(-2)).toEndWith(": queue status ask failed: queue status: HTTP 500")
+
+  r = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toMatch(/: the wait ran out after 240s$/)
+
+  r = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  expect((await r.fetch(API_CHAT, { ...ask(), headers: { "x-magpie-fallback": "1" } })).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": not waited: another candidate follows")
 })
 
 test("a cancelled request stops waiting: no status asked and no request sent after", async () => {
@@ -460,4 +532,58 @@ test("#1220 a queue with others ahead, unchanged, is still waited out past 5 min
   expect(lines.some((l) => l.line.includes("hello"))).toBe(true)
   expect(pauses.reduce((a, b) => a + b, 0)).toBe(10 * 60_000)
   expect(sent.chats.length).toBe(2)
+})
+
+// Qoder's client tells /api/v2/service/ask/finish when a queued request's
+// lease is done (qoderclicn 1.1.98 and qoder-worker-runtime, ZM.release:
+// at the turn's end, the session's, and at once when the request can't
+// wait); unheard, only Qoder's TTL lets the lease go (plugins#1560, a Qoder
+// CN account queued in p2 and p4 while its plan's credits went unused).
+// finishOf is a finish's payload, and whether its signature covers its
+// wire body and the path without /algo, as cosyHeaders signs a call.
+function finishOf(f) {
+  const [, payload, sig] = f.headers.Authorization.split(" ")[1].split(".")
+  const want = createHash("md5").update(`${payload}\n${f.headers["Cosy-Key"]}\n${f.headers["Cosy-Date"]}\n${f.wire}\n/api/v2/service/ask/finish`).digest("hex")
+  return { signed: sig === want, encodeVersion: f.body.encodeVersion, ...JSON.parse(f.body.payload) }
+}
+
+test("a request that gives up its wait in Qoder's queue tells the queue's finish at once, as Qoder's client does", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  expect((await fetch(API_CHAT, ask())).status).toBe(503)
+  expect(sent.finishes.length).toBe(1)
+  const f = sent.finishes[0]
+  expect(f.method).toBe("POST")
+  expect(f.url.origin + f.url.pathname).toBe("https://api3.qoder.sh/algo/api/v2/service/ask/finish")
+  expect(Object.fromEntries(f.url.searchParams)).toEqual({ Encode: "1" })
+  expect(finishOf(f)).toEqual({ signed: true, encodeVersion: "1", model_key: "dfmodel", request_set_id: sent.chats[0].request_set_id, user_id: "u1", time_consumed: QUEUE.budget })
+})
+
+test("told another candidate follows, the queued request's finish goes at once too, and a finish refused changes nothing", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(), statuses: () => status(QUEUED), finishes: () => new Response("boom", { status: 500 }) })
+  const res = await fetch(API_CHAT, { ...ask(), headers: { "x-magpie-fallback": "1" } })
+  expect(res.status).toBe(503)
+  expect((await res.json()).error.message).toBe("Qoder queued the request for dfmodel (this plan's queue: p3, 3 ahead); try again in 30s")
+  expect(sent.finishes.map(finishOf)).toEqual([{ signed: true, encodeVersion: "1", model_key: "dfmodel", request_set_id: sent.chats[0].request_set_id, user_id: "u1", time_consumed: 0 }])
+})
+
+test("a queued request let through keeps its lease for its task, and the session's next prompt tells its finish; a request never queued tells none", async () => {
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused() : answered()),
+    statuses: () => status({ isQueued: false, serviceAvailable: true, retryAfterSeconds: 3 }),
+  })
+  const turn = [{ role: "user", content: "hi" }]
+  const asked = (messages) => ({ method: "POST", body: JSON.stringify({ model: "dfmodel", messages }) })
+  expect((await fetch(API_CHAT, asked(turn))).status).toBe(200)
+  // the tool loop's next call is the same task: the lease is kept
+  expect((await fetch(API_CHAT, asked([...turn, { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "look", arguments: "{}" } }] }, { role: "tool", tool_call_id: "c1", content: "x" }]))).status).toBe(200)
+  expect(sent.finishes.length).toBe(0)
+  const lease = sent.chats[0].request_set_id
+  expect(sent.chats[2].request_set_id).toBe(lease)
+  // a new prompt is a new task, and the last one's lease is let go
+  expect((await fetch(API_CHAT, asked([...turn, { role: "assistant", content: "hello" }, { role: "user", content: "next" }]))).status).toBe(200)
+  expect(sent.chats[3].request_set_id).not.toBe(lease)
+  expect(sent.finishes.map(finishOf)).toEqual([{ signed: true, encodeVersion: "1", model_key: "dfmodel", request_set_id: lease, user_id: "u1", time_consumed: 3_000 }])
+  // the new task was never queued: its next prompt tells nothing
+  expect((await fetch(API_CHAT, asked([...turn, { role: "assistant", content: "hello" }, { role: "user", content: "next" }, { role: "assistant", content: "ok" }, { role: "user", content: "more" }]))).status).toBe(200)
+  expect(sent.finishes.length).toBe(1)
 })

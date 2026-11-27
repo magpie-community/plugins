@@ -1,0 +1,88 @@
+Created At: 2026-11-26T15:31:21+08:00
+Completed At: 2026-11-26T15:31:26+08:00
+The search for "opencode plugin hooks" returned the following summary:
+OpenCode plugins use a TypeScript/JavaScript-based architecture that allows you to intercept, inspect, and modify live agent operations via **runtime hooks**[1][2]. 
+
+Plugins are structured as async functions (or modules using Plugin definitions) that accept a context object and return a dictionary of hooks[2][3].
+
+---
+
+### 1. Core Plugin Structure
+A basic local plugin (`.opencode/plugins/my-plugin.ts`) looks like this[4]:
+
+```typescript
+import type { Plugin } from "@opencode-ai/plugin";
+
+export const MyPlugin: Plugin = async ({ client, project, $ }) => {
+  return {
+    // Define your hooks here
+    "tool.execute.before": async (input, output) => {
+      // Intercept or modify behavior
+    }
+  };
+};
+
+export default MyPlugin;
+```
+
+---
+
+### 2. Commonly Used Plugin Hooks
+
+OpenCode provides several lifecycle hooks depending on what you want to intercept[1][2]:
+
+| Hook Name | Trigger Point | What You Can Do |
+| :--- | :--- | :--- |
+| **`event`** | Fires on roughly ~30 system events (`session.idle`, `session.created`, `file.edited`, `permission.asked`, etc.)[2]. | **Observe-only:** Great for logging, notifications, or triggering analytics[2]. |
+| **`tool.execute.before`** *(or `PreToolUse`)* | Right before any built-in tool runs (e.g., file editing, bash commands)[2][5]. | **Block or Modify:** Throw an error to block execution, or mutate `output.args` to change tool inputs dynamically[2]. |
+| **`tool.execute.after`** *(or `PostToolUse`)* | Right after a built-in tool finishes executing[2][5]. | **Post-process:** Inspect tool output, mutate responses, or trigger automated follow-ups (like auto-formatting code/running linters after a file edit)[4][2]. |
+| **`shell.env`** | Before any shell execution takes place[2]. | **Inject environment variables:** Modify `output.env` to safely pass secrets or specific paths to sub-processes[2]. |
+| **`stop`** | When the coding agent attempts to wrap up or go idle[2]. | **Keep working:** Prevent the session from closing by calling client commands (`client.session.prompt()`) to feed the agent extra verification steps or remaining tasks[2]. |
+| **`config`** | During the initialization/configuration loading phase[2]. | **Modify configs:** Programmatically tweak configuration options directly[2]. |
+
+---
+
+### 3. Practical Example: Post-Turn Auto-Linting Hook
+A popular pattern for OpenCode plugins is running a linter (like Biome or ESLint) via a hook after the agent modifies files, feeding any errors back into the context so the agent can self-correct[4]:
+
+```typescript
+import type { Plugin } from "@opencode-ai/plugin";
+
+export const AutoFormatPlugin: Plugin = async ({ $ }) => {
+  return {
+    "tool.execute.after": async (input, output) => {
+      if (input.tool_name === "Edit" || input.tool_name === "write_file") {
+        // Run Biome or another formatter via the shell utility
+        const result = await $`biome check --write ${input.tool_input.file_path}`;
+        
+        if (result.exitCode !== 0) {
+          // Optionally push linter feedback back to the agent log/output
+          output.output += `\nLinter feedback:\n${result.stdout}`;
+        }
+      }
+    }
+  };
+};
+```
+
+---
+
+### 4. Where Plugins Live & Load Order
+OpenCode discovers and loads plugins from local directories and external packages in this exact sequence[2]:
+
+1. **Global Config Plugins:** Defined in `~/.config/opencode/opencode.json` (`"plugin": [...]`)[2].
+2. **Project Config Plugins:** Defined in project-level `opencode.json`[2].
+3. **Global Plugin Directory:** Local scripts placed in `~/.config/opencode/plugins/`[2].
+4. **Project Plugin Directory:** Local scripts placed in `.opencode/plugins/`[2].
+
+*Note: External npm packages specified in configurations are automatically downloaded and managed using Bun at startup[2][6].*
+
+Sources:
+[1] [boot.dev](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQG9sC6c-LyZgrbOl84RjkzsCrHp04XysIKrXbk8LoIqjvtmla24ObUbK30XIB4xmaTTqlLn8cSHF_Jpo8lJt7vFnJ-xx4YoFNLSws_Kdfm-8Yq8T6raHdpc94oeS_wMah7qOSXNX7Ecq5wsuAN2wfocKuA_IoKW)
+[2] [symposium.dev](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGwe0u7I0hqEe9L1sGr6cnszFnD1bT-S9pnnW_BKyLVDCmTY-QyLF6SWrj7LjxKRcKm88OzahVNF5MVmQc-eRFdauvo2TQ8tlyKEc8rdGwF4EIUslhSt00mQTbEt5qSTaG2q38TybbhCkXBtzqX)
+[3] [open-code.ai](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQH7ff3x2P4ZiJbMJAiyeaT2KJopEcBdF8rxbgd-wysYj9lSkQff7vWEtKxQaFeZuoZQzd7UP_Qk6wkvfMw5DHnK3zvHWDb9iA9f96N4WDzTSQEZ4Zwd18fSStlqLuwALg==)
+[4] [sulat.com](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQEPwNfzlTd92do2QaaePXo0yGd4QQ8J9DG7FwEifxucx2xPw3IfBl_WHJYymI3KmWHZcSW73He6fblz4_XxHE7LaU1_8mCoZjrXlfLaLbGlLeCUvYRP4LCqh_FxprZoxCRFMF8llpFqaXO5YvaG_93X86xgATtOILMYXo5Ur30Eg0fZmHQbdbCbrF3zW7RM7cAFqwVPwj2kxWY=)
+[5] [jsdelivr.com](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGBxQ310-Yd586Q50a58DT8tmR3v31fIgVga23H6sxCGEdNeZFn0l3UvLRGfY6rP7EXrKHskS1_6FcYJT8JT9iSjzodi1Sg-77BSQOQtBNyTsOKf0Y3FeYSj1EpV_FoFs6zE-gzrnPN_Q==)
+[6] [opencode-tutorial.com](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGdSzDr9hAZvG64QbRgKaNTGB7NVP6DgD0HO7E010iBErQJ-7oRFl24BXfPKpatnINue_-C-XVgLlt9_VnxbdQ2nSv-ppIZxhkeosuYhM68vuZDaMmePisr6WJXTGuYo5_PYQ==)
+
+Note: Source URLs are HTTP redirects; check where they resolve if you need the direct link.

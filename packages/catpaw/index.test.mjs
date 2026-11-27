@@ -470,6 +470,53 @@ describe("chat", () => {
     const body = await res.json()
     expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
   })
+  test("a reply whose JSON carries a literal newline inside a string still becomes a call (control-char repair)", async () => {
+    // kimi-k3.1-pro has been seen to emit the instructed JSON with a real
+    // newline inside a string value: strict JSON.parse fails and the raw
+    // text leaks to the user as content. The repair escapes control chars
+    // inside string literals only, so the call comes back as a call.
+    const raw = '{"tool_calls":[{"name":"Bash","arguments":{"command":"echo a\nls"}}]}'
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: raw.slice(0, 25) }] } },
+        { message: { content: [{ type: "text", text: raw }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "run ls" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("tool_calls")
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments)).toEqual({ command: "echo a\nls" })
+  })
+
+  test("a drifted name is matched by prefix (read_file → read)", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "read_file", arguments: { path: "a.txt" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "read a.txt" }],
+        tools: [{ type: "function", function: { name: "read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("read")
+  })
 
   test("a named tool_choice whose reply calls another tool gets the retry", async () => {
     const wrongText = JSON.stringify({ tool_calls: [{ name: "Unknown", arguments: {} }] })
@@ -718,6 +765,30 @@ describe("chat", () => {
       body: JSON.stringify({ model: "longcat-2.0", stream: false, messages: [{ role: "user", content: "hi" }] }),
     })
     expect(fake.state.conversations[0].token).toBe("acct-A-token")
+  })
+
+  test("a desktop account the client no longer holds neither reads nor spends the one it holds", async () => {
+    // two desktop accounts saved (u0, then the client switched to u1 and
+    // it was saved again): the file holds u1's token only
+    const u0 = { type: "oauth", access: "old-u0", refresh: "", expires: 0, source: "desktop", accountId: "Old", uid: "u0" }
+    const u1 = { type: "oauth", access: fake.state.token, refresh: "", expires: 0, source: "desktop", accountId: "Tester", uid: "u1" }
+    const usage = await plugin.auth.usage(async () => u0)
+    expect(usage.signIn).toBe("expired")
+    expect(usage.windows).toBeUndefined()
+    expect(usage.error).toMatch(/另一个账号，不是 Old/)
+    expect(fake.state.balanceCalls).toBe(0)
+    const refused = await (await plugin.auth.loader(async () => u0)).fetch("https://ai.catpaw.meituan.com/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "longcat-2.0", stream: false, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(refused.status).toBe(401)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    expect(fake.state.conversations.length).toBe(0)
+    // the held one, and one saved before uids were kept, read the file
+    expect((await plugin.auth.usage(async () => u1)).error).toBeUndefined()
+    const { uid, ...noUid } = u0
+    expect((await plugin.auth.usage(async () => noUid)).error).toBeUndefined()
+    expect(fake.state.balanceCalls).toBe(2)
   })
 
   test("a refused token says 401", async () => {
@@ -1003,11 +1074,117 @@ describe("models the vendor added (the desktop client asks the gateway for its l
   })
 })
 
+describe("native tool_use frames (kimi-k3.1-pro)", () => {
+  const tool = { type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }
+  // cumulative frames exactly as the gateway sends them: the params string
+  // grows across frames and the finished flag rides the last one. The model
+  // answers with its native tool_use blocks instead of the instructed JSON.
+  const nativeFrames = (name = "Bash", params = '{"command": "ls"}') => [
+    { message: { content: [{ type: "tool_use", toolCallId: "call_1", toolName: name, toolParams: params.slice(0, 6) }] } },
+    { message: { content: [{ type: "tool_use", toolCallId: "call_1", toolName: name, toolParams: params }] }, finished: true },
+  ]
+  const ask = async (body) => {
+    const loader = await plugin.auth.loader(getAuth)
+    return loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "list the files" }], ...body }),
+    })
+  }
+
+  test("native tool_use frames become tool_calls (non-stream)", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool] })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("tool_calls")
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments)).toEqual({ command: "ls" })
+    expect(fake.state.rounds).toBe(1)
+  })
+
+  test("native tool_use frames become tool_calls deltas (stream)", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool], stream: true })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  test("a native call with a drifted name is matched by prefix", async () => {
+    fake.state.turnFramesQueue = [nativeFrames("bash_command")]
+    const res = await ask({ tools: [tool] })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+  })
+
+  test("a native call with an unknown name is dropped: empty answer, no leak", async () => {
+    fake.state.turnFramesQueue = [nativeFrames("TotallyUnknown")]
+    const res = await ask({ tools: [tool] })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.tool_calls).toBeUndefined()
+    expect(body.choices[0].message.content ?? "").not.toContain("TotallyUnknown")
+  })
+
+  test("a native call missing its tool's required argument is dropped, as on the JSON path", () => {
+    // bash_output drifts to Bash by prefix, but carries BashOutput's arguments
+    const uses = [{ id: "call_1", name: "bash_output", params: '{"bash_id": "1"}' }]
+    expect(_internal.toolCallsFromUses(uses, [tool], "auto")).toEqual([])
+    expect(_internal.toolCallsFromUses([{ ...uses[0], params: '{"command": "ls"}' }], [tool], "auto")).toHaveLength(1)
+  })
+
+  test("a native call to a tool other than the one tool_choice names is dropped", () => {
+    const read = { type: "function", function: { name: "Read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }
+    const uses = [{ id: "call_1", name: "Bash", params: '{"command": "ls"}' }]
+    const named = { type: "function", function: { name: "Read" } }
+    expect(_internal.toolCallsFromUses(uses, [tool, read], named)).toEqual([])
+    expect(_internal.toolCallsFromUses(uses, [tool, read], "auto")).toHaveLength(1)
+  })
+
+  test("a native call after prose that already streamed still reaches the agent (stream)", async () => {
+    fake.state.turnFramesQueue = [[
+      { message: { content: [{ type: "text", text: "Let me look." }] } },
+      { message: { content: [{ type: "text", text: "Let me look." }, { type: "tool_use", toolCallId: "call_1", toolName: "Bash", toolParams: '{"command": "ls"}' }] }, finished: true },
+    ]]
+    const res = await ask({ tools: [tool], stream: true })
+    const text = await res.text()
+    expect(text).toContain("Let me look.")
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+  })
+
+  test("with tool_choice=required a native-only reply still counts and does not retry", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool], tool_choice: "required" })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(fake.state.rounds).toBe(1)
+  })
+})
+
 describe("helpers", () => {
   test("model type mapping", () => {
     expect(_internal.modelTypeOf("longcat-2.0")).toBe(77)
     expect(_internal.modelTypeOf("kimi-k3")).toBe(83)
     expect(_internal.modelTypeOf("unknown")).toBe(77)
+  })
+  test("tool-name drift resolution", () => {
+    const tools = [
+      { type: "function", function: { name: "read", parameters: { type: "object" } } },
+      { type: "function", function: { name: "read_file", parameters: { type: "object" } } },
+    ]
+    expect(_internal.resolveToolName("Read", tools)).toBe("read")
+    expect(_internal.resolveToolName("read_file", tools)).toBe("read_file")
+    expect(_internal.resolveToolName("read_something", tools)).toBe("read")
+    expect(_internal.resolveToolName("grep", tools)).toBe(null)
+    // two declared names match equally well: ambiguous beats wrong
+    const ambiguous = [
+      { type: "function", function: { name: "readx", parameters: { type: "object" } } },
+      { type: "function", function: { name: "ready", parameters: { type: "object" } } },
+    ]
+    expect(_internal.resolveToolName("read", ambiguous)).toBe(null)
   })
 })
 

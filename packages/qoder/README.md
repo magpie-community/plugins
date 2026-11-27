@@ -106,6 +106,15 @@ itself.
 
 - It writes the chat completion as Qoder's request:
   - Qoder's own system line comes before yours.
+  - Claude Code's identity line, `You are Claude Code, Anthropic's official
+    CLI for Claude.`, goes as the Claude Agent SDK's, `You are a Claude
+    agent, built on Anthropic's Claude Agent SDK.` (since 0.2.72): Qoder
+    answers a prompt with that line with 400 `Cannot find model`, whatever
+    the model. The rest of the prompt and your messages go as written.
+  - A harness's opener, such as DeepSeek Harness's `You are an AI agent
+    powered by DeepSeek Harness.`, goes with a comma before `powered by`
+    (since 0.2.73, #1517): Qoder CN puts a request whose system prompt
+    holds that line, as written, in a queue that never moves.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.
@@ -153,7 +162,8 @@ itself.
   - an MD5 signature;
   - the machine id and the client's headers.
   - `Cosy-Version`: the worker runtime version that Qoder's desktop app
-    ships (1.1.69 in app 0.4.8, since 0.2.23, #281), because
+    ships (1.1.96-hotfix.8 in app 0.5.20, since 0.2.75, #1560; before
+    that 1.1.69 in app 0.4.8, from 0.2.23, #281), because
     `Cosy-ClientType` says the desktop app.
 
 **Reading the reply**
@@ -583,7 +593,9 @@ Since **0.2.28** a queued request waits its turn as Qoder's own client
 model and the plan's `queueType`, at once and then every
 `retryAfterSeconds` (held to 0.5–30s, 30s when unsaid), and once
 `isQueued` is false it waits that state's `retryAfterSeconds` and sends the
-same request again (up to 10 times). Three failed status asks in a row, a
+same request again (up to 10 times). Since **0.2.74** `isQueued` false with
+`serviceAvailable` false is waited on too, as Qoder's client reads it
+(qoderclicn 1.1.98), rather than sent into the queue again. Three failed status asks in a row, a
 404, or a cancelled request end the wait early.
 
 Since **0.2.62** a streamed request (every agent's) waits as long as
@@ -605,9 +617,16 @@ keepalives); magpie can then rest the account or ask the next. A queue with
 others ahead is still waited out. Nothing needs setting. A request that isn't
 streamed has nothing to keep its client alive with, so it still waits 4
 minutes at most before the 503. Claude Code takes a ping as life only 30
-times in a row, about 35 minutes, so a longer wait still ends there. Qoder's client also reports the end
-of its turn to `/api/v2/service/ask/finish`; the plugin doesn't, and
-Qoder releases that lease on its own TTL. `queue.test.mjs` has the wait.
+times in a row, about 35 minutes, so a longer wait still ends there.
+
+A queued request holds a lease in Qoder's queue (its `request_set_id` and
+model) until Qoder hears `/api/v2/service/ask/finish`. Before **0.2.74** the
+plugin never told it, so each lease stayed until Qoder's own TTL let it go
+(plugins#1560). Now it tells finish as Qoder's client does: at once when a
+request gives up waiting (the 503 above, or a cancelled request), and
+otherwise when the task ends (the session's next prompt, or the task let go
+after 2 hours idle). A finish that fails changes nothing for the request.
+`queue.test.mjs` has the wait and the finish.
 
 Since **0.2.40** the wait is only for the last candidate: when magpie says
 another account, provider or routing group member follows this request

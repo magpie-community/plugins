@@ -130,13 +130,16 @@ export function buildAuthorizeUrl({ challenge, state }) {
   return `${authorizeUrl()}?${q.toString()}`;
 }
 
-export function exchangeForm(code, verifier) {
+export function exchangeForm(code, verifier, state) {
   const form = new URLSearchParams();
   form.set("grant_type", "authorization_code");
   form.set("client_id", CLIENT_ID);
   form.set("code", code);
   form.set("redirect_uri", REDIRECT_URI);
   form.set("code_verifier", verifier);
+  // Hydra rejects the code exchange without the state issued at the authorize
+  // hop ("one nonempty state required"), so echo the callback's state back.
+  if (state) form.set("state", state);
   return form;
 }
 
@@ -180,8 +183,8 @@ async function postToken(url, form, { timeoutMs = 20_000 } = {}) {
 }
 
 /** Exchange the browser's authorization code with our PKCE verifier. */
-export function exchangeCode({ code, verifier, timeoutMs }) {
-  return postToken(browserTokenUrl(), exchangeForm(code, verifier), { timeoutMs });
+export function exchangeCode({ code, verifier, state, timeoutMs }) {
+  return postToken(browserTokenUrl(), exchangeForm(code, verifier, state), { timeoutMs });
 }
 
 /** Renew a browser sign-in's token pair (Hydra rotates the refresh token). */

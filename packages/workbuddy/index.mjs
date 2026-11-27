@@ -19,6 +19,11 @@ const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
 const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before a request
 const LEAD_MS = 5 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
+const AHEAD_MS = 10 * 86400 * 1000 // a sign-in this near its end is renewed before a request: its access token lives 28 days, its refresh token 30
+const LONG_MS = 2 * AHEAD_MS // a token minted to live this long takes AHEAD_MS; a shorter one keeps EARLY_MS, so a renewal never renews again at once
+const AGED_MS = 86400 * 1000 // and a long-lived sign-in whose access token is this old is renewed before a request too, as WorkBuddy's own app renews its sign-in each time it starts: each refresh gives a new refresh token with a new window, so a sign-in in use never comes near its end (plugins#1598)
+const AHEAD_RETRY_MS = 60 * 1000 // a failed ahead renewal waits this, doubled for each failure in a row
+const AHEAD_RETRY_MOST = 30 * 60 * 1000
 const KEEP_RENEWED_MS = 60 * 1000 // how long a refresh's result answers for the old refresh token
 
 // [id, name, context, efforts, output]
@@ -281,11 +286,60 @@ function merge(a, got) {
   else if (got.expiresIn > 0) out.expires = now + got.expiresIn * 1000
   if (got.refreshExpiresAt > 0) out.refreshExpiresAt = got.refreshExpiresAt
   else if (got.refreshExpiresIn > 0) out.refreshExpiresAt = now + got.refreshExpiresIn * 1000
+  else if (got.refreshToken) {
+    // a new refresh token whose end the answer doesn't say ends when its
+    // own claims say, else is unknown: never the old token's end, which
+    // would have it taken for ended while WorkBuddy still takes it
+    const exp = claimsOf(got.refreshToken)?.exp
+    if (exp > 0) out.refreshExpiresAt = exp * 1000
+    else delete out.refreshExpiresAt
+  }
   return out
 }
 
 function stale(a) {
   return !!a.expires && Date.now() >= a.expires - EARLY_MS
+}
+
+// lifeOf is how long a's access token was minted to live, from its own
+// claims (WorkBuddy's tokens are RS256 JWTs with iat and exp): 0 when it
+// isn't one, or names no pair.
+function lifeOf(a) {
+  const c = claimsOf(a?.access)
+  const iat = Number(c?.iat)
+  const exp = Number(c?.exp)
+  return iat > 0 && exp > iat ? (exp - iat) * 1000 : 0
+}
+
+// ageOf is how long ago a's access token was issued (its iat): 0 when
+// it names none.
+function ageOf(a) {
+  const iat = Number(claimsOf(a?.access)?.iat)
+  return iat > 0 ? Math.max(0, Date.now() - iat * 1000) : 0
+}
+
+// claimsOf is a JWT's claims, null when it isn't one.
+function claimsOf(token) {
+  const seg = String(token ?? "").split(".")[1]
+  if (!seg) return null
+  try {
+    const c = JSON.parse(Buffer.from(seg, "base64url").toString("utf8"))
+    return c && typeof c === "object" ? c : null
+  } catch {
+    return null
+  }
+}
+
+// ahead is whether a is renewed before a request while its access token
+// still has AHEAD_MS left, or once it is AGED_MS old. magpie renews only within refreshLead of the
+// end, and its host clamps that to a day (host.js leadOf), by when the
+// 30-day refresh token can already have ended. Desktop's sign-in is never
+// renewed ahead: its refresh token is the app's too, and spending it early
+// signs the app out (README: the app's file is read again instead).
+function ahead(a) {
+  if (!refreshable(a) || a.source === "desktop") return false
+  const left = (a.expires ?? 0) - Date.now()
+  return left > 0 && lifeOf(a) >= LONG_MS && (left <= AHEAD_MS || ageOf(a) >= AGED_MS)
 }
 
 // renewing is each refresh under way, by site and the refresh token it
@@ -294,6 +348,22 @@ function stale(a) {
 // takes that rather than spending it again.
 const renewing = new Map()
 const renewed = new Map()
+
+// aheadHeld is each sign-in whose ahead renewal failed, by site and the
+// refresh token it spends: as the reference project's keepalive records a
+// failed refresh and tries it again later rather than dropping the account,
+// a failure here leaves the sign-in as it was and is retried after a wait,
+// doubled each failure in a row.
+const aheadHeld = new Map()
+const aheadKey = (site, a) => site.id + "\n" + a.refresh
+function aheadFailed(key) {
+  const n = (aheadHeld.get(key)?.n ?? 0) + 1
+  aheadHeld.set(key, { n, until: Date.now() + Math.min(AHEAD_RETRY_MS * 2 ** (n - 1), AHEAD_RETRY_MOST) })
+}
+function aheadWaiting(key) {
+  const h = aheadHeld.get(key)
+  return !!h && h.until > Date.now()
+}
 
 function refreshable(a) {
   return !!a.refresh && !(a.refreshExpiresAt && Date.now() >= a.refreshExpiresAt)
@@ -334,22 +404,29 @@ function merged(a, next) {
 const TOKEN_FIELDS = ["access", "refresh", "expires", "refreshExpiresAt", "domain", "tokenType"]
 
 // fresh is the sign-in with an access token that isn't about to end:
-// refreshed (and saved) when it is. A refresh that fails, or a refresh
+// refreshed (and saved) when it is, or when it comes near the end of a
+// long-lived sign-in's life (ahead). A refresh that fails, or a refresh
 // token that has ended, leaves the access token there is. Its failures
 // are worded as the built-in's (wbFresh), "WorkBuddy" on both sites.
 async function fresh(site, client, a) {
-  if (!stale(a)) return a
+  const early = !stale(a)
+  const key = aheadKey(site, a)
+  if (early && !ahead(a)) return a
+  if (early && aheadWaiting(key)) return a
   if (!refreshable(a)) {
     if (a.access) return a
     throw new Error("this WorkBuddy account is signed out; sign in again")
   }
   try {
-    return await renew(site, a, async (next) => {
+    const next = await renew(site, a, async (next) => {
       try {
         await client?.auth?.set?.({ path: { id: site.id }, body: next })
       } catch {}
     })
+    aheadHeld.delete(key)
+    return next
   } catch (e) {
+    if (early) aheadFailed(key)
     if (a.access) return a
     if (e?.bare) throw e
     throw new Error(`WorkBuddy token refresh: ${e?.said ?? e?.message ?? e}`)
@@ -2044,6 +2121,17 @@ function unsaid(res) {
       return null
     }
   }
+  // OpenAI-compatible clients treat a present tool_calls field as the end
+  // of the active reasoning block. WorkBuddy puts an empty list on every
+  // reasoning delta, so remove only the empty list and leave real calls
+  // and every unaffected event byte for byte.
+  const tidy = (ev) => {
+    const v = chunkOf(ev)
+    const delta = v?.choices?.[0]?.delta
+    if (!delta || !Array.isArray(delta.tool_calls) || delta.tool_calls.length) return ev
+    delete delta.tool_calls
+    return `data: ${JSON.stringify(v)}`
+  }
   // without is ev with the filter's text taken out, or "" when nothing
   // else is in it
   const without = (ev) => {
@@ -2056,7 +2144,7 @@ function unsaid(res) {
     return `data: ${JSON.stringify(v)}`
   }
   const event = (ev) => {
-    if (!open) return [ev]
+    if (!open) return [tidy(ev)]
     const c = chunkOf(ev)?.choices?.[0]
     const text = typeof c?.delta?.content === "string" ? c.delta.content : ""
     const finish = c?.finish_reason
@@ -2065,25 +2153,25 @@ function unsaid(res) {
     const calls = c?.delta?.tool_calls
     if ((Array.isArray(calls) ? calls.length > 0 : calls) || (text && !filterSaid(said + text))) {
       open = false
-      const out = [...held, ev]
+      const out = [...held, ev].map(tidy)
       held = []
       return out
     }
     said += text
     if (finish === "content_filter" && said) {
       open = false
-      const out = [...held, ev].map(without).filter(Boolean)
+      const out = [...held, ev].map(tidy).map(without).filter(Boolean)
       held = []
       return out
     }
     if (finish) {
       open = false
-      const out = [...held, ev]
+      const out = [...held, ev].map(tidy)
       held = []
       return out
     }
-    if (!said) return [ev] // reasoning, the role, before any text
-    held.push(ev)
+    if (!said) return [tidy(ev)] // reasoning, the role, before any text
+    held.push(tidy(ev))
     return []
   }
   const body = res.body.pipeThrough(
@@ -2097,9 +2185,202 @@ function unsaid(res) {
       },
       flush(ctl) {
         rest += dec.decode()
-        const out = held.map((e) => e + "\n\n").join("") + rest
+        const out = held.map((e) => e + "\n\n").join("") + tidy(rest)
         held = []
         if (out) ctl.enqueue(enc.encode(out))
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
+
+// WorkBuddy streams reasoning in 1-4 character deltas (measured: 40 chunks
+// for 63 characters). OpenCode 2 stores every delta as its own part, so one
+// answer becomes thousands of parts and the message JSON is rewritten once
+// per part. coalesced holds the deltas and emits them as one event, which
+// leaves the reasoning text intact while cutting the part count by orders of
+// magnitude.
+//
+// Size alone is not enough: this fetch serves every client of the provider,
+// and a client that shows thinking as it arrives would see nothing for a
+// whole 8k thought. So the buffer also flushes on a clock (FLUSH_MS), which
+// keeps other clients live and still turns 2,263 parts into a few dozen.
+const MERGE_CHARS = 8192
+const FLUSH_MS = 300
+
+// WorkBuddy sends the null and empty forms of every field it is not using
+// (content: "", tool_calls: [], refusal: "", function_call: null), so a key
+// counts as carrying something only when it holds a value.
+const filled = (v) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Object.keys(v).length)
+
+function coalesced(res, flushMs = FLUSH_MS) {
+  if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  let rest = ""
+  let held = null
+  let buf = ""
+  let field = "reasoning_content"
+  let queue = []
+  let ctl = null
+  let timer = null
+  let sentUsage = null
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+  }
+  const pump = () => {
+    if (!ctl || !queue.length) return
+    const text = queue.map((e) => e + "\n\n").join("")
+    queue = []
+    ctl.enqueue(enc.encode(text))
+  }
+  // flush writes the reasoning field, plus role and usage when the chunk that
+  // opened the block carried them. Anything else in that chunk goes out once,
+  // with the rest of it, not again here. It returns whether usage was written,
+  // so the caller can drop the duplicate copy.
+  const flush = () => {
+    clearTimer()
+    if (!buf || !held) return false
+    const v = JSON.parse(JSON.stringify(held))
+    const c = v.choices?.[0]
+    if (c) {
+      const delta = { [field]: buf }
+      if (c.delta?.role !== undefined) delta.role = c.delta.role
+      c.delta = delta
+      c.finish_reason = null
+    }
+    const hadUsage = filled(v.usage)
+    if (hadUsage) sentUsage = v.usage
+    queue.push("data: " + JSON.stringify(v))
+    held = null
+    buf = ""
+    return hadUsage
+  }
+  // A repeated usage is the one already written with the block; a different
+  // one is newer and must reach the client.
+  const sameUsage = (usage) => filled(usage) && sentUsage !== null && JSON.stringify(usage) === JSON.stringify(sentUsage)
+  const arm = () => {
+    if (timer !== null || !held) return
+    timer = setTimeout(() => {
+      timer = null
+      flush()
+      pump()
+    }, flushMs)
+  }
+
+  const event = (ev) => {
+    const m = /^data:\s?(.*)$/m.exec(ev)
+    if (!m) {
+      queue.push(ev)
+      return
+    }
+    if (m[1] === "[DONE]") {
+      flush()
+      queue.push(ev)
+      return
+    }
+    let v
+    try {
+      v = JSON.parse(m[1])
+    } catch {
+      flush()
+      queue.push(ev)
+      return
+    }
+    // Only a single choice is coalesced; anything else goes through whole
+    // rather than being rebuilt from choice 0.
+    if (!Array.isArray(v?.choices) || v.choices.length !== 1) {
+      flush()
+      queue.push(ev)
+      return
+    }
+    const c = v.choices[0]
+    const d = c?.delta
+    const next =
+      typeof d?.reasoning_content === "string" && d.reasoning_content
+        ? "reasoning_content"
+        : typeof d?.reasoning === "string" && d.reasoning
+          ? "reasoning"
+          : ""
+    const reason = next ? d[next] : ""
+    if (reason) {
+      // A block is one field: a switch mid-block starts a new one.
+      if (held && field !== next) flush()
+      field = next
+      if (!held) held = v
+      // usage rides on whichever chunk the provider puts it on, which is not
+      // necessarily the one that opened the block
+      if (filled(v.usage)) held.usage = v.usage
+      buf += reason
+      // Anything else in the delta ends the block and goes out after the
+      // reasoning, once. WorkBuddy sends finish_reason: "" on every delta,
+      // so only a named reason ends it.
+      const rest = { ...(d ?? {}) }
+      delete rest.reasoning_content
+      delete rest.reasoning
+      delete rest.role
+      const restKeys = Object.keys(rest).filter((k) => filled(rest[k]))
+      const named = c?.finish_reason
+      if (restKeys.length || (named != null && named !== "")) {
+        flush()
+        const w = JSON.parse(JSON.stringify(v))
+        w.choices[0].delta = {}
+        for (const k of restKeys) w.choices[0].delta[k] = rest[k]
+        if (sameUsage(w.usage)) delete w.usage
+        queue.push("data: " + JSON.stringify(w))
+        return
+      }
+      if (buf.length >= MERGE_CHARS) flush()
+      else arm()
+      return
+    }
+    flush()
+    if (d && (typeof d.reasoning_content === "string" || typeof d.reasoning === "string")) {
+      const w = JSON.parse(JSON.stringify(v))
+      const kept = { ...(w.choices[0].delta ?? {}) }
+      delete kept.reasoning_content
+      delete kept.reasoning
+      const keptKeys = Object.keys(kept).filter((k) => filled(kept[k]))
+      if (sameUsage(w.usage)) delete w.usage
+      if (!keptKeys.length && !w.choices[0].finish_reason && w.usage === undefined) return
+      w.choices[0].delta = {}
+      for (const k of keptKeys) w.choices[0].delta[k] = kept[k]
+      queue.push("data: " + JSON.stringify(w))
+      return
+    }
+    queue.push(ev)
+  }
+
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      start(controller) {
+        ctl = controller
+      },
+      transform(chunk) {
+        rest = (rest + dec.decode(chunk, { stream: true })).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+        const evs = rest.split("\n\n")
+        rest = evs.pop()
+        for (const ev of evs) event(ev)
+        pump()
+      },
+      flush() {
+        rest += dec.decode()
+        if (rest) event(rest)
+        flush()
+        pump()
+        ctl = null
+      },
+      cancel() {
+        clearTimer()
+        ctl = null
       },
     }),
   )
@@ -2845,16 +3126,33 @@ const CN_ESTIMATED_WINDOWS = [
     unit: "",
   },
 ]
-// WorkBuddy AI's window keeps the name it shipped with: there the model is
-// served at x0.00, so "Free model tokens" is what it is.
+// WorkBuddy AI's window is deepseek-v4.1-flash's while WorkBuddy AI serves
+// that model at x0.00. The card names the model and says its cap is an
+// estimate, as the China build's does (plugins#663): "Free model tokens"
+// read as an allowance for whatever model is free now, and the 1e8 was
+// measured on deepseek only (plugins#1567). It is shown only while the
+// account's model list, when there is one, still has deepseek free
+// (aiWindowApplies).
 const FREE_WINDOW_AI = {
   provider: "workbuddy-ai",
   model: "deepseek-v4.1-flash",
   aliases: ["deepseek-v4.1-flash-sg"],
   cap: 1e8,
-  name: "Free model tokens",
-  short: "100M",
-  unit: "tokens",
+  name: "deepseek-v4.1-flash tokens (est.)",
+  refusedName: "deepseek-v4.1-flash tokens",
+  short: "~100M",
+  unit: "",
+}
+
+// aiWindowApplies says whether a model's window still applies to an account
+// whose model list is `list` (liveModels' shape), or null for no list read.
+// With a list it applies only while the model is in it and not priced: once
+// WorkBuddy AI stops serving it free, the estimate is retired, and nothing
+// carries its count or cap to the model that is free instead.
+function aiWindowApplies(list, win = FREE_WINDOW_AI) {
+  if (!Array.isArray(list)) return true
+  const m = list.find((x) => x?.id === win.model)
+  return !!m && m.free !== false
 }
 const FREE_WINDOW_SPAN = 24 * 3600 * 1000
 // The lead: how far back of an edge the read goes on. A chain read from a row
@@ -3807,15 +4105,18 @@ function enterpriseUsageOf(u) {
 // the account last, and behind every other, for its free models too. A
 // model free only some hours (a night promotion) is not free here, as in
 // the list (priceOf). A list that can't be read leaves the windows as they
-// are: every model counted, as before.
+// are: every model counted, as before. It gives back the list it read
+// (null when the read failed, undefined with no windows to mark), so a
+// caller that needs the list too costs the poll no second config request.
 async function spareFree(site, a, windows) {
-  if (!windows.length) return windows
-  let free = []
+  if (!windows.length) return undefined
+  let list = null
   try {
-    free = (await liveModels(site, a)).filter((m) => m.free).map((m) => m.id)
+    list = await liveModels(site, a)
   } catch {}
+  const free = (list ?? []).filter((m) => m.free).map((m) => m.id)
   if (free.length) for (const w of windows) w.notModels = free
-  return windows
+  return list
 }
 
 // The packages' codes, as WorkBuddy's own client lists them when it asks
@@ -4397,6 +4698,309 @@ function notFree(site, model, why) {
   })
 }
 
+// ---- speech -------------------------------------------------------------------
+
+// WorkBuddy's desktop app reads a reply aloud and takes dictation through
+// its own server (both builds' workbuddy-server, tts/service.ts and
+// asr/service.ts, read from 5.9.3 and WorkBuddy AI 5.6.2):
+//
+//   POST <endpoint>/agenttool/v1/tts  {"text": …}, answered as SSE: each
+//     "audio" event's data a piece of base64 raw PCM, 16-bit signed
+//     little-endian mono at 16 kHz (use-tts-playback.ts, PCM_SAMPLE_RATE),
+//     an "error" event's data the reason;
+//   POST <endpoint>/agenttool/v1/asr  multipart, the recording as "audio"
+//     (16 kHz mono WAV, recording.wav), answered {code, msg, text}, code 0
+//     or none for a transcript.
+//
+// Neither names a model, a voice or a format: WorkBuddy has one voice and
+// one recogniser. They are listed here as two models of their own, named
+// so magpie knows what each is for (catalog.ServesOf: "-tts" speaks,
+// "transcribe" transcribes), and magpie's /v1/audio/speech and
+// /v1/audio/transcriptions, which arrive at this plugin's fetch in OpenAI's
+// shape, are sent on in WorkBuddy's.
+const SPEAKER = "workbuddy-tts"
+const LISTENER = "workbuddy-transcribe"
+const SPOKEN_RATE = 16000
+// OPENAI_PCM_RATE is the rate OpenAI's response_format "pcm" is at, which
+// a client asking for pcm plays it at
+const OPENAI_PCM_RATE = 24000
+// SPOKEN_PART is the most UTF-8 bytes of text one TTS request carries: the
+// app's own (MAX_TEXT_BYTES), under the 1800 WorkBuddy's server allows
+const SPOKEN_PART = 1000
+const SPEECH_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+const HEARD_FORMATS = ["json", "text"]
+
+// speechModels are the two as a provider's models: the speaker gives audio
+// alone, and the recogniser is said to give nothing to talk with (its text
+// is a transcript, as an embedding's vector is no reply), so magpie keeps
+// both out of its chat lists (#3279) and serves them on the audio routes.
+function speechModels(site, provider) {
+  const as = (id, name, input, output) => ({
+    ...modelOf(site, provider, { id, name }),
+    capabilities: {
+      temperature: false,
+      reasoning: false,
+      attachment: false,
+      toolcall: false,
+      input: { text: false, image: false, audio: false, video: false, pdf: false, ...input },
+      output: { text: false, image: false, audio: false, video: false, pdf: false, ...output },
+      interleaved: false,
+    },
+  })
+  return {
+    [SPEAKER]: as(SPEAKER, `${site.name} TTS`, { text: true }, { audio: true }),
+    [LISTENER]: as(LISTENER, `${site.name} speech recognition`, { audio: true }, {}),
+  }
+}
+
+// speechConfig is the same two as config models, for the list before an
+// account's is read
+function speechConfig(site) {
+  const as = (name, input, output) => ({ name, limit: { context: 0, output: 0 }, tool_call: false, attachment: false, modalities: { input, output } })
+  return {
+    [SPEAKER]: as(`${site.name} TTS`, ["text"], ["audio"]),
+    [LISTENER]: as(`${site.name} speech recognition`, ["audio"], []),
+  }
+}
+
+// speechRoute is which audio route url is: "speech", "transcriptions",
+// "translations", or "" for any other request
+function speechRoute(url) {
+  let path
+  try {
+    path = new URL(String(url)).pathname
+  } catch {
+    return ""
+  }
+  return path.match(/\/audio\/(speech|transcriptions|translations)$/)?.[1] ?? ""
+}
+
+// speechHeaders are what the app's server signs these two with: the
+// account's token, uid, enterprise and domain, each only when it has one,
+// and nothing of the chat's client headers. It asks through Node's own
+// fetch (createWorkbuddyServerHttpFetch), so the User-Agent, Accept,
+// Accept-Language and Sec-Fetch-Mode are that fetch's. A key is sent as
+// WorkBuddy's CLI sends one (keyAccount), both headers.
+function speechHeaders(a, json) {
+  const h = new Headers()
+  if (json) h.set("Content-Type", "application/json")
+  h.set("Authorization", "Bearer " + a.access)
+  if (a.source === "key") h.set("X-API-Key", a.key)
+  if (a.uid) h.set("X-User-Id", a.uid)
+  for (const [k, v] of Object.entries(enterpriseHeaders(a))) h.set(k, v)
+  if (a.source !== "key" && typeof a.domain === "string" && a.domain) h.set("X-Domain", a.domain)
+  h.set("User-Agent", "node")
+  h.set("Accept", "*/*")
+  h.set("Accept-Language", "*")
+  h.set("Sec-Fetch-Mode", "cors")
+  return h
+}
+
+const utf8Bytes = (s) => Buffer.byteLength(s, "utf8")
+
+// spokenParts is text cut into pieces of at most SPOKEN_PART bytes, as the
+// app cuts a long reply: at the last sentence end that fits, else the last
+// comma or colon, else the last space, else where the bytes run out.
+function spokenParts(text) {
+  let rest = String(text ?? "").trim()
+  const parts = []
+  while (rest) {
+    if (utf8Bytes(rest) <= SPOKEN_PART) {
+      parts.push(rest)
+      break
+    }
+    let fit = 0
+    let bytes = 0
+    for (const ch of rest) {
+      const n = utf8Bytes(ch)
+      if (bytes + n > SPOKEN_PART) break
+      bytes += n
+      fit += ch.length
+    }
+    const head = rest.slice(0, fit)
+    const lastOf = (re) => {
+      let at = -1
+      for (const m of head.matchAll(re)) at = m.index + m[0].length
+      return at
+    }
+    let cut = lastOf(/[。！？!?\n]/g)
+    if (cut <= 0) cut = lastOf(/[，,；;：:]/g)
+    if (cut <= 0) cut = lastOf(/\s/g)
+    if (cut <= 0) cut = fit
+    const part = rest.slice(0, cut).trim()
+    if (part) parts.push(part)
+    rest = rest.slice(cut).trim()
+  }
+  return parts
+}
+
+// speechFailure is an answer in OpenAI's error shape, the account kept
+function speechFailure(status, message, type = "invalid_request_error") {
+  return new Response(JSON.stringify({ error: { message, type, code: status } }), {
+    status,
+    headers: { "content-type": "application/json", "X-Magpie-Sign-In": "kept" },
+  })
+}
+
+// speechAsk reads OpenAI's /audio/speech body: the text cut for WorkBuddy,
+// and the format to answer in. voice, speed and instructions have nowhere
+// to go: WorkBuddy speaks in its one voice.
+function speechAsk(body) {
+  let b
+  try {
+    b = JSON.parse(typeof body === "string" ? body : new TextDecoder().decode(body))
+  } catch {
+    return { error: "send {\"model\", \"input\"} as JSON, as OpenAI's /v1/audio/speech takes it" }
+  }
+  if (typeof b?.input !== "string" || !b.input.trim()) return { error: "input is the text to read aloud, and it is empty" }
+  const format = b.response_format ?? "mp3"
+  if (!SPEECH_FORMATS.includes(format)) return { error: `response_format is one of ${SPEECH_FORMATS.join(", ")}, not ${format}` }
+  return { parts: spokenParts(b.input), format }
+}
+
+// spokenPcm is the PCM a TTS answer's SSE carries, its audio events in
+// order, or {error} for an error event. The app reads it the same way:
+// "event: " names an event, "data: " lines add to it, a blank line ends it.
+function spokenPcm(sse) {
+  const pieces = []
+  let type = ""
+  let data = ""
+  for (const raw of String(sse).split("\n")) {
+    const line = raw.replace(/\r$/, "")
+    if (line.startsWith("event: ")) type = line.slice(7).trim()
+    else if (line.startsWith("data: ")) data += (data ? "\n" : "") + line.slice(6)
+    else if (line === "" && type) {
+      if (type === "error") return { error: data || "WorkBuddy couldn't read it aloud" }
+      if (type === "audio" && data) pieces.push(Buffer.from(data, "base64"))
+      type = ""
+      data = ""
+    }
+  }
+  if (type === "error") return { error: data || "WorkBuddy couldn't read it aloud" }
+  if (type === "audio" && data) pieces.push(Buffer.from(data, "base64"))
+  return { pcm: Buffer.concat(pieces) }
+}
+
+// resampled is 16-bit mono PCM at rate from, at rate to, by linear
+// interpolation
+function resampled(pcm, from, to) {
+  const n = pcm.length >> 1
+  if (!n || from === to) return pcm
+  const m = Math.max(1, Math.round((n * to) / from))
+  const out = Buffer.alloc(m * 2)
+  for (let i = 0; i < m; i++) {
+    const x = (i * from) / to
+    const j = Math.floor(x)
+    const a = pcm.readInt16LE(Math.min(j, n - 1) * 2)
+    const b = pcm.readInt16LE(Math.min(j + 1, n - 1) * 2)
+    out.writeInt16LE(Math.round(a + (b - a) * (x - j)), i * 2)
+  }
+  return out
+}
+
+// wavOf is 16-bit mono PCM at rate in a WAV file
+function wavOf(pcm, rate) {
+  const h = Buffer.alloc(44)
+  h.write("RIFF", 0)
+  h.writeUInt32LE(36 + pcm.length, 4)
+  h.write("WAVE", 8)
+  h.write("fmt ", 12)
+  h.writeUInt32LE(16, 16)
+  h.writeUInt16LE(1, 20)
+  h.writeUInt16LE(1, 22)
+  h.writeUInt32LE(rate, 24)
+  h.writeUInt32LE(rate * 2, 28)
+  h.writeUInt16LE(2, 32)
+  h.writeUInt16LE(16, 34)
+  h.write("data", 36)
+  h.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([h, pcm])
+}
+
+// speechAnswer is WorkBuddy's PCM as the format asked: pcm at OpenAI's
+// 24 kHz, as a client asking for pcm plays it; anything else as WAV, the
+// one container the plugin can write without an encoder (mp3, opus, aac
+// and flac are answered WAV, its Content-Type saying so).
+function speechAnswer(pcm, format) {
+  if (format === "pcm") return new Response(resampled(pcm, SPOKEN_RATE, OPENAI_PCM_RATE), { status: 200, headers: { "content-type": "audio/pcm" } })
+  return new Response(wavOf(pcm, SPOKEN_RATE), { status: 200, headers: { "content-type": "audio/wav" } })
+}
+
+// refusedSpeech is a refusal of WorkBuddy's own ({code, msg}, or a body of
+// text) with its status
+async function refusedSpeech(res, what) {
+  const raw = await res.text().catch(() => "")
+  let said = raw.trim().slice(0, 300)
+  try {
+    const j = JSON.parse(raw)
+    said = j?.msg || j?.message || j?.error?.message || said
+    if (j?.code) said = `${said} (code ${j.code})`
+  } catch {}
+  return speechFailure(res.status, `WorkBuddy refused the ${what} (HTTP ${res.status})${said ? ": " + said : ""}`, res.status >= 500 ? "api_error" : "invalid_request_error")
+}
+
+// hearAsk reads OpenAI's /audio/transcriptions form: its file goes on as
+// the app's "audio", under the file's own name and type; language and
+// prompt have nowhere to go. json and text are answered: WorkBuddy gives
+// no timings, so verbose_json, srt and vtt are not.
+async function hearAsk(body, ctype) {
+  let form
+  try {
+    form = body instanceof FormData ? body : await new Response(body, { headers: { "content-type": ctype } }).formData()
+  } catch {
+    return { error: "send the audio as multipart/form-data, as OpenAI's /v1/audio/transcriptions takes it: a file and a model" }
+  }
+  const file = form.get("file")
+  if (!(file instanceof Blob) || !file.size) return { error: "the form has no audio: send it as the file field" }
+  const format = String(form.get("response_format") ?? "json")
+  if (!HEARD_FORMATS.includes(format)) return { error: `WorkBuddy's speech recognition answers json or text, not ${format}` }
+  // the part's type as sent: a runtime's form reader can rename it (Bun
+  // reads audio/wav as audio/x-wav), and the app sends audio/wav
+  const type = partType(body, "file") || file.type
+  const out = new FormData()
+  out.append("audio", new Blob([await file.arrayBuffer()], { type }), typeof file.name === "string" && file.name ? file.name : "audio.wav")
+  return { form: out, format }
+}
+
+// partType is the Content-Type a multipart body gives its part name, "" for
+// none found
+function partType(body, name) {
+  let text
+  if (typeof body === "string") text = body
+  else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    const bytes = body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+    // the part's headers are near the start of it; the audio after them isn't read
+    text = Buffer.from(bytes.subarray(0, 64 * 1024)).toString("latin1")
+  } else return ""
+  for (const chunk of text.split(/\r?\n\r?\n/)) {
+    // the part's own headers: what follows its boundary line
+    const head = chunk.slice(chunk.lastIndexOf("\n--") + 1)
+    if (!new RegExp(`content-disposition:[^\\r\\n]*\\bname="${name}"`, "i").test(head)) continue
+    return head.match(/content-type:\s*([^\r\n;]+)/i)?.[1]?.trim() ?? ""
+  }
+  return ""
+}
+
+// heardAnswer is WorkBuddy's {code, msg, text} as OpenAI answers the format
+async function heardAnswer(res, format) {
+  const raw = await res.text().catch(() => "")
+  let j
+  try {
+    j = JSON.parse(raw)
+  } catch {}
+  if (!j || typeof j !== "object") {
+    if (!res.ok) return speechFailure(res.status, `WorkBuddy refused the transcription (HTTP ${res.status})${raw.trim() ? ": " + raw.trim().slice(0, 300) : ""}`, res.status >= 500 ? "api_error" : "invalid_request_error")
+    return speechFailure(502, "WorkBuddy's speech recognition answered something that isn't JSON", "api_error")
+  }
+  if ((j.code && j.code !== 0) || !res.ok) {
+    const status = res.ok ? 502 : res.status
+    return speechFailure(status, `WorkBuddy couldn't transcribe it: ${j.msg || "recognition failed"}${j.code ? ` (code ${j.code})` : ""}`, status >= 500 ? "api_error" : "invalid_request_error")
+  }
+  const text = typeof j.text === "string" ? j.text : ""
+  if (format === "text") return new Response(text, { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } })
+  return new Response(JSON.stringify({ text }), { status: 200, headers: { "content-type": "application/json" } })
+}
+
 function makePlugin(site) {
   // the models of this site that refused tool results then the user's
   // message, for this run: their next chats go with replyAfterTools at once
@@ -4455,6 +5059,64 @@ function makePlugin(site) {
     if (!free.length) throw new Error(`${site.name} lists no free model, and "Free models only" is on`)
     return free
   }
+  // withSpeech is a list with the speech models on it (speechModels); with
+  // "Free models only" on it has none, as WorkBuddy names no price for them
+  const withSpeech = (ms, provider) => (freeOnly() ? ms : { ...ms, ...speechModels(site, provider) })
+  // spoken answers magpie's audio routes (speechRoute) with WorkBuddy's own.
+  // A 401 WorkBuddy says is the token's (invalidToken) is answered as a
+  // chat's is, once, by a sign-in with another token; a bare 401 is
+  // WorkBuddy's refusal of the request and goes back with the account kept.
+  const spoken = async (route, a, stored, getAuth, req, init) => {
+    const what = route === "speech" ? "TTS" : "speech recognition"
+    if (route === "translations") return speechFailure(400, `${site.name}'s speech recognition transcribes; it doesn't translate`)
+    if (freeOnly()) return speechFailure(404, `${site.name} names no price for its ${what}, so with "Free models only" on it isn't sent. Turn the switch off in ${site.name}'s provider settings to use it`)
+    const ctype = new Headers(init?.headers ?? req?.headers).get("content-type") ?? ""
+    let body = init?.body
+    if (body === undefined && req) body = route === "speech" ? await req.clone().text() : await req.clone().arrayBuffer()
+    if (body == null) return speechFailure(400, "the request has no body")
+    const ours = new WeakSet()
+    const mark = (r) => (ours.add(r), r)
+    const ask = async (path, headers, b) => {
+      try {
+        return await fetch(endpointOf(site, a) + path, { method: "POST", headers, body: b, signal: init?.signal })
+      } catch (e) {
+        if (init?.signal?.aborted) throw e
+        return mark(speechFailure(502, `${site.name} didn't answer the ${what} request: ${e?.message ?? e}`, "api_error"))
+      }
+    }
+    const signed = async (send) => {
+      const res = await send()
+      if (res.status !== 401 || !invalidToken(res)) return res
+      await res.body?.cancel().catch(() => {})
+      if (a.source === "key") return mark(keyRefused(site, true))
+      const r = await reissued(site, client, getAuth, a, stored?.access)
+      if (!r.a) return mark(signedOut(site, a, r.why, gone(a, r, true)))
+      a = r.a
+      const again = await send()
+      if (again.status !== 401 || !invalidToken(again)) return again
+      await again.body?.cancel().catch(() => {})
+      return mark(signedOut(site, a, "it refused the token renewed for it too", a.source !== "desktop"))
+    }
+    if (route === "speech") {
+      const asked = speechAsk(body)
+      if (asked.error) return speechFailure(400, asked.error)
+      const pcm = []
+      for (const text of asked.parts) {
+        const res = await signed(() => ask("/agenttool/v1/tts", speechHeaders(a, true), JSON.stringify({ text })))
+        if (ours.has(res)) return res
+        if (!res.ok) return refusedSpeech(res, what)
+        const got = spokenPcm(await res.text())
+        if (got.error) return speechFailure(502, `${site.name} couldn't read it aloud: ${got.error}`, "api_error")
+        pcm.push(got.pcm)
+      }
+      return speechAnswer(Buffer.concat(pcm), asked.format)
+    }
+    const asked = await hearAsk(body, ctype)
+    if (asked.error) return speechFailure(400, asked.error)
+    const res = await signed(() => ask("/agenttool/v1/asr", speechHeaders(a, false), asked.form))
+    if (ours.has(res)) return res
+    return heardAnswer(res, asked.format)
+  }
   return {
     config: async (config) => {
       config.provider ??= {}
@@ -4463,7 +5125,7 @@ function makePlugin(site) {
       p.name ??= site.name
       p.npm ??= NPM
       p.api ??= api(site)
-      p.models = { ...configModels(site), ...(p.models ?? {}) }
+      p.models = { ...configModels(site), ...speechConfig(site), ...(p.models ?? {}) }
     },
     // the conversation's id, which the chats below carry to WorkBuddy:
     // magpie's (or OpenCode's) session for this request, when it names one
@@ -4492,7 +5154,7 @@ function makePlugin(site) {
             return provider.models
           }
           if (!ms.length && !freeOnly()) return provider.models
-          return Object.fromEntries(onlyFree(ms).map((m) => [m.id, modelOf(site, provider, m)]))
+          return withSpeech(Object.fromEntries(onlyFree(ms).map((m) => [m.id, modelOf(site, provider, m)])), provider)
         }
         if (auth?.type !== "oauth" || !(auth.access || auth.source)) return provider.models
         let ms
@@ -4507,16 +5169,20 @@ function makePlugin(site) {
           return provider.models
         }
         if (!ms.length && !freeOnly()) return provider.models
-        return Object.fromEntries(onlyFree(ms).map((m) => [m.id, modelOf(site, provider, m)]))
+        return withSpeech(Object.fromEntries(onlyFree(ms).map((m) => [m.id, modelOf(site, provider, m)])), provider)
       },
     },
     auth: {
       provider: site.id,
-      // magpie renews a browser sign-in LEAD_MS before its end (an hour's
-      // token), once for the account, before its requests, models and
-      // usage ask; the check before each request stays for OpenCode,
-      // which doesn't call this. Desktop's sign-in has no expiry stored
-      // and is renewed as before.
+      // magpie renews a browser sign-in LEAD_MS before its end, once for
+      // the account, before its requests, models and usage ask. The lead
+      // stays short: magpie's host takes any lead up to a day, and a sign-in
+      // whose token lives less than its lead would be due again as soon as
+      // it is renewed, so it would be renewed on every request and every
+      // keep-alive. A long-lived sign-in is renewed sooner by fresh (ahead)
+      // instead. The check before each request stays for OpenCode, which
+      // doesn't call this. Desktop's sign-in has no expiry stored and is
+      // renewed as before.
       refreshLead: LEAD_MS,
       rotating: true,
       refresh: (auth) => refreshed(site, auth),
@@ -4585,6 +5251,8 @@ function makePlugin(site) {
             if (stored?.type !== "oauth" && !keyed) throw new Error(`${site.name} isn't signed in`)
             let a = keyed ?? (await current(site, client, stored))
             const req = input instanceof Request ? input : null
+            const route = speechRoute(req ? req.url : input)
+            if (route) return spoken(route, a, stored, getAuth, req, init)
             const headers = new Headers(init?.headers ?? req?.headers)
             headers.delete("authorization")
             headers.delete("x-api-key")
@@ -4779,7 +5447,7 @@ function makePlugin(site) {
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
             if (res.status >= 400) return explained(res)
-            const told = native ? res : unsaid(await renamed(res, names))
+            const told = native ? res : coalesced(unsaid(await renamed(res, names)))
             // the ids are the ones the chat went with, after any renewal
             const conv = headers.get("X-Conversation-ID") ?? ""
             const t = step && conv ? { ...step, conv, turn: headers.get("X-Conversation-Request-ID") ?? "", message: headers.get("X-Conversation-Message-ID") ?? "" } : null
@@ -4831,7 +5499,10 @@ function makePlugin(site) {
             try {
               ent = enterpriseUsageOf(await meter(site, a, "/billing/meter/get-enterprise-user-usage"))
             } catch {}
-            if (ent) return { plan: auth.plan || "Enterprise", windows: await spareFree(site, a, [ent]), signIn: said }
+            if (ent) {
+              await spareFree(site, a, [ent])
+              return { plan: auth.plan || "Enterprise", windows: [ent], signIn: said }
+            }
           }
           // when the plan's credits start again (cycleOf), and when the credits
           // left run out, for routing to spend them first (runsOutOf);
@@ -4872,7 +5543,7 @@ function makePlugin(site) {
               }
             } catch {}
           }
-          await spareFree(site, a, out.windows)
+          const known = await spareFree(site, a, out.windows)
           // each measured model's own window, which the credit meter above
           // does not show: what actually refuses a chat long before the
           // credits are spent. WorkBuddy AI has one (deepseek, 1e8, ten days
@@ -4882,7 +5553,10 @@ function makePlugin(site) {
           // (see the window definitions above)
           {
             const account = a.accountId || a.user || a.uid || ""
-            const wins = site.ai ? [FREE_WINDOW_AI] : CN_ESTIMATED_WINDOWS
+            // known is the list spareFree read for this poll: no request
+            // of its own (none read: shown, as the card names its model and
+            // says it is an estimate)
+            const wins = site.ai ? [FREE_WINDOW_AI].filter((w) => aiWindowApplies(known, w)) : CN_ESTIMATED_WINDOWS
             for (const win of wins) {
               const rows = await freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
               const w = rows && freeWindowOf(rows, account, Date.now(), win)
@@ -5035,4 +5709,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { SPEAKER, LISTENER, speechRoute, speechHeaders, spokenParts, speechAsk, spokenPcm, resampled, wavOf, speechAnswer, hearAsk, heardAnswer, speechModels, speechConfig, callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

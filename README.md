@@ -12,11 +12,12 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | Package | Signs in to | Provider id |
 |---|---|---|
 | [agnes](packages/agnes) | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance | `agnes` |
-| [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
+| [agnes-code](packages/agnes-code) | Agnes Code, both sites — international (agnes-ai.com) and China (agnes-ai.cn) as `agnes-code` and `agnes-code-cn` — with a browser loopback sign-in on any platform or the desktop's saved session (Windows): live models, daily credit check-in and points balance per site (unofficial) | `agnes-code`, `agnes-code-cn` |
 | [agy-cli](packages/agy-cli) | Antigravity on your installed agy CLI through ACP (`agy acp`), with agy's own Google sign-in: only the models agy offers this client, a process pool, MCP tool bridge and session resume (unofficial) | `agy-cli` |
 | [antigravity](packages/antigravity) | Withdrawn for new users: Google suspends accounts it sees used this way. Kept working for whoever has it; use agy-cli instead | `antigravity` |
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
+| [bailucode](packages/bailucode) | BAILU AI (白鹿) Open Platform (bailucode.com): an API key, or a browser sign-in that fetches the account's key — live models, the 白鹿通行证 quota (credits, tokens, per-protocol packs) on the card, and the portal's daily check-in | `bailucode` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
@@ -35,9 +36,12 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
+| [magnific-api](packages/magnific-api) | Magnific image and video generation, with your API key: 20 native image and video models, and tools for every agent that reach all 140 generation endpoints | `magnific` |
 | [mclaw](packages/mclaw) | China Mobile Cloud's MClaw agent (ai.yun.139.com), with a browser sign-in that harvests the ticket and auto-fetches the llm key: live models with token multipliers, aitokens pool usage, auto renewal (unofficial) | `mclaw` |
 | [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
+| [minimax-design-auth](packages/minimax-design-auth) | MiniMax Design desktop (China): read-only local session reuse or pasted token, live chat + native image/video models and credit wallet; separate from MiniMax Code and opposite in direction to agent-minimax-design (unofficial) | `minimax-design` |
+| [minimax-design-auth](packages/minimax-design-auth) | MiniMax Design desktop (international): read-only local session reuse or pasted token, live chat + native image/video models and credit wallet (unofficial) | `minimax-design-global` |
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
 | [openai-decisions](packages/openai-decisions) | OpenAI's native Decisions API as System One for magpie's classifiers and decision groups, with standard API-key sign-in and per-question refusal handling | `openai-decisions` |
@@ -226,7 +230,7 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 | [aelios](packages/aelios) | [Aelios](https://github.com/Aelios-project/Aelios) recall before each turn from your own Aelios on Cloudflare, and opt-in recording of each turn so Aelios can remember it |
 | [respire-memory](packages/respire-memory) | [Respire](https://github.com/risense-ai/respire-magpie): per-turn recall and complete policy reads, automatic process diaries, and grounded experience archival with readback; storage runs after reply completion |
 | [OpenViking](https://github.com/volcengine/OpenViking/tree/main/examples/magpie-memory-plugin) | OpenViking context recall and opt-in completed-conversation capture using existing OpenViking configuration; published as `@openviking/magpie-plugin` and maintained in the OpenViking repository |
-| [@vshulcz/magpie-deja](https://github.com/vshulcz/deja-vu/tree/main/extensions/magpie) | [deja-vu](https://github.com/vshulcz/deja-vu) local cross-agent session memory: recalls project-scoped (`ctx.cwd`) history from the transcripts Claude Code, Codex, Hermes, Gemini CLI, OpenCode, Cursor and DSH write on disk, scrubs secret patterns, and attaches the recalled excerpt to the request sent to your model provider; when recalled history helped, the model is asked to end its reply with a one-line `déjà vu: … — reusing it.` note |
+| [@vshulcz/magpie-deja](https://github.com/vshulcz/deja-vu/tree/main/extensions/magpie) | [deja-vu](https://github.com/vshulcz/deja-vu) local cross-agent session memory: indexes local transcripts from 47 coding agents (Claude Code, Codex, OpenCode, Cursor, Gemini CLI, Hermes, DSH, Orca, CodeWhale, Claw Code, and 37 more) under `~/.cache/deja/` (BM25F) with index-time secret scrubbing, scopes recall to `ctx.cwd`, and attaches the recalled excerpt to the request sent to your model provider; when recalled history helped, the model is asked to end its reply with a one-line `déjà vu: … — reusing it.` note |
 | [notify](packages/notify) | A push to ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook when an agent's turn is done or fails, after it ran `minMinutes` or longer, and when a subscription account needs signing in again |
 | [page-harnessweight](packages/page-harnessweight) | Tracks in-flight request counts in memory and records tool-definition sizes and usage metadata after responses; never modifies requests |
 
@@ -331,6 +335,7 @@ Agent skills for magpie users, in `skills/<name>/SKILL.md`.
 | [magpie-setup](skills/magpie-setup) | Lets an agent set magpie up as the user asks, through its own `magpie` commands: keys and subscriptions, an agent's model, routing groups with fallbacks and time-of-day rules, gateway keys with budgets, and MCP servers and instructions shared with every agent |
 | [magpie-quota](skills/magpie-quota) | Lets an agent check what is left of every subscription, coding plan and key balance magpie has (`magpie quota --json`), and wait for allowance to come back |
 | [magpie-sessions](skills/magpie-sessions) | Lets an agent search what was said in every coding agent's sessions on this computer (`magpie sessions search`) and read the session a hit is in (`magpie sessions show`) |
+| [magpie-api](skills/magpie-api) | Teaches an agent magpie's own HTTP API: what is left of every subscription, plan and key (`/v1/magpie/quotas`), the models on now (`/v1/models`), and which model a routing group picked for a session and what it fell back from (`/v1/magpie/route`) |
 
 In magpie, they are first under Library › Market › Skills. Elsewhere:
 
@@ -338,6 +343,7 @@ In magpie, they are first under Library › Market › Skills. Elsewhere:
 npx skills add magpie-community/plugins --skill magpie-setup
 npx skills add magpie-community/plugins --skill magpie-quota
 npx skills add magpie-community/plugins --skill magpie-sessions
+npx skills add magpie-community/plugins --skill magpie-api
 ```
 
 ## Use

@@ -29,6 +29,11 @@ let chatReply = null
 let ownList = null
 let ownListReply = null
 const ownAuth = []
+// the servers magpie is signed in to, as the list's signedIn names them
+// (plugins#873); null leaves signedIn out, as a magpie from before it does
+let signedInList = null
+// what reached the fake gateway's sign-in relay, /mcp/<name>
+const relaySeen = []
 const gateway = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
@@ -36,7 +41,20 @@ const gateway = Bun.serve({
     const url = new URL(req.url)
     if (url.pathname === "/v1/magpie/mcp") {
       if (ownListReply) return ownListReply();
-      return ownList ? Response.json({ servers: ownList }) : new Response("no", { status: 404 })
+      if (!ownList && !signedInList) return new Response("no", { status: 404 })
+      return Response.json({ servers: ownList || [], ...(signedInList ? { signedIn: signedInList } : {}) })
+    }
+    if (/^\/mcp\/[^/]+$/.test(url.pathname) && !url.pathname.startsWith("/mcp/magpie")) {
+      // the relay that carries magpie's sign-in to a Library server
+      const msg = await req.json()
+      relaySeen.push({ path: url.pathname, auth: req.headers.get("authorization"), team: req.headers.get("x-team") })
+      if (msg.id === undefined) return new Response(null, { status: 202 })
+      const result = msg.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "relay", version: "1" } }
+        : msg.method === "tools/list"
+          ? { tools: [{ name: "search_signed", description: "search signed", inputSchema: { type: "object", properties: {} } }] }
+          : {}
+      return Response.json({ jsonrpc: "2.0", id: msg.id, result })
     }
     if (url.pathname.startsWith("/mcp/magpie/")) {
       // one of magpie's own servers: its tool is named for its path
@@ -1359,6 +1377,65 @@ test("with mcpAll on, a chat gets magpie's own MCP servers that are on, beside t
     await raw("POST", "/api/settings", h, { mcp: [], mcpAll: false })
     rmSync(join(cfg, "library.json"), { force: true })
     a.stop(true); img.stop(true)
+    await own.close()
+  }
+})
+
+// plugins#873 (duhu2000): a Library server magpie is signed in to showed
+// Signed in in the Library while Chat connected to its URL with no sign-in.
+// One magpie names in signedIn by its name and URL both is reached through
+// the gateway's relay with the gateway key in place of its own
+// Authorization, its other headers kept; one signed in under the same name
+// to another URL, an SSE one, or any with a magpie that doesn't say, is
+// reached directly as before.
+test("a Library server magpie is signed in to is reached through magpie's relay", async () => {
+  const { startServer } = await import("./lib/server.mjs")
+  const { readMcp } = await import("./lib/library.mjs")
+  const own = await startServer({ configDir: cfg, options: { port: 0 } })
+  const raw = (...args) => rawOn(own.port, ...args)
+  const h = { ...json, origin: "null", "x-magpie-chat-token": token }
+  const direct = fakeMcp("search_direct")
+  const gw = `http://127.0.0.1:${gateway.port}`
+  writeFileSync(join(cfg, "library.json"), JSON.stringify({
+    mcp: [
+      { name: "neon", transport: "http", url: "https://mcp.neon.example/mcp", headers: { Authorization: "Bearer own-stale", "X-Team": "acme" }, agents: [] },
+      // signed in under this name, but to another URL: not this entry's
+      { name: "other", transport: "http", url: `http://127.0.0.1:${direct.port}/mcp`, agents: [] },
+      { name: "events", transport: "sse", url: "https://sse.example/sse", agents: [] },
+    ],
+  }))
+  try {
+    signedInList = [
+      { name: "neon", url: "https://mcp.neon.example/mcp", path: "/mcp/neon" },
+      { name: "other", url: "https://elsewhere.example/mcp", path: "/mcp/other" },
+      { name: "events", url: "https://sse.example/sse", path: "/mcp/events" },
+    ]
+    const got = Object.fromEntries((await readMcp(cfg)).map((m) => [m.name, m]))
+    expect(got.neon.url).toBe(gw + "/mcp/neon")
+    expect(got.neon.headers).toEqual({ "X-Team": "acme", authorization: "Bearer mk-test-key" })
+    expect(got.other.url).toBe(`http://127.0.0.1:${direct.port}/mcp`)
+    expect(got.events.url).toBe("https://sse.example/sse")
+    expect(got.events.headers).toBeUndefined()
+
+    await raw("POST", "/api/settings", h, { mcp: ["neon", "other"], mcpAll: false })
+    relaySeen.length = 0
+    const res = await raw("POST", "/api/chat", h, { ...chatBody, messages: [{ role: "user", content: "search something" }] })
+    expect(res.status).toBe(200)
+    expect((seen.at(-1).body.tools || []).map((t) => t.function.name).sort()).toEqual(["neon_search_signed", "other_search_direct"])
+    expect(relaySeen.length).toBeGreaterThan(0)
+    expect(relaySeen.every((r) => r.path === "/mcp/neon" && r.auth === "Bearer mk-test-key" && r.team === "acme")).toBe(true)
+
+    // a magpie that doesn't say: the Library's URL, as before
+    signedInList = null
+    expect((await readMcp(cfg)).find((m) => m.name === "neon")).toMatchObject({
+      url: "https://mcp.neon.example/mcp",
+      headers: { Authorization: "Bearer own-stale", "X-Team": "acme" },
+    })
+  } finally {
+    signedInList = null
+    await raw("POST", "/api/settings", h, { mcp: [], mcpAll: false })
+    rmSync(join(cfg, "library.json"), { force: true })
+    direct.stop(true)
     await own.close()
   }
 })
