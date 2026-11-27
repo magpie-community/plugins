@@ -561,3 +561,135 @@ test("everything the manifest ships is on disk", async () => {
   expect(imports.length).toBeGreaterThan(0)
   for (const spec of imports) expect(pkg.files).toContain(spec)
 })
+
+// ---- the thinking block amr-link streams --------------------------------------
+
+// OpenDesign 499 (plugins#1607): amr-link opens a thinking turn on
+// Anthropic's messages with a `redacted_thinking` block and streams
+// `signature_delta` into it, which Claude Code reads as a malformed stream
+// and aborts. The block is renamed to the standard `thinking` and the
+// signature dropped; the plain-text thinking deltas stay.
+const sseText = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("")
+
+const readAll = async (stream) => {
+  const decoder = new TextDecoder()
+  let out = ""
+  for await (const chunk of stream) out += decoder.decode(chunk, { stream: true })
+  return out + decoder.decode()
+}
+
+const eventsOf = (text) =>
+  text
+    .split("\n")
+    .filter((l) => l.startsWith("data: "))
+    .map((l) => JSON.parse(l.slice(6)))
+
+test("a redacted_thinking block is renamed to thinking and its signature_delta dropped (plugins#1607)", async () => {
+  const upstream = [
+    { type: "message_start", message: { id: "m1", model: "deepseek-v4.1-flash" } },
+    { type: "content_block_start", index: 0, content_block: { type: "redacted_thinking", thinking: "", signature: "", data: "u-0" } },
+    { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "let me see" } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "u-0" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "hi" } },
+    { type: "content_block_stop", index: 1 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ]
+  const out = eventsOf(await readAll(I.plainThinkingSse(new Response(sseText(upstream)).body)))
+  expect(out.map((e) => e.type)).toEqual([
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
+  ])
+  // the block is a plain thinking one: no data id, no redacted marker
+  expect(out[1].content_block).toEqual({ type: "thinking", thinking: "" })
+  expect(out[2].delta).toEqual({ type: "thinking_delta", thinking: "let me see" })
+  // the text block is untouched
+  expect(out[4].content_block).toEqual({ type: "text", text: "" })
+  // every other event, its framing included, is what upstream sent
+  const text = await readAll(I.plainThinkingSse(new Response(sseText(upstream)).body))
+  for (const ev of upstream.filter((e) => e.content_block?.type !== "redacted_thinking" && e.delta?.type !== "signature_delta")) {
+    expect(text).toContain(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`)
+  }
+  expect(text).not.toContain("signature_delta")
+})
+
+test("a signature_delta on a block that was never redacted is left alone", async () => {
+  const upstream = [
+    { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } },
+    { type: "content_block_stop", index: 0 },
+  ]
+  const out = eventsOf(await readAll(I.plainThinkingSse(new Response(sseText(upstream)).body)))
+  expect(out.map((e) => e.delta?.type ?? e.type)).toEqual(["content_block_start", "signature_delta", "content_block_stop"])
+})
+
+test("an event split across chunks is held until its newline arrives", async () => {
+  const upstream = sseText([
+    { type: "content_block_start", index: 0, content_block: { type: "redacted_thinking", thinking: "", signature: "", data: "u-0" } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "u-0" } },
+    { type: "content_block_stop", index: 0 },
+  ])
+  // three-byte chunks: every line is cut mid-way, including the JSON
+  const pieces = []
+  for (let i = 0; i < upstream.length; i += 3) pieces.push(upstream.slice(i, i + 3))
+  const source = new ReadableStream({
+    start(c) {
+      for (const p of pieces) c.enqueue(new TextEncoder().encode(p))
+      c.close()
+    },
+  })
+  const text = await readAll(I.plainThinkingSse(source))
+  const out = eventsOf(text)
+  expect(out.map((e) => e.type)).toEqual(["content_block_start", "content_block_stop"])
+  expect(out[0].content_block).toEqual({ type: "thinking", thinking: "" })
+})
+
+test("only a streaming messages response is rewritten", async () => {
+  const body = sseText([{ type: "content_block_start", index: 0, content_block: { type: "redacted_thinking", thinking: "", signature: "", data: "u-0" } }])
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url instanceof Request ? url.url : String(url)).pathname
+    // only the messages endpoint streams; count_tokens and the chat API answer JSON
+    const ct = path.endsWith("/messages") ? "text/event-stream" : "application/json"
+    const res = new Response(body, { status: 200, headers: { "content-type": ct, "content-length": String(body.length) } })
+    seen.push({ path, res })
+    return res
+  }
+  const hooks = await OpenDesignAuthPlugin({})
+  const { fetch: send } = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  const base = "https://amr-link.open-design.ai/v1"
+  // the messages stream is the one rewritten
+  const streamed = await send(base + "/messages", { method: "POST", body: "{}" })
+  expect(streamed).not.toBe(seen[0].res)
+  expect(streamed.headers.get("content-length")).toBeNull()
+  expect(eventsOf(await streamed.text())[0].content_block).toEqual({ type: "thinking", thinking: "" })
+  // a JSON response on another API is handed back as it came
+  const json = await send(base + "/chat/completions", { method: "POST", body: "{}" })
+  expect(json).toBe(seen[1].res)
+  // count_tokens is not a stream either, whatever it says
+  const counted = await send(base + "/messages/count_tokens", { method: "POST", body: "{}" })
+  expect(counted).toBe(seen[2].res)
+})
+
+test("a CRLF stream keeps its line endings", async () => {
+  const crlf = (events) => events.map((e) => `event: ${e.type}\r\ndata: ${JSON.stringify(e)}\r\n\r\n`).join("")
+  const upstream = crlf([
+    { type: "content_block_start", index: 0, content_block: { type: "redacted_thinking", thinking: "", signature: "", data: "u-0" } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "u-0" } },
+    { type: "content_block_stop", index: 0 },
+  ])
+  const text = await readAll(I.plainThinkingSse(new Response(upstream).body))
+  expect(text).toBe(
+    "event: content_block_start\r\ndata: " + JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } }) + "\r\n\r\nevent: content_block_stop\r\ndata: " +
+      JSON.stringify({ type: "content_block_stop", index: 0 }) + "\r\n\r\n",
+  )
+})

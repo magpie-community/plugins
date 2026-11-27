@@ -127,6 +127,20 @@ of them is signed as that API takes the key — `x-api-key` on `/messages`,
 the model is declared on, so a model set to another API in magpie's model
 editor works there too.
 
+## Thinking blocks on Anthropic's messages
+
+`amr-link` streams a thinking turn on `/v1/messages` as a
+`redacted_thinking` block with `signature_delta`s on it. Anthropic's own
+`redacted_thinking` carries no signature and takes no deltas, and Claude Code
+reads that pair as a malformed stream: it aborts the request and re-asks
+without streaming, which the routing log shows as `499`/`canceled` — a third
+of OpenDesign's requests ended that way (#1607). Upstream doesn't check the
+shape of a thinking block sent back to it, so the plugin's own `fetch`
+renames that block to the standard `thinking` and drops its
+`signature_delta`s as the stream passes; the plain-text `thinking_delta`s
+are left as they came. The rewrite is streaming and per event, and touches
+only a streaming `/messages` response.
+
 ## Where the sign-in is kept
 
 magpie's `plugin-auth.json` (mode 600), as an oauth account:
