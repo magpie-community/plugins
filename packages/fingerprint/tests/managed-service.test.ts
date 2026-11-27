@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startManagedService } from '../src/managed-service';
+import { serviceBindError, startManagedService } from '../src/managed-service';
 
 const waitFor = async (check: () => boolean) => {
   for (let i = 0; i < 100; i++) {
@@ -12,6 +12,16 @@ const waitFor = async (check: () => boolean) => {
   }
   throw new Error('Timed out waiting for host takeover');
 };
+
+test('bind diagnostics distinguish port conflicts from Windows port exclusions', () => {
+  const inUse = Object.assign(new Error('bind failed'), { code: 'EADDRINUSE' });
+  const denied = Object.assign(new Error('bind failed'), { code: 'EACCES' });
+  expect(serviceBindError(inUse, 3488).message).toContain('port 3488: the port is already in use');
+  expect(serviceBindError(denied, 3488).message).toContain('reserved or excluded');
+  expect(serviceBindError(denied, 3488).message).toContain(
+    'netsh interface ipv4 show excludedportrange protocol=tcp',
+  );
+});
 
 test('two hosts share one compatible service and the survivor takes over', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'fingerprint-hosts-'));

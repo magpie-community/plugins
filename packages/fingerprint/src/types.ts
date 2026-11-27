@@ -31,7 +31,10 @@ export interface RunConfig {
   targetParallel: number;
   sampleParallel: number;
   deadlineSeconds: number;
+  /** History records names only; header values stay in the active run. */
+  headerNames?: string[];
 }
+export type RunRequest = RunConfig & { headers?: Record<string, string> };
 export interface Provenance {
   session: string;
   requestedModel: string;
@@ -64,6 +67,8 @@ export interface Job {
   error?: string;
   demo?: boolean;
 }
+export type BankUpdate =
+  { state: 'idle' | 'local' | 'current' | 'updated' } | { state: 'failed'; error: string };
 export interface Bootstrap {
   version: string;
   demo: boolean;
@@ -72,6 +77,11 @@ export interface Bootstrap {
   jobs: Job[];
   bank: { builtAt: string; modelCount?: number } | null;
   bankStatus: { state: 'missing' | 'cached' | 'ready' };
+  bankUpdate: BankUpdate;
+  localBank: boolean;
   gateway: { url: string; reachable: boolean; error?: string };
   bankError?: string;
 }
+export type BankCheckResponse = Pick<Bootstrap, 'bank' | 'bankStatus' | 'bankUpdate'> & {
+  checkAgainInMs: number | null;
+};

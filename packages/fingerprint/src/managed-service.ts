@@ -3,6 +3,19 @@ import { boundedText } from './http';
 import { startServer } from './server';
 import { serviceIdentity } from './service-identity';
 
+export function serviceBindError(error: unknown, port: number) {
+  const cause = error as NodeJS.ErrnoException;
+  if (cause.code === 'EADDRINUSE')
+    return new Error(
+      `Cannot bind Fingerprint service to port ${port}: the port is already in use. Configure a different page service port.`,
+    );
+  if (cause.code === 'EACCES' || cause.code === 'EPERM')
+    return new Error(
+      `Cannot bind Fingerprint service to port ${port}: the operating system denied access. On Windows, this port may be reserved or excluded; choose another available page service port and check \`netsh interface ipv4 show excludedportrange protocol=tcp\`.`,
+    );
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 /** Hosts with identical settings share one listener. An attached host takes over
  * when its owner exits; no detached daemon survives the Magpie hosts. */
 export async function startManagedService(input: Options = {}, pollMs = 1000) {
@@ -45,7 +58,12 @@ export async function startManagedService(input: Options = {}, pollMs = 1000) {
       owned = await startServer(opt);
     } catch (error) {
       // Another host may have won between discovery and bind.
-      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && (await probe())) return;
+      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+        if (await probe()) return;
+        throw serviceBindError(error, opt.port);
+      }
+      if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code || ''))
+        throw serviceBindError(error, opt.port);
       throw error;
     }
     if (closed) {

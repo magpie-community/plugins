@@ -144,5 +144,5 @@ are copied unchanged from the npm `lmfpd-sdk@0.2.0` package, published from
 `1e58ed83c1cde17f88cba89560ad4d083042ae92`. `index.d.ts` is a local re-export
 of the upstream declarations. Its runtime bundle includes `fzstd`; both MIT
 notices are preserved above. The SDK is vendored so repository tests and plugin
-installation require no dependency installation. The reference bank is fetched
-only on explicit download or an uncached run, or supplied locally with `bankSource`.
+installation require no dependency installation. The page checks for newer
+reference data automatically. `bankSource` can also point to local data.

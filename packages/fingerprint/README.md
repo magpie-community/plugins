@@ -12,6 +12,9 @@ for investigation, not proof of model identity.
 
 - Select up to 24 models across providers, with the same three challenges per batch.
 - Reuse Magpie authentication and native endpoint metadata; optionally pin an account.
+- Choose editable Codex CLI, Claude Code, OpenCode, Cline or Roo Code header presets,
+  or enter per-batch headers in Advanced settings;
+  other headers require the provider's `passHeaders` setting in Magpie.
 - Follow live sample counts, cancel work, and inspect the actual response route.
 - Compare ranked candidates, including partial and unscorable outcomes.
 - Keep raw replies and data versions in local history; export or copy JSON.
@@ -56,11 +59,13 @@ on completion. In a standalone copy of this package, `bun install
 --frozen-lockfile --registry https://registry.npmjs.org` and `bun run check`
 produce the same build.
 
-The plugin page service listens on `3488` by default and uses Magpie's gateway
-at `http://127.0.0.1:3425`. Opening or refreshing the page never downloads
-reference data. **Download reference data** explicitly fetches a fresh snapshot;
-starting a run downloads one only when no usable snapshot is cached. There is
-no background refresh. The default primary source is
+The plugin page service listens on `4388` by default and uses Magpie's gateway
+at `http://127.0.0.1:3425`. The service checks the reference catalog when the
+page opens and every 24 hours while it stays open. If the remote detector
+version changed, the plugin downloads and installs the new snapshot in the
+background. Without a cache, it downloads the initial snapshot. A failed
+check or download leaves any usable cache available for detection. The
+**Check for updates** button runs the check immediately. The default primary source is
 `https://lm.ikale.io/data/`; its fallback is
 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client's
 IP address. Reference downloads carry no provider credentials, model ids,
