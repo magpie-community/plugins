@@ -51,6 +51,7 @@ export const GATEWAY_FREE_FILE = path.join(REPO_DIR, "gateway-free.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
+export const OFFERED_TTL_MS = 60 * 60 * 1000
 
 const RUNTIME_SPECIFIER = "agy-testkit:runtime"
 const RUNTIME_NAMES = ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "process"]

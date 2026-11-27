@@ -14,7 +14,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
-  BASE_MODEL_ROWS, CATALOG_TTL_MS, MESSAGES_URL, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
+  BASE_MODEL_ROWS, CATALOG_TTL_MS, OFFERED_TTL_MS, MESSAGES_URL, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 const FAST_BUDGET_MS = 750 // 计划给的调度容差；补丁内部等待预算是 500ms，远低于 Magpie 的 2s。
@@ -607,11 +607,16 @@ test("会话开放的型号才列出：不等请求，探测会话就列出 Clau
     assert.equal(kit.acpLog.find(entry => entry.method === "initialize")?.params?.clientInfo?.name, "opencode-agy-cli-auth")
     assert.deepEqual(kit.acpSpawns.map(spawn => spawn.args), [["acp"]])
     assert.equal(kit.children.size, 0, "探测的 agy acp 应已退出")
-    // 已知开放什么之后不再探测。
-    kit.clock.advance(CATALOG_TTL_MS)
+    // 到了开放型号的 TTL 就再探测一次：学到的开放型号不能永远当真，
+    // Google 在服务端换了开放的型号，目录要跟上（2026-11-27）。
+    kit.clock.advance(OFFERED_TTL_MS)
     await kit.models()
     await settle(kit)
-    assert.equal(kit.acpSpawns.length, 1)
+    assert.equal(kit.acpSpawns.length, 2, "到了开放型号的 TTL 应当再探测一次")
+    const relearned = await kit.models()
+    assert.ok(relearned["claude-opus-5-5"], "重探测后仍应列出会话开放的型号")
+    assert.equal(relearned["claude-sonnet-5-5"], undefined, "重探测后仍不应列出会话没开放的型号")
+    assert.equal(relearned["gemini-3.8-flash"], undefined, "重探测后仍不应列出会话没开放的 Gemini")
   })
 })
 
@@ -651,6 +656,68 @@ test("会话后来开放的型号变了，目录随之更新", async () => {
     const parsed = await readSse(await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] })))
     assert.equal(parsed.error, null, JSON.stringify(parsed.error))
     assert.ok((await kit.models())["claude-opus-5-5"])
+  })
+})
+
+// 2026-11-27：Google 在服务端换了 agy acp 开放的型号（新来的 claude-4-6 /
+// gemini-3.1-flash-image，旧的 gemini-4-neon/carbon/argon 与 claude-5-5 不再
+// 开放），网关却一直列着旧的开放型号：学到的开放型号没有 TTL，列表没变
+// 就不重新探测。到了 TTL 就再探测，目录跟上新开放的型号；图片模型不进
+// 聊天目录（只走图片路径）。
+const INCIDENT_ROWS = [
+  ...BASE_MODEL_ROWS,
+  ["gemini-4-neon-high", "Gemini 4 Neon (High)"], ["gemini-4-neon-low", "Gemini 4 Neon (Low)"],
+  ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"],
+  ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+  ["gemini-3.1-flash-image", "Gemini 3.1 Flash Image"],
+]
+const INCIDENT_OFFERED_NEW = [
+  ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6"], ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+  ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"], ["gpt-oss-120b", "GPT-OSS 120B"],
+]
+const INCIDENT_OFFERED_OLD = [
+  ["gemini-4-neon-high", "Gemini 4 Neon (High)"], ["gemini-4-neon-low", "Gemini 4 Neon (Low)"],
+  ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"],
+  ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
+  ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-opus-5-5-low", "Claude Opus 5.5 (Low)"],
+  ["claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"], ["claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"],
+  ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+]
+
+test("服务端换了开放的型号，目录在一个 TTL 内跟上；图片模型不进聊天目录", async () => {
+  await withKit({ modelsBehavior: { stdout: modelsOutput(INCIDENT_ROWS) }, offeredModels: INCIDENT_OFFERED_NEW }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    const listed = await kit.models()
+    assert.ok(listed["claude-sonnet-4-6"], "新开放的型号应列出")
+    assert.ok(listed["claude-opus-4-6-thinking"], "新开放的型号应列出")
+    assert.ok(listed["gpt-oss-120b"], "新开放的型号应列出")
+    assert.equal(listed["gemini-4-neon"], undefined, "会话没开放的型号不应列出")
+    assert.equal(listed["gemini-4-carbon"], undefined, "会话没开放的型号不应列出")
+    assert.equal(listed["claude-opus-5-5"], undefined, "会话没开放的型号不应列出")
+    assert.equal(listed["claude-sonnet-5-5"], undefined, "会话没开放的型号不应列出")
+    // 图片模型只走图片路径：models() 里是纯图像条目，不是聊天型号。
+    const image = listed["gemini-3.1-flash-image"]
+    assert.ok(image, "图片模型应作为图像条目出现")
+    assert.equal(image.capabilities?.output?.text, false, "图片模型不应有文本输出")
+    assert.equal(image.capabilities?.output?.image, true, "图片模型应有图像输出")
+    assert.deepEqual(image.variants ?? {}, {}, "图片模型不应有聊天档位")
+    // 服务端换回旧的开放型号：到了 TTL 再探测，目录跟上。
+    const probes = kit.acpSpawns.length
+    kit.offeredModels = INCIDENT_OFFERED_OLD
+    kit.clock.advance(OFFERED_TTL_MS)
+    await kit.models()
+    await settle(kit)
+    assert.ok(kit.acpSpawns.length > probes, "到了 TTL 应当再探测开放型号")
+    const after = await kit.models()
+    for (const id of ["gemini-4-neon", "gemini-4-carbon", "gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5"]) assert.ok(after[id], `重探测后应列出 ${id}`)
+    assert.equal(after["claude-sonnet-4-6"], undefined, "重探测后不应再列出已不开放的型号")
+    assert.equal(after["claude-opus-4-6-thinking"], undefined, "重探测后不应再列出已不开放的型号")
+    assert.equal(after["gemini-3.1-flash-image"]?.capabilities?.output?.text, false, "重探测后图片模型仍不应是聊天型号")
   })
 })
 
@@ -1369,11 +1436,12 @@ test("shenggxhz 运行中换了账号：agy models 列表变了就重新探测�
     const after = await kit.models()
     assert.ok(after["gemini-4-carbon"], `换账号后 Gemini 4 Carbon 没列出：${ids(after).join(", ")}`)
     assert.equal(kit.acpSpawns.length, 2, "列表变了该再探测一次")
-    // 列表没变时不再探测
-    kit.clock.advance(CATALOG_TTL_MS)
+    // 列表没变，但开放型号到了 TTL：再探测一次，确认开放的还是同一批。
+    kit.clock.advance(OFFERED_TTL_MS)
     await kit.models()
     await warmed(kit)
-    assert.equal(kit.acpSpawns.length, 2, "列表没变不该再起探测会话")
+    assert.equal(kit.acpSpawns.length, 3, "到了开放型号的 TTL 应当再探测一次")
+    assert.ok((await kit.models())["gemini-4-carbon"], "重探测后仍应列出 Gemini 4 Carbon")
   })
 })
 
