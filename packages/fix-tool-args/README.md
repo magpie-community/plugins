@@ -26,7 +26,10 @@ and at the chunk carrying `finish_reason` emits them as one whole call:
     is quoted: `{pattern:**/*x*}` → `{"pattern":"**/*x*"}`;
   - a bare **value** (a run in a value slot that starts like no JSON
     value) is quoted up to the next structural character — colons and
-    internal spaces belong to it: `{"path":C:/x y}` → `{"path":"C:/x y"}`;
+    internal spaces belong to it: `{"path":C:/x y}` → `{"path":"C:/x y"}`.
+    A `,` or closing bracket still ends the value (the run cannot be
+    told apart from the next member's), so a command that needs one —
+    `ls a, b` — is left broken;
   - a `,` directly before `}` or `]` is dropped (trailing comma);
   - a raw control character inside a string is escaped (the same fix
     pi-ai's own `repairJson` applies client-side);
