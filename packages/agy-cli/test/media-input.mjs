@@ -91,13 +91,37 @@ test("view_file is agy's tool only in a conversation that carries a video or aud
     const described = await kit.request(stateless([media("audio", MP3, "audio/mpeg"), { type: "text", text: "transcribe" }]))
     assert.equal(described.status, 200, await described.clone().text())
     assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    const describedIn = prompts(kit).at(-1).spawn
     const plain = await kit.request(stateless("write a title"))
     assert.equal(plain.status, 200, await plain.clone().text())
     assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: []")
     const again = await kit.request(stateless([media("video", MP4, "video/mp4"), { type: "text", text: "describe it" }]))
     assert.equal(again.status, 200, await again.clone().text())
     assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    // nor in one whose folder holds another conversation's clip
+    assert.notEqual(prompts(kit).at(-1).spawn, describedIn)
   }, { sessionResume: true })
+})
+
+// view_file reads unasked what is under an --add-dir folder and in agy's
+// temp folder: a video must not open the caller's named folder, or /tmp
+// with every other session's workspace in it, to the model
+test("an agy for a video gets no --add-dir, and its temp folder is its workspace", async () => {
+  await withKit(async (kit) => {
+    const dir = path.join(kit.tmp, "project")
+    fs.mkdirSync(dir)
+    const ask = async (content) => {
+      await readSse(await kit.request(baseBody({ messages: [{ role: "user", content }] }), { headers: { "x-magpie-work-dir": dir } }))
+      return kit.acpSpawns[prompts(kit).at(-1).spawn]
+    }
+    const plain = await ask("hello")
+    const video = await ask([media("video", MP4, "video/mp4"), { type: "text", text: "what is in it?" }])
+    assert.notEqual(plain, video)
+    assert.equal(plain.args[plain.args.indexOf("--add-dir") + 1], dir)
+    assert.equal(video.args.includes("--add-dir"), false)
+    assert.deepEqual([video.env.TMPDIR, video.env.TMP, video.env.TEMP], [video.cwd, video.cwd, video.cwd])
+    assert.notEqual(plain.env.TMPDIR, plain.cwd)
+  })
 })
 
 test("a flattened opening that grows by a video sends the new one as a file too", async () => {
@@ -178,6 +202,22 @@ test("a video by URL is refused before agy, and a video counts as an image does,
     assert.equal(counted, await kit.countTokens(body("image", "image/png")))
     // the note in the video's place is no history cut from the prompt
     assert.equal(usageTotal((await readSse(await kit.request(body("video", "video/mp4")))).usage), counted)
+  })
+})
+
+// claude-haiku stands in for Gemini Flash, but agy runs Haiku itself when its session offers it
+test("a video to a model other than Gemini is refused before agy", async () => {
+  await withKit(async (kit) => {
+    for (const model of ["claude-opus-5-5", "claude-haiku-4-5"]) {
+      const response = await kit.request(baseBody({ model: `agy-cli/${model}`, stream: false, messages: [{ role: "user", content: [
+        media("video", MP4, "video/mp4"), { type: "text", text: "what is in it?" }] }] }))
+      assert.equal(response.status, 400)
+      assert.equal(response.headers.get("x-should-retry"), "false")
+      const body = await response.json()
+      assert.equal(body.error.type, "invalid_request_error")
+      assert.equal(body.error.message, `agy bridge: video or audio input to ${model} is not supported. Choose a Gemini model`)
+    }
+    assert.equal(kit.acpSpawns.length, 0)
   })
 })
 

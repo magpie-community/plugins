@@ -1888,8 +1888,10 @@ export function ideToolOf(toolCall) {
 }
 
 // media: the conversation carries a video or audio (stageMedia), which the
-// model reads with agy's own view_file. Otherwise agy's tools stay off: with
-// --add-dir, view_file would read the client's files unasked.
+// model reads with agy's own view_file. Otherwise agy's tools stay off.
+// view_file reads unasked what is under an --add-dir folder and agy's temp
+// folder (anywhere else it asks, and the bridge denies): so a media session
+// gets no --add-dir, and agy's temp folder is the session's workspace (#spawn).
 function agentDefinition(media) {
   const lines = [
     "---",
@@ -2727,8 +2729,9 @@ class Proc {
     // never the home folder or one above it: agy loads what is in it as the
     // workspace's customizations, inside the same 20k budget as the
     // client's tools, and drops the biggest of those (Bash, Read) to fit
-    // (plugins#1405). The model is still told where the tools run.
-    if (this.workDir && !holdsHome(this.workDir)) args.push("--add-dir", this.workDir)
+    // (plugins#1405). The model is still told where the tools run. Nor with
+    // media: view_file would read everything in it unasked.
+    if (this.workDir && !this.media && !holdsHome(this.workDir)) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
     args.push(...await telemetryArgs(this.agyPath))
     const own = await geminiDirArgs(this.agyPath)
@@ -2758,6 +2761,9 @@ class Proc {
           PATH: bin + path.delimiter + inheritedPath,
           AGY_BRIDGE_CONTROL_PORT: String(controlServer.address().port),
           AGY_BRIDGE_TOKEN: this.token,
+          // view_file reads agy's temp folder unasked: the workspace, not
+          // the one every other session's workspace is in
+          ...this.media ? { TMPDIR: this.workspace, TMP: this.workspace, TEMP: this.workspace } : {},
         },
       })
     } catch (error) {
@@ -4484,7 +4490,8 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // the new key (sorted, to avoid deadlock), then pick again inside those
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
-  const launch = !forceNew && isFreshConversation && freshToolless(opts)
+  // never a media request: the agy's folder still holds the clips it was sent
+  const launch = !forceNew && isFreshConversation && freshToolless(opts) && !opts.media
     ? await launchKey(agyPath, opts.workDir, opts.media).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
@@ -6115,6 +6122,8 @@ function historyBlock(block, ids) {
   } else if (block.type === "image") {
     const image = parseUserImage(block)
     value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
+  } else if (isMedia(block)) {
+    value = { type: block.type, mediaType: block.source.media_type, sha256: digest(mediaData(block)) }
   } else if (block.type === "tool_use") {
     const ordinal = ids.size + 1
     ids.set(block.id, ordinal)
@@ -6752,6 +6761,11 @@ function isMedia(block) {
 
 function hasMedia(message) {
   return Array.isArray(message.content) && message.content.some(isMedia)
+}
+
+// of agy's models, only Gemini takes a video or audio
+function takesMedia(modelId) {
+  return modelId.startsWith("gemini-")
 }
 
 function mediaData(block) {
@@ -9779,6 +9793,11 @@ export const AntigravityBridgePlugin = async () => {
               anotherAccountLists(agy, requestedModel)) {
               return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
             }
+            // agy runs the requested model when its session offers it (configModelSelection), else the resolved one
+            const media = body.messages.some(hasMedia)
+            if (media && !(takesMedia(requestedModel) && takesMedia(model))) {
+              return jsonError(400, `agy bridge: video or audio input to ${requestedModel} is not supported. Choose a Gemini model`, undefined, { noRetry: true })
+            }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
             // the key before the model line left it (0.1.142 and older)
             const legacyConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "", true)
@@ -9815,7 +9834,7 @@ export const AntigravityBridgePlugin = async () => {
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
                 legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : "",
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope,
-                media: body.messages.some(hasMedia) }
+                media }
               let answeredIds = null
               // tools the steered prompt names as callable now (grown mid-turn)
               let grownTools = null
@@ -10087,9 +10106,7 @@ export const AntigravityBridgePlugin = async () => {
         }
         for (const model of catalog.models) {
           const imageModel = /^(?:gemini-|claude-)/.test(model.id)
-          // a video or audio reaches the model as a file view_file reads
-          // (stageMedia); of agy's models, only Gemini takes one
-          const mediaModel = model.id.startsWith("gemini-")
+          const mediaModel = takesMedia(model.id)
           out[model.id] = {
             id: model.id,
             name: model.name,

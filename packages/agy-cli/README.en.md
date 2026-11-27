@@ -107,7 +107,9 @@ MCP server. The control port listens on loopback only, with a token per process.
   session's folder and the model is asked to read it with agy's own
   `view_file`, which hands Gemini the frames and the sound. Only a
   conversation that carries one gets `view_file`; agy's tools stay off
-  otherwise. A video or audio URL gets HTTP 400.
+  otherwise. A video or audio URL, or one sent to a model other than Gemini,
+  gets HTTP 400. `count_tokens` counts a video or audio clip as one image, so
+  a long clip is undercounted.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.
