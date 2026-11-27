@@ -2908,7 +2908,11 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
   // handed is this Run's step owed at a later Run's start while this one
   // waited on results (handover): owed, collected (and what), or withdrawn
   let handed = null
-  const owes = () => started && native.segments > 0 && !native.finalUsage && convID && canRead(tok)
+  // A Run whose tool steps were handed over with their own count
+  // (plugins#1615) owes no dashboard event: the event sums every step of the
+  // Run, billed ones too. What it owes is the counts it was sent and didn't
+  // bill (carried, at abandon).
+  const owes = () => started && native.segments > 0 && !native.finalUsage && convID && canRead(tok) && !native.billedSteps
   native.accounting = {
     started() { started = true },
     // A later Run of the conversation began (NativeSessionPool.create) while
@@ -2962,6 +2966,9 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
         // laterRunAt: a later Run of this conversation began while this one
         // was live (NativeSessionPool.create); its events are not this debt
         owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt, before: native.laterRunAt })
+      } else if (native.billedSteps && !native.finalUsage && convID) {
+        const u = native.unbilled()
+        if (u.input + u.output + u.cacheRead + u.cacheWrite > 0) owe(debtKey, { carry: u })
       }
     },
   }
@@ -3171,7 +3178,10 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, search, countWait = NATIVE_LIMITS.countWait }) {
+// countMisses: stateless steps in a row whose own count didn't come in
+// usageWait (decode's tail)
+const countMisses = { n: 0 }
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, search, countWait = NATIVE_LIMITS.countWait, usageWait = NATIVE_LIMITS.usageWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -3191,7 +3201,28 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
     listed = 0
     answered = 0
     step.nextStep()
+    steps++
     return false
+  }
+  // The Run's model calls so far (steps), and Cursor's count of each
+  // (ModelCallCompletedUpdate, 31), in order (modelCounts). A step's own
+  // comes just after its tool count (plugins#1615), so once its calls are
+  // all in the step waits for it (handing, tail), up to usageWait; the Run
+  // was closed before it came, and a step kept for its conversation said 0.
+  let steps = 1
+  const modelCounts = []
+  let handing = false
+  // earlierCounts: the counts of this Run's steps whose calls were all
+  // answered here, which go apart, as magpie_deferred
+  let earlierCounts = null
+  const take31 = (uf) => {
+    if (!ended && uf.some((f) => f.num >= 2 && f.num <= 6)) modelCounts.push(usageOf(uf, 1))
+  }
+  const own = () => {
+    if (counted || ended || modelCounts.length < steps) return
+    usage = modelCounts.at(-1)
+    counted = true
+    for (const u of modelCounts.slice(0, -1)) earlierCounts = addUsage(earlierCounts, u)
   }
   let said = 0
   // wrote: the reply's text alone; a turn of thinking only says nothing
@@ -3246,13 +3277,42 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
   // owed); and with what the conversation's earlier steps owed, which a
   // step that ends the turn waits for
   const settled = async () => {
+    if (calls > 0 && !ended) own()
     if (calls > 0 && !ended && !counted && stepUsage) {
       close?.()
       const u = await stepUsage().catch(() => null)
       if (u) usage = u
       counted = u === false || !!u
     }
-    return finish(owedUsage ? await owedUsage(calls === 0).catch(() => null) : null)
+    const more = owedUsage ? await owedUsage(calls === 0).catch(() => null) : null
+    return finish(earlierCounts ? addUsage(addUsage(ZERO(), more), earlierCounts) : more)
+  }
+  // tail reads on, for the step's own count only, until it comes, the
+  // stream ends or usageWait passes. Once 3 steps in a row had none in
+  // time, only every 10th waits, as the dashboard's misses go.
+  const tail = async () => {
+    if (calls === 0 || ended || counted || modelCounts.length >= steps) return
+    if (countMisses.n >= 3 && countMisses.n % 10 !== 0) return void countMisses.n++
+    const until = Date.now() + usageWait
+    while (modelCounts.length < steps) {
+      const ms = until - Date.now()
+      if (ms <= 0) return void countMisses.n++
+      const next = Promise.resolve(it.next())
+      next.catch(() => {})
+      let timer
+      const r = await Promise.race([next, new Promise((res) => {
+        timer = setTimeout(() => res({ cut: true }), ms)
+        timer.unref?.()
+      })]).finally(() => clearTimeout(timer))
+      if (r.cut) return void countMisses.n++
+      if (r.done || r.value.end) return
+      try {
+        for (const m of fields(r.value.data)) if (m.num === 1) for (const u of fields(m.data)) if (u.num === 31) take31(fields(u.data))
+      } catch {
+        return
+      }
+    }
+    countMisses.n = 0
   }
   const closeExec = (id) => send(pb().bytes(5, pb().bytes(1, pb().varint(1, id))).done())
   // A step whose calls came and whose count never does: Cursor sent the
@@ -3305,10 +3365,15 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
         return
       }
       for (const m of fields(f.data)) {
+        if (handing && m.num !== 1) continue
         switch (m.num) {
           case 1: // interaction_update
             for (const u of fields(m.data)) {
               const uf = fields(u.data)
+              if (handing) {
+                if (u.num === 31) take31(uf)
+                continue
+              }
               switch (u.num) {
                 case 1: {
                   // text
@@ -3343,26 +3408,17 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
                 case 27: // how many tool calls the step makes, sent before or after them
                   listed = pbNum(uf, 1)
                   step.listed()
-                  if (stepDone()) {
-                    yield await settled()
-                    return
-                  }
+                  if (stepDone()) handing = true
                   break
-                case 31: // model_call_completed: the step's own token usage
-                  if (!ended && uf.some((f) => f.num >= 2 && f.num <= 6)) {
-                    usage = usageOf(uf, 1)
-                    counted = true
-                  }
+                case 31: // model_call_completed: a model call's own token usage
+                  take31(uf)
                   break
                 case 2: // a call started on the client
                 case 3: // a call completed: by Cursor itself when it never started here
                 case 7: // a call the model is writing
                   // still named in an empty reply's list: only their ids are read
                   count(seen.updates, u.num)
-                  if (step.update(u.num, uf) && (note?.("completed by Cursor"), stepDone())) {
-                    yield await settled()
-                    return
-                  }
+                  if (step.update(u.num, uf) && (note?.("completed by Cursor"), stepDone())) handing = true
                   break
                 default:
                   count(seen.updates, u.num)
@@ -3377,11 +3433,8 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
               said += call.args.length
               yield { tool: { index: calls++, ...call } }
             } else if (!fields(m.data).some((e) => e.num === 10)) answered++
-            if (stepDone()) {
-              // every call made: the caller runs them
-              yield await settled()
-              return
-            }
+            // every call made: the caller runs them
+            if (stepDone()) handing = true
             break
           }
           case 3:
@@ -3393,8 +3446,8 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
             // even if this checkpoint omits it.
             if (listed && step.listedAfter && !step.pendingMcp && calls > 0 && pendingCalls(m.data, fields) === calls) {
               note?.("waited on")
-              yield await settled()
-              return
+              handing = true
+              break
             }
             count(seen.messages, m.num)
             break
@@ -3431,6 +3484,11 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
           default:
             count(seen.messages, m.num)
         }
+      }
+      if (handing) {
+        await tail()
+        yield await settled()
+        return
       }
     }
     if (calls > 0) {
@@ -3896,4 +3954,4 @@ export async function CursorAuthPlugin(input) {
 }
 
 // for tests
-export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, countMisses, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

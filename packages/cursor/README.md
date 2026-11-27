@@ -77,9 +77,14 @@ plugin's `fetch` answers them on Cursor's agent API:
   Cursor's `input_tokens` counts the cached prompt too: the cache
   read and written is taken out of it, and given as `cached_tokens` and
   `cache_write_tokens`, so it is counted once; its reasoning tokens are
-  `reasoning_tokens`. A step that calls tools gets no usage in its Run
-  (Cursor tells it only once the tools' results come back in the same
-  Run), so once the Run is closed its usage is read from the dashboard's
+  `reasoning_tokens`. A step that calls tools gets its own count from
+  `ModelCallCompletedUpdate`, which Cursor sends just after the step's
+  tool count: the calls wait for it up to 1 s (plugins#1615). The counts
+  of earlier model calls of the same Run (a step whose calls were all
+  answered here) go as `usage.magpie_deferred`. Without one, a step that
+  calls tools has no usage in its Run (TurnEnded comes only once the
+  tools' results come back in the same Run), so once the Run is closed
+  its usage is read from the dashboard's
   usage events, by the Run's conversation id: it shows in about 2.5 s,
   and is looked for up to 6 s. Far from Cursor it shows later than that
   (yetone/magpie#1053), so the step says 0 used and the conversation owes
@@ -172,8 +177,12 @@ write is reported to that request because its outcome may be uncertain. A later
 request can rebuild from its supplied history without submitting the result to
 the old native exec again.
 
-A native tool handoff reports zero usage with `magpie_native.accounting=pending`;
-the final native answer bills the turn's totals. Its own `prompt_tokens` and
+A native tool handoff reports its model call's own count
+(`ModelCallCompletedUpdate`, which Cursor sends just after the step's tool
+count; the calls wait up to `usageWait`, 1 s, for it, plugins#1615). Without
+one it reports zero usage with `magpie_native.accounting=pending`, and a Run
+that sent no count in that wait, and none before, isn't waited on again. The
+final native answer bills the turn's totals, less what handoffs billed. Its own `prompt_tokens` and
 `completion_tokens` are its last model call's count (`ModelCallCompletedUpdate`,
 asked for with `emit_model_call_usage`, else the larger of that call's prompt
 estimate and the turn's mean per call), since a client reads
@@ -191,7 +200,9 @@ each step to a Run's one event as the step ends, so that event is looked for
 only `owedAt` (5 seconds) after the handover; a final waits for it. If its own
 results resume it after all, a count not collected yet is withdrawn, and one
 already collected comes off its final (from the earlier calls' share first),
-so the event is billed once.
+so the event is billed once. A Run with a handoff billed by its own count
+owes no dashboard count, since the event sums every step: abandoned, it
+carries the counts Cursor sent that no step billed.
 
 Dashboard attribution uses event timestamps, rather than when events arrive.
 Older debt is bounded strictly before the native Run's start, and keeps that

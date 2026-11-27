@@ -13,6 +13,7 @@ afterEach(() => {
   globalThis.fetch = real
   Object.assign(STEP_WAIT, wait)
   for (const map of [_internal.owed, _internal.flights, _internal.misses, _internal.unreadable]) map.clear()
+  _internal.countMisses.n = 0
 })
 
 const update = (num, body) => ({ data: pb().bytes(1, pb().bytes(num, body)).done() })
@@ -273,4 +274,84 @@ test("ledger flights and late carry keep account and collection identity during 
     releaseB?.(response(usageB))
     await Promise.all([ownA, ownB])
   }
+})
+
+// plugins#1615 (easyku): a Cursor turn's tool steps said 0 used, input,
+// output and cache alike, so a relay reading each step's usage (sub2api)
+// billed them nothing. Cursor sends the step's own count, a
+// ModelCallCompletedUpdate, a checkpoint after its tool count, about 10 ms
+// later in plugins#635's traces: exec, tool count, checkpoint, count,
+// checkpoint. The Run was closed at the tool count, before it came, and a
+// step kept for its conversation said 0, owing its count to later steps.
+const checkpoint = { data: pb().bytes(3, pb().str(22, "cli").done()).done() }
+const count31 = (id, input, output, cacheRead, cacheWrite, reasoning) =>
+  update(31, pb().str(1, id).varint(2, input).varint(3, output).varint(4, cacheRead).varint(5, cacheWrite).varint(6, reasoning).done())
+// frames as a live stream sends them: each after its pause, then open until closed
+function live(steps) {
+  let closed = false, wake
+  return {
+    closed: () => closed,
+    async *[Symbol.asyncIterator]() {
+      try {
+        for (const [ms, f] of steps) {
+          await new Promise((r) => setTimeout(r, ms))
+          if (closed) return
+          yield f
+        }
+        await new Promise((r) => (wake = r))
+      } finally {
+        closed = true
+      }
+    },
+    close: () => ((closed = true), wake?.()),
+  }
+}
+
+test("a step that calls tools reports the count Cursor sends after its tool count (plugins#1615)", async () => {
+  let asked = 0
+  const s = live([[0, call], [0, listed], [0, checkpoint], [10, count31("mc-1", 61000, 700, 55000, 5980, 400)], [0, checkpoint]])
+  const out = await run(s, { close: s.close, stepUsage: async () => (asked++, false) })
+  // Cursor's count, not the dashboard's, and not 0
+  expect(asked).toBe(0)
+  expect(out.at(-1)).toEqual({
+    stop: "tool_calls",
+    usage: {
+      prompt_tokens: 61000,
+      completion_tokens: 700,
+      total_tokens: 61700,
+      prompt_tokens_details: { cached_tokens: 55000, cache_write_tokens: 5980 },
+      completion_tokens_details: { reasoning_tokens: 400 },
+    },
+  })
+})
+
+test("a step whose count doesn't come in usageWait takes the dashboard's, as before (plugins#1615)", async () => {
+  const seen = []
+  const s = live([[0, call], [0, listed], [0, checkpoint], [300, count31("mc-1", 61000, 700, 55000, 5980, 400)]])
+  const t0 = Date.now()
+  const out = await run(s, {
+    usageWait: 40,
+    close: () => (seen.push("close"), s.close()),
+    stepUsage: async () => (seen.push("usage"), { input: 41, output: 133, cacheRead: 4224, cacheWrite: 0, reasoning: 0 }),
+  })
+  expect(Date.now() - t0).toBeLessThan(290)
+  expect(seen).toEqual(["close", "usage"])
+  expect(out.at(-1).usage).toMatchObject({ prompt_tokens: 4265, completion_tokens: 133 })
+})
+
+test("after 3 steps in a row without their count in time, only every 10th waits for it (plugins#1615)", async () => {
+  const step = async () => {
+    const s = live([[0, call], [0, listed], [0, checkpoint]])
+    const t0 = Date.now()
+    await run(s, { usageWait: 30, close: s.close, stepUsage: async () => null })
+    return Date.now() - t0 >= 25
+  }
+  const waited = []
+  for (let i = 0; i < 11; i++) waited.push(await step())
+  expect(waited).toEqual([true, true, true, false, false, false, false, false, false, false, true])
+  // a count that comes resets it
+  _internal.countMisses.n = 2
+  const s = live([[0, call], [0, listed], [5, count31("mc-1", 10, 1, 0, 0, 0)]])
+  await run(s, { usageWait: 30, close: s.close, stepUsage: async () => null })
+  expect(_internal.countMisses.n).toBe(0)
 })
