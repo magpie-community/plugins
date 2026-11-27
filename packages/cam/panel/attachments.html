@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>上下文附件 · Magpie CAM</title>
+<script src="_magpie/bridge.js"></script>
+<script src="app.js?v=9" defer></script>
+<style>
+:root{--paper:#f3f0e8;--ink:#17221d;--muted:#68736c;--line:#c9cec4;--acid:#d9f99d;--forest:#244b38;--card:#faf9f4;--danger:#9b3c31}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:"Avenir Next","PingFang SC",sans-serif}button,input{font:inherit}button{cursor:pointer}.shell{min-height:100vh;display:grid;grid-template-columns:270px 1fr}.rail{border-right:1px solid var(--line);padding:28px 18px;background:#e9e7de;display:flex;flex-direction:column;gap:24px}.brand{display:flex;align-items:center;gap:12px}.mark{width:38px;height:38px;border:1px solid var(--ink);display:grid;place-items:center;font:700 18px Georgia,serif;transform:rotate(-4deg);background:var(--acid)}h1,h2,p{margin:0}.brand h1{font:600 20px "Iowan Old Style","Palatino Linotype",serif;letter-spacing:.02em}.eyebrow{text-transform:uppercase;letter-spacing:.18em;font-size:10px;color:var(--muted);margin-bottom:5px}.rail-head{display:flex;justify-content:space-between;align-items:center}.rail h2,.section-label{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted)}.icon-btn{border:1px solid var(--line);background:transparent;width:30px;height:30px;border-radius:50%;color:var(--ink)}.sessions{display:flex;flex-direction:column;gap:7px;overflow:auto}.session{border:0;border-left:2px solid transparent;background:transparent;text-align:left;padding:11px 10px;color:var(--ink)}.session:hover{background:#f4f3ec}.session.active{background:var(--card);border-left-color:var(--forest)}.session strong{display:block;font-size:12px;font-weight:600;margin-bottom:4px}.session small{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rail-note{margin-top:auto;font:12px/1.6 "Iowan Old Style",serif;color:var(--muted);border-top:1px solid var(--line);padding-top:18px}.main{padding:38px 42px 60px;min-width:0}.top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;border-bottom:1px solid var(--ink);padding-bottom:26px}.title{font:500 clamp(30px,4vw,52px)/1.05 "Iowan Old Style","Palatino Linotype",serif;letter-spacing:-.025em}.subtitle{margin-top:12px;color:var(--muted);font-size:13px;line-height:1.6;max-width:560px}.auto-card{min-width:210px;background:var(--forest);color:#f5f7ef;padding:18px 20px;transform:rotate(1deg)}.auto-line{display:flex;align-items:center;justify-content:space-between;gap:18px;font-size:13px}.auto-card small{display:block;color:#cbd7cd;font-size:10px;margin-top:8px;line-height:1.5}.switch{appearance:none;width:40px;height:22px;background:#6f7d73;border-radius:20px;position:relative;transition:.2s;flex:none}.switch:after{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:white;transition:.2s}.switch:checked{background:var(--acid)}.switch:checked:after{transform:translateX(18px);background:var(--forest)}.stats{display:flex;gap:34px;padding:24px 0 28px}.stat b{font:500 28px Georgia,serif;display:block}.stat span{font-size:10px;color:var(--muted);letter-spacing:.1em}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px}.card{background:var(--card);border:1px solid var(--line);position:relative;transition:transform .18s,box-shadow .18s}.card:hover{transform:translateY(-3px);box-shadow:5px 6px 0 #d8d9cf}.thumb{aspect-ratio:4/3;background:#e2e3dc;display:grid;place-items:center;overflow:hidden;color:#879087;font:12px Georgia,serif}.thumb img{width:100%;height:100%;object-fit:cover;display:block}.card-body{padding:14px}.id{font:600 18px Georgia,serif}.meta{font-size:10px;color:var(--muted);margin:5px 0 14px;line-height:1.5}.pin{width:100%;border:1px solid var(--ink);background:transparent;color:var(--ink);padding:8px 10px;font-size:11px}.pin[aria-pressed=true]{background:var(--acid)}.pin:disabled,.switch:disabled{opacity:.5;cursor:wait}.empty{border:1px dashed #aab1a7;padding:52px 24px;text-align:center;color:var(--muted);grid-column:1/-1}.empty strong{display:block;font:400 27px "Iowan Old Style",serif;color:var(--ink);margin-bottom:10px}.toast{position:fixed;right:24px;bottom:24px;background:var(--ink);color:var(--paper);padding:13px 18px;font-size:12px;max-width:380px;opacity:0;transform:translateY(10px);pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:none}.toast.error{background:var(--danger)}@media(max-width:800px){.shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid var(--line);max-height:240px}.rail-note{display:none}.main{padding:26px 20px}.top{flex-direction:column}.auto-card{width:100%;transform:none}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.section-nav{display:flex;gap:8px;margin-bottom:22px}.section-nav button,.settings button{border:1px solid var(--line);border-radius:9px;padding:8px 14px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}.section-nav button[aria-pressed=true],.settings button[type=submit]{background:var(--forest);color:#fff}.settings{max-width:680px}.settings h2{margin-top:0}.settings fieldset{border:1px solid var(--line);border-radius:12px;margin:18px 0;padding:14px}.setting-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 0}.setting-row input[type=number],.setting-row select{max-width:52%;padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}.settings p{color:var(--muted);line-height:1.6}.settings button:disabled{opacity:.55;cursor:default}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><div class="mark">C</div><div><div class="eyebrow">Magpie plugin</div><h1>上下文附件</h1></div></div>
+    <nav class="section-nav" aria-label="上下文附件导航"><button id="show-attachments" aria-controls="attachments" aria-pressed="true">会话</button><button id="show-settings" aria-controls="settings" aria-pressed="false">设置</button></nav>
+    <div class="rail-head"><h2>最近会话</h2><button class="icon-btn" id="refresh" title="刷新" aria-label="刷新">↻</button></div>
+    <div class="sessions" id="sessions"></div>
+    <p class="rail-note">让旧图退出上下文，<br>需要时再把它找回来。</p>
+  </aside>
+  <main class="main">
+    <div id="attachments">
+    <section class="top">
+      <div><div class="eyebrow">Context, curated</div><h2 class="title">留下判断，<br>卸下重复的画面。</h2><p class="subtitle">旧轮附件自动替换为占位符。需要原图时，模型可按编号取回；固定的图片则始终随请求发送。</p></div>
+      <div class="auto-card"><div class="auto-line"><strong>自动管理</strong><input class="switch" id="auto" type="checkbox" aria-label="自动管理附件" aria-describedby="auto-help"></div><small id="auto-help">关闭后保留历史原图。新附件仍会被索引。</small></div>
+    </section>
+    <section class="stats"><div class="stat"><b id="count">—</b><span>已索引附件</span></div><div class="stat"><b id="pinned">—</b><span>固定发送</span></div><div class="stat"><b id="session-name">—</b><span>当前平台</span></div></section>
+    <section aria-label="最近三次请求"><h3>最近三次请求</h3><p id="request-status" style="white-space:pre-line">暂无处理记录</p></section>
+    <div class="section-label" style="margin-bottom:14px">附件胶片</div>
+    <section class="grid" id="grid"><div class="empty"><strong>正在读取</strong>查找 Magpie 已见到的附件…</div></section>
+    </div>
+    <section class="settings" id="settings" hidden>
+      <h2>附件管理设置</h2>
+      <p>勾选允许自动省略旧图的客户端。取图工具仍需在 Magpie → Library → MCP 中分配。</p>
+      <form id="settings-form">
+        <fieldset id="settings-fields" disabled>
+          <legend>自动省略旧图</legend>
+          <label class="setting-row">Codex <input type="checkbox" data-agent="codex"></label>
+          <label class="setting-row">Claude Code <input type="checkbox" data-agent="claude"></label>
+          <label class="setting-row">Claude Desktop <input type="checkbox" data-agent="claude-desktop"></label>
+          <label class="setting-row">Codex 延迟取图模式 <select id="settings-codex-mode" aria-describedby="codex-mode-help"><option value="savings">优先节省（默认）</option><option value="compatible">兼容</option></select></label>
+          <p id="codex-mode-help">优先节省会直接省略符合条件的旧图，取图仍可能需要审批。兼容模式会保留原图，直到当前会话有可验证的取图结果。</p>
+          <label class="setting-row">模型提示语言 <select id="settings-language"><option value="zh">简体中文</option><option value="en">English</option></select></label>
+          <label class="setting-row">单次取图张数 <input id="settings-image-limit" type="number" min="1" max="8" step="1" required></label>
+          <label class="setting-row">单次取图大小（Base64 字符） <input id="settings-size-limit" type="number" min="1024" max="33554432" step="1" required></label>
+          <button type="submit">保存设置</button>
+        </fieldset>
+      </form>
+      <p id="settings-status" role="status"></p>
+      <h3>本地存储用量</h3>
+      <p id="storage-usage">暂无用量记录</p>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+</body>
+</html>
