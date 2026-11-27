@@ -552,6 +552,11 @@ const field = (fs, n) => fs.find((f) => f.num === n)
 const str = (fs, n) => field(fs, n)?.data.toString("utf8") ?? ""
 const num = (fs, n) => field(fs, n)?.n ?? 0
 
+// Non-oneof metadata on agent.v1.ExecServerMessage (2026.11.17): id (1),
+// exec_id (15), span_context (19), accept_hook_additional_contexts (55),
+// machine_id (57), record_agent_view (58), refuse_unread_changes (59).
+export const EXEC_META = new Set([1, 15, 19, 55, 57, 58, 59])
+
 // StepCalls is what Cursor says of a step's calls besides its execs
 // (plugins#550). InteractionUpdate 2 (tool_call_started), 3
 // (tool_call_completed) and 7 (partial_tool_call) each carry the call's
@@ -595,12 +600,14 @@ export class StepCalls {
     this.listedAfter = false
     try {
       for (const e of this.parse(data)) {
-        if (e.wire !== 2 || e.num === 15 || e.num === 19) continue
-        for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) {
-          const s = a.data.toString("utf8")
-          this.execs.add(s)
-          this.byCursor.delete(s)
-        }
+        if (e.wire !== 2 || EXEC_META.has(e.num)) continue
+        try {
+          for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) {
+            const s = a.data.toString("utf8")
+            this.execs.add(s)
+            this.byCursor.delete(s)
+          }
+        } catch {}
       }
     } catch {}
   }

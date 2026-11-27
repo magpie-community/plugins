@@ -251,3 +251,39 @@ test("an empty reply says what the Run sent before it", async () => {
   const [l] = await run({ end: true, data: Buffer.from(JSON.stringify({ metadata: "z".repeat(1000) })) })
   expect(l.error.message.length).toBeLessThan(420)
 })
+
+test("an empty reply ignores ExecServerMessage metadata (#57-#59) when naming refused tools", async () => {
+  const sent = []
+  const frames = [
+    {
+      data: pb()
+        .bytes(
+          2,
+          pb()
+            .varint(1, 1)
+            .str(15, "e1")
+            .str(57, "machine-1")
+            .varint(58, 1)
+            .varint(59, 1)
+            .bytes(60, pb().done())
+            .done(),
+        )
+        .done(),
+    },
+    { data: pb().bytes(2, pb().varint(1, 2).str(15, "e2").varint(58, 1).bytes(2, pb().done()).done()).done() },
+    { data: pb().bytes(2, pb().varint(1, 3).str(15, "e3").varint(59, 1).bytes(3, pb().done()).done()).done() },
+    { data: pb().bytes(1, pb().bytes(14, pb().done())).done() },
+  ]
+  const out = []
+  for await (const p of _internal.decode(frames, { send: (m) => sent.push(m), blobs: new Map(), tools: [], estimate: 1 })) out.push(p)
+  expect(out).toEqual([
+    {
+      error: {
+        status: 502,
+        message:
+          "an empty reply (Cursor ended the turn; with no thinking, no text and no tool call; Cursor counted 0 output tokens; Cursor's own tools asked for and refused: #60, #2, #3; try again)",
+      },
+    },
+  ])
+  expect(sent.length).toBe(6)
+})
