@@ -48,6 +48,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
+| [qoder](packages/qoder) | Qoder CN Teams (qoder.com.cn), with Qoder CN's device sign-in and the organization kept on the account | `qoder-team` |
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
 | [river](packages/river) | River (river.ai) pay-as-you-go inference, with your API key: per-account models, documented reasoning efforts and live prices | `river` |
 | [sap-aicore](packages/sap-aicore) | SAP AI Core deployments for account-scoped GPT Responses and Claude Messages models | `sap-aicore` |
