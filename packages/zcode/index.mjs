@@ -17,7 +17,9 @@
 // plan, device id), `accountId` the account's email.
 
 import { createDecipheriv, createHash } from "node:crypto"
+import { execFileSync, execSync } from "node:child_process"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { createRequire } from "node:module"
 import { arch, homedir, release, userInfo } from "node:os"
 import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
@@ -263,13 +265,20 @@ async function plansOf(s) {
     // Plan's 405 until the route was read again (#369)
     if (start) sure = !(s.key && r && !r.start)
   } catch {
-    // the plan list could not be read: a key account takes the dual route
-    // (start stays false, the gift is kept, a minute's ttl), so a gift
-    // refusal still replays to the coding plan rather than blacking out
-    try {
-      gift = await startPlan(s.jwt, s.device)
-      sure = false
-    } catch {}
+    // the plan list could not be read. An account the last read found with
+    // no coding plan stays on the Start Plan for the minute: the dual route
+    // would send its key to the coding plan's host, which bills a key with
+    // no plan pay-as-you-go while the free quota sits unspent (bg5eau on
+    // X). Any other key account takes the dual route (start stays false,
+    // the gift is kept, a minute's ttl), so a gift refusal still replays to
+    // the coding plan rather than blacking out
+    if (r?.start) start = true
+    else {
+      try {
+        gift = await startPlan(s.jwt, s.device)
+      } catch {}
+    }
+    sure = false
   }
   const out = { start, gift, at: Date.now(), ttl: Math.min(sure ? 600_000 : 60_000, gift?.ttl ?? 600_000) }
   routes.set(id, out)
@@ -715,6 +724,48 @@ async function claimHint(s) {
   return { name: CLAIM_HINT, used: 0, aside: true, display: `${n} · ${plan}` }
 }
 
+// unclaimed names the gift plans ZCode holds for the account but has not
+// put on it (toClaim), for a -Trial pick that finds no gift: the weekend
+// plan (ZCODE WEEKEND BUILD) comes only by a claim, and the claim needs
+// the ZCode app's captcha (claimDaily posts none), so until it is
+// claimed in the app the pick's quota does not exist yet (heduian and
+// bg5eau on X, 11-14). The refusal says where the quota is rather than
+// only that there is none. Kept ten minutes per session, so an agent
+// retrying the pick doesn't read the feed each time; a read that fails
+// names none and is not kept.
+// aloneSeen is a gift-only account's balance as last read (the model list
+// reads it), kept ten minutes. A request reads no balance on its own: only
+// a model the kept balance doesn't name has it read again (aloneGift), so
+// a gift claimed since is not refused. A read that fails is not kept.
+const aloneSeen = new Map()
+const aloneNames = (s) => {
+  const c = aloneSeen.get(s.jwt)
+  return c && Date.now() - c.at < 600_000 ? giftNames(c.gift) : []
+}
+async function aloneGift(s) {
+  let gift
+  try {
+    gift = await startPlan(s.jwt, s.device)
+  } catch {
+    return null
+  }
+  aloneSeen.set(s.jwt, { at: Date.now(), gift })
+  return gift
+}
+
+const unclaimedSeen = new Map()
+async function unclaimed(s) {
+  if (!s.jwt || jwtExpired(s.jwt)) return []
+  const k = s.jwt
+  const c = unclaimedSeen.get(k)
+  if (c && Date.now() - c.at < 600_000) return c.names
+  const got = await toClaim(s).catch(() => null)
+  if (!got || got.unread.length) return []
+  const names = uniqueModels(got.plans.map((p) => first(p.name, p.plan_id)).filter(Boolean))
+  unclaimedSeen.set(k, { at: Date.now(), names })
+  return names
+}
+
 // ---- the daily claim ---------------------------------------------------------------
 
 // CLAIMED_ALREADY is /billing/claim's body code for a plan the account
@@ -931,24 +982,48 @@ async function toClaim(s) {
   return { plans, unread, rate: null }
 }
 
-// RECHECK is how long an "nothing to claim" stands before magpie's loop
-// asks again: ZCode drops gift plans into the feed during the day (a
-// weekend banner, say) on its own schedule, and the day's ask
-// may have run hours before, so an inactive settled for the day lets a
-// plan sit unclaimed past its short life (the weekend plan of
-// testdata/touch-1030-wk.json starts 19:00 Beijing). `until` wakes the
-// loop again in half an hour, and it asks again all day while neither
-// list names a plan — two GETs and no claim posted. The other settled
-// answers stand for the day: a claimed plan leaves the feed, so asking
-// a claimed account again half an hour later finds nothing and flips
-// its card from "Checked in today" to "No check-in event now"; a
-// captcha plan re-asked makes ZCode demand its captcha again each time,
-// and a done plan re-asked posts a claim it already answered 1003. The
-// same shape as Qoder's campaign that opens mid-day, asked again on
-// magpie's side there (yetone/magpie#2696). A failed needs no until:
-// magpie asks a failed again after 30 minutes of its own.
+// RECHECK is how long an answer that leaves the day open stands before
+// magpie's loop asks again: ZCode drops gift plans into the feed during
+// the day on its own schedule (the weekend plan of
+// testdata/touch-1030-wk.json starts 19:00 Beijing; @aaron0x10 on X,
+// 11-22: a second one follows at 19:30), and the day's ask may have run
+// hours before, so an answer settled for the day lets a plan sit
+// unclaimed past its short life. `until` wakes the loop again in half an
+// hour, and it asks again all day — one GET each time. That holds after a
+// claim too (claimed, done): the recheck posts only plans this account
+// has no answer for today (dayAnswers), so a plan claimed, answered 1003
+// or held for the captcha is never posted again, and one that has left
+// the feed is still the day's claim — answered done, so the card keeps
+// "Checked in today" instead of flipping to "No check-in event now". A
+// captcha needs no until: magpie leaves it for the day, as it waits on
+// the user. A failed needs none either: magpie asks a failed again after
+// 30 minutes of its own. The same shape as Qoder's campaign that opens
+// mid-day, asked again on magpie's side there (yetone/magpie#2696).
 const RECHECK_MS = 30 * 60_000
 const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
+
+// dayAnswers is what each account's plans answered today (Beijing):
+// holdKey -> { day, plans: Map(plan_id -> { name, outcome }) }, for the
+// answers that settle a plan for the day — claimed, done (1003) and
+// captcha (3007). A recheck posts only plans not in it, so none of those
+// is asked again; an ineligible or failed one is not kept, and is asked
+// again. It lives in this process's memory: a magpie restart forgets it,
+// and the next check-in posts a plan still in the feed once more (1003,
+// done, as before).
+const dayAnswers = new Map()
+const SETTLES = new Set(["claimed", "done", "captcha"])
+const uniq = (xs) => [...new Set(xs)]
+const beijingDay = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+function answersToday(s) {
+  const k = holdKey(s), day = beijingDay()
+  let a = dayAnswers.get(k)
+  if (!a || a.day !== day) dayAnswers.set(k, (a = { day, plans: new Map() }))
+  return a.plans
+}
+// resetDayAnswers is for tests: it forgets every account's answers today.
+export function resetDayAnswers() {
+  dayAnswers.clear()
+}
 
 // claimDaily claims every gift plan ZCode offers the account (#503:
 // toClaim, the app's banners and its preview), as auth.checkin's answer:
@@ -967,9 +1042,10 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // v0.1.3165 honors a failed's `until` itself; older versions wait for
 // this hold, which is why it stays.
 // A failed one is asked again later in the
-// day, when a plan claimed now answers 1003. An inactive stands only
-// until RECHECK_MS from now, so a plan dropped into the feed later in
-// the day is still claimed; the other settled answers stand for the day
+// day. An inactive, ineligible, claimed or done stands only until
+// RECHECK_MS from now, so a plan dropped into the feed later in the day
+// is still claimed; a plan answered today (dayAnswers) is not posted
+// again, and after the day's claim an ask that finds nothing new is done
 // (see RECHECK).
 // Nothing here marks the account: a failed claim keeps its sign-in.
 async function claimDaily(s) {
@@ -986,14 +1062,23 @@ async function claimDaily(s) {
     const message = unread.join("; ") || "ZCode rate limited this account"
     return { outcome: "failed", message, until: noteRateLimit(holdKey(s), rate, message) }
   }
+  // the plans this account answered for already today: never posted again
+  const today = answersToday(s)
+  const checkedToday = () => [...today.values()].filter((a) => a.outcome === "claimed" || a.outcome === "done").map((a) => a.name)
+  const fresh = plans.filter((p) => !today.has(p.plan_id))
   // the feed answered and no claim is read: the wait is over. It is not
   // forgotten before the claims below, so a claim ZCode keeps limiting
   // waits longer each time (see noteRateLimit)
-  if (!plans.length) {
+  if (!fresh.length) {
     rateWait.delete(holdKey(s))
-    return unread.length
-      ? { outcome: "failed", message: unread.join("; ") }
-      : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+    if (unread.length) return { outcome: "failed", message: unread.join("; ") }
+    // nothing new since the day's claim: still checked in today, and
+    // looked at again half an hour out (see RECHECK)
+    const had = checkedToday()
+    if (had.length) return { outcome: "done", message: `already claimed: ${uniq(had).join(", ")}`, until: recheck() }
+    // only plans held for the captcha, still listed: named again, not posted
+    if (plans.length) return { outcome: "captcha", message: plans.map((p) => `${p.name}: claim it in the ZCode app (${today.get(p.plan_id).why})`).join("; ") }
+    return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   }
   // a claim ZCode guards with its security check is not posted: the app
   // passes it before each claim and sends the proof in a header, which
@@ -1010,11 +1095,15 @@ async function claimDaily(s) {
   }
   if (guarded !== false) {
     rateWait.delete(holdKey(s))
-    if (guarded === null) return { outcome: "failed", message: [...plans.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
-    return { outcome: "captcha", message: plans.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
+    if (guarded === null) return { outcome: "failed", message: [...fresh.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
+    return { outcome: "captcha", message: fresh.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
   }
   const got = []
-  for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
+  for (const p of fresh) {
+    const g = { name: p.name, ...(await claimOne(s, p.plan_id)) }
+    if (SETTLES.has(g.outcome)) today.set(p.plan_id, { name: p.name, outcome: g.outcome, why: g.why })
+    got.push(g)
+  }
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
   const claimed = named("claimed")
   const said = [
@@ -1033,12 +1122,16 @@ async function claimDaily(s) {
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
-  if (claimed.length) return { outcome: "claimed", message: said }
+  // claimed and done keep looking for the day's later plans (see RECHECK)
+  if (claimed.length) return { outcome: "claimed", message: said, until: recheck() }
+  const had = checkedToday()
+  const notOffered = got.filter((g) => g.outcome === "ineligible").map((g) => `${g.name}: ${g.why}`)
   // a plan not offered now can be offered later in the day (11-04: an
   // account's GLOBAL BUILD banner showed 28 minutes after it signed in),
-  // so an ineligible is read again half an hour out, as an inactive is
-  if (got.some((g) => g.outcome === "ineligible")) return { outcome: "ineligible", message: said, until: recheck() }
-  return { outcome: "done", message: `already claimed: ${named("done").join(", ")}` }
+  // so an ineligible is read again half an hour out, as an inactive is;
+  // after the day's claim the card stays checked in
+  if (!had.length) return { outcome: "ineligible", message: said, until: recheck() }
+  return { outcome: "done", message: [`already claimed: ${uniq(had).join(", ")}`, ...notOffered].join("; "), until: recheck() }
 }
 
 // GIFT_SIGN_IN is the card's line for an account whose gift plans can't
@@ -1050,7 +1143,11 @@ async function claimDaily(s) {
 // translate it; why goes in the display. Set aside: it stops nothing.
 const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
 function giftSignIn(s, key) {
-  if (!s.jwt) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: key ? "not read with an API key: add the account with a ZCode sign-in" : "this sign-in has no ZCode session: sign in again" }
+  if (!s.jwt) {
+    if (key) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+    if (s.source === "zcode" && ownStoreUnreadable()) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: UNREADABLE_SIGN_IN }
+    return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
+  }
   if (jwtExpired(s.jwt)) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "ZCode's sign-in has expired: sign in again" }
   return null
 }
@@ -1251,6 +1348,7 @@ async function personalResets(root, key) {
 // hours and of the week, of which only those still available count (one
 // run out stays listed a week, available false), each with its own end
 // (each, soonest first, one with no end last) and the soonest as until.
+// One whose end has passed is not counted, whatever its flag says.
 // null when the list can't be read, so no count is shown rather than 0,
 // and when it holds none.
 async function resetsOf(url, auth, headers) {
@@ -1266,8 +1364,11 @@ async function resetsOf(url, auth, headers) {
     let n = 0
     for (const x of Array.isArray(rs) ? rs : []) {
       if (x?.available !== true) continue
-      n++
       const t = when(x.expireTime)
+      // a reset past its end is no reset: the list can still flag it
+      // available, and the vendor's page puts it among the expired
+      if (t && t <= Date.now()) continue
+      n++
       if (t && (!until || t < until)) until = t
       each.push(t ? { until: new Date(t).toISOString(), window } : { window })
     }
@@ -1429,11 +1530,17 @@ async function signedIn(site, token, jwt, device, onTeam = false) {
 
 // TEAM marks a team seat's account name beside the account's own.
 const TEAM = "team"
-const who = (u) => first(String(u?.email ?? "").replace(/@phone\.local$/, ""), u?.name, u?.user_id, "ZCode")
+// who names the account: email first, then the names the sites give; 3.18's
+// own user_info keeps id/username/displayName alone (patched).
+const who = (u) =>
+  first(String(u?.email ?? "").replace(/@phone\.local$/, ""), u?.name, u?.user_id, u?.displayName, u?.username, u?.id, "ZCode")
 // uidOf is the account's user id, kept beside its name: magpie tells two
 // accounts of one name apart by it, a name being no one's own (wakkana on
-// Discord, WorkBuddy's)
-const uidOf = (u) => (u?.user_id === undefined || u?.user_id === null ? "" : String(u.user_id).trim())
+// Discord, WorkBuddy's); 3.18's own user_info names it id (patched).
+const uidOf = (u) => {
+  const id = u?.user_id ?? u?.id
+  return id === undefined || id === null ? "" : String(id).trim()
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // authorize opens ZCode's sign-in flow on site; its callback polls it.
@@ -1475,6 +1582,7 @@ async function authorize(site, log, onTeam = false) {
           continue // a hiccup: ask again
         }
         const token = site === "bigmodel" ? first(got.bigmodel?.access_token, got.bigmodel?.accessToken) : first(got.zai?.access_token)
+        if (got.status === "ready" && !token) return fail(`${SITES[site].name} sign-in: the poll answered ready without an OAuth access token; sign in again`)
         if (got.status === "pending" || !got.status) continue
         if (got.status === "failed") return fail(`the sign-in was declined on ${SITES[site].name}`)
         if (got.status !== "ready" || !token) return fail("ZCode sign-in: unexpected answer " + got.status)
@@ -1501,11 +1609,13 @@ async function authorize(site, log, onTeam = false) {
 
 // ---- ZCode's own sign-in ------------------------------------------------------------
 // ZCode keeps its sign-in in ~/.zcode/v2/credentials.json, each value
-// encrypted (AES-256-GCM, "enc:v1:<iv>.<tag>.<data>") with a key made from
-// the machine's user; ~/.zcode/v2/setting.json says whether it is on a
-// team's plan. An account signed in "as ZCode" reads them for every
-// request, so it follows ZCode's own sign-in, its renewed session and its
-// switches between plans, as magpie's built-in did (zcode.go zcodeOwn).
+// encrypted AES-256-GCM: through 3.17 as "enc:v1:<iv>.<tag>.<data>" with a
+// key made from the machine's user, from 3.18 as "enc:v2:…" with a key
+// kept in the system's own credential store (how, below); ~/.zcode/v2/
+// setting.json says whether it is on a team's plan. An account signed in
+// "as ZCode" reads them for every request, so it follows ZCode's own
+// sign-in, its renewed session and its switches between plans, as
+// magpie's built-in did (zcode.go zcodeOwn).
 //
 // ZCode 3.14 can move its data (数据存储路径, "data storage path"): it copies
 // ~/.zcode/v2 to <folder>/.zcode/v2, all but setting.json, and from its next
@@ -1543,8 +1653,278 @@ function secret() {
   return createHash("sha256").update(seed).digest()
 }
 
+// ---- enc:v2 (ZCode 3.18+, #1196) ----------------------------------------------------
+// ZCode 3.18 writes credentials.json's values as
+// "enc:v2:os:<24 hex>:<iv>.<tag>.<data>": the same AES-256-GCM payload as
+// enc:v1, but the key no longer comes from a machine-user seed. It is a
+// 43-char base64url string (32 bytes) kept in the system's own credential
+// store, put there by ZCode itself — beside the file sits a
+// ~/.zcode/v2/credential-source holding "os" — and the 24 hex are
+// sha256(key)'s first half, so the right key is told without opening the
+// store. The entry's service is "ZCode Credential Encryption" (the same
+// name on every platform, read the same way by ZCode's own VS Code
+// extension); on Windows its account is sha256 of the absolute path of
+// the credentials.json it wrote and the entry is a Credential Manager
+// generic credential whose blob is the password as UTF-16LE, on a Mac it
+// sits in the login Keychain, on a Linux desktop in the Secret Service.
+// A value of the form enc:v2:env: takes its key from the
+// ZCODE_CREDENTIAL_SECRET variable, or from a file
+// (ZCODE_CREDENTIAL_SECRET_FILE, or ~/.zcode/v2/credential-secret),
+// sha256'd, as ZCode's own reader takes it.
+
+const KEYRING_SERVICE = "ZCode Credential Encryption"
+const V2 = /^enc:v2:(os|env):([a-f0-9]{24}):([A-Za-z0-9_.-]+)$/
+const KEYRING_PASSWORD = /^[A-Za-z0-9_-]{43}$/
+
+// credAccounts are the keyring entry's candidate accounts: ZCode keys the
+// entry by the credentials.json it reads, the home folder's first, a moved
+// data folder's (dataBaseDir) second.
+function credAccounts() {
+  const accounts = [createHash("sha256").update(join(settingDir(), "credentials.json")).digest("hex")]
+  const moved = createHash("sha256").update(join(zcodeDir(), "credentials.json")).digest("hex")
+  if (moved !== accounts[0]) accounts.push(moved)
+  return accounts
+}
+
+// napiEntries holds the Entry classes of the @napi-rs/keyring modules
+// bundled with the ZCode desktop installs on this machine, the binaries
+// ZCode itself reads the entry with; null when there are none. The roots
+// are the installs' usual places, named as each platform unpacks an
+// Electron app's resources (a Mac's ZCode.app/Contents/Resources, the
+// resources folder elsewhere); the module needs no store of its own
+// beyond the platform's.
+let napiEntries
+function napiEntriesOf() {
+  if (napiEntries !== undefined) return napiEntries
+  napiEntries = []
+  const want = `keyring-${process.platform}-${process.arch}`
+  const roots =
+    process.platform === "darwin"
+      ? [join("/Applications", "ZCode.app", "Contents", "Resources"), join(homedir(), "Applications", "ZCode.app", "Contents", "Resources")]
+      : process.platform === "win32"
+        ? [join(process.env.LOCALAPPDATA ?? "", "Programs", "ZCode", "resources")]
+        : [join("/opt", "ZCode", "resources"), join("/usr", "lib", "zcode", "resources"), join(homedir(), ".local", "share", "ZCode", "resources")]
+  for (const root of roots) {
+    const napi = join(root, "app.asar.unpacked", "node_modules", "@napi-rs")
+    let names
+    try {
+      names = readdirSync(napi)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (name !== want && !name.startsWith(want + "-")) continue
+      let file
+      try {
+        file = readdirSync(join(napi, name)).find((f) => /^keyring\..+\.node$/.test(f))
+      } catch {
+        continue
+      }
+      if (!file) continue
+      try {
+        const Entry = createRequire(import.meta.url)(join(napi, name, file)).Entry
+        if (Entry) napiEntries.push(Entry)
+      } catch {}
+    }
+  }
+  if (!napiEntries.length) napiEntries = null
+  return napiEntries
+}
+
+// napiKeyring reads the entry through a bundled keyring module; "" when it
+// can't. linux's store matches ZCode's own choice.
+function napiKeyring(account) {
+  for (const Entry of napiEntriesOf() ?? []) {
+    try {
+      const p = new Entry(KEYRING_SERVICE, account, { linux: { store: "secret-service" } }).getPassword()
+      if (typeof p === "string" && KEYRING_PASSWORD.test(p)) return p
+    } catch {}
+  }
+  return ""
+}
+
+// WIN_CRED_PS reads a Windows Credential Manager entry through PowerShell's
+// CredReadW, for a machine with no ZCode desktop install to take a keyring
+// module from. The Rust keyring crate ZCode bundles keeps the entry as a
+// generic credential named "<account>.<service>" whose blob is the password
+// as UTF-16LE; the script prints the blob as base64. -EncodedCommand keeps
+// the P/Invoke source out of the shell's quoting.
+const WIN_CRED_PS = [
+  "$ErrorActionPreference = 'Stop'",
+  "$t = '__TARGET__'",
+  "$sig = @'",
+  "using System;",
+  "using System.Runtime.InteropServices;",
+  "public class CredHelper {",
+  "  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]",
+  "  public struct CREDENTIAL {",
+  "    public int Flags; public int Type; public string TargetName; public string Comment;",
+  "    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;",
+  "    public int CredentialBlobSize; public IntPtr CredentialBlob; public int Persist;",
+  "    public int AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;",
+  "  }",
+  "  [DllImport(\"advapi32.dll\", CharSet=CharSet.Unicode, SetLastError=true)]",
+  "  public static extern bool CredReadW(string target, int type, int flags, out IntPtr credPtr);",
+  "  [DllImport(\"advapi32.dll\")]",
+  "  public static extern void CredFree(IntPtr cred);",
+  "  public static string Read(string target) {",
+  "    IntPtr ptr;",
+  "    if (!CredReadW(target, 1, 0, out ptr)) return \"ERR:\" + Marshal.GetLastWin32Error();",
+  "    try {",
+  "      var c = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));",
+  "      if (c.CredentialBlobSize <= 0) return \"EMPTY\";",
+  "      var bytes = new byte[c.CredentialBlobSize];",
+  "      Marshal.Copy(c.CredentialBlob, bytes, 0, bytes.Length);",
+  "      return Convert.ToBase64String(bytes);",
+  "    } finally { CredFree(ptr); }",
+  "  }",
+  "}",
+  "'@",
+  "Add-Type -TypeDefinition $sig -Language CSharp",
+  "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+  "[CredHelper]::Read($t)",
+].join("\n")
+
+// winCredKey reads the entry's password from Windows Credential Manager;
+// "" when it can't. Failures rest a while, so a request without the store
+// doesn't spawn a shell each time.
+const winCredTried = new Map()
+function winCredKey(target) {
+  const was = winCredTried.get(target)
+  if (was && (was.password || Date.now() - was.at < 300_000)) return was.password
+  let password = ""
+  try {
+    const script = WIN_CRED_PS.replace("__TARGET__", target.replace(/'/g, "''"))
+    const out = execSync(`powershell -NoProfile -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`, {
+      encoding: "utf8",
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim()
+    const blob = Buffer.from(out, "base64")
+    for (const enc of ["utf16le", "utf8"]) {
+      const p = blob.toString(enc).replace(/\0+$/, "")
+      if (KEYRING_PASSWORD.test(p)) {
+        password = p
+        break
+      }
+    }
+  } catch {}
+  winCredTried.set(target, { at: Date.now(), password })
+  return password
+}
+
+// cliKey runs a store's own CLI reader and takes the password it prints,
+// when it is a key's shape; "" when it isn't, or the reader said nothing.
+// A Mac's `security` may ask once for the entry's keychain ACL — ZCode
+// holds it — which the user allows and is not asked again.
+function cliKey(cmd) {
+  try {
+    const out = execFileSync(cmd[0], cmd.slice(1), {
+      encoding: "utf8",
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    })
+    const p = String(out ?? "").trim()
+    return KEYRING_PASSWORD.test(p) ? p : ""
+  } catch {
+    return ""
+  }
+}
+
+// storeKey reads the entry's password from the platform's own store:
+// through a ZCode install's keyring module first — the read ZCode itself
+// makes — else Windows' Credential Manager (CredReadW), a Mac's Keychain
+// (find-generic-password, by service alone: ZCode's own item keeps no
+// account), a Linux desktop's Secret Service (secret-tool, by the
+// attributes ZCode's keyring writes; alone by service as a fallback).
+// "" when the store, or a reader for it, isn't there.
+function storeKey(account) {
+  const napi = napiKeyring(account)
+  if (napi) return napi
+  if (process.platform === "win32") return winCredKey(`${account}.${KEYRING_SERVICE}`)
+  if (process.platform === "darwin") return cliKey(["security", "-q", "find-generic-password", "-s", KEYRING_SERVICE, "-w"])
+  if (process.platform === "linux")
+    return cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE, "username", account]) || cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE])
+  return ""
+}
+
+// osKey is the credential store's key whose hash the envelope names, or
+// null without one. Each envelope hash rests five minutes after a miss, so
+// a moved data folder with its own entry is still checked.
+const osKeyState = new Map()
+function osKey(hash) {
+  const was = osKeyState.get(hash)
+  if (was && (was.key || Date.now() - was.at < 300_000)) return was.key
+  let key = null
+  for (const account of credAccounts()) {
+    const p = storeKey(account)
+    if (!p) continue
+    const candidate = Buffer.from(p, "base64url")
+    if (createHash("sha256").update(candidate).digest("hex").slice(0, 24) !== hash) continue
+    key = candidate
+    break
+  }
+  osKeyState.set(hash, { at: Date.now(), key })
+  return key
+}
+
+// envKey is the enc:v2:env key, sha256 of the secret ZCode's own reader
+// would take; null without one.
+let envKeyCache
+function envKey() {
+  if (envKeyCache !== undefined) return envKeyCache
+  envKeyCache = null
+  const v = process.env.ZCODE_CREDENTIAL_SECRET
+  const f = process.env.ZCODE_CREDENTIAL_SECRET_FILE
+  if (v && f) throw new Error("ZCode credential secret: both a variable and a file name it; keep one")
+  if (v) {
+    envKeyCache = createHash("sha256").update(v).digest()
+    return envKeyCache
+  }
+  let d
+  try {
+    d = readFileSync(f || join(settingDir(), "credential-secret"), "utf8")
+  } catch {
+    return envKeyCache
+  }
+  const len = Buffer.byteLength(d)
+  if (len >= 32 && len <= 4096) envKeyCache = createHash("sha256").update(d).digest()
+  return envKeyCache
+}
+
+// decryptV2 opens an enc:v2 value, as ZCode's own reader does: the key by
+// the source the envelope names, checked against the envelope's hash
+// before the payload's AES-256-GCM is opened. null when it can't.
+function decryptV2(v) {
+  const m = V2.exec(v)
+  if (!m) return null
+  const [, source, hash, payload] = m
+  let key
+  try {
+    key = source === "os" ? osKey(hash) : envKey()
+  } catch {
+    return null
+  }
+  if (!key || key.length !== 32) return null
+  if (createHash("sha256").update(key).digest("hex").slice(0, 24) !== hash) return null
+  const parts = payload.split(".")
+  if (parts.length !== 3) return null
+  try {
+    const [iv, tag, data] = parts.map((p) => Buffer.from(p.replace(/=+$/, ""), "base64url"))
+    const d = createDecipheriv("aes-256-gcm", key, iv)
+    d.setAuthTag(tag)
+    return Buffer.concat([d.update(data), d.final()]).toString("utf8")
+  } catch {
+    return null
+  }
+}
+
 function decrypt(key, v) {
-  if (typeof v !== "string" || !v.startsWith("enc:v1:")) return null
+  if (typeof v !== "string") return null
+  if (v.startsWith("enc:v2:")) return decryptV2(v)
+  if (!v.startsWith("enc:v1:")) return null
   const parts = v.slice(7).split(".")
   if (parts.length !== 3) return null
   try {
@@ -1554,6 +1934,41 @@ function decrypt(key, v) {
     return Buffer.concat([d.update(data), d.final()]).toString("utf8")
   } catch {
     return null
+  }
+}
+
+// UNREADABLE_SIGN_IN says why a sign-in "as ZCode" has no session to
+// read: ZCode 3.18 writes credentials.json's values as "enc:v2:os:…",
+// bound to the system's own key store, and that store — nor
+// ZCODE_CREDENTIAL_SECRET — gave the key (#1196). With one, they read.
+const UNREADABLE_SIGN_IN = "ZCode 3.18 keeps its sign-in in a new form this plugin can't read yet: add the account with a Z.ai or BigModel sign-in"
+
+// ownStoreUnreadable says whether ZCode's credentials.json holds values
+// in a form decrypt can't read: an enc: form it knows nothing of, or an
+// enc:v2 one whose key — the system store's or the env's — it can't get.
+function ownStoreUnreadable() {
+  const store = readJSON(join(zcodeDir(), "credentials.json"))
+  if (!store || typeof store !== "object") return false
+  let v2 = false
+  for (const v of Object.values(store)) {
+    if (typeof v !== "string" || !v.startsWith("enc:")) continue
+    if (v.startsWith("enc:v1:")) continue
+    if (V2.test(v)) {
+      v2 = true
+      continue
+    }
+    return true
+  }
+  if (!v2) return false
+  try {
+    for (const value of Object.values(store)) {
+      const match = typeof value === "string" ? V2.exec(value) : null
+      if (!match) continue
+      if (!(match[1] === "os" ? osKey(match[2]) : envKey())) return true
+    }
+    return false
+  } catch {
+    return true
   }
 }
 
@@ -1800,9 +2215,13 @@ function ownSignIn() {
   else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
   if (!s.key && !s.jwt && !isTeam(s)) return null
   let info = {}
-  for (const name of ["oauth:zai:user_info", "oauth:bigmodel:user_info"]) {
+  // The JWT belongs to the app's active sign-in. Cached profiles from
+  // another provider must not name it, and 3.18's China sign-in is zai_cn.
+  const active = decrypt(key, store["oauth:active_provider"])
+  const families = [...new Set([active, "zai", "zai_cn", "bigmodel"].filter((x) => ["zai", "zai_cn", "bigmodel"].includes(x)))]
+  for (const name of families.map((x) => `oauth:${x}:user_info`)) {
     const v = decrypt(key, store[name])
-    if (v && !first(info.email, info.name, info.user_id)) {
+    if (v && !first(info.email, info.name, info.user_id, info.displayName, info.username, info.id)) {
       try {
         info = JSON.parse(v)
       } catch {}
@@ -1819,7 +2238,7 @@ function asZCode() {
     method: "auto",
     async callback() {
       const own = ownSignIn()
-      if (!own) return { type: "failed", error: "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
+      if (!own) return { type: "failed", error: ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
       const { user, uid, ...s } = own
       const state = { source: "zcode", device: anyDevice, ...s }
       return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user, ...(uid ? { uid } : {}) }
@@ -1841,8 +2260,12 @@ function stateOf(auth) {
       // send this account's requests as that one, and an expired session
       // says sign in again (EXPIRED) rather than borrowing another's.
       const own = ownSignIn()
-      // (by user id where both have one: another account may share the name)
-      if (own && own.user === String(auth.accountId ?? "") && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
+      // (by user id where both have one: another account may share the name.
+      // An entry named by the pre-3.18 reader's fallback "ZCode", with no
+      // uid, is the app's own sign-in as it could name it then — patched to
+      // follow the app's account, the only one an entry so named can be.)
+      const legacyName = String(auth.accountId ?? "") === "ZCode" && !auth.uid
+      if (own && (own.user === String(auth.accountId ?? "") || legacyName) && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
         const { user, uid: _uid, ...now } = own
         s = { source: "zcode", device: s.device, plan: s.plan, ...now }
       }
@@ -2036,7 +2459,11 @@ function kept(res, text) {
 // this computer through this one process, so the plugin does what that
 // client does: the Start Plan gets a few requests of an account in flight at
 // once (startGate), the rest wait their turn here instead of being sent to be
-// refused, and a refusal anyway is asked again twice (BUSY_WAITS).
+// refused, and a refusal anyway is asked again twice (BUSY_WAITS). A refusal
+// of a request sent beside others of the same account lowers that account's
+// gate and waits its turn again (askBusy's requeue), as ZCode's own
+// dynamic-workflow governor cuts its cap and queues a capped subagent
+// request rather than failing it.
 //
 // The coding plan keeps no gate of the plugin's: its cap depends on its tier
 // (Z.ai serves Max more at once than Pro, and Lite fewer) and is higher
@@ -2045,13 +2472,16 @@ function kept(res, text) {
 // the number declared below (DEFAULT_CONCURRENCY, on the auth hook and in
 // package.json), which a user raises on the account.
 const DEFAULT_CONCURRENCY = 3
-// DEFAULT_ACCOUNTS is how many of a user's ZCode accounts magpie sends
-// requests to at the same time (maxAccounts, on the auth hook and in
-// package.json): the first in the user's list, the next taking over once
-// one runs out or fails. 01huadalang on Discord: three accounts used at
-// once from one address got the address refused with a 405, two didn't. A
-// user sets their own on the provider (Accounts at once), 0 for no limit.
-const DEFAULT_ACCOUNTS = 2
+// No maxAccounts is declared: magpie sends requests to every ZCode account
+// of the user's, and a user still sets their own on the provider (Accounts
+// at once). 0.1.40 to 0.1.67 declared two, after 01huadalang's address was
+// refused with a 405 while three accounts took requests at once (Discord),
+// and the others sat in reserve until one ran out: a user with five gift
+// accounts saw two used (mathfournity on X). What the edge firewall counts
+// is this address's Start Plan requests in flight, not its accounts (see
+// busyHold), so that is what is held now, over every account (startGate's
+// address): as many as two accounts had in flight before, while a coding
+// plan account, on another host, is held to none of it.
 const BUSY_CODES = new Set(["3008", "3009", "3010"])
 // BUSY_WAITS are the waits before each ask again: ZCode's own client's,
 // 1s and 2s (kqo in its bundle). Past them the cap goes back to magpie,
@@ -2060,6 +2490,10 @@ const BUSY_CODES = new Set(["3008", "3009", "3010"])
 // requests a capped account could serve on the wire, and the agents' own
 // retries came on top.
 const BUSY_WAITS = [1000, 2000]
+// REQUEUE_MAX bounds how often one request is handed back to the gate by a
+// narrowing (askBusy): each narrowing lowers the gate, three to one at most
+// takes two, so more is a fault of the count, not ZCode.
+const REQUEUE_MAX = 4
 // The hint names neither "plan" nor "limit": after the vendor's "…limit
 // exceeded" either would read to magpie as a plan used up.
 const BUSY_HINT =
@@ -2089,11 +2523,18 @@ const BUSY_HINT =
 // narrow is kept apart from lanes, which go when idle; now is its clock,
 // injectable for tests.
 const NARROW_FOR = 5 * 60_000
-const startGate = { inflight: 3, wait: 120_000, lanes: new Map(), narrow: new Map(), now: () => Date.now() }
+const startGate = { inflight: 3, address: 6, wait: 120_000, lanes: new Map(), narrow: new Map(), now: () => Date.now() }
+// ADDRESS is the lane every account's Start Plan requests share as well as
+// their own: zcode.z.ai sees one address, and its firewall refused the whole
+// of it with 405 once ~10 were in flight (busyHold). startGate.address is
+// six, what two accounts of three each sent when the plugin declared
+// maxAccounts two, which no 405 followed. It is never narrowed.
+const ADDRESS = "\0address"
 
 // limitOf is how many of the account's Start Plan requests go at once: the
 // gate's number, or less while the account is narrowed.
 function limitOf(key) {
+  if (key === ADDRESS) return startGate.address
   const n = startGate.narrow.get(key)
   if (!n) return startGate.inflight
   if (startGate.now() >= n.until) {
@@ -2110,7 +2551,8 @@ function narrowed(key) {
   const busy = startGate.lanes.get(key)?.busy ?? 0
   if (busy < 2) return false
   const limit = Math.max(1, Math.min(limitOf(key), busy - 1))
-  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR })
+  // busy is kept to say why, in startQueueAnswer
+  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR, busy })
   return true
 }
 
@@ -2121,23 +2563,29 @@ const startFull = (key) => {
 }
 
 // startSlot waits for one of the account's Start Plan slots: { release },
-// null when startGate.wait ran out first, or the agent's abort thrown.
-function startSlot(key, signal) {
+// null when the wait (startGate.wait unless given) ran out first, or the
+// agent's abort thrown. A request handed back by a narrowing (requeued) was
+// first in line already, so it waits at the head of the queue.
+function startSlot(key, signal, { wait = startGate.wait, front = false } = {}) {
   const lanes = startGate.lanes
   let l = lanes.get(key)
-  if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
+  // held is when each slot taken now was taken, for startQueueAnswer
+  if (!l) lanes.set(key, (l = { busy: 0, queue: [], held: new Set() }))
   const next = () => {
     while (l.busy < limitOf(key) && l.queue.length) l.queue.shift()()
     if (!l.busy && !l.queue.length && lanes.get(key) === l) lanes.delete(key)
   }
   const take = () => {
     l.busy++
+    const at = { at: startGate.now() }
+    l.held.add(at)
     let gone = false
     return {
       release() {
         if (gone) return
         gone = true
         l.busy--
+        l.held.delete(at)
         next()
       },
     }
@@ -2164,10 +2612,39 @@ function startSlot(key, signal) {
       leave()
       next()
       resolve(null)
-    }, startGate.wait)
+    }, Math.max(0, wait))
     signal?.addEventListener?.("abort", aborted, { once: true })
-    l.queue.push(go)
+    if (front) l.queue.unshift(go)
+    else l.queue.push(go)
   })
+}
+
+// startSlots waits for a slot of the account's, then one of the address's
+// (ADDRESS), both within the one wait: { release } letting both go, or
+// { key } naming the lane whose wait ran out, nothing held. Every request
+// takes the account's first, so one holding the address's never waits for
+// an account's.
+async function startSlots(key, signal, { wait = startGate.wait, front = false } = {}) {
+  const until = Date.now() + wait
+  const mine = await startSlot(key, signal, { wait, front })
+  if (!mine) return { key }
+  let all
+  try {
+    all = await startSlot(ADDRESS, signal, { wait: until - Date.now(), front })
+  } catch (e) {
+    mine.release()
+    throw e
+  }
+  if (!all) {
+    mine.release()
+    return { key: ADDRESS }
+  }
+  return {
+    release() {
+      all.release()
+      mine.release()
+    },
+  }
 }
 
 // released hands res on and lets its slot go once ZCode's answer has come
@@ -2208,18 +2685,53 @@ function released(res, slot, signal) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
 }
 
-// startQueueAnswer is a request that waited its whole turn behind the
-// account's others and was never sent: a 429 magpie reads as a rate limit,
-// so it tries the next account, and a short Retry-After.
-function startQueueAnswer(key) {
+// startQueueAnswer is a request whose wait for a slot ran out, never sent
+// (or, refused, not sent again): a 429 magpie reads as a rate limit, so it
+// tries the next account, and a short Retry-After. It says what the wait
+// was behind, as the gate saw it when the wait ran out: how many of the
+// lane's requests held its slots and since when, how many more waited, and
+// why the account's gate is below three, if it is. plugins#1572: "1 request
+// at a time … waited 120s behind the others and was not sent" named no
+// others, and the request had been sent and refused twice before it waited.
+function startQueueAnswer(key, { refused = false } = {}) {
   const n = limitOf(key)
-  const error = {
-    type: "rate_limit_error",
-    message: `ZCode's free Start Plan serves this account ${n} request${n === 1 ? "" : "s"} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+  const s = n === 1 ? "" : "s"
+  const waited = `${Math.round(startGate.wait / 1000)}s`
+  const l = startGate.lanes.get(key)
+  const busy = l?.busy ?? 0
+  const queued = l?.queue.length ?? 0
+  const now = startGate.now()
+  const oldest = l?.held?.size ? Math.min(...[...l.held].map((h) => h.at)) : null
+  const holders = busy === 0
+    ? "no request held a slot when it ran out"
+    : `${busy} of ${key === ADDRESS ? "this computer's Start Plan requests" : "this account's requests"} held ${busy === 1 ? "its slot" : "the slots"}${oldest != null ? `, ${busy === 1 ? "in flight" : "the oldest in flight"} for ${lasted(now - oldest)}` : ""}`
+  const behind = `${holders}${queued ? `, and ${queued} more ${queued === 1 ? "was" : "were"} waiting` : ""}`
+  let message
+  if (key === ADDRESS) {
+    message = `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${waited} for a slot and was not sent: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
+  } else {
+    const nr = startGate.narrow.get(key)
+    const why = nr && n < startGate.inflight
+      ? ` for the next ${lasted(nr.until - now)}, since ZCode refused a request as busy again at its re-ask while ${nr.busy} of this account's were in flight from this computer`
+      : ""
+    const head = refused
+      ? `ZCode refused this request as busy at its first ask and again at its re-ask, and its free Start Plan now serves this account ${n} request${s} at a time${why}; it waited ${waited} for a slot to send it again and was not sent again`
+      : `ZCode's free Start Plan serves this account ${n} request${s} at a time${why}; this one waited ${waited} for a slot and was not sent`
+    message = `${head}: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
   }
+  const error = { type: "rate_limit_error", message }
   return new Response(JSON.stringify({ type: "error", error }), {
     status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
   })
+}
+
+// lasted says a duration as a person reads it: 45s, 2m 5s, 66m.
+function lasted(ms) {
+  const t = Math.max(0, Math.round(ms / 1000))
+  if (t < 60) return `${t}s`
+  const m = Math.floor(t / 60)
+  if (m >= 10) return `${m}m`
+  return t % 60 ? `${m}m ${t % 60}s` : `${m}m`
 }
 
 // busyHold is the firewall's countdown. Two days of logs (11-05 23:06–23:15
@@ -2262,10 +2774,12 @@ const busyHeld = () => busyHold.now() < busyHold.until
 // busyCap records one sustained concurrency cap of a Start Plan request.
 // Only a run arms a hold; the window is cleared on arming, and a cap that
 // lands while the hold is on counts toward nothing — the hold's own 429s and
-// the first caps after it cannot keep re-arming it.
+// the first caps after it cannot keep re-arming it. It says true when the
+// cap narrowed the account instead: the request is then requeued, not
+// failed (see askBusy).
 function busyCap(key) {
-  if (key != null && narrowed(key)) return
-  if (busyHeld()) return
+  if (key != null && narrowed(key)) return true
+  if (busyHeld()) return false
   const now = busyHold.now()
   busyHold.hits.push(now)
   while (busyHold.hits.length && now - busyHold.hits[0] > BUSY_WINDOW) busyHold.hits.shift()
@@ -2273,6 +2787,7 @@ function busyCap(key) {
     busyHold.until = now + BUSY_HOLD
     busyHold.hits.length = 0
   }
+  return false
 }
 
 // BUSY_HOLD_MARK marks an answer the hold made up: a request the gate or the
@@ -2341,8 +2856,13 @@ function busyAnswer(res, text) {
 // 1s and then 2s, as ZCode's own client does. Past them the cap goes back as
 // busyAnswer's 429. A request refused again at its 1s re-ask is a sustained
 // cap, told to onCap once (the firewall hold's count); one the re-ask got
-// past is not. The plan path's patience, shared with free first's replay,
-// whose plan has a cap of its own.
+// past is not. When onCap says the cap narrowed the account (others of this
+// computer were in flight on it), asking again in 2s would only be refused
+// beside them again: the busyAnswer goes back at once marked `requeue`, and
+// the Start Plan path waits for one of those others to end and sends it
+// again (JJLIN070414 on X: two sessions on one account, each pair's second
+// request failed 429 where ZCode's own client queues it). The plan path's
+// patience, shared with free first's replay, whose plan has a cap of its own.
 async function askBusy(u, o, hs, onCap) {
   let res = await fetch(u, { ...o, headers: hs })
   let caps = 0
@@ -2350,7 +2870,11 @@ async function askBusy(u, o, hs, onCap) {
     const text = await res.text()
     const cap = busy(429, text)
     // one request's refusals are one saturation signal, not one per ask
-    if (cap && ++caps === 2) onCap?.()
+    if (cap && ++caps === 2 && onCap?.() === true) {
+      res = busyAnswer(res, text)
+      res.requeue = true
+      break
+    }
     // the hold armed: a request already in flight stops asking too. The
     // second check catches the asks that capped before the hold armed and
     // woke from their wait after it. Keying on onCap keeps the coding plan
@@ -2939,7 +3463,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         const s = await located(stateOf(auth))
         if (!s) return provider.models
         const { start, gift: known } = await plansOf(s).catch(() => ({ start: false, gift: null }))
-        const gift = start ? await startPlan(s.jwt, s.device).catch(() => null) : known
+        const gift = start ? await aloneGift(s) : known
         const base = start ? START_BASE : s.base
         const cfg = await zcodeConfig().catch(() => null)
         let ms = modelsOf(cfg, planID(base))
@@ -2992,9 +3516,6 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
       // of day, and a user who knows theirs can raise this on the account.
       // The Start Plan has the plugin's own gate below it (startGate)
       maxConcurrency: DEFAULT_CONCURRENCY,
-      // how many accounts take requests at once, the others in reserve
-      // (DEFAULT_ACCOUNTS); a magpie that doesn't read it uses them all
-      maxAccounts: DEFAULT_ACCOUNTS,
       // magpie's own switches (OpenCode never reads auth.options), read at
       // each request through input.magpie
       options: [
@@ -3088,14 +3609,15 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `${giftRested(s, raw) ? `ZCode said the last request for ${raw} was over its quota, so it is not asked again for a minute: ` : ""}ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
+                  const held = raw ? [] : await unclaimed(s)
+                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `${giftRested(s, raw) ? `ZCode said the last request for ${raw} was over its quota, so it is not asked again for a minute: ` : ""}ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}${held.length ? `. ZCode holds ${held.join(", ")} for this account unclaimed: claim it in the ZCode app (its claim needs the app's security check), and ${m} spends it` : ""}` }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
                 giftName = giftID(raw)
-              } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
+              } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && !startFull(ADDRESS) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -3115,6 +3637,25 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 m = raw
                 freeGift = true
                 giftName = giftID(raw)
+              } else if (alone && /\/v1\/messages$/.test(new URL(url).pathname)) {
+                // a gift-only account's Start Plan serves the models its
+                // balance names, and ZCode's app offers only those
+                // (resolveStartPlanBalanceAvailability). Any other model
+                // spends none of the free quota, so it is not sent: an
+                // agent left on another model would be billed while the
+                // gift stayed unspent (bg5eau on X). The balance is the
+                // one the model list read (aloneSeen); a model it doesn't
+                // name has it read again before the refusal. One not read
+                // yet, one that fails, or one naming none leaves the
+                // request as it was.
+                const named = (ns) => ns.some((x) => x.toLowerCase() === m.toLowerCase())
+                const kept0 = aloneNames(s)
+                const names = kept0.length && !named(kept0) ? giftNames(await aloneGift(s)) : []
+                if (names.length && !named(names)) {
+                  const shown = uniqueModels(names.map(wireModel))
+                  const error = { type: "invalid_request_error", message: `ZCode's Start Plan on this account serves ${shown.join(", ")}; ${m} is not among them and would spend none of its free quota, so it was not sent. Pick ${shown.length > 1 ? "one of those" : shown[0]} for this account` }
+                  return kept(new Response(JSON.stringify({ type: "error", error }), { status: 400, headers: { "content-type": "application/json" } }))
+                }
               }
               start = alone || forcedGift || freeGift
             }
@@ -3190,9 +3731,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // the account's Start Plan slots (startGate): a request past them
             // waits here for one rather than being sent to be refused
             if (start) {
-              own.slot = await startSlot(gateKey, opts.signal)
+              const got = await startSlots(gateKey, opts.signal)
               own.signal = opts.signal
-              if (!own.slot) return kept(startQueueAnswer(gateKey))
+              if (!got.release) return kept(startQueueAnswer(got.key))
+              own.slot = got
               // a hold may have armed while it waited
               if (edgeHeld()) return kept(edgeHeldAnswer())
               if (busyHeld()) return kept(busyHeldAnswer())
@@ -3242,6 +3784,27 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               // coding plan is served by another host and was never refused
               // with the IP's 405.
               res = await askBusy(url, opts, h, start ? () => busyCap(gateKey) : undefined)
+              // a cap this computer brought on itself, with others of the
+              // account in flight beside it, narrowed the account's gate:
+              // the request gives its slot back and waits, first in line,
+              // until one of those others has ended, then is sent again —
+              // queued, as ZCode's own client queues its subagents' caps,
+              // not failed. Free first's gift goes to the plan instead,
+              // which serves it now. The waits share one startGate.wait;
+              // each turn the gate is lower or the request is alone, where
+              // a cap is ZCode's or another client's and goes back as it
+              // did.
+              const until = Date.now() + startGate.wait
+              for (let turn = 0; res.requeue && !freeGift && turn < REQUEUE_MAX; turn++) {
+                own.slot?.release()
+                own.slot = null
+                const got = await startSlots(gateKey, opts.signal, { wait: until - Date.now(), front: true })
+                if (!got.release) return kept(startQueueAnswer(got.key, { refused: true }))
+                own.slot = got
+                if (edgeHeld()) return kept(edgeHeldAnswer())
+                if (busyHeld()) return kept(busyHeldAnswer())
+                res = await askBusy(url, opts, h, () => busyCap(gateKey))
+              }
             } catch (e) {
               // free first moved the request onto the gift, so a gift that
               // cannot be asked at all — the network, the host — is answered
@@ -3451,4 +4014,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }

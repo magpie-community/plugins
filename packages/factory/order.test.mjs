@@ -34,6 +34,7 @@ test("company ordering is opt-in, preserves metadata, and is read on each model 
     before("gpt-6.1-sol", "gpt-6-sol")
     before("gpt-6-luna", "gpt-5.6-sol")
     before("gpt-5.3-codex-fast", "gemini-4-carbon")
+    before("gemini-4-hydrogen", "gemini-4-carbon")
     before("gemini-4-carbon", "gemini-4-argon")
     before("gemini-3.8-flash", "gemini-3.1-pro-preview")
     before("glm-5.2-fast", "kimi-k3.1-pro")

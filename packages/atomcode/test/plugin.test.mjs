@@ -491,7 +491,85 @@ test("loader：发往网关的请求照常带凭证与签名", async () => {
     assert.equal(call.headers.get("authorization"), "Bearer tok");
     assert.match(call.headers.get("x-atomcode-sig") ?? "", /^v1:[0-9a-f]{64}$/);
     assert.equal(call.headers.get("user-agent"), "atomcode/5.2.3");
+    assert.match(
+      call.headers.get("x-atomcode-session-id") ?? "",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      "glm5.3-flash 等模型组的上游准入要求 session-id（无它 → 403 policy disabled）",
+    );
     assert.equal(call.redirect, "error");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("loader：session-id 每账号稳定、账号间隔离", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    const { fetch: patched } = await plugin.auth.loader(async () => AUTH);
+    await patched(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    await patched(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    const ids = stub.calls
+      .filter((c) => c.url.includes("chat/completions"))
+      .map((c) => c.headers.get("x-atomcode-session-id"));
+    assert.equal(ids.length, 2);
+    assert.ok(ids[0] && ids[0] === ids[1], "同一账号的连续请求共享一个稳定会话 id");
+
+    const { fetch: patched2 } = await plugin.auth.loader(async () => ({ ...AUTH, uid: "u2" }));
+    await patched2(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    const other = stub.calls
+      .filter((c) => c.url.includes("chat/completions"))
+      .map((c) => c.headers.get("x-atomcode-session-id"))[2];
+    assert.ok(other && other !== ids[0], "不同账号的会话 id 互不相同");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("chat.headers：magpie 会话 id 原样上头，且只对本供应商", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    assert.equal(typeof plugin["chat.headers"], "function", "chat.headers 钩子要导出");
+
+    const output = { headers: {} };
+    await plugin["chat.headers"](
+      { model: { providerID: "atomcode" }, sessionID: "sess-abc-123" },
+      output,
+    );
+    assert.equal(
+      output.headers["x-atomcode-session-id"],
+      "sess-abc-123",
+      "同一对话各轮共享 magpie 的会话 id（官方客户端语义）",
+    );
+
+    const other = { headers: {} };
+    await plugin["chat.headers"](
+      { model: { providerID: "acme" }, sessionID: "sess-abc-123" },
+      other,
+    );
+    assert.equal(other.headers["x-atomcode-session-id"], undefined, "别的供应商不加这个头");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("loader：chat.headers 已带会话头时不覆盖（per-conversation 优先）", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    const { fetch: patched } = await plugin.auth.loader(async () => AUTH);
+    await patched(`${GATEWAY}/chat/completions`, {
+      method: "POST",
+      body: "{}",
+      headers: { "x-atomcode-session-id": "sess-from-magpie" },
+    });
+    const call = stub.calls.find((c) => c.url.includes("chat/completions"));
+    assert.equal(
+      call.headers.get("x-atomcode-session-id"),
+      "sess-from-magpie",
+      "magpie 会话 id 优先于每账号兜底",
+    );
   } finally {
     stub.restore();
   }

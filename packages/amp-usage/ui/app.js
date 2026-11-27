@@ -120,9 +120,12 @@ $("auto").value = auto;
 
 async function api(path, body) {
   let r, result;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
   // Errors are codes the page words itself; see W.err.
   try {
     r = await fetch(new URL(`api/${path}`, location.href), {
+      signal: controller.signal,
       method: body === undefined ? "GET" : "POST",
       headers: {
         "X-Amp-Usage-Token": token,
@@ -133,6 +136,8 @@ async function api(path, body) {
     result = await r.json();
   } catch {
     throw new Error("unreachable");
+  } finally {
+    clearTimeout(timeout);
   }
   if (!r.ok) throw new Error(result.code || "unexpected");
   return result;
@@ -352,12 +357,16 @@ for (const id of ["from", "to"])
   };
 
 let left = Infinity;
+let polling = false;
 async function poll() {
+  if (polling || busy) return;
+  polling = true;
   const mine = turn;
   try {
     const s = await api("status");
     // A reply that raced an action is older than what the action returned.
     if (busy || mine !== turn) return;
+    if (failure === "unreachable") failure = "";
     render(s);
     if (s.phase !== "idle") return;
     const age = s.lastScan ? Date.now() - Date.parse(s.lastScan) : Infinity;
@@ -368,7 +377,9 @@ async function poll() {
       void act(read);
     }
   } catch (e) {
-    if (!busy) errors([e.message]);
+    if (!busy && mine === turn) errors([e.message]);
+  } finally {
+    polling = false;
   }
 }
 void poll();

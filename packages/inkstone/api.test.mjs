@@ -48,6 +48,7 @@ test("the listing is the key's live set intersected with the public metadata", a
   expect(models["glm-5.3"].reasoning).toBe(true)
   expect(models["Agents-A1"].capabilities.input.image).toBe(true)
   expect(models["glm-5.3"].variants).toBeUndefined()
+  expect(models[Symbol.for("magpie.fellBack")]).toBeUndefined()
   // the magpie-only price markers reach provider.models too
   expect(models["glm-5.3"].rate).toBe(8)
   expect(models["glm-5.3"].free).toBeUndefined()
@@ -91,6 +92,9 @@ test("a catalogue read that fails keeps the declared models", async () => {
   const given = { "glm-5.3": {} }
   const got = await p.provider.models({ id: "intern-inkstone", models: given }, { auth })
   expect(got).toEqual(given)
+  // and says they aren't the account's list, so magpie keeps the one it
+  // had and the models picked from it (Archivemylife on X, agy-cli's sibling)
+  expect(got[Symbol.for("magpie.fellBack")]).toBe(true)
 })
 
 test("an account with no auth yet still sees the bootstrap list", async () => {

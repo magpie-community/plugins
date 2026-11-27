@@ -8,6 +8,7 @@ accounts exist only on their own:
 |---|---|---|---|
 | `qoder` | qoder.com (international) | Google, GitHub or email | `QoderAuthPlugin` |
 | `qoder-cn` | qoder.cn ([Qoder CN](#qoder-cn)) | Alibaba Cloud or phone number | `QoderCNAuthPlugin` |
+| `qoder-team` | qoder.com.cn ([Qoder Teams](#qoder-teams)) | a Teams member: phone, email or the organization's SSO | `QoderTeamAuthPlugin` |
 | `qwenwork` | gateway.qwenwork.cn ([QwenWork](#qwenwork-千问办公)) | phone number or email | `QwenWorkAuthPlugin` |
 | `qwenwork-enterprise` | the enterprise's own domain ([QwenWork](#qwenwork-千问办公)) | email OTP or enterprise SSO | `QwenWorkEnterpriseAuthPlugin` |
 
@@ -106,6 +107,15 @@ itself.
 
 - It writes the chat completion as Qoder's request:
   - Qoder's own system line comes before yours.
+  - Claude Code's identity line, `You are Claude Code, Anthropic's official
+    CLI for Claude.`, goes as the Claude Agent SDK's, `You are a Claude
+    agent, built on Anthropic's Claude Agent SDK.` (since 0.2.72): Qoder
+    answers a prompt with that line with 400 `Cannot find model`, whatever
+    the model. The rest of the prompt and your messages go as written.
+  - A harness's opener, such as DeepSeek Harness's `You are an AI agent
+    powered by DeepSeek Harness.`, goes with a comma before `powered by`
+    (since 0.2.73, #1517): Qoder CN puts a request whose system prompt
+    holds that line, as written, in a queue that never moves.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.
@@ -153,7 +163,8 @@ itself.
   - an MD5 signature;
   - the machine id and the client's headers.
   - `Cosy-Version`: the worker runtime version that Qoder's desktop app
-    ships (1.1.69 in app 0.4.8, since 0.2.23, #281), because
+    ships (1.1.96-hotfix.8 in app 0.5.20, since 0.2.75, #1560; before
+    that 1.1.69 in app 0.4.8, from 0.2.23, #281), because
     `Cosy-ClientType` says the desktop app.
 
 **Reading the reply**
@@ -193,7 +204,7 @@ itself.
 | A refused sign-in (no code, or code 105) | 401 |
 | A quota (codes 110, 112–119, 122) | 429 |
 | A model the account's listing has off while its usage says no credits are left (since 0.2.64, #880) | 429 usage limit reached, with the credits used and the model; a model off with credits left, or whose usage can't be read, stays 400 `unknown or disabled model`, and an id Qoder never served is that 400 at once |
-| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
+| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour (since 0.2.71, 5 minutes when the queue hasn't moved with nothing ahead), its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
 | "Range of max_tokens should be [1, N]" behind "Error in upstream response" (since 0.2.63) | Asked again once with max_tokens N, which later requests for that model are sent from the start; refused again, 400 with Qoder's words, the sign-in untouched. QoDuck (`lmodel`) is never sent more than 131072, and a model whose listing entry names `max_output_tokens` never more than that; a smaller max_tokens goes as asked |
@@ -410,6 +421,42 @@ tests on a real Lingma dedicated domain. The folders and the model names
 were checked against Qoder CN IDE 1.38.0. This plugin itself has not been
 tried on one.
 
+## Qoder Teams
+
+`qoder-team` is for Qoder CN's **Teams (团队版)** seats. An organization is
+bought on Alibaba Cloud and managed on qoder.com.cn; its members are invited
+by email, by phone or through the organization's SSO, and sign in there.
+qoder.com.cn and qoder.cn serve the same app — on 2026-11-27 the same bytes at
+`/` and `/users/sign-in`, and the same `/device/selectAccounts` page — so a
+Teams account speaks the protocol [above](#qoder-cn) on the same hosts:
+
+| | `qoder-cn` | `qoder-team` |
+|---|---|---|
+| Sign-in page | qoder.cn | qoder.com.cn |
+| Accounts: poll, tokens, user info, usage | openapi.qoder.com.cn | the same |
+| Models and chat | gateway.qoder.com.cn | the same |
+| Device-flow client id | Qoder CN's CLI's | the same |
+
+The sign-in page is the only difference, and it is the domain the
+organization's invitation and SSO links point at.
+
+What a Teams account adds:
+
+- The organization its user info names (`organization_id` /
+  `organization_name`, or a nested `organization`) is kept on the credential
+  as `orgId` / `orgName`, and the account is named for it: `dev@acme.cn (Acme)`
+  is its `accountId`, `dev@acme.cn · Acme` its card. The same person's
+  personal account on `qoder-cn` therefore stays a row of its own, and a PAT
+  sign-in names the same account a browser sign-in does.
+- An account whose user info names no organization is named as `qoder-cn`
+  names it: the Teams site also serves personal accounts.
+- **Sign in with Qoder Teams Enterprise (VPC)** and **… dedicated domain** are
+  offered as they are on Qoder CN: an organization on a VPC instance or a
+  dedicated domain belongs to the same Teams plan.
+
+Tried with a real Teams seat (Qoder CN, phone sign-in, 2026-11-27): the
+sign-in, the organization read from user info, the model list and chat work.
+
 ## The card's name
 
 An account signed in with a phone is shown by that phone — masked, `138****8000` — not by
@@ -419,6 +466,10 @@ its `accountId`, which is a uuid. Qoder CN's user info answers the number as `se
 QwenWork's phone accounts answer only the last four digits, as `name`, beside a synthetic
 `phone_<uuid>@phone.local` email (measured): the card shows `****8000` and never that email.
 An email sign-in keeps its email.
+
+On a Teams site (`qoder-team`) the organization follows the name — `dev@acme.cn · Acme` —
+and the `accountId` carries it too, `dev@acme.cn (Acme)`, so a team seat and the same
+person's personal account are two accounts to magpie.
 
 `accountId` stays the account's identity — what magpie keys the user's own name for
 it, its proxy, model picks, caps and a gateway key's account list by — so it never
@@ -583,7 +634,9 @@ Since **0.2.28** a queued request waits its turn as Qoder's own client
 model and the plan's `queueType`, at once and then every
 `retryAfterSeconds` (held to 0.5–30s, 30s when unsaid), and once
 `isQueued` is false it waits that state's `retryAfterSeconds` and sends the
-same request again (up to 10 times). Three failed status asks in a row, a
+same request again (up to 10 times). Since **0.2.74** `isQueued` false with
+`serviceAvailable` false is waited on too, as Qoder's client reads it
+(qoderclicn 1.1.98), rather than sent into the queue again. Three failed status asks in a row, a
 404, or a cancelled request end the wait early.
 
 Since **0.2.62** a streamed request (every agent's) waits as long as
@@ -596,12 +649,25 @@ SSE comment saying the queue (": Qoder queued the request for smodel
 on: a Codex client is told `response.in_progress`, the event its 300s idle
 timeout counts, and a Chat client gets the comment. What comes of the wait
 goes on in the same stream: the answer, or a refusal (the queue's own after
-the hour) as the stream's error. Nothing needs setting. A request that isn't
+the hour) as the stream's error. Since **0.2.71** a wait with nothing ahead of
+the request (`queueCount` 1 or none) whose queue state comes back the same
+at every ask for 5 minutes ends there, with the queue's 503 and "the queue
+hasn't moved in 5 minutes with nothing ahead" (plugins#1220: Qoder CN held
+such a RESOURCE_LIMIT queue unchanged, and the agent heard only
+keepalives); magpie can then rest the account or ask the next. A queue with
+others ahead is still waited out. Nothing needs setting. A request that isn't
 streamed has nothing to keep its client alive with, so it still waits 4
 minutes at most before the 503. Claude Code takes a ping as life only 30
-times in a row, about 35 minutes, so a longer wait still ends there. Qoder's client also reports the end
-of its turn to `/api/v2/service/ask/finish`; the plugin doesn't, and
-Qoder releases that lease on its own TTL. `queue.test.mjs` has the wait.
+times in a row, about 35 minutes, so a longer wait still ends there.
+
+A queued request holds a lease in Qoder's queue (its `request_set_id` and
+model) until Qoder hears `/api/v2/service/ask/finish`. Before **0.2.74** the
+plugin never told it, so each lease stayed until Qoder's own TTL let it go
+(plugins#1560). Now it tells finish as Qoder's client does: at once when a
+request gives up waiting (the 503 above, or a cancelled request), and
+otherwise when the task ends (the session's next prompt, or the task let go
+after 2 hours idle). A finish that fails changes nothing for the request.
+`queue.test.mjs` has the wait and the finish.
 
 Since **0.2.40** the wait is only for the last candidate: when magpie says
 another account, provider or routing group member follows this request

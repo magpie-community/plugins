@@ -43,6 +43,7 @@ function routeToFake() {
     return real(`http://127.0.0.1:${server.port}/${new URL(host).host}${url.slice(host.length)}`, init)
   }
 }
+const ADDRESS_SLOTS = 6 // startGate.address
 afterEach(() => {
   globalThis.fetch = real
   got.length = 0
@@ -55,6 +56,7 @@ afterEach(() => {
   _internal.startGate.lanes.clear()
   _internal.startGate.narrow.clear()
   _internal.startGate.now = () => Date.now()
+  _internal.startGate.address = ADDRESS_SLOTS
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -695,14 +697,21 @@ test("the busy hold reads its clock: a spread run holds nothing, caps during the
 // accounts, one each, so each cap is a lone request's, the kind that counts
 // (two or more of one account's narrow its gate instead, plugins#438) — and
 // answer them all 3008 after they
-// have all reached the fake. No first cap counts; the 1s re-asks are
-// refused again and the fifth of those arms the hold. With the guard gone,
-// the seven after it count toward a second hold.
+// have all reached the fake. No first cap counts; the re-asks are parked on
+// a second gate until all twelve have reached the fake too, then refused
+// again, and the fifth of those arms the hold. With the guard gone, the
+// seven after it count toward a second hold. (plugins#1036: with the re-asks
+// answered as they came, a request whose first answer came late found the
+// hold already armed by the others' re-asks and never asked again, 20 asks
+// and not 24.)
 test("caps that land after the hold armed change neither hits nor until (requests in flight)", async () => {
   const waits = _internal.BUSY_WAITS.splice(0)
   _internal.BUSY_WAITS.push(1)
   try {
     routeToFake()
+    // twelve in flight at once, more than the address's gate lets go
+    // (startGate.address): what the hold does with such a run is under test
+    _internal.startGate.address = 12
     let clock = 1_000_000_000_000
     _internal.busyHold.now = () => clock
     const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
@@ -712,11 +721,15 @@ test("caps that land after the hold armed change neither hits nor until (request
       return { type: "oauth", access: own, refresh: JSON.stringify(s), expires: 0 }
     })
     const loaders = await Promise.all(accounts.map((a) => hooks.auth.loader(async () => a, { id: "zcode" })))
-    // the fake parks every /messages request on one gate until the test opens it
+    // the fake parks the twelve first asks on one gate and the twelve
+    // re-asks on another, each until the test opens it
     let open = () => {}
+    let openAgain = () => {}
     const gate = new Promise((r) => (open = r))
+    const again = new Promise((r) => (openAgain = r))
+    let asked = 0
     answer = async () => {
-      await gate
+      await (++asked <= 12 ? gate : again)
       return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
     }
     const all = loaders.flatMap((opts) =>
@@ -727,6 +740,11 @@ test("caps that land after the hold armed change neither hits nor until (request
     expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
     clock += 1_000
     open()
+    // every re-ask is in flight before any is refused: none can find the
+    // hold armed by the others and stay home
+    while (got.filter((r) => r.path.endsWith("/messages")).length < 24) await Bun.sleep(5)
+    expect(_internal.busyHold.until).toBe(0)
+    openAgain()
     const rs = await Promise.all(all)
     // every request was refused twice; the fifth second refusal armed the
     // hold, and the ones after it changed neither hits nor until. Each

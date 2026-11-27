@@ -13,21 +13,54 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { execFileSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { App, Page, sleep } from "./cdp.mjs"
 
 // isChat says whether a page is either app's chat page. The page reports
 // itself as chrome://doubao(work)-chat/chat from inside.
 export const isChat = (url) => /^(doubao|doubaowork|chrome):\/\/(doubao|doubaowork)-chat\/chat/.test(String(url))
 
-// Doubao has no API to ask which models it offers: the app's own model menu
-// is the list, and it changes as Doubao adds models. These are the ones the
-// menu showed when the plugin was written; they are only the fallback for
-// when the menu cannot be read. The real list is read from the menu (see
-// Doubao#discover) and kept in models.json under DOUBAO_WORK_HOME.
+// The models Doubao offers come from the list its own page asks for
+// (brief_list, see LIST and listOf) and change as Doubao adds models. These
+// are the ones it listed when the plugin was written; they are only the
+// fallback for when nothing could be read. The real list is read by
+// Doubao#discover and kept in models.json under DOUBAO_WORK_HOME.
 export const MODELS = {
   auto: { label: "自动", name: "自动" },
   "doubao-2.1-lite": { label: "豆包 2.1 Lite", name: "豆包 2.1 Lite" },
   "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包 2.1 Pro" },
+}
+
+// EFFORTS are the names Doubao gives its 推理强度 levels, lowest first, and
+// the OpenAI reasoning_effort each one is offered as.
+export const EFFORTS = [
+  ["低", "low"],
+  ["中", "medium"],
+  ["高", "high"],
+  ["极高", "xhigh"],
+  ["最高", "max"],
+]
+
+// effortFor turns a client's reasoning_effort into one of a model's
+// 推理强度 names: the same level when the model has it, else the nearest,
+// the higher one on a tie. none and minimal ask for the lowest. "" when the
+// client asked for nothing (or the model has no levels): the model's own
+// default stays.
+export function effortFor(asked, efforts) {
+  const list = (efforts ?? []).filter((e) => EFFORTS.some(([n]) => n === e))
+  const want = String(asked ?? "").trim().toLowerCase()
+  if (!want || !list.length) return ""
+  const rank = (name) => EFFORTS.findIndex(([n]) => n === name)
+  let i = EFFORTS.findIndex(([n, o]) => o === want || n === want)
+  if (want === "none" || want === "minimal") i = 0
+  if (i < 0) return ""
+  let best = list[0]
+  for (const e of list) {
+    const d = Math.abs(rank(e) - i), b = Math.abs(rank(best) - i)
+    if (d < b || (d === b && rank(e) > rank(best))) best = e
+  }
+  return best
 }
 
 // idFor turns the first line of a menu row into the model id a client
@@ -39,6 +72,7 @@ export function idFor(label) {
   if (!text || text === "自动") return "auto"
   let id = text
     .replace(/豆包/g, "doubao ")
+    .replace(/高速/g, " fast ")
     .toLowerCase()
     .replace(/[^a-z0-9.]+/g, "-")
     .replace(/-{2,}/g, "-")
@@ -53,20 +87,87 @@ export function idFor(label) {
   return id
 }
 
-// tableFrom builds the model table ({ id: {label, name} }) from the rows
-// read off the menu. Nothing read means the fallback stays.
+// rateOf reads the multiple a menu row says it costs from the lines under
+// the model's name ("2x 额度", "×0.5", "消耗 1.5 倍"); 0 when it says none.
+// Version numbers and context sizes ("V4.1", "256K") are not multiples.
+export function rateOf(lines) {
+  for (const line of lines ?? []) {
+    const t = String(line ?? "")
+    const m = t.match(/(?:^|[^\w.])[x×]\s*(\d+(?:\.\d+)?)(?![\w.])/i) || t.match(/(\d+(?:\.\d+)?)\s*(?:[x×]|倍)(?![a-z])/i)
+    const n = m ? Number(m[1]) : 0
+    if (n > 0) return n
+  }
+  return 0
+}
+
+// tableFrom builds the model table from the rows read off Doubao's list
+// (listOf) or its menu: { id: {label, name, key?, efforts?, effort?, rate?} }.
+// key is Doubao's own id for the model (model_item_key), efforts its
+// 推理强度 names and effort the one it picks by default. Nothing read means
+// the fallback stays.
 export function tableFrom(rows) {
   const out = {}
   for (const r of rows ?? []) {
     const label = String(r?.label ?? "").trim()
     if (!label) continue
-    const id = idFor(label)
-    if (out[id]) continue
+    let id = idFor(label)
+    if (out[id]?.label === label) continue
+    // two rows whose names differ only in what idFor can't spell (a
+    // Chinese suffix) must not become one model
+    for (let n = 2; out[id]; n++) id = idFor(label) + "-" + n
     out[id] = { label, name: label }
+    if (r.key) out[id].key = String(r.key)
+    if (Array.isArray(r.efforts) && r.efforts.length) out[id].efforts = r.efforts.map(String)
+    if (r.effort) out[id].effort = String(r.effort)
+    const rate = Number(r?.rate) || rateOf(r?.lines)
+    if (Number.isFinite(rate) && rate > 0) out[id].rate = rate
   }
   if (!Object.keys(out).length) return { ...MODELS }
-  if (out.auto) out.auto = { ...MODELS.auto }
+  if (out.auto && !out.auto.key) out.auto = { ...MODELS.auto, ...out.auto, label: MODELS.auto.label }
   return out
+}
+
+// lookup finds a model in the table by the id the plugin gives it, by
+// Doubao's own id for it (model_item_key, "person-deepseek-v4-1-flash-261017")
+// or by its name as the menu shows it ("DeepSeek V4.1 Flash").
+export function lookup(table, model) {
+  const want = String(model ?? "")
+  if (table?.[want]) return table[want]
+  for (const m of Object.values(table ?? {})) if (m?.key === want || m?.label === want) return m
+  return null
+}
+
+// listOf turns LIST's reply into rows for tableFrom: the models of
+// 工作任务 (mode 3, the agent mode, the one for "office" conversations),
+// in the order Doubao lists them, each with its 推理强度 names. A mode
+// without its own list takes the shared list's models it supports. null
+// when the reply has no such list.
+export function listOf(read) {
+  const conf = read?.conf
+  if (!conf || typeof conf !== "object") return null
+  const modes = conf.mode_list?.item_list ?? []
+  const mode =
+    modes.find((m) => String(m?.mode_id) === "3") ??
+    modes.find((m) => Number(m?.agent_mode) === 1) ??
+    modes.find((m) => (m?.conversation_mode_list ?? []).includes("office") && String(m?.default_conversation_mode ?? "office") === "office")
+  let items = mode?.model_list?.item_list
+  if (!Array.isArray(items) || !items.length) {
+    const all = conf.model_list?.item_list ?? []
+    const keys = new Set((mode?.support_models ?? []).map((m) => String(m?.model_item_key)))
+    // no modes at all: the shared list is the only one; modes without a
+    // work task (another app's list) give none
+    items = keys.size ? all.filter((i) => keys.has(String(i?.model_item_key))) : mode || modes.length ? [] : all
+  }
+  const rows = []
+  for (const i of items ?? []) {
+    const label = String(i?.name ?? "").trim()
+    if (!label) continue
+    const opts = i.reasoning_effort_config?.option_list ?? []
+    const efforts = opts.map((o) => String(o?.name ?? "").trim()).filter(Boolean)
+    const def = opts.find((o) => o?.level === i.reasoning_effort_config?.default_level)
+    rows.push({ label, key: String(i.model_item_key ?? ""), efforts, effort: def ? String(def.name).trim() : "", upgrade: !!i.subscribe_config?.need_upgrade })
+  }
+  return rows.length ? rows : null
 }
 
 // localAppData is %LOCALAPPDATA%, where Doubao's Windows installer puts
@@ -81,8 +182,8 @@ const localAppData = (home) => process.env.LOCALAPPDATA || path.win32.join(home,
 //   sub  the folder under dataDir() for this app's profile, port and model
 //        list; 豆包's stays at the top, where 0.1.0 to 0.1.4 kept it
 export const APPS = [
-  { name: "豆包工作", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
-  { name: "豆包", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
+  { name: "豆包工作", bundle: "com.work.pc.doubao", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
+  { name: "豆包", bundle: "com.bot.pc.doubao", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
 ]
 
 // places lists where an app can be installed: /Applications, then
@@ -93,13 +194,115 @@ export function places(app, platform = process.platform, home = os.homedir()) {
   return []
 }
 
+// Where the app is installed when it is not in the usual place. The system
+// knows: Windows keeps an uninstall entry (InstallLocation, DisplayIcon,
+// UninstallString), an App Paths entry and the path of a running copy;
+// macOS's Spotlight knows every bundle by its identifier, and a running
+// copy has its path in ps. Each finder returns paths (files or folders) the
+// install may be under; installedAt turns them into the app's binary.
+const WIN_PROBE = String.raw`
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$o = @()
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+  Get-ItemProperty $r -ErrorAction SilentlyContinue | Where-Object { ($_.PSChildName + $_.DisplayIcon + $_.UninstallString + $_.InstallLocation) -match 'Doubao' } | ForEach-Object { $o += $_.InstallLocation, $_.DisplayIcon, $_.UninstallString }
+}
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\') {
+  foreach ($e in 'DoubaoWork.exe', 'Doubao.exe') { $k = Get-ItemProperty ($r + $e) -ErrorAction SilentlyContinue; if ($k) { $o += $k.'(default)', $k.Path } }
+}
+Get-CimInstance Win32_Process -Filter "Name='DoubaoWork.exe' or Name='Doubao.exe'" -ErrorAction SilentlyContinue | ForEach-Object { $o += $_.ExecutablePath }
+ConvertTo-Json -Compress -InputObject @($o | Where-Object { $_ })
+`
+
+// hintsWin lists the paths Windows has for 豆包工作 and 豆包.
+export function hintsWin(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 15000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })) {
+  try {
+    const out = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WIN_PROBE])
+    const list = JSON.parse(out.trim() || "[]")
+    return (Array.isArray(list) ? list : [list]).filter((x) => typeof x === "string" && x.trim())
+  } catch {
+    return []
+  }
+}
+
+// hintsMac lists the app bundles Spotlight knows by identifier, then the
+// paths of running copies.
+export function hintsMac(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] })) {
+  const out = []
+  for (const app of APPS) {
+    try {
+      out.push(...run("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${app.bundle}'`]).split("\n"))
+    } catch {}
+  }
+  try {
+    for (const l of run("/bin/ps", ["-axo", "comm="]).split("\n")) if (/\.app\/Contents\/MacOS\/Doubao(Work)?$/.test(l.trim())) out.push(l.trim())
+  } catch {}
+  // Spotlight may be off or not indexing that disk: look one folder down
+  // in the places apps are put as well
+  const roots = ["/Applications", path.join(os.homedir(), "Applications")]
+  try { for (const v of fs.readdirSync("/Volumes")) roots.push(path.join("/Volumes", v), path.join("/Volumes", v, "Applications")) } catch {}
+  for (const r of roots.slice()) {
+    try { for (const e of fs.readdirSync(r, { withFileTypes: true })) if (e.isDirectory() && !e.name.endsWith(".app")) roots.push(path.join(r, e.name)) } catch {}
+  }
+  for (const r of roots) for (const app of APPS) out.push(path.join(r, app.mac.split("/")[0]))
+  return out.map((l) => l.trim()).filter(Boolean)
+}
+
+let hinted
+const systemHints = (platform) => {
+  if (platform !== "win32" && platform !== "darwin") return []
+  return (hinted ??= {})[platform] ??= platform === "win32" ? hintsWin() : hintsMac()
+}
+
+// installedAt turns hint paths into the binaries app could have there.
+// A hint may be the exe, a folder, or a command ("\"D:\\x\\uninstall.exe\" /S",
+// "D:\\x\\icon.ico,0"): the quotes and the icon index are taken off, and the
+// folder it names and the three above it are tried, each as <dir>\app\<exe>
+// and <dir>\<exe>. On macOS a hint is a .app folder or a binary inside one.
+export function installedAt(app, hints, platform = process.platform) {
+  const out = []
+  const add = (p) => { if (p && !out.includes(p)) out.push(p) }
+  if (platform === "darwin") {
+    const suffix = "/" + app.mac
+    for (const h of hints) {
+      const i = h.indexOf(".app")
+      if (i < 0) continue
+      const bundle = h.slice(0, i + 4)
+      if (bundle.endsWith("/" + app.mac.split("/")[0])) add(bundle + "/" + app.mac.split("/").slice(1).join("/"))
+    }
+    return out
+  }
+  if (platform !== "win32") return out
+  const W = path.win32
+  const exe = app.win[app.win.length - 1]
+  for (const h of hints) {
+    let p = String(h).trim()
+    const q = p.match(/^"([^"]+)"/)
+    p = q ? q[1] : p.replace(/\s+\/[A-Za-z].*$/, "").replace(/,-?\d+$/, "")
+    p = p.replace(/[\\/]+$/, "")
+    if (!/^[A-Za-z]:\\|^\\\\/.test(p)) continue
+    if (W.basename(p).toLowerCase() === exe.toLowerCase()) add(p)
+    let d = /\.[A-Za-z0-9]{1,5}$/.test(W.basename(p)) ? W.dirname(p) : p
+    for (let n = 0; n < 4; n++) {
+      add(W.join(d, "app", exe))
+      add(W.join(d, "Application", "app", exe))
+      add(W.join(d, exe))
+      const up = W.dirname(d)
+      if (up === d) break
+      d = up
+    }
+  }
+  return out
+}
+
 // choose picks the app to drive: { app, binary, dataDir }. DOUBAO_WORK_APP
 // names the binary outright. A user already signed in to 豆包 through this
 // plugin (its profile exists) stays on 豆包 while it is installed, so an
 // update never signs them out. Otherwise the first app installed, 豆包工作
-// first; with neither, 豆包工作's own place, so the error names it. On
-// Linux the binary is "".
-export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+// first; with neither, 豆包工作's own place, so the error names it. An app
+// is looked for in its usual place first, then where the system says it was
+// installed (find returns those hints; it runs once, and only when a usual
+// place has nothing). On Linux the binary is "".
+export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find = exists === fs.existsSync ? systemHints : () => []) {
   const P = platform === "win32" ? path.win32 : path.posix
   const base = dataDir(platform, home)
   const out = (app, bin) => ({ app, binary: bin, dataDir: app.sub ? P.join(base, app.sub) : base })
@@ -108,9 +311,15 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
     const bin = process.env.DOUBAO_WORK_APP
     return out(/doubaowork/i.test(bin) ? work : doubao, bin)
   }
-  const found = (app) => places(app, platform, home).find((p) => exists(p))
-  const old = found(doubao)
-  if (old && exists(P.join(base, "profile"))) return out(doubao, old)
+  let hints
+  const found = (app) => {
+    const usual = places(app, platform, home).find((p) => exists(p))
+    if (usual) return usual
+    hints ??= find(platform) ?? []
+    return installedAt(app, hints, platform).find((p) => exists(p))
+  }
+  const old = exists(P.join(base, "profile")) ? found(doubao) : ""
+  if (old) return out(doubao, old)
   for (const app of APPS) {
     const bin = found(app)
     if (bin) return out(app, bin)
@@ -119,8 +328,8 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
 }
 
 // binary is the executable choose picks.
-export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
-  return choose(platform, home, exists).binary
+export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find) {
+  return choose(platform, home, exists, find).binary
 }
 
 export function dataDir(platform = process.platform, home = os.homedir()) {
@@ -132,6 +341,11 @@ export function dataDir(platform = process.platform, home = os.homedir()) {
 
 export const owns = (list) => list.some((t) => isChat(t.url))
 
+// NOT_QUERY_CODE is Doubao's answer to an /alice/ call that carries none of
+// the app's own query (see commonQuery). It is the app's "系统错误", not a
+// statement about the account.
+const NOT_QUERY_CODE = 710010702
+
 // Page-side helpers, run through Runtime.evaluate. They read the page and
 // press its controls the way a pointer does (Radix menus open on
 // pointerdown, not on click()).
@@ -140,12 +354,70 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const press = (el) => { for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); };
+// dismiss closes a menu left open: a pointerdown outside it, as Radix
+// takes one. A menu can stay open after its item is pressed (its closing
+// animation waits for a frame a window in the background doesn't draw),
+// and an open menu keeps the focus, so Enter would not send.
+const dismiss = async () => {
+  if (!$$("[role=menu]").some((m) => $$("[role=menuitem]", m).length)) return;
+  const at = $(".ProseMirror") || document.body;
+  for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup"]) at.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, view: window, pointerType: "mouse" }));
+  await wait(200);
+};
 const message = (el) => {
   if (!el) return null;
   const k = Object.keys(el).find((k) => k.startsWith("__reactFiber"));
   let f = k && el[k];
   for (let d = 0; f && d < 40; d++, f = f.return) { const m = f.memoizedProps && f.memoizedProps.message; if (m && m.message_id !== undefined && m.content_blocks_v2) return m; }
   return null;
+};
+// commonQueryOwn is the query an /alice/ call of the app's own carried: the
+// app puts the same set on every /alice/, /samantha/ and /biz/ request it
+// makes, and it is the only place some of those values exist — the page keeps
+// no runtime_version anywhere (its localStorage, its <meta>s, its globals),
+// and Doubao answers the account's own campaign only to a request that has it.
+// "" when the page has made no such call yet, as a window that has only just
+// opened has not.
+const commonQueryOwn = () => {
+  const names = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/") && u.includes("?"));
+  // only a request that carries the app's own parameters is a source: the
+  // page signs a bare path too (msToken, a_bogus alone), and the plugin's own
+  // calls are such bare paths — taking one of those gave a query of nothing
+  const own = (u) => /[?&]device_id=/.test(u) && /[?&]aid=/.test(u);
+  const found = names.filter((u) => u.includes("/alice/") && own(u)).pop() || names.filter(own).pop();
+  if (!found) return "";
+  const q = new URL(found).searchParams;
+  q.delete("msToken"); q.delete("a_bogus");
+  return String(q);
+};
+// commonQuery is what ALICE and LIST send. The app's own query when the page
+// has made a call; otherwise only what the page really has about this
+// install — its device (client_device_info: device_id, aid, pc_version,
+// chromium_version), its build channel (client_brand_info) and the country it
+// signed in from (flow_user_country). Nothing is made up to fill the gaps:
+// version_code, runtime_version, fp, web_id and web_tab_id are not on the page
+// and are left out, so Doubao answers a request built here as it does a client
+// it can't place — an /alice/ call with no query at all is answered
+// ${NOT_QUERY_CODE} 系统错误 instead.
+const commonQuery = () => {
+  const own = commonQueryOwn();
+  if (own) return own;
+  const read = (k) => { try { return JSON.parse(localStorage.getItem(k) || "{}") } catch (e) { return {} } };
+  const info = read("client_device_info"), brand = read("client_brand_info");
+  const device = String(info.deviceId || info.deviceIdCustom || "");
+  const aid = String(info.appId || ""), version = String(info.appVersion || "");
+  const country = String(localStorage.getItem("flow_user_country") || "");
+  const q = {
+    language: "zh", device_platform: "web", doubao_device_platform: "desktop",
+    aid, real_aid: aid, pkg_type: "release_version", device_id: device,
+    pc_version: version, doubao_pc_version: version, tea_uuid: device,
+    samantha_web: "1", web_platform: "desktop", "use-olympus-account": "1",
+    runtime: "web", client_platform: "pc_client",
+    chromium_version: String(info.chromiumVersion || ""),
+    os: String(info.osName || ""), channel: String(brand.buildChannel || ""),
+    region: country, sys_region: country,
+  };
+  return String(new URLSearchParams(Object.entries(q).filter(([, v]) => v !== "")));
 };
 `
 
@@ -186,20 +458,58 @@ export const CLOUD = js(`
   return "the mode stayed " + b.innerText.trim();
 `)
 
+// pickModel picks the model whose menu row is label. A row's first line
+// is the model's name, maybe followed by a badge ("限时优惠", "0.01x"): a
+// row is taken by its exact name first, then by the name and a badge, never
+// by a longer name ("Kimi K3.1 Pro" is not "Kimi K3.1 Pro 高速").
 export const pickModel = (label) =>
   js(`
   const label = ${JSON.stringify(label)};
   const b = $("[data-testid=chat_input_action_model]");
   if (!b) return "no model button";
   if (b.innerText.split("\\n")[0].trim() === label) return "";
+  const esc = () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const first = (e) => e.innerText.split("\\n")[0].trim();
+  const badge = (t) => t.startsWith(label + " ") && /^(限时|优惠|小额|免费|新|热|推荐|hot|new|beta|[\\d.]+\\s*[x×倍]|[x×]\\s*[\\d.]+)/i.test(t.slice(label.length + 1).trim());
   press(b);
   let it;
-  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu] [role=menuitem]").find((e) => e.innerText.split("\\n")[0].trim() === label); }
-  if (!it) { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "no " + label + " in the model menu"; }
-  if (it.innerText.includes("升级")) { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "upgrade"; }
+  for (let i = 0; i < 20 && !it; i++) {
+    await wait(100);
+    const rows = $$("[role=menu] [role=menuitem]").filter((e) => e.getAttribute("aria-haspopup") !== "menu");
+    it = rows.find((e) => first(e) === label) || rows.find((e) => badge(first(e)));
+  }
+  if (!it) { esc(); return "no " + label + " in the model menu"; }
+  if (it.innerText.includes("升级")) { esc(); return "upgrade"; }
   press(it);
   await wait(200);
   return "";
+`)
+
+// EFFORT sets the 推理强度 of the model picked: the model button shows it
+// under the model's name ("自动\n中"); otherwise the model menu's 推理强度
+// row opens a submenu (hovered, then ArrowRight, as Radix opens one) and
+// the level is pressed there.
+export const EFFORT = (name) =>
+  js(`
+  const name = ${JSON.stringify(name)};
+  const b = $("[data-testid=chat_input_action_model]");
+  if (!b) return "no model button";
+  const now = () => b.innerText.split("\\n").map((x) => x.trim()).filter(Boolean)[1] || "";
+  if (now() === name) return "";
+  const esc = () => { for (let i = 0; i < 2; i++) document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); };
+  press(b);
+  let row;
+  for (let i = 0; i < 20 && !row; i++) { await wait(100); row = $$("[role=menu] [role=menuitem]").find((e) => e.getAttribute("aria-haspopup") === "menu" && e.innerText.includes("推理强度")); }
+  if (!row) { esc(); return "no 推理强度 in the model menu"; }
+  for (const t of ["pointerenter", "pointermove", "pointerover"]) row.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerType: "mouse" }));
+  row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  let it;
+  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu]").filter((m) => !m.contains(row)).flatMap((m) => $$("[role=menuitem]", m)).find((e) => e.innerText.split("\\n")[0].trim() === name); }
+  if (!it) { esc(); return "no " + name + " under 推理强度"; }
+  press(it);
+  for (let i = 0; i < 10 && now() !== name; i++) await wait(100);
+  await dismiss();
+  return now() === name ? "" : "推理强度 stayed " + now();
 `)
 
 // MENU reads the model list off the app's own menu: press the model button,
@@ -219,7 +529,7 @@ export const MENU = js(`
   await wait(250);
   const rows = $$("[role=menuitem]", menu)
     .filter((e) => e.getAttribute("aria-haspopup") !== "menu")
-    .map((e) => ({ label: e.innerText.split("\\n")[0].trim(), upgrade: e.innerText.includes("升级") }))
+    .map((e) => { const l = e.innerText.split("\\n").map((x) => x.trim()).filter(Boolean); return { label: l[0] || "", lines: l.slice(1), upgrade: e.innerText.includes("升级") }; })
     .filter((r) => r.label);
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return { rows };
@@ -229,11 +539,21 @@ export const MENU = js(`
 // Doubao sends newlines (a hard break is dropped).
 export const fill = (text) =>
   js(`
+  await dismiss();
   const ed = $(".ProseMirror") && $(".ProseMirror").editor;
   if (!ed) return -1;
   const lines = ${JSON.stringify(String(text).split("\n"))};
   ed.chain().clearContent(true).insertContent(lines.map((l) => ({ type: "paragraph", content: l ? [{ type: "text", text: l }] : [] }))).focus("end").run();
   return ed.getText({ blockSeparator: "\\n" }).length;
+`)
+
+// SEND presses the send button; false when there is none to press.
+export const SEND = js(`
+  await dismiss();
+  const b = $("[data-testid=chat_input_send_button]");
+  if (!b || b.disabled || b.getAttribute("aria-disabled") === "true") return false;
+  b.click();
+  return true;
 `)
 
 export const READ = js(`
@@ -256,6 +576,305 @@ export const READ = js(`
     usage: ext.context_window_usage || "", error: r.error_details ? JSON.stringify(r.error_details) : "" };
 `)
 
+// OWN_QUERY says the page has made a call of its own that carries the app's
+// query (commonQueryOwn). A check-in read before that is a read whose query
+// the page could only partly build, and the campaign's answer to it is not
+// this account's (see checkinOf's complete).
+export const OWN_QUERY = js(`return !!commonQueryOwn();`)
+
+// QUOTA asks the app's own page for the plan's allowance, the way the
+// page's 订阅 view does (its cookies sign the call). The body is the app's
+// own (product_line membership); with the app's query beside it Doubao also
+// answers the amounts — used_amount / total_amount, quota_remaining_amount —
+// while the bare path answers the percentages alone, so the bare path is the
+// fallback for a query Doubao doesn't take.
+export const QUOTA = js(`
+  const read = async (url) => {
+    const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ product_line: "membership" }) });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+    return { status: r.status, body: j };
+  };
+  const query = commonQuery();
+  const path = "https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/";
+  try {
+    let got = query ? await read(path + "?" + query) : null;
+    if (!got || !got.body || got.body.code !== 0) got = await read(path);
+    return got;
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+// ALICE posts a JSON body to one of Doubao's /alice/ paths the way the
+// page's own calls go: with its cookies and the query its other calls carry
+// (commonQuery; msToken and a_bogus left out, as LIST leaves them). It
+// answers {status, body} or, when nothing answered, {error}.
+export const ALICE = (path, body) => js(`
+  const query = commonQuery();
+  try {
+    const r = await fetch("https://www.doubao.com" + ${JSON.stringify(path)} + (query ? "?" + query : ""), { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: ${JSON.stringify(JSON.stringify(body ?? {}))} });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+    return { status: r.status, body: j };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+// Doubao's daily check-in (签到) has two surfaces, both read from the app's
+// own bundle (UgCampaignApiService). Which one an account gets is Doubao's,
+// and it has no make-up check-in (补签):
+//
+//   1. the desktop app's own 每日签到 task (daily_signin) of its PC incentive
+//      campaign — what the app shows as 每日签到 / "每天签到领 200 额度". Its
+//      detail says whether today is already in (daily_checkin) and what the
+//      streak is; landing/checkin presses it. That press is idempotent: a
+//      second one the same day answers checked_in with idempotent true and the
+//      day's reward, so a check-in magpie isn't sure it made claims nothing
+//      twice.
+//   2. the landing page of the growth campaign (豆包探索计划), for the
+//      accounts Doubao still shows it to: landing/get says what to show, and a
+//      签到 button there reports the press (landing/report) and checks in.
+//
+// An account with neither gets no 签到 today — that is "inactive", not a
+// failure.
+export const LANDING = "/alice/ug/campaign/landing/get"
+export const CHECKIN = "/alice/ug/campaign/landing/checkin"
+export const REPORT = "/alice/ug/campaign/landing/report"
+export const DETAIL = "/alice/ug/campaign/v3/detail/"
+// CHECKIN_GROUP is the campaign the app's 每日签到 belongs to (its bundle's
+// own constant), SIGNIN the task inside it.
+export const CHECKIN_GROUP = "pc_incentive_task_mvp_v3"
+const SIGNIN = "daily_signin"
+
+// landing/get's chosen_type: 1 the check-in page, 2 the page after it (today
+// is in), 3 cards. A button's type: button_type on the pages, interaction_type
+// on a card; 2 is 签到 on both.
+const MAIN_PAGE = 1, CHECKED_IN = 2, CARDS = 3, CHECK_IN = 2
+// reward_status 4 is a check-in whose reward failed
+const REWARD_FAILED = 4
+
+const words = (info) => [info?.title, info?.content].map((s) => String(s ?? "").trim()).filter(Boolean).join("，")
+
+// refusal is a reply that isn't Doubao's yes, as magpie's outcome: codes 0
+// and 200 (or none) are the page's yes.
+function refusal(read, what) {
+  if (read?.error) throw new DoubaoError(`${what}没有回复：${read.error}`, "doubao_network")
+  if (read?.status === 401 || read?.status === 403) return { outcome: "failed", message: "豆包登录已过期，请重新登录豆包工作窗口。" }
+  const b = read?.body
+  if (!b || typeof b !== "object") return { outcome: "failed", message: `${what}的回复不是 JSON（HTTP ${read?.status ?? "?"}）` }
+  if (b.code != null && !["0", "200"].includes(String(b.code))) {
+    // the app's own query missing is Doubao's 系统错误: said as what it is,
+    // not as the account having nothing
+    if (Number(b.code) === NOT_QUERY_CODE)
+      return { outcome: "failed", message: `${what}失败：豆包没有认这次请求（系统错误）。请在豆包工作窗口打开后重试。` }
+    return { outcome: "failed", message: `${what}失败：${b.msg || b.message || "code " + b.code}` }
+  }
+  return null
+}
+
+// offerOf is the 签到 button landing/get offers: on the check-in page, or
+// on a card (whose press is reported with the card's id).
+function offerOf(d) {
+  const type = Number(d?.chosen_type)
+  if (type === MAIN_PAGE && (d.main_page_info?.buttons ?? []).some((b) => Number(b?.button_type) === CHECK_IN)) return {}
+  if (type === CARDS)
+    for (const c of d.landing_cards ?? []) {
+      const b = (c?.buttons ?? []).find((b) => Number(b?.interaction_type) === CHECK_IN)
+      if (b && c.card_id) return { card: { card_id: String(c.card_id), ...(b.button_id ? { button_id: String(b.button_id) } : {}) } }
+    }
+  return null
+}
+
+// signinOf reads the 每日签到 task of the PC incentive campaign out of its
+// detail, as the app's own page does: {checked_in_today, continuous_days,
+// reward, reward_status, ...}, or null when that campaign offers this account
+// no 签到 at all.
+export function signinOf(read) {
+  const tasks = read?.body?.data?.tasks
+  const task = (Array.isArray(tasks) ? tasks : []).find((t) => t?.campaign_code === SIGNIN)
+  if (!task) return null
+  return task.daily_checkin && typeof task.daily_checkin === "object" ? task.daily_checkin : {}
+}
+
+// pressCheckIn presses the app's 签到 (landing/checkin) and says the reply as
+// magpie's outcome. The press report beside it (landing/report) is the landing
+// page's own instrumentation — event_type user_operate, biz_event_name
+// check_in, and the card the button sits on when it sits on one — so it goes
+// out only for a landing page's press: `report` is false for the campaign's
+// own 每日签到, which is not a landing page and whose press the app reports, if
+// at all, through the campaign's own calls.
+async function pressCheckIn(call, newId, { card, report = true } = {}) {
+  // the page reports the press beside the check-in and doesn't wait for it
+  const pressed = report
+    ? call(REPORT, { event_type: "user_operate", biz_event_name: "check_in", ...(card ? { card_event: { ...card, event_id: newId() } } : {}) }).catch(() => {})
+    : Promise.resolve()
+  let got
+  try {
+    got = await call(CHECKIN, {})
+  } finally {
+    await pressed
+  }
+  const refused = refusal(got, "豆包签到")
+  if (refused) return refused
+  const r = got.body.data ?? {}
+  if (!r.checked_in) return { outcome: "failed", message: got.body.msg || got.body.message || "豆包没有完成签到" }
+  const streak = Number(r.continuous_days)
+  const credit = Number(r.reward_amount)
+  const lost = Number(r.reward_status) === REWARD_FAILED
+  // idempotent: today's check-in was already in, and this press granted
+  // nothing new — the day's check-in is done, not one magpie just made
+  const already = r.idempotent === true
+  return {
+    outcome: already ? "done" : "claimed",
+    ...(streak > 0 ? { streak } : {}),
+    ...(credit > 0 && !lost ? { credit } : {}),
+    ...(lost ? { message: "已签到，但豆包这次没有发放签到奖励" } : already ? { message: "今日已签到" } : {}),
+  }
+}
+
+// checkinOf checks the account in the way the app's own 签到 button does,
+// through call(path, body) ({status, body} or {error}), and says it as
+// magpie's check-in outcome. `complete` says the query the calls carried was
+// the app's own (commonQueryOwn): the campaign detail answers for this account
+// only to one that has runtime_version, so a detail read with a query built
+// without it is not a "this account has no 签到" — it is a read that told
+// nothing, and it is said as a failure to try again rather than as `inactive`.
+// A request nothing answered is thrown.
+export async function checkinOf(call, { newId = randomUUID, complete = true } = {}) {
+  // the app's own 每日签到 task first: one read says whether Doubao gives this
+  // account one today and whether it is already in
+  const detail = await call(DETAIL, { campaign_group_code: CHECKIN_GROUP })
+  const trouble = refusal(detail, "读取豆包签到")
+  const signin = trouble ? null : signinOf(detail)
+  if (signin) {
+    const streak = Number(signin.continuous_days) > 0 ? Number(signin.continuous_days) : 0
+    const reward = Number(signin.reward?.reward_amount) > 0 ? Number(signin.reward.reward_amount) : 0
+    if (signin.checked_in_today) {
+      const said = [streak > 0 ? `已连续 ${streak} 天` : "", reward > 0 ? `今天领 ${reward} 额度` : ""].filter(Boolean)
+      return {
+        outcome: "done",
+        ...(streak > 0 ? { streak } : {}),
+        ...(reward > 0 ? { credit: reward } : {}),
+        message: "今日已签到" + (said.length ? `（${said.join("，")}）` : ""),
+      }
+    }
+    const got = await pressCheckIn(call, newId, { report: false })
+    // the reply of a press that landed names no amount when Doubao already
+    // handed the day's reward out: the task's own reward is the day's
+    if (got.outcome === "claimed") {
+      if (!(got.credit > 0) && reward > 0 && Number(signin.reward_status) !== REWARD_FAILED) got.credit = reward
+      if (!(got.streak > 0) && streak > 0) got.streak = streak
+    }
+    return got
+  }
+  // the accounts Doubao still shows the growth campaign's landing page to
+  const landing = await call(LANDING, {})
+  const no = refusal(landing, "读取豆包签到")
+  if (no) return no
+  const d = landing.body.data ?? {}
+  if (Number(d.chosen_type) === CHECKED_IN) return { outcome: "done", ...(words(d.complete_page_info) ? { message: words(d.complete_page_info) } : {}) }
+  const offer = offerOf(d)
+  if (!offer) {
+    // Doubao answered, and nothing of its is a 签到: the account has none
+    // today. A read that failed is said as it failed, not as this — and a
+    // query built without the app's own runtime_version makes even that
+    // answer not this account's, so it is asked again later instead.
+    if (trouble) return trouble
+    if (!complete) return { outcome: "failed", message: "豆包工作的页面还没有发出自己的请求，这次读到的可能不是这个账号的活动：稍后再试。" }
+    return { outcome: "inactive", message: "豆包今天没有给这个账号签到入口（签到由豆包按账号推送）。" }
+  }
+  const got = await pressCheckIn(call, newId, { card: offer.card })
+  if (got.outcome === "claimed" && !got.message && words(d.complete_page_info)) got.message = words(d.complete_page_info)
+  return got
+}
+
+// BOT_ID is the bot Doubao's page names when it asks for its action bar
+// (the app's code has it as a constant); without it brief_list answers
+// 710010202.
+export const BOT_ID = "7338286299411103781"
+
+// LIST asks Doubao for the action bar its own page builds the model menu
+// from (POST /alice/slot/action_bar_v3/brief_list), the way the page does:
+// with the page's cookies and the query its own calls carry (commonQuery).
+// It returns the deep-thinking entry's menu_conf_v2 with the icons left out.
+export const LIST = js(`
+  const query = commonQuery();
+  const url = "https://www.doubao.com/alice/slot/action_bar_v3/brief_list" + (query ? "?" + query : "");
+  try {
+    const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ bot_id: ${JSON.stringify(BOT_ID)}, language_code: "zh" }) });
+    const j = await r.json().catch(() => null);
+    if (!j || j.code !== 0) return { status: r.status, code: j && j.code, msg: j && j.msg };
+    const e = ((j.data && j.data.entry_list) || []).find((e) => e.action_bar_key === "coco_deep_thinking");
+    const v = e && e.active_switch_conf && e.active_switch_conf.menu_conf_v2;
+    const bare = (x) => JSON.parse(JSON.stringify(x == null ? null : x, (k, val) => (/icon/i.test(k) ? undefined : val)));
+    return { status: r.status, code: 0, conf: bare(v) };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+const HOUR = 3600000
+
+// amountOf reads one of Doubao's own amounts ("1,400") as a number; 0 when it
+// says none.
+const amountOf = (v) => {
+  const n = Number(String(v ?? "").replace(/[,\s]/g, ""))
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// compact writes a number back as Doubao does ("1,400").
+const compact = (n) => n.toLocaleString("en-US")
+
+// quotaOf turns quota/summary into magpie's usage: the plan's short name and
+// one window per limit, as a percent used.
+//
+// Doubao splits an account's allowance into sections and any of them can be
+// the whole of it: a paid plan's limits are in window_limit_section, an
+// enterprise plan's in enterprise_window_limit_section, and the gift quotas
+// of its campaigns (活动赠送额度 — what a free account has) in
+// incentive_quota_section. Reading only the first two left a free account
+// with no quota at all ("当前套餐没有额度限制数据"), which is what
+// incentive_quota_section is read for here; every *_window_limit_section is
+// read, so a section Doubao adds later is not lost either.
+//
+// A window names its span when the reply gives one (a plan's 5 小时 / 每周 /
+// 本月); a campaign's quota has no start (start_time 0) and is named as
+// Doubao names the group (活动赠送额度). The amounts, when the reply carries
+// them, are shown as 已用 / 总量.
+export function quotaOf(read) {
+  const d = read?.body?.data
+  if (!d || typeof d !== "object") return null
+  // every section that has window limits: the plan's own window_limit_section,
+  // an enterprise plan's, the campaigns' incentive_quota_section and any
+  // section Doubao adds later
+  const sections = Object.keys(d).filter((k) => Array.isArray(d[k]?.window_limit_groups))
+  // the plan's own section first, then the rest as Doubao lists them
+  sections.sort((a, b) => (a === "window_limit_section" ? -1 : b === "window_limit_section" ? 1 : 0))
+  const windows = []
+  for (const key of sections) {
+    const s = d[key] ?? {}
+    const exhausted = s.usage_exhausted === true
+    for (const g of s.window_limit_groups ?? []) {
+      const group = String(g?.feature_group_name ?? "").trim()
+      for (const w of g?.window_limits ?? []) {
+        const pct = Number(w?.used_percent)
+        if (!Number.isFinite(pct)) continue
+        const start = Number(w?.start_time) || 0
+        const end = Number(w?.end_time) || 0
+        const span = end - start
+        let name = group || "额度"
+        if (start > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
+        const out = { name, used: exhausted ? 100 : Math.max(0, Math.min(100, pct)) }
+        const used = amountOf(w?.used_amount)
+        const total = amountOf(w?.total_amount)
+        if (total > 0) Object.assign(out, { display: `${compact(used)} / ${compact(total)} 额度`, amount: used, limit: total, unit: "额度" })
+        else if (w?.less_than_one_percent && pct === 0) out.display = "不到 1%"
+        if (end > 0) out.resetsAt = new Date(end).toISOString()
+        windows.push(out)
+      }
+    }
+  }
+  return { plan: String(d.current_subscription?.display?.short_name || d.current_subscription?.display?.product_name || ""), windows }
+}
+
 export const usageOf = (raw) => {
   try {
     const u = typeof raw === "string" ? JSON.parse(raw) : raw
@@ -264,6 +883,96 @@ export const usageOf = (raw) => {
   } catch {
     return 0
   }
+}
+
+// A spent allowance is no error on Doubao's page. In place of running the
+// task, Doubao answers with a reply of its own, as ordinary text (aaron0x10
+// on X, 2026-11):
+//
+//   本月额度已用完，下个月恢复为你服务。升级到标准套餐畅享更多额度。
+//
+//   升级正式订阅
+//
+// Given to the agent as the model's answer, it ended the agent's work. It is
+// a 429 instead (doubao_quota), with Doubao's own words, so magpie rests the
+// account and asks the next one. Only a reply that is that notice whole is
+// one: its head (本月, or a shorter window's 本周, 今日, 今天), maybe when it
+// is back, then nothing but lines offering an upgrade. An answer that only
+// mentions 额度 is an answer.
+const SPENT_HEADS = ["本月", "本周", "今日", "今天"].map((s) => s + "额度已用完")
+const SPENT = /^(本月|本周|今日|今天)额度已用完(?:[，,]\s*(下个月|下月|下周|明天|明日)恢复为你服务)?[。！!.]?/
+// the longest a notice is: a reply longer than this is an answer
+const SPENT_MAX = 160
+
+// spentNotice reads a whole reply as Doubao's notice that the allowance is
+// spent: { words, when } (when: 下个月, 明天..., "" when it doesn't say), or
+// null when the reply is anything else.
+export function spentNotice(text) {
+  const t = String(text ?? "").trim()
+  if (!t || t.length > SPENT_MAX) return null
+  const m = t.match(SPENT)
+  if (!m) return null
+  // what may follow the head: the upgrade offer, sentence by sentence or
+  // line by line, each beginning 升级
+  const rest = t.slice(m[0].length).split(/[。！!\n]+/).map((s) => s.trim()).filter(Boolean)
+  if (!rest.every((s) => s.startsWith("升级") && s.length <= 30)) return null
+  return { words: t.replace(/\s*\n\s*/g, " "), when: m[2] ?? "" }
+}
+
+// maySpend says whether a reply still growing could be that notice: empty
+// yet, part of a head, or a head and short enough. A stream holds such a
+// reply back, so a notice is a 429 and never an answer begun.
+export function maySpend(text) {
+  const t = String(text ?? "").trimStart()
+  if (!t) return true
+  if (SPENT_HEADS.some((h) => h.startsWith(t))) return true
+  return SPENT_HEADS.some((h) => t.startsWith(h)) && t.length <= SPENT_MAX
+}
+
+// BEIJING is the clock Doubao's allowance runs on: Doubao is ByteDance's
+// China service, so a month (or a day, or a week) is Beijing's, UTC+8 with
+// no summer time.
+const BEIJING = 8 * HOUR
+
+// backAt is when a notice's "下个月 恢复为你服务" says the allowance is
+// back, in ms: the start of next month, tomorrow or next Monday on Beijing's
+// clock. 0 when it doesn't say.
+export function backAt(when, now = Date.now()) {
+  const d = new Date(now + BEIJING) // read in UTC, its fields are Beijing's
+  const y = d.getUTCFullYear(), m = d.getUTCMonth(), day = d.getUTCDate()
+  if (when === "下个月" || when === "下月") return Date.UTC(y, m + 1, 1) - BEIJING
+  if (when === "明天" || when === "明日") return Date.UTC(y, m, day + 1) - BEIJING
+  if (when === "下周") return Date.UTC(y, m, day + 7 - ((d.getUTCDay() + 6) % 7)) - BEIJING
+  return 0
+}
+
+// spentError is the doubao_quota error for a notice: a 429 with Doubao's
+// words and, when it says, the time it is back (resetsAt, ms).
+export function spentError(notice, now = Date.now()) {
+  const at = backAt(notice.when, now)
+  return new DoubaoError("豆包工作：" + notice.words, "doubao_quota", { status: 429, ...(at > now ? { resetsAt: at } : {}) })
+}
+
+// CACHE is the models.json format: 2 since the list comes from brief_list.
+const CACHE = 2
+
+// CHAT_ONLY are the 对话 menu's models, which 0.1.9 could list
+const CHAT_ONLY = ["快速", "专家"]
+
+// rateIn finds the multiple the model menu shows for the model named label:
+// its row is the one with that name, or that name and a badge ("Kimi K3
+// 0.65x") when no other model has the longer name.
+export function rateIn(menu, label, rows = []) {
+  for (const r of menu ?? []) {
+    const l = String(r?.label ?? "").trim()
+    if (l === label) return Number(r.rate) || rateOf(r.lines)
+  }
+  for (const r of menu ?? []) {
+    const l = String(r?.label ?? "").trim()
+    if (l.startsWith(label + " ") && !rows.some((o) => o.label !== label && l.startsWith(o.label) && o.label.length > label.length))
+      return Number(r.rate) || rateOf([l.slice(label.length), ...(r.lines ?? [])])
+  }
+  return 0
 }
 
 export class DoubaoError extends Error {
@@ -275,13 +984,15 @@ export class DoubaoError extends Error {
 
 // Doubao drives the app. One request runs at a time: there is one window.
 export class Doubao {
-  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000 } = {}) {
+  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000, queryWait = 8000 } = {}) {
     if (!app) {
       const c = choose()
       app = new App({ binary: c.binary, dataDir: c.dataDir, owns })
     }
     this.app = app
-    Object.assign(this, { openPage, poll, idle, total, fresh })
+    Object.assign(this, { openPage, poll, idle, total, fresh, queryWait })
+    this.missAt = 0
+    this.readAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
     this.tableAt = 0
@@ -289,16 +1000,27 @@ export class Doubao {
     this.queue = Promise.resolve()
   }
 
-  // modelList is what the plugin offers: the menu read last time, or the
-  // fallback before the menu has ever been read. It never opens the app —
-  // the menu is read by discover(), on sign-in and on a stale request.
+  // modelList is what the plugin offers: the list read last time, or the
+  // fallback before it has ever been read. It never opens the app — the
+  // list is read by discover(), on sign-in and on a stale request. A
+  // models.json older than CACHE is not used: up to 0.1.9 it could hold the
+  // 对话 menu's 快速 and 专家, so it is read again.
   modelList() {
     if (this.table) return this.table
     try {
       const d = JSON.parse(fs.readFileSync(this.cacheFile, "utf8"))
-      if (d?.models && typeof d.at === "number" && Object.keys(d.models).length) {
+      if (d?.v === CACHE && d?.models && typeof d.at === "number" && Object.keys(d.models).length) {
         this.table = d.models
         this.tableAt = d.at
+        return this.table
+      }
+      // an older one keeps its models, less the 对话 menu's, until the
+      // next read (#1117: a model picked from it was dropped when an
+      // update made it unreadable); it counts as never read
+      const old = Object.fromEntries(Object.entries(d?.models ?? {}).filter(([, m]) => m?.label && !CHAT_ONLY.includes(m.label)))
+      if (Object.keys(old).length) {
+        this.table = old
+        this.tableAt = 0
         return this.table
       }
     } catch {}
@@ -319,31 +1041,129 @@ export class Doubao {
     try {
       fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true })
       const tmp = this.cacheFile + ".tmp"
-      fs.writeFileSync(tmp, JSON.stringify({ at: this.tableAt, models: table }, null, 1))
+      fs.writeFileSync(tmp, JSON.stringify({ v: CACHE, at: this.tableAt, models: table }, null, 1))
       fs.renameSync(tmp, this.cacheFile)
     } catch {}
   }
 
-  // discover reads Doubao's model menu and keeps the result. It opens a
-  // new task first when the current page has no model button (the app can
-  // sit on 技能 or another page); nothing is sent, so no task runs.
-  async discover({ signal } = {}) {
-    const page = await this.connect(signal)
-    let read = await page.eval(MENU)
-    if (read?.error === "no model button") {
-      const why = await page.eval(NEW_TASK)
-      if (why) throw new DoubaoError("豆包读取模型列表失败：" + why, "doubao_ui")
-      read = await page.eval(MENU)
+  // discover reads the models Doubao's 工作任务 offers and keeps them. It
+  // asks Doubao's own list first (LIST), the one the page builds its menu
+  // from. When that can't be read it reads the model menu of a new work
+  // task: the page may sit on a 对话 page, whose menu (快速, 专家) is
+  // another list. Nothing is sent, so no task runs. inTask says the page is
+  // on a new work task already (ask), so its menu is read too, for the
+  // multiple each model costs, which only the menu shows.
+  async discover({ signal, inTask = false, launch = true } = {}) {
+    const page = await this.connect(signal, { launch })
+    const old = this.modelList()
+    let rows = null
+    try { rows = listOf(await page.eval(LIST)) } catch {}
+    let menu = null
+    if (!rows || inTask) {
+      if (!inTask) {
+        const why = await page.eval(NEW_TASK)
+        if (why) throw new DoubaoError("豆包读取模型列表失败：" + why, "doubao_ui")
+      }
+      const read = await page.eval(MENU)
+      if (read?.error && !rows) throw new DoubaoError("豆包读取模型列表失败：" + read.error, "doubao_ui")
+      menu = read?.rows ?? null
     }
-    if (read?.error) throw new DoubaoError("豆包读取模型列表失败：" + read.error, "doubao_ui")
-    const table = tableFrom(read?.rows)
+    if (!rows) rows = menu
+    else if (menu) rows = rows.map((r) => ({ ...r, rate: rateIn(menu, r.label, rows) }))
+    const table = tableFrom(rows)
+    // a model whose multiple the menu didn't show this time keeps the one
+    // it showed before
+    for (const m of Object.values(table)) {
+      const was = Object.values(old).find((o) => o?.label === m.label)
+      if (!(m.rate > 0) && was?.rate > 0) m.rate = was.rate
+    }
     this.#save(table)
     return table
   }
 
-  async connect(signal) {
+  // ensureList reads the menu once when it has never been read, for an
+  // account that signed in before the plugin read menus (or whose sign-in
+  // read failed): without it the list stays at the three built-in models
+  // until the first request. It reads it only from a window already open:
+  // a model list is no reason to bring Doubao up (#1117), so a closed one
+  // is read on the next request. A failed read is tried again after a
+  // minute. It queues behind a running ask.
+  async ensureList({ signal } = {}) {
+    this.modelList()
+    if (this.tableAt || !this.app?.running || !this.cacheFile) return
+    if (Date.now() - this.readAt < 60000) return
+    this.readAt = Date.now()
+    const run = this.queue.then(() => this.tableAt || this.discover({ signal, launch: false }))
+    this.queue = run.catch(() => {})
+    try { await run } catch {}
+  }
+
+  // known says whether Doubao offers model. A model the list read last
+  // doesn't have sends the plugin back to the menu at once (Doubao adds
+  // models between reads, #1048), at most once a minute, so a client
+  // asking for a name Doubao never had doesn't open the menu each time.
+  // The read waits its turn behind a running ask: both press the same
+  // controls.
+  async known(model, { signal } = {}) {
+    if (lookup(this.modelList(), model)) return true
+    if (!this.app?.start || Date.now() - this.missAt < 60000) return false
+    this.missAt = Date.now()
+    const run = this.queue.then(() => this.discover({ signal }))
+    this.queue = run.catch(() => {})
+    try { await run } catch { return false }
+    return !!lookup(this.modelList(), model)
+  }
+
+  // quota reads the plan's allowance through the app's page, from a
+  // window already open only: a usage read never brings Doubao up
+  // (#1117), it says the window is closed instead.
+  async quota({ signal } = {}) {
+    if (!(this.page && !this.page.closed)) {
+      if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
+      if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
+    }
+    const page = await this.connect(signal, { launch: false })
+    return page.eval(QUOTA)
+  }
+
+  // checkin presses Doubao's daily 签到 through the app's page, from a
+  // window already open only, as quota reads: a check-in never brings
+  // Doubao up (#1117).
+  async checkin({ signal } = {}) {
+    if (!(this.page && !this.page.closed)) {
+      if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
+      if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
+    }
+    const page = await this.connect(signal, { launch: false })
+    // a window that has only just opened has made no call of its own yet, and
+    // the query the page can build alone lacks runtime_version, which the
+    // campaign's detail needs to answer for this account: wait a moment for
+    // the app's first call, and say `complete` when there was one
+    const complete = await this.#ownQuery(page, signal)
+    return checkinOf((p, body) => page.eval(ALICE(p, body)), { complete })
+  }
+
+  // #ownQuery waits up to queryWait for the page to make a call of its own
+  // (OWN_QUERY), and says whether it did. A document being replaced by a
+  // navigation is not an error here: the next look finds the new one.
+  async #ownQuery(page, signal) {
+    for (const until = Date.now() + this.queryWait; ; ) {
+      try { if (await page.eval(OWN_QUERY)) return true } catch {}
+      if (Date.now() >= until) return false
+      await sleep(Math.min(250, Math.max(0, until - Date.now())), signal)
+    }
+  }
+
+  // connect gives the page of the app's chat window, starting the app
+  // when launch says so; without it a closed app is the app_closed error
+  async connect(signal, { launch = true } = {}) {
     if (this.page && !this.page.closed) return this.page
-    const port = await this.app.start({ signal })
+    let port
+    if (launch) port = await this.app.start({ signal })
+    else {
+      port = this.app?.running ? await this.app.running() : 0
+      if (!port) throw new DoubaoError("豆包工作窗口没有打开：额度和模型列表在它打开时读取，下一次请求会打开它。", "app_closed")
+    }
     this.page = await this.openPage(port, (t) => isChat(t.url))
     if (!this.page) throw new DoubaoError("豆包的对话窗口没有打开。请在豆包里打开一个对话窗口后再试。", "doubao_no_window")
     return this.page
@@ -377,7 +1197,22 @@ export class Doubao {
     return run
   }
 
-  async #ask(prompt, { model = "auto", signal, onUpdate = () => {} }) {
+  // reload loads the chat page again: a running app keeps the model menu
+  // it loaded when it started, and Doubao adds models in between.
+  async #reload(page, signal) {
+    await page.call("Page.reload", { ignoreCache: true })
+    for (const until = Date.now() + 30000; Date.now() < until; ) {
+      await sleep(500, signal)
+      let s
+      try { s = await page.eval(STATE) } catch { continue }
+      if (s?.input) return
+    }
+    throw new DoubaoError("豆包的页面重新加载后没有打开。", "doubao_ui")
+  }
+
+  // effort is the client's reasoning_effort ("low" ... "max"); "" is the
+  // model's own default.
+  async #ask(prompt, { model = "auto", effort = "", signal, onUpdate = () => {} }) {
     signal?.throwIfAborted()
     const page = await this.connect(signal)
     const s = await page.eval(STATE)
@@ -388,18 +1223,32 @@ export class Doubao {
     }
     await step(NEW_TASK, "新建任务")
     await step(CLOUD, "切换到云电脑")
-    // the menu is open anyway to pick a model: refresh the list while here
-    // when it has not been read for a while
-    if (this.cacheFile && this.stale()) { try { await this.discover({ signal }) } catch {} }
+    // refresh the list while here when it has not been read for a while
+    if (this.cacheFile && this.stale()) { try { await this.discover({ signal, inTask: true }) } catch {} }
     const table = this.modelList()
-    const label = (table[model] ?? table.auto ?? MODELS.auto).label
-    const picked = await page.eval(pickModel(label))
+    const m = lookup(table, model) ?? table.auto ?? MODELS.auto
+    const label = m.label
+    let picked = await page.eval(pickModel(label))
+    if (/^no .* in the model menu$/.test(picked)) {
+      // the list has it and the menu doesn't: the menu is the one the page
+      // loaded with, older than the list. Load the page again, once.
+      await this.#reload(page, signal)
+      await step(NEW_TASK, "新建任务")
+      await step(CLOUD, "切换到云电脑")
+      picked = await page.eval(pickModel(label))
+    }
     if (picked === "upgrade") throw new DoubaoError(`${label} 需要升级豆包会员。`, "doubao_upgrade", { status: 403 })
     if (picked) throw new DoubaoError(`豆包选择模型失败：${picked}`, "doubao_ui")
+    // no effort asked: the model's own default, not the level the last
+    // request left the app on (the app keeps that)
+    const level = effortFor(effort, m.efforts) || (m.efforts?.includes(m.effort) ? m.effort : "")
+    if (level) await step(EFFORT(level), "设置推理强度")
     const n = await page.eval(fill(prompt))
     if (n < 0) throw new DoubaoError("豆包的输入框没有找到。", "doubao_ui")
     signal?.throwIfAborted()
-    await page.key("Enter", { keyCode: 13, text: "\r" })
+    // the send button, as a person sends; Enter when there is none. Enter
+    // alone was seen not to send while a menu of the page stayed open.
+    if (!(await page.eval(SEND))) await page.key("Enter", { keyCode: 13, text: "\r" })
     let last = null
     let changed = Date.now()
     const start = Date.now()
@@ -421,6 +1270,8 @@ export class Doubao {
       }
       last = r
       if (r.finished) {
+        const spent = spentNotice(r.text)
+        if (spent) throw spentError(spent)
         if (!r.text && !r.reasoning && (r.error || !/^succeed/i.test(r.reason || "succeed")))
           throw new DoubaoError(`豆包没有回复（${r.status || r.reason || r.error || "unknown"}）`, "doubao_failed", { status: 502 })
         return r

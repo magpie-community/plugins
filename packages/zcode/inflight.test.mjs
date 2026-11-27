@@ -59,6 +59,7 @@ afterEach(() => {
   globalThis.fetch = real
   BUSY_WAITS.splice(0, BUSY_WAITS.length, ...WAITS)
   startGate.inflight = GATE.inflight
+  startGate.address = GATE.address
   startGate.wait = GATE.wait
   startGate.lanes.clear()
   startGate.narrow.clear()
@@ -148,6 +149,61 @@ test("each account has slots of its own", async () => {
   expect([...now.peak.values()]).toEqual([3, 3])
 })
 
+test("every account's Start Plan requests share the address's six slots", async () => {
+  // mathfournity on X: every gift account takes requests now (no
+  // maxAccounts), so what reaches zcode.z.ai from this address is held to
+  // what two accounts sent before, three each, over all of them
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const accounts = await Promise.all([1, 2, 3, 4].map((n) => loader(startAuth(n))))
+  const rs = await Promise.all(accounts.flatMap((a) => Array.from({ length: 5 }, () => one(a))))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(messages().length).toBe(20)
+  expect(peak).toBe(startGate.address)
+  expect(Math.max(...now.peak.values())).toBeLessThanOrEqual(3)
+  expect(now.peak.size).toBe(4)
+})
+
+test("a wait for the address's slots that runs out says so, nothing sent, and lets the account's slot go", async () => {
+  startGate.address = 1
+  startGate.wait = 200
+  let release
+  answer = () => new Promise((r) => (release = () => r(OK())))
+  const [a, b] = await Promise.all([loader(startAuth(1)), loader(startAuth(2))])
+  const first = one(a)
+  while (!release) await sleep(5)
+  const res = await one(b)
+  expect(res.status).toBe(429)
+  expect(JSON.parse(res.text).error.message).toContain("over all its accounts")
+  expect(messages().length).toBe(1)
+  release()
+  expect((await first).status).toBe(200)
+  // neither lane is left holding a slot
+  expect(startGate.lanes.size).toBe(0)
+})
+
+test("the coding plan is held to none of the address's slots", async () => {
+  startGate.address = 1
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const opts = await loader(planAuth())
+  const rs = await Promise.all(Array.from({ length: 4 }, () => one(opts)))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(peak).toBe(4)
+})
+
 test("a slot is held across the re-asks, and let go when the answer has been read", async () => {
   BUSY_WAITS.splice(0, BUSY_WAITS.length, 50, 50)
   const opts = await loader(startAuth())
@@ -184,12 +240,43 @@ test("a wait that runs out is answered here, plainly, and nothing is sent", asyn
   expect(e.type).toBe("rate_limit_error")
   expect(e.message).toContain("serves this account 3 requests at a time")
   expect(e.message).toContain("was not sent")
+  // what it waited behind, as the gate saw it (plugins#1572)
+  expect(e.message).toMatch(/: 3 of this account's requests held the slots, the oldest in flight for \d+s\. /)
+  expect(e.message).not.toContain("refused")
   expect(messages().length).toBe(3)
   free()
   expect((await Promise.all(first)).every((r) => r.status === 200)).toBe(true)
   // the slots are back: the next request goes out at once
   expect((await one(opts)).status).toBe(200)
   expect(messages().length).toBe(4)
+})
+
+// plugins#1572: a wait that runs out names how long what it waited behind
+// has held its slot, so a slot held far past any reply reads as such from
+// the answer alone, as does how many more were waiting.
+test("a wait that runs out says how long the slot it waited for was held, and who else waited", async () => {
+  startGate.inflight = 1
+  startGate.wait = 100
+  let clock = 1_000_000_000_000
+  startGate.now = () => clock
+  let free = () => {}
+  const held = new Promise((r) => (free = r))
+  answer = async () => {
+    await held
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  const first = one(opts)
+  while (messages().length < 1) await sleep(5)
+  clock += 66 * 60_000
+  const [a, b] = await Promise.all([one(opts), sleep(20).then(() => one(opts))])
+  const e = JSON.parse(a.text).error.message
+  expect(a.status).toBe(429)
+  expect(e).toContain("serves this account 1 request at a time; this one waited 0s for a slot and was not sent: 1 of this account's requests held its slot, in flight for 66m, and 1 more was waiting.")
+  expect(JSON.parse(b.text).error.message).toContain("held its slot, in flight for 66m.")
+  free()
+  expect((await first).status).toBe(200)
+  expect(startGate.lanes.size).toBe(0)
 })
 
 test("an agent that gives up while waiting leaves the queue", async () => {
@@ -384,11 +471,84 @@ test("an account ZCode serves one at a time is narrowed to one, and no hold arms
   expect(busyHold.hits.length).toBe(0)
   const [key] = startGate.narrow.keys()
   expect(_internal.limitOf(key)).toBe(1)
-  // the first pair's second request was refused through its re-asks; every
-  // pair after it went one at a time and was served
-  expect(pairs.slice(1).flat().every((r) => r.status === 200)).toBe(true)
-  const after = got.filter((r) => r.path.endsWith("/messages")).slice(4)
+  // the first pair's second request was refused once and at its re-ask,
+  // then waited for the first and was served; every pair went to the end
+  // (before 0.1.64 that second request failed 429)
+  expect(pairs.flat().every((r) => r.status === 200)).toBe(true)
+  const after = got.filter((r) => r.path.endsWith("/messages")).slice(3)
   expect(Math.max(...after.map((r) => r.flight))).toBe(1)
+})
+
+// JJLIN070414 on X (0.1.63): "two or more sessions on ZCode's Start Plan
+// through magpie always show 429". Two agents' sessions keep a request each
+// in flight on one account, which ZCode serves one at a time. The request
+// refused beside the other's is not failed: the account's gate narrows to
+// one, and it waits for the other to end and is sent again — what ZCode's
+// own client does with a capped subagent request. Nothing reaches the agent
+// as an error, nothing is sent while the other is in flight after the
+// refusal, and no hold arms.
+test("two sessions on an account served one at a time: every request is served, none fails (JJLIN070414)", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  let clock = 1_000_000_000_000
+  busyHold.now = () => clock
+  startGate.now = () => clock
+  answer = async ({ flight }) => {
+    if (flight >= 2) return CAP()
+    await sleep(80)
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  // each session sends its next request when its last is answered
+  const session = async () => {
+    const out = []
+    for (let i = 0; i < 4; i++) {
+      clock += 1_000
+      out.push(await one(opts))
+    }
+    return out
+  }
+  const rs = (await Promise.all([session(), sleep(10).then(session)])).flat()
+  expect(rs.map((r) => r.status)).toEqual(Array(8).fill(200))
+  expect(busyHold.until).toBe(0)
+  // one refused pair (the first ask and its 1s re-ask), then one at a time
+  const asks = messages()
+  expect(asks.filter((r) => r.flight >= 2).length).toBeLessThanOrEqual(2)
+  expect(asks.length).toBe(10)
+})
+
+// The requeued request waits no longer than the gate's own wait, counted
+// from the refusal: an account whose other request runs past it answers the
+// queue's 429, nothing more sent.
+test("a requeued request whose turn doesn't come within the wait is answered here", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  startGate.wait = 150
+  let release
+  const long = new Promise((r) => (release = r))
+  answer = async ({ flight }) => {
+    if (flight >= 2) return CAP()
+    await long
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  const first = one(opts)
+  await sleep(20)
+  const second = await one(opts)
+  expect(second.status).toBe(429)
+  expect(second.retryAfter).toBe("5")
+  // plugins#1572 (llyy873): the answer said "waited 120s behind the others
+  // and was not sent" for a request that had been sent, refused twice and
+  // narrowed the gate, and named no others. It says what happened, and what
+  // held the one slot when the wait ran out.
+  const said = JSON.parse(second.text).error.message
+  expect(said).toContain("ZCode refused this request as busy at its first ask and again at its re-ask")
+  expect(said).toMatch(/serves this account 1 request at a time for the next (5m|4m \d+s), since/)
+  expect(said).toContain("while 2 of this account's were in flight from this computer")
+  expect(said).toMatch(/was not sent again: 1 of this account's requests held its slot, in flight for \d+s\. /)
+  expect(said).not.toContain("behind the others")
+  // the first ask and its re-ask; nothing after the wait ran out
+  expect(messages().length).toBe(3)
+  release()
+  expect((await first).status).toBe(200)
 })
 
 // The narrowing ends by its own clock: NARROW_FOR on, the account's gate is

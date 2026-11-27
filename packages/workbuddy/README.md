@@ -36,21 +36,47 @@ The package exports `WorkBuddyAuthPlugin` (`workbuddy`) and
   none with a key), and its models are `/v3/config`'s only for `ck_`/`pt_`
   keys, as the CLI asks; any other key keeps the list below.
 
+- **Import from a file** (since 0.2.32; magpie with plugin imports).
+  magpie's "Import accounts from a file…" takes WorkBuddy desktop's
+  sign-in file (`workbuddy-desktop[-ai].info`, above) or a copy of a
+  sign-in: JSON with its access and refresh tokens, as this plugin's
+  `auth.json` entry, `accessToken`/`refreshToken` or
+  `access_token`/`refresh_token`, alone, in a map or in a list. Each is
+  renewed with WorkBuddy before it is added, as a browser sign-in is, so
+  the app or tool the file came from is signed out of that account. An
+  encrypted file (WorkBuddy 5.6 and later) and the other build's sign-in
+  are refused with why.
+
 A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
 marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode keeps it in
 `auth.json`; magpie keeps it in `plugin-auth.json`. The access token is
-refreshed a minute before it ends, and the new one is saved. If the refresh
-fails, the old token is used while it lasts.
+refreshed a minute before it ends, and the new one is saved; one minted to
+live long (the browser sign-in's access token lasts 28 days, its refresh
+token 30) is instead renewed before a request while it still has 10 days
+left, or once it is a day old. WorkBuddy's own app renews its sign-in each
+time it starts, and each renewal gives a new refresh token with a new
+window (30 days or more), so since 0.2.42 a sign-in used at least once
+a month is never signed out; up to 0.2.41 one used only while its token
+still had more than 10 days left was, every month (plugins#1598). A renewal that
+names no end for its new refresh token takes the token's own, else
+leaves it unknown rather than keeping the old one's. WorkBuddy AI's
+sign-in ends a year after it was made, renewed or not. If
+the refresh fails, the old token is used while it lasts; an early renewal
+that fails is tried again after a minute, and after twice as long for each
+failure in a row.
 
 In magpie (0.1.684 or later) the plugin also gives `auth.refresh` with
-`refreshLead` of 5 minutes: magpie renews a browser sign-in (an hour's
-token) 5 minutes before it ends, once for the account, before its
-requests, models and usage ask, and saves what it gives. It goes through
-the same one-refresh-at-a-time as a request's refresh, so a refresh token
-is never spent twice. A failed renewal, a refresh token past its end
-included, doesn't mark the account, as the built-in never did; magpie
-tries again later, and the old token is used meanwhile.
+`refreshLead` of 5 minutes: magpie renews a browser sign-in 5 minutes
+before it ends, once for the account, before its requests, models and
+usage ask, and saves what it gives. The lead stays short because a
+sign-in whose token lives less than the lead would be due again as soon
+as it was renewed; a long-lived one is renewed 10 days ahead by a
+request, as above. It goes through the same
+one-refresh-at-a-time as a request's refresh, so a refresh token is never
+spent twice. A failed renewal, a refresh token past its end included,
+doesn't mark the account, as the built-in never did; magpie tries again
+later, and the old token is used meanwhile.
 OpenCode doesn't call `auth.refresh`; the check before each request stays.
 
 An enterprise (team) account is asked for as the enterprise. A browser
@@ -60,6 +86,17 @@ app's file. Every request then carries `X-Enterprise-Id` and `X-Tenant-Id`,
 as WorkBuddy's own client sends them; without them WorkBuddy answers as the
 personal account, with the personal plan's models. A browser sign-in made
 before 0.1.13 has no enterprise id kept: sign in again.
+
+A cloud-hosted enterprise's account (its sign-in's domain is
+`<enterprise>.sso.copilot.tencent.com`, `<enterprise>.copilot.qq.com` or
+`<enterprise>.sso.codebuddy.cn`, the cloud-hosted hosts WorkBuddy's own
+`product.json` lists) is served at that host, as WorkBuddy's client sets
+the enterprise's endpoint for it: its refresh, account list, models, usage
+and chats go there. Tencent's own iOA host
+(`tencent.sso.copilot.tencent.com`) stays on `copilot.tencent.com`, as in
+WorkBuddy's `product.ioa.json`. Before 0.2.32 every account was sent to
+the build's own endpoint. A self-hosted enterprise's host isn't known to
+the plugin and isn't routed.
 
 An enterprise's own models (`custom:<name>|<name>`) are listed after the
 plan's, as WorkBuddy's own client lists them, with their context, output,
@@ -174,6 +211,30 @@ Not sent: `X-Device-Token`, which the desktop app gets from Tencent's
 native device SDK before each prompt, and a `traceparent`, which the CLI
 adds only while its server-side tracing is on.
 
+A WorkBuddy AI chat also carries, in its body, the `extra_vars` its own
+client sends (#691): `initiator: "user"` and `growthEvent`, a JSON string
+holding a `chat_request_send` event for the chat's `X-Conversation-ID`, with
+the user's last message's length, the model's id and name, `mode: "craft"`
+and no command. WorkBuddy AI's CLI sends this event in the chat itself
+instead of on `/v2/report`; whether WorkBuddy reads it for the daily credit
+is not known. Anything the caller put in `extra_vars` is kept. The China
+build's chats go without it.
+
+Since 0.2.35 a WorkBuddy AI chat is also reported on `POST /v2/report`, as
+WorkBuddy AI 5.9.4's client reports one (#691): once the reply has been
+read to its end, `chat_message_send`, then `chat_message_response` and
+`chat_message_status` (with `chat_request_send` first when the user's own
+message opened the step, and `chat_request_response` last when the step
+ends the turn), then `agent_task_completed` and `chat_response_complete`
+for a step that ends it. They carry the chat's ids, model, token counts and
+finish reason, and the client's common fields: the account's id and name,
+WorkBuddy's version, this computer's OS, CPU and memory, and a machine id
+that is a hash of the host's and user's names. Only the user's own chats
+are reported, never a message of the plugin's own; a reply cut off, a
+refusal, a key account and the China build send none, and a report that
+fails is dropped. Whether the daily credit reads these reports is not
+known yet.
+
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
 
@@ -216,12 +277,35 @@ client sends. WorkBuddy drops `reasoning_content`, so a client such as Grok
 Build that sends it lost its earlier thinking; nothing is folded into the
 message's content.
 
+`kimi-k3.1-pro` (and `-highspeed`) answers 400 "Invalid request parameters"
+to an assistant turn with `tool_calls` and no text, which is how OpenAI
+clients such as dsh record a call-only turn (`"content": null`), so an
+agent failed from its first tool call on. Since 0.2.37 such a turn goes to
+that model with one space as its content, as the same model on QwenWork
+serves it (#1213). A turn with text, and every other model, go as they
+came; `kimi-k3` takes the empty turn.
+
+WorkBuddy sends `"tool_calls": []` on every streamed delta, including
+reasoning. OpenAI-compatible clients treat any present `tool_calls` field as
+the end of the active reasoning block, which can create thousands of tiny
+reasoning parts and make OpenCode Desktop freeze when restoring a session.
+Since 0.2.38 the plugin removes only that empty list from forwarded deltas;
+real tool calls and unaffected events pass through unchanged (#1532).
+
+Since 0.2.41 the forwarded reasoning deltas are also held and emitted as one
+event, flushed on 8 KB, on a 300 ms clock, or when the block ends, so a long
+answer no longer becomes thousands of parts and the message is not rewritten
+per delta. The text is unchanged; only the chunk boundaries move (#1393).
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
 - a tool's parameters with no `type`, empty, or a union (`anyOf`, `oneOf`,
   `allOf`) at the root are an object, the union's fields merged;
 - a `pattern`'s `\0` is `\u0000`, which matches the same;
+- REA's exact `^[^\uD800-\uDFFF]*$` surrogate guard is omitted from the
+  outbound schema: WorkBuddy AI's DeepSeek rejects it with "invalid function
+  call parameters". Other path constraints and REA's own validation stay;
 - a tuple's `items` (a list) is one schema any of them fits;
 - an `enum` with no `type` takes its values' type (or that and `"null"`),
   and an `enum` of several types is an `anyOf` of one typed `enum` for
@@ -320,6 +404,13 @@ sends its model requests (`RequestBodyGzip` in both builds' product.json).
 Claude's Messages route goes as it came, and so does anything that isn't a
 chat completion: magpie's drawings (`/v2/images/generations`,
 `/v2/images/edits`) go as plain JSON, which is all the images API reads.
+So do its videos (#1585): the models the config tags `text-to-video` or
+`image-to-video` (kling-video-v3, minimax-video-h3) are started at
+`/v2/videos/generations` and polled at `/v2/videos/tasks` as WorkBuddy's
+own CLI does, signed like a chat. magpie shapes those requests itself
+(magpie's `internal/gateway/video_workbuddy.go`); the plugin only signs and
+sends them. With "Free models only" on, a video is never started, since
+each costs credits.
 
 A model's price is its `credits` ("x0.29") and the config's
 `modelPromotions`. A discount for whole days (Step-5-Preview's 独家限免) is
@@ -365,6 +456,32 @@ sent as `/root/the agent harness/Work/` before), and so does the name in a
 path or a file name anywhere. Tools' results, commands and names such as
 `DSH_HOME` or `~/.dsh` go as they were.
 Whether this keeps an account from being banned is not known.
+
+### Speech and transcription
+
+Since 0.2.43 each site also lists two models that don't chat (#1617):
+
+| Model | Route | WorkBuddy's API |
+|---|---|---|
+| `workbuddy-tts` | `/v1/audio/speech` | `POST /agenttool/v1/tts`, `{"text"}`, answered as SSE `audio` events of base64 16 kHz mono PCM16 |
+| `workbuddy-transcribe` | `/v1/audio/transcriptions` | `POST /agenttool/v1/asr`, multipart `audio`, answered `{code, msg, text}` |
+
+Both are the APIs WorkBuddy's own app calls for read-aloud and voice
+input (`workbuddy-server`'s tts and asr services), with the same headers,
+on the account's endpoint. WorkBuddy takes no voice, model or speed: one
+voice is all there is, and `voice` and `speed` are ignored.
+
+- Speech: text is sent in pieces of at most 1000 bytes, cut at the end of a
+  sentence, as the app does (WorkBuddy refuses more than 1800). The answer
+  is `wav` (16 kHz) for every format but `pcm`, which is raw 24 kHz PCM16 as
+  OpenAI's. Asking for `mp3`, `opus`, `aac` or `flac` gets WAV too, with
+  its own Content-Type.
+- Transcription: the file goes as sent; the app sends 16 kHz mono WAV.
+  `response_format` is `json` or `text`; `verbose_json`, `srt` and `vtt`
+  are refused, since WorkBuddy gives no timings. `/v1/audio/translations`
+  is refused.
+- With "Free models only" on, neither is listed and their requests are
+  refused before they're sent: WorkBuddy names no price for them.
 
 ## Credits in magpie
 
@@ -417,8 +534,11 @@ to continue using it.
 That is a token allowance of its own — per account, per 24 hours, about 1e8
 tokens, counted as prompt + cache-read + completion. Nothing the vendor
 answers with reports it, so the plugin rebuilds the current window from
-magpie's `usage.jsonl` and gives it to the card as **Free model tokens**
-beside **Credits**. `quota alert` and `magpie quota` show it too; before,
+magpie's `usage.jsonl` and gives it to the card as
+**deepseek-v4.1-flash tokens (est.)** (~100M) beside **Credits**, while the
+account's model list has deepseek-v4.1-flash at x0.00. Once the list prices
+it or drops it, the card goes, and no other free model takes its count or
+cap: nothing has measured another model's window (plugins#1567). `quota alert` and `magpie quota` show it too; before,
 the card read 0% on an account that was already refused.
 
 What is measured, and what is easy to read wrongly:
@@ -443,11 +563,13 @@ What is measured, and what is easy to read wrongly:
 - **A refusal hidden by routing still counts.** A group that moves to
   another provider after the 429 writes only the 200 that answered, so the
   failed WorkBuddy attempt is read from `routing/YYYY-MM-DD.jsonl` (or its
-  `.gz`) as well: its vendor words — or the gateway rest's `until` and
-  `key`, which names the account and model — pin the window the same way.
-  Three days of traces are read, the current plain file and the compressed
-  days before it, and what they held is kept until a trace itself changes;
-  an append to `usage.jsonl` does not decompress them again.
+  `.gz`, and a busy day's numbered `YYYY-MM-DD.N.jsonl` files) as well: its
+  vendor words — or the gateway rest's `until` and `key`, which names the
+  account and model — pin the window the same way. Three days of traces are
+  read a line at a time, never held whole, and what they held is kept until
+  a trace itself changes; an append to `usage.jsonl` does not decompress
+  them again, and an append to today's plain file is read from where the
+  last read stopped.
 - **The sum is shown, not routed on.** Until the vendor refuses, the card is
   set aside (`aside: true`): magpie draws it beside the account and never
   counts it as the account's allowance, so an estimate near its cap does not

@@ -1,5 +1,13 @@
 # @magpie-community/opencode-antigravity-auth
 
+**Withdrawn for new users (0.2.1).** Google suspends accounts it sees
+calling Code Assist the way this plugin does (Antigravity's own client,
+outside the Antigravity app). magpie keeps it working for whoever has it
+already, tells them the risk, and installs it for nobody new. Use
+[Antigravity (local agy CLI)](../agy-cli/README.md),
+`@magpie-community/opencode-agy-cli-auth`, which runs the `agy` you
+installed and signed in to yourself.
+
 Signs in to **Antigravity** with a Google account (Google AI Pro, Ultra or
 the free tier) and calls the models Antigravity serves: Gemini, and the
 Claude and GPT-OSS models Google hosts for it. Requests go through Google's
@@ -66,14 +74,31 @@ A request picks the level in this order:
 Asking for a level the model lacks picks the nearest one, and a tie goes
 up.
 
+The reply's `x-magpie-sent-model` header names the id the request went
+out under (`gemini-3.7-flash-high`), so magpie can show it beside the
+model. OpenCode ignores the header.
+
 ## Requests
 
 The plugin sends every request to `v1internal:streamGenerateContent`,
-wrapped in the app's envelope (`{model, project, userAgent: "antigravity",
-requestType: "agent", requestId, request}`):
+wrapped in the app's envelope, keys in the order the app's language server
+sends them (`{project, requestId, request, model, userAgent: "antigravity",
+requestType: "agent"}`, captured from 2.32.1):
 
-- The User-Agent is `antigravity/hub/<version> <os>/<arch>`. The version is
-  read from the app's update manifest every 6 hours.
+- The User-Agent is the language server's: `antigravity/hub/<version>
+  (aidev_client; os_type=<os>; arch=<arch>; cl=<changelist>)`. The version is
+  read from the app's update manifest every 6 hours. Google lists Gemini 4
+  only to new enough releases, so a manifest that can't be read is asked
+  again after a minute, and the model list is read again when the version
+  changes. The changelist is each release's own, from a table in the
+  plugin; a release newer than the table goes with the newest one known.
+- A conversation is one cascade: `requestId` is
+  `agent/<cascade>/<ms>/<trajectory>/<step>`, and `request.labels` carries the
+  cascade and trajectory ids, the step, the model's enum from
+  `fetchAvailableModels` and whether it is Claude or not Gemini, as the app
+  labels its requests.
+- `onboardUser` is asked as the language server asks it:
+  `{tierId, metadata: {ideType: "ANTIGRAVITY"}}`.
 - The session id is a number made from the host's session header when named,
   else the conversation's first real user prompt (skipping injected
   `AGENTS.md` and environment preambles), so unrelated conversations that
@@ -83,12 +108,27 @@ requestType: "agent", requestId, request}`):
 
 The plugin also changes the request itself, as the built-in did:
 
-- **System prompt:** lines Antigravity turns away (Claude Code's billing
-  header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a
-  zero-width space.
+- **System prompt:** lines Antigravity turns away with a 429 whatever quota
+  is left go reworded with the same meaning, since Google's check reads past
+  zero-width spaces (11-14): Claude Code's billing header is left out, the
+  Claude Agent SDK's "built on Anthropic's Claude Agent SDK" (Claude
+  Desktop's Code tab and its subagents) goes as "built on the Claude Agent
+  SDK by Anthropic", Codex's GPT-5 lines say "built on GPT-5", omp's line
+  "RFC 2119 key words: …", Hermes Agent's persona, OpenCode's prompt and
+  Codex's prompt for a model it has none for go as "You're …" for "You are
+  Hermes Agent" / "You are OpenCode" / "You are a coding agent running in
+  the Codex CLI", and pi's default prompt as "running within pi" for
+  "running inside pi" (the last four turned away since 11-14). Claude
+  Code's identity line ("You are Claude Code, Anthropic's official CLI for
+  Claude") goes as "You're …" too (#1151). A copy
+  someone broke up with invisible characters is reworded the same way.
   DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
   paths…") goes reworded with the same meaning: word for word, it got most
-  `gemini-4-argon` answers fast, without thinking and shallow (#1028).
+  `gemini-4-argon` answers fast, without thinking and shallow (#1028). Its
+  first line, "You are an AI agent powered by DeepSeek Harness.", and "The
+  browser provides no implicit DOM, route, or screenshot context." in its
+  Web GUI paragraph get the 429 as written, so they go as "You're …" and
+  "The browser gives …" (#1105).
 - **Tool calls:**
   - Tool call ids are reduced to `[A-Za-z0-9_-]`.
   - A tool's `{output}` or `{error}` response becomes `{result}`.
@@ -113,6 +153,7 @@ The plugin also changes the request itself, as the built-in did:
 |---|---|
 | 429 "Resource has been exhausted" to a system prompt with a turned-away line | 400 "turned this request away as from an unapproved channel", with what to change (it isn't a quota, so nothing is rested) |
 | 429 from a plan's quota, the account having Google AI credits | with the Use AI credits switch on (off by default), the request is asked again once with `enabled_credit_types: ["GOOGLE_ONE_AI"]`, as the app's Use AI Credits does; with it off, the 429 says the switch would spend them |
+| Gemini 4's 400 INVALID_ARGUMENT after it ran (in the stream after thinking, or a slow 400) | asked again, up to twice. A stream's thinking is held back for up to 10 seconds, or until the answer starts, so a retry sends nothing twice; past 10 seconds the thinking streams live, and a 400 after that reaches the client. Code Assist writes the stream's error as a bare JSON line with no `data:`, read as well. A 400 that still comes says the model turned down a call it built, and how many times it was asked, since Google's words alone read as a region or account block |
 | 401 | 401, sign-in kept |
 | 404 | 404 "model … not found" |
 | Refresh refused | 401, `x-magpie-sign-in: expired` |
@@ -134,12 +175,19 @@ pool it reads from:
   group's windows;
 - else a pool of its own, named for the model, when it reads otherwise.
 
+## Web Search
+
+The plugin registers a magpie `search` hook (`antigravity:antigravity`)
+backed by Antigravity's Google Search grounding (`tools: [{ googleSearch: {} }]`
+on an available Flash model with minimal/zero thinking on the signed-in
+Antigravity account), returning grounded pages with URLs and snippets.
+
 ## Not carried over from the built-in
 
 - Resting an account that Antigravity turned away for 6 hours, and asking
   its other accounts first. The 400 above makes magpie try the next
   account at once.
-- Google Search grounding, and image models (drawing).
+- Image models (drawing) as an OpenAI images endpoint.
 - `countTokens` answers 404, so magpie estimates the count.
 - Sending the system prompt as written: the plugin always breaks up the
   turned-away lines.

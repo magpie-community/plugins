@@ -14,7 +14,7 @@ Then pick one of magpie's models in Wave's row. magpie writes one mode,
 ```json
 {
   "magpie": {
-    "display:name": "Magpie",
+    "display:name": "Magpie · GLM-5.3-Flash",
     "ai:model": "v2ex/glm-5.3-flash",
     "ai:endpoint": "http://127.0.0.1:3425/v1/chat/completions",
     "ai:apitype": "openai-chat",

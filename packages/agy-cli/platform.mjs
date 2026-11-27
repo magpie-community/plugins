@@ -1,5 +1,16 @@
 import { spawn } from "node:child_process"
+import os from "node:os"
 import path from "node:path"
+import { accountEnv, currentHome } from "./account.mjs"
+
+// holdsHome says whether dir is the user's home folder or a folder above
+// it ("/", "C:\Users"); on Windows case aside, as the system ignores it.
+export function holdsHome(dir, home = os.homedir(), platform = process.platform) {
+  if (!dir || !home) return false
+  const paths = platform === "win32" ? path.win32 : path.posix
+  const rel = paths.relative(paths.resolve(dir), paths.resolve(home))
+  return rel === "" || (!rel.startsWith("..") && !paths.isAbsolute(rel))
+}
 
 export function agyCandidates(env, home, platform = process.platform) {
   const windows = platform === "win32"
@@ -17,7 +28,24 @@ export function agyCandidates(env, home, platform = process.platform) {
     paths.join(home, ".gemini", "bin"),
   ] : [paths.join(home, ".local", "bin"), paths.join(home, ".gemini", "bin"), "/usr/local/bin", "/opt/homebrew/bin"]
   for (const directory of directories) candidates.push(...names.map(name => paths.join(directory, name)))
+  // the copy the plugin installed itself (install.mjs), last: an agy the
+  // user installed wins
+  candidates.push(ownAgyPath(env, home, platform))
   return candidates
+}
+
+// Where the plugin installs agy when the machine has none (install.mjs):
+// a folder of its own under the user's data folder, never one an agy the
+// user installed is in, so it never writes over theirs. In magpie's Docker
+// image XDG_DATA_HOME is /config/data, on the volume, so it outlives the
+// container.
+export function ownAgyPath(env, home, platform = process.platform) {
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA || path.win32.join(home, "AppData", "Local")
+    return path.win32.join(local, "magpie-agy-cli", "agy.exe")
+  }
+  const data = env.XDG_DATA_HOME && path.posix.isAbsolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : path.posix.join(home, ".local", "share")
+  return path.posix.join(data, "magpie-agy-cli", "agy")
 }
 
 // The cmd.exe escaping algorithm is adapted from node-cross-spawn:
@@ -69,11 +97,13 @@ export function agySpawnSpec(file, args, platform = process.platform, env = proc
 // AGY_CLI_DISABLE_AUTO_UPDATE (in the parent's environment or the caller's)
 // is kept as written. Only when nobody set it do the plugin's children run
 // with auto-update off, so a pool of ACP processes doesn't update the binary
-// under each other; the user's own `agy` runs keep updating.
+// under each other; the user's own `agy` runs keep updating. Work for an
+// account with a home of its own (account.mjs) runs agy in that home.
 export function childEnv(parent = process.env, extra = {}, platform = process.platform) {
   const env = {}
   const names = new Map()
-  for (const source of [parent, extra]) {
+  const home = currentHome()
+  for (const source of [parent, extra, home ? accountEnv(home, platform) : null]) {
     for (const [key, value] of Object.entries(source || {})) {
       if (value === undefined) continue
       // Windows treats env names case-insensitively; keep the caller's PATH.
@@ -101,4 +131,26 @@ export function windowsMcpShim(executable, server) {
     return `"${value.replace(/%/g, "%%")}"`
   }
   return `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${quote(executable)} ${quote(server)}\r\n`
+}
+
+// agy dials --ide-mcp-port by running `nc` from PATH. On Windows a console
+// program started that way can be handed a console of its own, and nc.cmd
+// always runs in cmd.exe, a console program: each dial then flashes a window
+// and leaves a conhost.exe behind (#1047). A GUI-subsystem nc.exe never gets
+// a console, whatever creation flags agy uses, and still talks over the
+// stdio pipes agy hands it. Bun builds it from mcp-server.mjs on the user's
+// own machine; nothing prebuilt ships. magpie runs plugins on a Bun it keeps
+// as magpie-bun(.exe), so that name counts as Bun too. Another runtime (an
+// opencode build, Node) gets null, and the caller falls back to nc.cmd.
+export function windowsNcBuild(runtime, server, outfile, versions = process.versions) {
+  if (!versions?.bun || !/^(?:magpie-)?bun(?:\.exe)?$/i.test(path.win32.basename(String(runtime || "")))) return null
+  return { file: runtime, args: ["build", "--compile", "--windows-hide-console", server, "--outfile", outfile] }
+}
+
+// One taskkill run that ends each agy and everything it started (cmd.exe,
+// nc); null when there is nothing to end.
+export function windowsTreeKill(pids) {
+  const live = [...new Set(pids)].filter(pid => Number.isInteger(pid) && pid > 0)
+  if (!live.length) return null
+  return { file: "taskkill", args: ["/T", "/F", ...live.flatMap(pid => ["/PID", String(pid)])] }
 }

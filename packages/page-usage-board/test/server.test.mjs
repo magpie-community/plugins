@@ -226,7 +226,11 @@ test('the page CSP lists the loopback explicitly and no third-party hosts', asyn
   assert.equal(r.status, 200);
   const csp = String(r.headers['content-security-policy']);
   assert.match(csp, /default-src 'self'/);
-  assert.match(csp, new RegExp(`connect-src 'self' http://127\\.0\\.0\\.1:${port}`));
+  // 沙盒 frame 里 'self' 是 opaque：每一类子资源都要列出回环地址，否则脚本被拦、整页空白（#1500）
+  for (const kind of ['script-src', 'style-src', 'img-src', 'font-src', 'connect-src']) {
+    const dir = csp.split(';').map((x) => x.trim()).find((x) => x.startsWith(kind + ' ')) || '';
+    assert.ok(dir.includes(`http://127.0.0.1:${port}`) && dir.includes(`http://localhost:${port}`), `${kind}: ${dir}`);
+  }
   // frame-ancestors 显式声明（* = 被宿主嵌入是设计意图；宿主 origin 桌面/web 不固定）
   assert.match(csp, /frame-ancestors/);
   assert.doesNotMatch(csp, /cloudflareinsights/);
@@ -546,6 +550,30 @@ test('reuses a live instance of the same build, never a different one', { timeou
   }
 });
 
+test('a reused port is taken over when the instance holding it exits (#1500)', { timeout: 45000 }, async () => {
+  // magpie 滚动自更新：新宿主的看板复用了旧宿主的同构建实例，0.2s 后旧宿主退出，
+  // 端口从此没人监听。复用的一方要在持有方走后自己绑上。
+  const p = await freePort();
+  const a = start({ PORT: String(p) });
+  let b;
+  try {
+    await a.ready;
+    b = start({ PORT: String(p) });
+    b.ready.catch(() => {});
+    await waitFor(() => /reusing it/.test(b.captured.out), 15000);
+    assert.match(b.captured.out, /reusing it/, b.captured.out.slice(0, 400));
+    a.c.kill();
+    await waitFor(() => /took it over/.test(b.captured.out), 15000);
+    assert.match(b.captured.out, /took it over/, b.captured.out.slice(0, 600));
+    const r = await request(p, '/api/health');
+    assert.equal(r.status, 200);
+  } finally {
+    a.c.kill();
+    b?.c.kill();
+    for (const d of [a.dir, b?.dir].filter(Boolean)) { try { rmSync(d, { recursive: true, force: true }); } catch {} }
+  }
+});
+
 test('index.mjs: importing has no side effects, server() starts and awaits listen', { timeout: 30000 }, async () => {
   // The community import-check imports this file for inspection; a module-level
   // startServer would grab a port and write config during that check. The child
@@ -579,6 +607,52 @@ test('the dashboard asks the local service for attribution', () => {
   assert.match(html, /api\/attribution\?period=/);
   assert.doesNotMatch(html, /remote\.js/);
   assert.doesNotMatch(html, /cloudflareinsights/);
+});
+
+function pageBetween(text, start, end) {
+  const first = text.indexOf(start);
+  const last = text.indexOf(end, first + start.length);
+  assert.ok(first >= 0, `missing page source: ${start}`);
+  assert.ok(last > first, `missing page source: ${end}`);
+  return text.slice(first, last);
+}
+
+function quotaPageApi() {
+  const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const source = [
+    pageBetween(html, 'function isWorkBuddyProvider', 'function soonWin'),
+    pageBetween(html, 'function soonWin', '// 总积分：'),
+  ].join('\n');
+  const functions = new Function(
+    'winExp',
+    'winAlive',
+    `${source}
+    return {quotaWins,soonWin};`,
+  )(
+    (win) => win.exp,
+    (win) => win.remaining !== 0,
+  );
+  return functions;
+}
+
+test('quota expiry ignores WorkBuddy estimated-token windows', () => {
+  const { quotaWins, soonWin } = quotaPageApi();
+
+  const estimated = { name: 'DeepSeek tokens (est.)', exp: 1, remaining: 1 };
+  const credits = { name: 'Extra credits', exp: 2, remaining: 1 };
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy-ai', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.equal(quotaWins({ provider: 'trae-cn', windows: [estimated, credits] }).length, 2);
+  assert.equal(
+    soonWin(quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }))[0].name,
+    'Extra credits',
+  );
 });
 
 test('registry draft summary matches package.json verbatim (three-text rule)', () => {

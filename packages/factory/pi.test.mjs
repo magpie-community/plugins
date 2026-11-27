@@ -48,7 +48,9 @@ test("pi's opening sentence is cut to its first half on chat completions, the re
   const send = await loaded()
   const b = await send(chat, { model: "deepseek-v4.1-flash", messages: [{ role: "developer", content: PI }, { role: "user", content: "hi" }], tools, stream: true })
   expect(b.messages).toEqual([{ role: "system", content: DROID_LINE }, { role: "developer", content: ADAPTED }, { role: "user", content: "hi" }])
-  expect(b.tools).toEqual(tools)
+  // Factory refuses pi's read, bash, edit and write as tool names: they go out as droid's (tool-names.mjs)
+  const droid = { read: "Read", bash: "Execute", edit: "Edit", write: "Create" }
+  expect(b.tools).toEqual(tools.map((t) => ({ ...t, function: { ...t.function, name: droid[t.function.name] } })))
   // as a system message too, and in text parts
   let c = await send(chat, { model: "kimi-k3", messages: [{ role: "system", content: PI }, { role: "user", content: "hi" }] })
   expect(c.messages[0]).toEqual({ role: "system", content: DROID_LINE + "\n" + ADAPTED })
@@ -86,7 +88,9 @@ test("pi's opening quoted in user, assistant or system text is escaped, a fragme
   ] })
   // Factory refuses the sentence in user and assistant text too, so the last
   // pass escapes it everywhere; only the complete sentence changes.
-  expect(b.system[1].text).toBe("Quote: " + ESCAPED_OPENING)
+  // a system prompt's "harness" reads runtime first, so its quote no longer
+  // holds the refused sentence
+  expect(b.system[1].text).toBe("Quote: " + OPENING.replace("harness", "runtime"))
   expect(b.messages[0].content[0].text).toBe("Why does pi say: " + ESCAPED_OPENING)
   expect(b.messages[1].content[0].text).toBe("Why does pi say: " + ESCAPED_OPENING)
   expect(b.messages[2].content[0].text).toBe(partial)

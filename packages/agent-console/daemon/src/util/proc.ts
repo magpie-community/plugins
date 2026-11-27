@@ -1,16 +1,21 @@
 // Small process/environment helpers: cross-platform pid liveness, PATH completion.
 import { delimiter } from "node:path";
 import { extraBinDirs } from "../../../lib/pathscan.mjs";
+import { processAlive } from "../../../lib/proc.mjs";
+
+type ProcessAliveDeps = {
+  platform?: NodeJS.Platform;
+  procRoot?: string;
+  readFile?: (file: string) => string;
+};
 
 /** kill(pid, 0): ESRCH = gone; EPERM = exists but we may not signal it (common on Windows across sessions / elevated processes), counts as alive. */
-export function pidAlive(pid: number, kill: (pid: number, sig: 0) => unknown = (p, s) => process.kill(p, s)): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === "EPERM";
-  }
+export function pidAlive(
+  pid: number,
+  kill: (pid: number, sig: 0) => unknown = (p, s) => process.kill(p, s),
+  deps: ProcessAliveDeps = {},
+): boolean {
+  return processAlive(pid, { ...deps, kill });
 }
 
 /** Append nodeDir and common CLI install directories to the end of PATH (deduped; case-insensitive on Windows). Returns the new PATH string. */

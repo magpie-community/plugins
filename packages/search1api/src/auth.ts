@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { processExists } from "./proc.mjs";
 import { refreshToken } from "./oauth.ts";
 import {
   PROVIDER,
@@ -70,12 +71,16 @@ export class Credentials {
     throw new Error("Invalid Search1API sign-in. Sign in again in Magpie.");
   }
 
+  // The plugin option or environment key, which wins over any sign-in.
+  override(): string | undefined {
+    return this.options.apiKey?.trim() || process.env.SEARCH1API_API_KEY?.trim() || undefined;
+  }
+
   async token(
     signal?: AbortSignal,
   ): Promise<{ token: string; oauth?: StoredOAuth }> {
     signal?.throwIfAborted();
-    const override =
-      this.options.apiKey?.trim() || process.env.SEARCH1API_API_KEY?.trim();
+    const override = this.override();
     if (override) return { token: override };
     const auth = await this.stored();
     if (auth?.type === "api") return { token: auth.key };
@@ -118,11 +123,7 @@ export class Credentials {
         try {
           const holder = JSON.parse(raw);
           if (Number.isInteger(holder.pid) && holder.pid > 0) {
-            try {
-              process.kill(holder.pid, 0);
-            } catch (error) {
-              dead = (error as NodeJS.ErrnoException).code === "ESRCH";
-            }
+            dead = !processExists(holder.pid);
           }
         } catch {}
         if (

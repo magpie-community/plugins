@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/agent-zycode",
+  "version": "0.1.0",
+  "description": "zycode as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["zycode.agent.js", "index.mjs", "bridge.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "zycode", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/zycode" },
+  "magpie": { "agent": "./zycode.agent.js" }
+}

@@ -6,11 +6,11 @@
 // (read-only; desktopAuthCandidates lists where). Chats are OpenAI-compatible
 // chat completions at /api/web/llm/v2/chat/completions.
 
-import { randomUUID, randomBytes } from "node:crypto"
+import { createHash, randomUUID, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
-import { readFileSync, statSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 const PROVIDER_ID = "raccoon"
 const PROVIDER_NAME = "商汤小浣熊"
@@ -454,6 +454,14 @@ async function fetchLiveModels(token) {
   return models
 }
 
+// fellBack marks a list that isn't the account's own: magpie's plugin host
+// reads Symbol.for("magpie.fellBack"), and never routes by such a list as
+// if it were the account's plan (bitssly on X: a paid account left out of
+// sn-kimi-k3-1-pro, which the defaults lack).
+function fellBack(models) {
+  return Object.assign({ ...(models ?? {}) }, { [Symbol.for("magpie.fellBack")]: true })
+}
+
 function configModels() {
   return Object.fromEntries(
     FALLBACK_MODELS.map((m) => [
@@ -645,7 +653,14 @@ async function availablePoints(token) {
   try {
     const points = await apiGetJson("/api/web/points/v1/balance", token)
     const n = Number(points?.available_points)
-    if (Number.isFinite(n)) return Math.floor(n)
+    if (Number.isFinite(n)) {
+      // daily_points is the daily-grant pool the vendor keeps itself (300/day,
+      // each grant lasting 7 days). It includes remainders of grants already
+      // past expire_at but not swept yet, so it is the authoritative "free
+      // credits still left"; the bills only say when the next slice expires.
+      const d = Number(points?.daily_points)
+      return { avail: Math.floor(n), daily: Number.isFinite(d) ? Math.floor(d) : null }
+    }
     first = new Error("balance has no available_points")
   } catch (e) {
     if (e?.signIn === "expired") throw e
@@ -660,15 +675,71 @@ async function availablePoints(token) {
   }
   const n = Number(info?.available_points)
   if (!Number.isFinite(n)) throw first
-  return Math.floor(n)
+  return { avail: Math.floor(n), daily: null }
 }
 
-async function queryUsage(token) {
-  const [avail, entitlement, bills] = await Promise.all([
+// topBalance holds, per account and per set of grants, the highest balance
+// a read has seen. A balance over every listed grant (plugins #936) has no
+// grant total to measure spending against, so the window's total is that
+// highest balance and what was spent since is what it has gone down by
+// (plugins #1030: 9,965 then 9,964 read 0 / 9,965 then 0 / 9,964). A new
+// or expired grant changes the set and starts it again. It is kept on disk
+// too (plugins #1182: what was spent read 0 again after every restart), one
+// entry per account, so a restarted host goes on from the same top.
+const topBalance = new Map()
+
+const topBalanceFile = () =>
+  process.env.RACCOON_TOP_BALANCE_FILE ||
+  join(process.env.MAGPIE_CONFIG_DIR || join(homedir(), ".config", "magpie"), "raccoon-top-balance.json")
+
+function readTops() {
+  try {
+    const raw = JSON.parse(readFileSync(topBalanceFile(), "utf8"))
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+// savedTop is the top a past host saw for this account and set of grants,
+// or 0 when it saw none (or the file can't be read).
+function savedTop(account, grants) {
+  const e = readTops()[account]
+  const n = Number(e?.top)
+  return e?.grants === grants && Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// saveTop writes through a temp file and a rename, so a host reading it
+// mid-write never sees half of it. A failed write keeps the memory copy.
+function saveTop(account, grants, top) {
+  try {
+    const file = topBalanceFile()
+    const all = readTops()
+    if (all[account]?.grants === grants && all[account]?.top === top) return
+    all[account] = { grants, top }
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(all))
+    renameSync(tmp, file)
+  } catch {}
+}
+
+// The daily pool: 300 credits granted per day, each slice lasting 7 days, so
+// the ceiling the vendor's own rule implies is 2,100. This is only the window's
+// limit; the remaining side always comes from the vendor's daily_points, never
+// from this arithmetic. A vendor that grants more per day still reads right,
+// because the bills' unexpired daily grants are summed too and the limit takes
+// whichever is larger.
+const DAILY_POOL_CAP = 2100
+
+async function queryUsage(token, account = "") {
+  const [pool, entitlement, bills] = await Promise.all([
     availablePoints(token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
     allBills(token).catch(() => null),
   ])
+
+  const avail = pool.avail
 
   // entitlement_info answers 403 too (plugins #520): an unread plan is
   // left unsaid, not read as Free.
@@ -683,11 +754,19 @@ async function queryUsage(token) {
   let grantedFromBills = 0
   let soonestExpMs = 0
   let expiringPts = 0
+  // The daily pool's own slice: what will expire inside the vendor's 7-day
+  // window, and when. Kept apart from the aggregate so the card can show it
+  // on its own line (300/day, 7 days deep).
+  let dailyUnexpired = 0
+  let dailySoonestMs = 0
+  let dailySoonestPts = 0
   const expired = []
+  const grantKeys = []
   const now = Date.now()
   for (const item of Array.isArray(bills?.items) ? bills.items : []) {
     const pts = Math.floor(Number(item?.points) || 0)
     if (pts <= 0) continue
+    grantKeys.push(billKey(item))
     const expStr = typeof item?.expire_at === "string" ? item.expire_at : ""
     const expMs = expStr ? Date.parse(expStr) : 0
     if (expMs > 0 && expMs <= now) {
@@ -695,6 +774,15 @@ async function queryUsage(token) {
       continue
     }
     grantedFromBills += pts
+    if (String(item?.biz_type ?? "") === "daily_grant" && expMs > now) {
+      dailyUnexpired += pts
+      if (!dailySoonestMs || expMs < dailySoonestMs) {
+        dailySoonestMs = expMs
+        dailySoonestPts = pts
+      } else if (expMs === dailySoonestMs) {
+        dailySoonestPts += pts
+      }
+    }
     if (expMs > now) {
       if (!soonestExpMs || expMs < soonestExpMs) {
         soonestExpMs = expMs
@@ -720,36 +808,82 @@ async function queryUsage(token) {
   // the card still shows one. A balance far over the bills is left
   // balance-only: the bills don't explain it.
   if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
-    grantedFromBills = avail
+    const grants = createHash("sha256").update(grantKeys.sort().join("\n")).digest("hex")
+    const key = `${account}\n${grants}`
+    if (!topBalance.has(key)) topBalance.set(key, savedTop(account, grants))
+    const top = Math.max(avail, topBalance.get(key))
+    topBalance.set(key, top)
+    saveTop(account, grants, top)
+    grantedFromBills = top
   }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
 
+  // The daily pool comes first when the vendor reports it: 300 credits a day,
+  // each slice good for 7 days, so what will lapse is the vendor's
+  // daily_points - not the aggregate. Same reading direction as the aggregate
+  // (used / limit), so the card reads one way. The aggregate is display-only
+  // beside it: it also holds reward/top-up credits that never lapse, and the
+  // pool that expires is what routing should weigh. When the vendor says no
+  // daily_points (the setting_info fallback), the aggregate stays the only
+  // window and keeps its routing weight - nothing is left unweighed.
+  const windows = []
+  // A pool of 0 shows nothing: the account may have no daily grants at all,
+  // and a "2,100 / 2,100 used" line would read the whole account as spent.
+  // Credits then keeps its routing weight.
+  const dailyRemain = typeof pool.daily === "number" && pool.daily > 0 ? Math.floor(pool.daily) : null
+  if (dailyRemain !== null) {
+    // The limit is the vendor's 300/day x 7 days, but never less than what it
+    // says is left or than the unexpired daily grants in bills already add up
+    // to - so a larger grant schedule reads as "0% used" instead of a negative
+    // one, and the percentage stays honest.
+    const limit = Math.max(DAILY_POOL_CAP, dailyRemain, dailyUnexpired)
+    const usedPts = Math.max(0, limit - dailyRemain)
+    const dailySoonestAt = dailySoonestMs ? new Date(dailySoonestMs).toISOString() : null
+    windows.push({
+      name: "Daily pool",
+      used: limit > 0 ? (100 * usedPts) / limit : 0,
+      display: `${usedPts} / ${limit}`,
+      amount: usedPts,
+      limit,
+      unit: "credits",
+      ...(dailySoonestAt ? { runsOutAt: dailySoonestAt, runsOut: Math.min(dailyRemain, dailySoonestPts || dailyRemain) } : {}),
+    })
+  }
+
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
+    windows.push({
+      name: "Credits",
+      used: (100 * used) / grantedFromBills,
+      display: `${used} / ${grantedFromBills}`,
+      amount: used,
+      limit: grantedFromBills,
+      unit: "credits",
+      // Display-only only while the daily pool is on the card too; alone it
+      // is the window routing weighs.
+      ...(dailyRemain !== null ? { aside: true } : {}),
+      ...(runsOutAt ? { runsOutAt, runsOut } : {}),
+    })
+  }
+
+  if (windows.length === 0) {
     return {
       ...(plan ? { plan } : {}),
       ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-      windows: [
-        {
-          name: "Credits",
-          used: (100 * used) / grantedFromBills,
-          display: `${used} / ${grantedFromBills}`,
-          amount: used,
-          limit: grantedFromBills,
-          unit: "credits",
-          ...(runsOutAt ? { runsOutAt, runsOut } : {}),
-        },
-      ],
+      balance: `${avail} credits`,
+      windows,
     }
   }
-
   return {
     ...(plan ? { plan } : {}),
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-    balance: `${avail} credits`,
-    windows: [],
+    windows,
   }
+}
+
+function usageAccount(a) {
+  return String(a?.accountId || a?.uid || a?.phone || a?.name || "")
 }
 
 function billKey(item) {
@@ -1059,6 +1193,99 @@ function desktopSignIn() {
   }
 }
 
+// ---- conversation identity --------------------------------------------------
+//
+// Raccoon's own desktop client names every chat request by its conversation and
+// its turn: X-RACCOON-Session-ID stays the same across a conversation, and
+// X-RACCOON-Turn-ID is new for each message the user sends. The session comes
+// from the host through the chat.headers hook (magpie and OpenCode 1.x) or a
+// session header magpie already sends; when the host names none, it is derived
+// from the account and the conversation's first user message, which later turns
+// repeat.
+
+const RACCOON_SESSION_HEADER = "x-magpie-raccoon-session"
+const INBOUND_SESSION_HEADERS = [
+  RACCOON_SESSION_HEADER,
+  "x-magpie-session",
+  "x-opencode-session",
+  "x-session-id",
+  "session_id",
+  "session-id",
+  "x-session-affinity",
+  "x-conversation-id",
+]
+
+// uuidish is a version 4 UUID made of a hash's first 16 bytes, the shape the
+// desktop client's ids have.
+function uuidish(seed) {
+  const b = Buffer.from(createHash("sha256").update(seed).digest().subarray(0, 16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = b.toString("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
+function textOfContent(content) {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("")
+}
+
+function sessionFromHeaders(headers) {
+  try {
+    const h = new Headers(headers ?? {})
+    for (const name of INBOUND_SESSION_HEADERS) {
+      const value = String(h.get(name) ?? "").trim()
+      // magpie's synthetic session (a hash of the first user message) names no
+      // conversation: it is skipped, as the built-in clients skip it.
+      if (value && !/^magpie-[0-9a-f]{24}$/.test(value)) return value.slice(0, 128)
+    }
+  } catch {}
+  return ""
+}
+
+function firstUserText(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  return textOfContent(messages.find((message) => message?.role === "user")?.content).trim()
+}
+
+// sessionFor is the conversation id one request goes out under: the session the
+// host names, or, when it names none, one derived from the account and the
+// conversation's first user message so every turn of that conversation reuses
+// the same id.
+function sessionFor(headers, body, account) {
+  const host = sessionFromHeaders(headers)
+  if (host) return host
+  const stamp = conversationStamp(body, account)
+  return stamp ? derivedSessionOf(stamp) : ""
+}
+
+// derivedSessionOf names a conversation the host gave no session for, in the
+// plain UUID shape the desktop client's fallback session id has.
+function derivedSessionOf(stamp) {
+  return uuidish(`raccoon-session|${stamp}`)
+}
+
+// conversationStamp is what a conversation's session id is derived from when
+// the host names none: the account and the first user message every later turn
+// repeats.
+function conversationStamp(body, account) {
+  const first = firstUserText(body)
+  if (!account || !first) return ""
+  return `${account}\0${first}`
+}
+
+// turnOf is the message a request answers: the user messages count, so the
+// tool-call steps of one turn share an id and the next message the user sends
+// gets a new one. The shape is the desktop client's fallback,
+// <session>-turn-<n>, used when the host sends no turn id.
+function turnOf(session, body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  const users = messages.filter((message) => message?.role === "user")
+  if (!users.length) return ""
+  return `${session}-turn-${users.length}`
+}
+
 // ---- Plugin export ----------------------------------------------------------
 
 export const RaccoonAuthPlugin = async ({ client }) => {
@@ -1069,6 +1296,15 @@ export const RaccoonAuthPlugin = async ({ client }) => {
   }
 
   return {
+    // the conversation a request belongs to, for the loader's fetch to name
+    // its session and turn with
+    "chat.headers": async (input, output) => {
+      const id = input?.model?.providerID ?? input?.provider?.info?.id
+      if (id !== PROVIDER_ID || !input?.sessionID || !output?.headers) return
+      const session = String(input.sessionID).trim()
+      if (!session || /^magpie-[0-9a-f]{24}$/.test(session)) return
+      output.headers[RACCOON_SESSION_HEADER] = session.slice(0, 128)
+    },
     config: async (config) => {
       config.provider ??= {}
       const was = config.provider[PROVIDER_ID] ?? {}
@@ -1090,10 +1326,12 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             token = a.access
           }
           const ms = await fetchLiveModels(token)
-          if (!ms.length) return provider.models
+          if (!ms.length) return fellBack(provider.models)
           return Object.fromEntries(ms.map((m) => [m.id, runtimeModel(provider, m)]))
         } catch {
-          return provider.models
+          // the defaults aren't this account's list: magpie keeps the one
+          // it read last, or takes the account to serve every model
+          return fellBack(provider.models)
         }
       },
     },
@@ -1127,11 +1365,11 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             const req = input instanceof Request ? input : null
             let bodyText = init?.body
             if (bodyText === undefined && req) bodyText = await req.clone().text()
-            let requestedModel = ""
+            let parsedBody = null
             try {
-              const parsed = typeof bodyText === "string" ? JSON.parse(bodyText) : null
-              if (typeof parsed?.model === "string") requestedModel = parsed.model
+              parsedBody = typeof bodyText === "string" ? JSON.parse(bodyText) : null
             } catch {}
+            const requestedModel = typeof parsedBody?.model === "string" ? parsedBody.model : ""
 
             let a
             let didRenew = false
@@ -1157,11 +1395,19 @@ export const RaccoonAuthPlugin = async ({ client }) => {
             }
             const sendOnce = (cred) => {
               const headers = new Headers(init?.headers ?? req?.headers)
+              const session = sessionFor(headers, parsedBody, cred?.uid || cred?.accountId || "")
+              headers.delete(RACCOON_SESSION_HEADER)
               headers.delete("x-api-key")
               headers.delete("content-length")
               headers.set("Authorization", "Bearer " + cred.access)
               headers.set("Content-Type", "application/json")
               headers.set("Accept", "*/*")
+              headers.set("X-RACCOON-Call-Kind", "session_turn")
+              if (session) {
+                headers.set("X-RACCOON-Session-ID", session)
+                const turn = turnOf(session, parsedBody)
+                if (turn) headers.set("X-RACCOON-Turn-ID", turn)
+              }
               return fetch(req ? req.url : input, {
                 ...init,
                 method: init?.method ?? req?.method ?? "POST",
@@ -1193,13 +1439,13 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           let { a, didRenew } = await currentAuth(client, auth)
           let result
           try {
-            result = await queryUsage(a.access)
+            result = await queryUsage(a.access, usageAccount(a))
           } catch (e) {
             if (e?.status === 401 && a.refresh && a.source !== "desktop") {
               const retryAuth = await currentAuth(client, a, true)
               a = retryAuth.a
               didRenew = true
-              result = await queryUsage(a.access)
+              result = await queryUsage(a.access, usageAccount(a))
             } else {
               throw e
             }
@@ -1260,6 +1506,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 }
 
 export const _internal = {
+  topBalance,
   browserSignIn,
   desktopAuthPath,
   desktopAuthCandidates,

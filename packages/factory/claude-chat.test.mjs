@@ -66,7 +66,7 @@ test("Claude Code's request made chat completions goes without the phrases Facto
   // user turn by the translation: reworded, its facts kept
   expect(m[2].content.startsWith("# Runtime context\nThe session environment is: \n - Primary working directory: /Users/me/proj\n")).toBe(true)
   expect(m[2].content).toContain("\n\nCurrent model: glm-5.3-flash.\n\n")
-  expect(m[2].content).toContain("the harness executes these, not the assistant, so memory")
+  expect(m[2].content).toContain("the runtime executes these, not the assistant, so memory")
   expect(m.length).toBe(JSON.parse(CHAT).messages.length)
   expect(b.model).toBe("glm-5.3-flash")
 })
@@ -114,11 +114,11 @@ test("tool output quoting Claude Code's identity is encoded, on chat and Respons
   expect(b.messages.find((m) => m.role === "tool").content).toBe("ok")
 })
 
-test("Codex's request is only opened with droid's line, as before", async () => {
+test("Codex's request is opened with droid's line, its own identity without its name", async () => {
   const send = await loaded()
   const dev = "<permissions instructions>\nYou are powered by the model gpt-5.5 says nothing here.\n</permissions instructions>"
   const b = await send(responses, JSON.stringify({ model: "glm-5.3-flash", instructions: "You are Codex, a coding agent based on GPT-5.", input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: dev }] }, { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/Users/me/proj</cwd>\n</environment_context>" }, { type: "input_text", text: "hi" }] }] }))
-  expect(b.instructions).toBe(DROID_LINE + "\nYou are Codex, a coding agent based on GPT-5.")
+  expect(b.instructions).toBe(DROID_LINE + "\nYou are a coding agent based on GPT-5.")
   expect(b.input[0].content[0].text).toBe(dev)
   expect(b.input[1].content.map((p) => p.text)).toEqual(["<environment_context>\n  <cwd>/Users/me/proj</cwd>\n</environment_context>", "hi"])
 })

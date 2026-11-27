@@ -96,6 +96,14 @@ Its token package shows as one window, `usage_token_num` of `package_token_amoun
 `/api/v2/chat/completions` there as on the mainland, and the model list falls back to the
 built-in one when the station doesn't answer it.
 
+**International browser sign-in** (since 0.3.17, #1090): "Sign in with Huawei Cloud
+(International)" opens Huawei Cloud's international login (`auth.huaweicloud.com`,
+`site=intl`), which goes on to the international portal's authorize page
+(`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`). The code is exchanged at the same
+STS endpoint, and the credential is kept as an international one, through every renewal. It
+skips the mainland-only phone and OfficeAce reads. Not tried yet with a real international
+account.
+
 ## Models
 
 The account's live list: CodeArts' builtin models, plus the free models of its daily benefit
@@ -143,10 +151,15 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
   `mcp__plugin_android-emulator_android-emulator__android_discover_project`) goes as its first
   55 characters, `_` and 8 hex of its SHA-256, and the tool calls in the answer, streamed or
   not, carry the agent's own name again.
-- Every model is listed as text only (`modalities.input: ["text"]`, `image: false`): CodeArts
-  answers an image with `InferHub.001001020.406` "The request model is not multimodal". Since
-  0.2.4 magpie is told so, and describes an image for the model or leaves it out. That refusal,
-  inside a `200` or with any status, comes back as a `400`, not a `502` an agent would ask again.
+- The five models CodeArts' agent kernel declares in `multimodalModels` (`deepseek-v4.1-flash-1017`,
+  `glm-5.3-flash`, `deepseek-v4.1-flash`, `kimi-k3.1-pro`, `kimi-k3`; measured on CodeArts 0.2.9,
+  2026-11-23) are listed as taking images (`modalities.input: ["text", "image"]`); the kernel sends
+  the image to the same `/api/v2/chat/completions` endpoint as a data URL, and all five answered one
+  on a real account. Every other model is listed as text only (`modalities.input: ["text"]`,
+  `image: false`): CodeArts answers an image with `InferHub.001001020.406` "The request model is not
+  multimodal". Since 0.2.4 magpie is told so, and describes an image for a text-only model or leaves
+  it out. That refusal, inside a `200` or with any status, comes back as a `400`, not a `502` an agent
+  would ask again.
 
 ## Usage and check-in
 
@@ -167,7 +180,13 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 - `auth.checkin`: the client's 「限时福利 → 每日领取」 — `GET /v1/ops/delivery?channel=IDE`,
   `POST /v1/ops/claim`, then `POST /v1/ops/confirm` when the claim answers an id. A claim whose
   confirm failed is kept in that ledger for the day and confirmed at the next check-in; one the
-  client leaves unconfirmed (`id: null`) never is. Turn on
+  client leaves unconfirmed (`id: null`) never is. Every claimable campaign whose title is a
+  daily one (`签到` / `每日`) is claimed: the ordinary daily check-in and a contest's daily
+  check-in beside it (such as the 小红书 Skill 创新赛 daily 1000, 2026-11-11–12-05) are separate campaigns in that
+  same list; a contest's one-time sign-up gift is left to the user. A contest check-in the
+  account has not signed up for is not claimable, so it is skipped and the ordinary one is still
+  claimed. The dates are the vendor list's own (`extra.endTime`), not hardcoded here, so the
+  campaign stops being claimed when it ends. Turn on
   *Auto check-in* for CodeArts under **Settings → Usage → Plugins**.
 
 ## OfficeAce (the second provider)
@@ -261,8 +280,10 @@ under **Settings → Usage → Plugins**.
 First written by [yuweihao17](https://github.com/yuweihao17/codearts); this version carries the
 fixes of [yuweihao17/codearts#8](https://github.com/yuweihao17/codearts/pull/8). It builds on the
 measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pull/6) and
-[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel of
-[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model).
+[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel that
+[iJetLi](https://gitee.com/iJetLi) wrote in
+[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts), as
+[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model) carried it.
 
 ## 中文
 
@@ -300,6 +321,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   `start_date`–`end_date` 内 `package_token_amount` 中已用的 `usage_token_num`，套餐名取 `package_name_en`。
   国际站没有 `opengw` 接口、积分批次和每日签到，插件在那里一概不请求（签到回答「未开通」）。尚未用真实国际站账号试过：
   对话仍发到 `/api/v2/chat/completions`，模型列表读不到时用内置列表。
+- **国际站浏览器登录**（0.3.17 起，#1090）：「Sign in with Huawei Cloud (International)」先打开华为云国际站登录页
+  （`auth.huaweicloud.com`，`site=intl`），再到国际站门户的授权页（`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`）。
+  授权码仍在同一个 STS 端点换取，凭据记为国际站凭据，续期后不变；不读国内站才有的手机号和 OfficeAce 信息。尚未用真实国际站账号试过。
 - **模型**：账号实时的内置模型列表；领取当日免费权益成功后，再加上免费模型（每个北京自然日领一次，与
   客户端一致；当天还没领取时遇到 `benefit not found` 也会先领取再重发）。每个模型的「消耗系数」作为 magpie 的倍率上报，来自账号主智能体（`build`）的模型列表。
   0.3.2 起模型名照码道给的显示：带日期的 `deepseek-v4.1-flash-1017` 是另一个模型（错峰倍率不同），显示为
@@ -310,12 +334,19 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   只对流式回答计量积分），调用方要非流式时折叠回 JSON；默认注入 `thinking: { type: "enabled" }`，思考与
   正文分开；200 里内嵌的错误换算为 `429` / `400` / `502` 并带厂商原话；码道只接受不超过 64 个字符的工具名，
   更长的（如 MCP 工具名）发出时缩为前 55 个字符 + `_` + 8 位 SHA-256，回答（流式与非流式）里的工具调用再换回原名。
-  0.2.4 起所有模型都声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
+  码道 0.2.9 的 agent kernel 在 `multimodalModels` 里声明了五个可收图片的模型（`deepseek-v4.1-flash-1017`、
+  `glm-5.3-flash`、`deepseek-v4.1-flash`、`kimi-k3.1-pro`、`kimi-k3`；2026-11-23 实测），它们声明为
+  `modalities.input: ["text", "image"]`；kernel 也是把图片以 data URL 发到同一个 `/api/v2/chat/completions`，
+  五个模型都能读图。其余模型仍声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
   magpie 会替模型描述图片或把图片略去；这个拒绝不论放在 200 里还是带别的状态码，都换算为 `400`，而不是让智能体反复重试的 `502`。
 - **用量与签到**：总积分决定账号是否可用，其余积分桶只做明细；另有每日免费额度窗口。各批积分的到期
   时间读自码道控制台同一批接口，读不到时退回插件的签到账本 `~/.config/magpie/codearts-checkins.json`
   （这部分仍在用更多账号验证，请以控制台为准）。`auth.checkin` 与客户端「限时福利 → 每日领取」一致
   （插件领取后确认失败的，当天记在签到账本里，下次签到时补确认；客户端本就不确认的 `id: null` 领取不会被确认），
+  活动列表里标题为签到/每日（`签到` / `每日`）的每一个可领活动都会领取：普通每日签到和赛事附带的
+  每日签到（例如小红书 Skill 创新赛的每日 1000 积分，2026-11-11–12-05）是同一列表里的不同活动，赛事的一次性报名礼
+  留给用户自己领；没报名该赛事的账号，赛事签到不可领，会被跳过，普通每日签到仍照常领取，
+  日期取自服务端活动列表的 `extra.endTime`，代码里没有写死，活动结束后自然不再领取，
   在 **设置 → 用量 → Plugins** 打开「每日自动签到」即可。
 - **OfficeAce（第二个供应商）**：officeace 卡片提供与 CodeArts 卡片相同的「华为云登录」，账号体系是同一套：
   码道的 STS 三元组能签 OfficeAce 的订阅接口（V11-HMAC）并通过它的 CLAW 权限校验，反之 OfficeAce 的三元组也能签
@@ -337,7 +368,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
 - **OfficeAce 的模型**：目录 `/v2/models` 是注册表（26 条，多数对话时回 `404 ModelArts.81009 Invalid model`），
   插件只保留计费清单（`/v1/model-token-rates`，9 条）里的，并永不列出三个实测必 404 的 id；倍率表读取失败时保留上
   一份好表（空表会让不可调的 id 全部回到用户面前）；未登录时用 10 个内置模型兜底。模型名带上倍率（`GLM-5.3 · x0.18`），
-  上游 `model_name` 的尾部换行会去掉。
+  上游 `model_name` 的尾部换行会去掉。目录读取被拒（`401`/`403`，华为在 `client-permission-validate` 换发 Basic 对子，
+  另一个客户端续期就作废这一份）**只回退静态表，不当登录失效**：这条读的是 MaaS 的 Basic 对子，聊天会自己续期后照常
+  200，真失效由聊天、用量与签到各自的 401 / `signIn: "expired"` 去说。
 - **OfficeAce 的请求**：MaaS 要 `Authorization: Basic base64(appKey:appSecret)`，插件把 SDK 的 Bearer 改写掉，
   去掉 `officeace/` 前缀，发到凭据里自带的 MaaS 地址（为空时用官方直连）。`401`（或 4xx 但报文点名这对 Basic 凭据）
   会先续期一次再重发，**但只有续期真的换了这对凭据时才重发**。已登录但没开通 MaaS 的账号会得到一条说清原因的 `400`，
@@ -353,7 +386,8 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   输的一方重试，只有 token 一直是被消费状态才标记需重新登录。
   另外，`officeace-auth` 与本包不能同时服务 `officeace` 这个 provider id，magpie 会让你选一个，装之前先卸掉旧的。
 - **致谢**：原作者 [yuweihao17](https://github.com/yuweihao17/codearts)；HuHong-Tao、ReachForStar 的
-  实测与实现；[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
+  实测与实现；CodeArts 渠道的原作者 [iJetLi](https://gitee.com/iJetLi)（[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts)），
+  以及转载它的 [Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
 
 ## License
 

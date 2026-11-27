@@ -8,6 +8,7 @@ import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
 import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readCursor, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
+import { processExists } from "./proc.mjs"
 
 const READ_CHUNK = 64 * 1024
 const GUARD_BYTES = 64 // bounded prefix/end witnesses catch truncate-and-regrow between ticks
@@ -294,11 +295,9 @@ function zstd(path) {
   throw new Error("no zstd here")
 }
 
-// whether a process with this pid is running: EPERM is someone else's, still
+// whether a process with this pid exists: EPERM is someone else's, still
 // running; only ESRCH says there is none
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true } catch (e) { return e?.code !== "ESRCH" }
-}
+const pidAlive = processExists
 
 // The sessions folder of a Claude-format agent: which session ids have a
 // running process. null when it can't say: the folder has never held such a

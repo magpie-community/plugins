@@ -11,7 +11,7 @@ afterEach(() => f?.close())
 test("credits are the packs' limits and what they used", async () => {
   f = fakeTrae()
   f.route("POST /trae/api/v2/pay/ide_user_ent_usage", () => json({ is_credits_billing: false, user_entitlement_pack_list: [
-    { entitlement_base_info: { quota: { credits_limit: 300 }, end_time: 1790000000 }, usage: { credits_amount: 75 } },
+    { entitlement_base_info: { quota: { credits_limit: 300 }, end_time: 4102444800 }, usage: { credits_amount: 75 } },
     { entitlement_base_info: { quota: {} }, usage: {} }, // a feature pack, no credits
     { entitlement_base_info: { quota: { credits_limit: 100 } }, usage: { credits_amount: 25 } },
   ] }))
@@ -23,7 +23,7 @@ test("credits are the packs' limits and what they used", async () => {
   expect(u.user).toBe("Ann")
   expect(u.signIn).toBe("kept")
   expect(u.balance).toBeUndefined() // the window carries the count (yetone/magpie#694)
-  expect(u.windows).toEqual([{ name: "Credits", used: 25, amount: 100, limit: 400, unit: "credits", resetsAt: new Date(1790000000 * 1000).toISOString() }])
+  expect(u.windows).toEqual([{ name: "Credits", used: 25, amount: 100, limit: 400, unit: "credits", resetsAt: new Date(4102444800 * 1000).toISOString(), runsOutAt: new Date(4102444800 * 1000).toISOString(), runsOut: 225 }])
 })
 
 test("unlimited packs say so", () => {
@@ -104,7 +104,7 @@ test("the lists are asked in one batch, as TRAE SOLO CN asks them, and DeepSeek 
   expect(live["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1000000, output: 128000 })
   const m = live["deepseek-v4.1-flash"]
   expect(m.name).toBe("DeepSeek-V4.1-Flash")
-  expect(m.limit).toEqual({ context: 200000, output: 64000 })
+  expect(m.limit).toEqual({ context: 1000000, output: 64000 })
   expect(live["glm-5.2"].limit).toEqual({ context: 200000, output: 32000 })
   const opts = await hooks.auth.loader(async () => signedIn())
   const ask = async (model) => {
@@ -321,7 +321,7 @@ test("a model whose lists mostly name it alike keeps that name, its limit and it
   const p = await given(hooks)
   const live = await hooks.provider.models(p, { auth: signedIn() })
   expect(live["deepseek-v4.1-flash"].name).toBe("DeepSeek-V4.1-Flash")
-  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 200000, output: 32000 })
+  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 1000000, output: 32000 })
   expect(live["deepseek-v4.1-flash-max"].name).toBe("DeepSeek-V4.1-Flash (Max)")
   const opts = await hooks.auth.loader(async () => signedIn())
   const ask = async (model) => {
@@ -363,4 +363,50 @@ test("a reply limit is Trae's own or none, and a request is held to Trae's", asy
   expect(await ask("glm-5.2", 131072)).toBe("32000")
   expect(await ask("glm-5.2", 8000)).toBe("8000")
   expect(await ask("deepseek-v4.1-flash", 384000)).toBe("384000")
+})
+
+// the date the credits turn over is a pack's that still counts: a spent
+// pack, or one already past its end, names nothing (#718, #1157)
+test("the soonest end is a live pack's", () => {
+  const now = Date.parse("2026-11-14T12:00:00Z")
+  const sec = (iso) => Date.parse(iso) / 1000
+  const pack = (limit, used, end) => ({ entitlement_base_info: { quota: { credits_limit: limit }, end_time: sec(end) }, usage: { credits_amount: used } })
+  const c = _internal.credits({ user_entitlement_pack_list: [
+    pack(300, 300, "2026-11-14T16:00:38Z"), // today's daily pack, spent
+    pack(500, 10, "2026-11-13T16:00:00Z"), // yesterday's, ended with credits left
+    pack(3000, 0, "2026-11-30T15:59:59Z"), // the monthly pack
+  ] }, now)
+  expect(c.until).toBe(Date.parse("2026-11-30T15:59:59Z"))
+  expect(c.limit).toBe(3800)
+  expect(c.used).toBe(310)
+  // the daily pack with credits left is the soonest again
+  const d = _internal.credits({ user_entitlement_pack_list: [pack(300, 100, "2026-11-14T16:00:38Z"), pack(3000, 0, "2026-11-30T15:59:59Z")] }, now)
+  expect(d.until).toBe(Date.parse("2026-11-14T16:00:38Z"))
+  // an unlimited pack counts as one with credits left
+  const u = _internal.credits({ user_entitlement_pack_list: [pack(-1, 5, "2026-11-20T00:00:00Z"), pack(3000, 0, "2026-11-30T15:59:59Z")] }, now)
+  expect(u.until).toBe(Date.parse("2026-11-20T00:00:00Z"))
+  // nothing live: no date at all
+  expect(_internal.credits({ user_entitlement_pack_list: [pack(300, 300, "2026-11-20T00:00:00Z")] }, now).until).toBe(0)
+})
+
+// gcq909893267's account B on #718, its packs as Trae answered them (ids
+// out): the monthly pack, a spent sign-in reward and one with 95.85 left
+test("a sign-in reward pack's credits run out at its end", async () => {
+  const packs = [
+    { display_desc: "每月登录赠送", entitlement_base_info: { charge_amount: 0, currency: 1, end_time: 1796054399, ent_status: 0, product_extra: { package_extra: { duration: 1, package_duration_type: 1, package_source_type: 0, quota: { credits_limit: 500 } } }, product_id: 221, product_type: 2, quota: { credits_limit: 500 }, start_time: 1793462400 }, expire_time: 1796054399, group_name: "每月登录积分", group_type: 3, is_hide: false, is_last_period: false, is_oneweek: false, next_billing_time: 0, source_id: "", status: 1, usage: {}, yearly_expire_time: 0 },
+    { display_desc: "签到奖励", entitlement_base_info: { charge_amount: 0, currency: 1, end_time: 1794758624, ent_status: 0, product_extra: { package_extra: { duration: 31, package_duration_type: 0, package_name: "签到奖励", package_source_type: 9, quota: { credits_limit: 100 } } }, product_id: 208, product_type: 2, quota: { credits_limit: 100 }, start_time: 1792080224 }, expire_time: 1794758624, group_name: "每日签到", group_type: 1, is_hide: false, is_last_period: false, is_oneweek: false, next_billing_time: 0, source_id: "", status: 1, usage: { credits_amount: 100 }, yearly_expire_time: 0 },
+    { display_desc: "签到奖励", entitlement_base_info: { charge_amount: 0, currency: 1, end_time: 1794931244, ent_status: 0, product_extra: { package_extra: { duration: 31, package_duration_type: 0, package_name: "签到奖励", package_source_type: 9, quota: { credits_limit: 100 } } }, product_id: 208, product_type: 2, quota: { credits_limit: 100 }, start_time: 1792252844 }, expire_time: 1794931244, group_name: "每日签到", group_type: 1, is_hide: false, is_last_period: false, is_oneweek: false, next_billing_time: 0, source_id: "", status: 1, usage: { credits_amount: 4.1456 }, yearly_expire_time: 0 },
+  ]
+  const now = Date.parse("2026-11-14T16:31:21Z")
+  const c = _internal.credits({ user_entitlement_pack_list: packs }, now)
+  expect(c.until).toBe(1794931244 * 1000) // 11-18 00:00:44 Beijing, not the spent 11-16 pack
+  expect(Math.round(c.lapsing * 100) / 100).toBe(95.85)
+  // two rewards ending at the same second lapse together
+  const twin = structuredClone(packs[2])
+  twin.usage = { credits_amount: 0 }
+  expect(Math.round(_internal.credits({ user_entitlement_pack_list: [...packs, twin] }, now).lapsing * 100) / 100).toBe(195.85)
+  // once both rewards are past, the monthly pack is what lapses, all 500
+  const later = _internal.credits({ user_entitlement_pack_list: packs }, Date.parse("2026-11-20T00:00:00Z"))
+  expect(later.until).toBe(1796054399 * 1000)
+  expect(later.lapsing).toBe(500)
 })

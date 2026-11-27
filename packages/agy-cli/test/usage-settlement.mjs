@@ -950,6 +950,42 @@ test("LRU 淘汰后，补默认字段的 follow-up 仍能 resume 原 session", a
   })
 })
 
+test("LRU 淘汰后 resume 的 agy 跑在原 session 的目录里（agy 的缓存跟着目录走）", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROCS: "1" }, sessionResume: true }, async (kit) => {
+    for (const text of ["a1", "b1", "a2", "b2", "a3"]) {
+      kit.prompts.push(async (agent) => {
+        await agent.text(text)
+        return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+      })
+    }
+    const bodyA = baseBody({ messages: [{ role: "user", content: "conversation A" }] })
+    const bodyB = baseBody({ messages: [{ role: "user", content: "conversation B" }] })
+    const follow = (body, prior, reply, next) => ({
+      ...body,
+      messages: [...prior, { role: "assistant", content: [{ type: "text", text: reply }] }, { role: "user", content: next }],
+    })
+    await runTurn(kit, bodyA)
+    await runTurn(kit, bodyB)
+    const a2 = follow(bodyA, bodyA.messages, "a1", "more A")
+    await runTurn(kit, a2)
+    await runTurn(kit, follow(bodyB, bodyB.messages, "b1", "more B"))
+    await runTurn(kit, follow(bodyA, a2.messages, "a2", "and more A"))
+    assert.equal(kit.acpSpawns.length, 5, "每次换会话都应挤掉另一个 agy")
+    const resumes = kit.acpLog.filter((item) => item.method === "session/resume")
+    assert.equal(resumes.length, 3, "A、B、A 都应 resume，而不是新开 session")
+    const [a, b, aAgain, bAgain, aThird] = kit.acpSpawns.map((spawn) => spawn.cwd)
+    assert.ok(a && b && a !== b, "两个会话应各有自己的目录")
+    assert.equal(aAgain, a, "resume 的 agy 换了目录，agy 会整段不走缓存")
+    assert.equal(bAgain, b)
+    assert.equal(aThird, a)
+    for (const item of resumes) {
+      const spawn = kit.acpSpawns[item.spawn]
+      assert.equal(item.params.cwd, spawn?.cwd ?? item.params.cwd)
+    }
+    assert.ok(fs.existsSync(path.join(a, ".agents", "agents")), "目录被删后应重新建好")
+  })
+})
+
 test("取消 prompt 把缓存比例校准为 0 后，下一回合工具步也不再把前缀估成读缓存", async () => {
   await withKit({}, async (kit) => {
     const cancelled = { inputTokens: 5000, cachedReadTokens: 0, outputTokens: 3 }
@@ -1290,8 +1326,10 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
     assert.ok(secondToolElapsedMs < 500, `同次生成续接工具耗时 ${secondToolElapsedMs.toFixed(0)}ms，不应空转等待 1000ms`)
     assert.deepEqual(plain(responses.map((r) => r.usage)), [
       { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 1255, output_tokens_details: { thinking_tokens: 850 } },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
-      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      // 同次生成的续接响应：无新输入/输出，但上下文仍是该生成的整窗（读自缓存），
+      // 全零会让 dsh 等客户端的上下文占用跳成 0%（@seven_7cx）
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
+      { input_tokens: 0, cache_read_input_tokens: 31_609 + 22_528, cache_creation_input_tokens: 0, output_tokens: 0 },
       { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 509, output_tokens_details: { thinking_tokens: 171 } },
       { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 640, output_tokens_details: { thinking_tokens: 283 } },
     ])
@@ -1643,7 +1681,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
       assert.equal(responses.length, 3)
       assert.deepEqual(plain(responses.map((r) => r.usage)), [
         { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 32, output_tokens_details: { thinking_tokens: 8 } },
-        { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+        { input_tokens: 0, cache_read_input_tokens: 1800 + 18_200, cache_creation_input_tokens: 0, output_tokens: 0 },
         { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 553, output_tokens_details: { thinking_tokens: 15 } },
       ])
     } finally {
@@ -1910,5 +1948,401 @@ test("SQLite field 3 已含 field 9（thinking）：单步/多步落盘、steps 
       try { locker?.exec("ROLLBACK") } catch {}
       try { locker?.close() } catch {}
     }
+  })
+})
+
+test("同会话工具中途 steer：等待 tool_call_update 提交后再发 session/cancel，且保留 SQLite stepUsageTrusted（含未消费新生成回退保护）", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const usageBytes = ({ input, output, write = 0, read = 0, thinking = 0 }) => [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+    ...(thinking ? [0x48, ...varint(thinking)] : []),
+  ]
+  const genBlob = (stats) => new Uint8Array(field(1, field(4, usageBytes(stats))))
+
+  // 子场景 1：正常 steer 等待 tool_call_update 后再取消，不取消在途 MCP 调用，且后续多步工具回合继续精确读取 gen_metadata
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let cancelBeforeCommit = null
+    let mcpReply = null
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 2400, read: 14_600, output: 35, thinking: 10 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_steer_1", name: "mcp_ide-tools_Read", status: "in_progress" })
+      mcpReply = await agent.tool("Read", { path: "/secret.txt" })
+      await sleep(15)
+      cancelBeforeCommit = agent.cancelPending
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_steer_1", name: "mcp_ide-tools_Read", status: "completed" })
+      await agent.waitCancel()
+      return {
+        stopReason: "cancelled",
+        usage: { inputTokens: 2400, cachedReadTokens: 14_600, cachedWriteTokens: 0, outputTokens: 35, thoughtTokens: 10, totalTokens: 17_035 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const writeGen = (idx, stats) => {
+        const db = openSqlite(dbFile)
+        try {
+          db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+        } finally {
+          db.close()
+        }
+      }
+      writeGen(1, { input: 350, read: 16_800, output: 48, thinking: 12 })
+      await agent.tool("Read", { path: "/after-steer.txt" })
+      writeGen(2, { input: 220, read: 17_200, output: 25, thinking: 5 })
+      await agent.text("steered done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 350 + 220,
+          cachedReadTokens: 16_800 + 17_200,
+          cachedWriteTokens: 0,
+          outputTokens: 48 + 25,
+          thoughtTokens: 12 + 5,
+          totalTokens: 350 + 220 + 16_800 + 17_200 + 48 + 25,
+        },
+      }
+    })
+
+    const body1 = baseBody()
+    const first = await readSse(await kit.request(body1))
+    assert.equal(first.stopReason, "tool_use")
+    assert.deepEqual(plain(first.usage), {
+      input_tokens: 2400,
+      cache_read_input_tokens: 14_600,
+      cache_creation_input_tokens: 0,
+      output_tokens: 35,
+      output_tokens_details: { thinking_tokens: 10 },
+    })
+
+    const steeredBody = continueWithToolResults(body1, first, () => "SECRET_98421")
+    steeredBody.messages.at(-1).content.push({ type: "text", text: "Steer to new instruction" })
+    const second = await readSse(await kit.request(steeredBody))
+    assert.equal(second.stopReason, "tool_use")
+    assert.equal(cancelBeforeCommit, false, "session/cancel 不能早于 tool_call_update 发出")
+    assert.equal(mcpReply?.result?.content?.[0]?.text, "SECRET_98421")
+    assert.equal(kit.acpSpawns.length, 1, "steer 应复用同一 agy 会话")
+    assert.deepEqual(plain(second.usage), {
+      input_tokens: 350,
+      cache_read_input_tokens: 16_800,
+      cache_creation_input_tokens: 0,
+      output_tokens: 48,
+      output_tokens_details: { thinking_tokens: 12 },
+    })
+
+    const third = await readSse(await kit.request(continueWithToolResults(steeredBody, second, () => "AFTER_STEER_OK")))
+    assert.equal(third.stopReason, "end_turn")
+    assert.deepEqual(plain(third.usage), {
+      input_tokens: 220,
+      cache_read_input_tokens: 17_200,
+      cache_creation_input_tokens: 0,
+      output_tokens: 25,
+      output_tokens_details: { thinking_tokens: 5 },
+    })
+  })
+
+  // 子场景 2：若取消落地前 gen_metadata 已留下未消费的额外生成行，必须拒绝信任游标并回退 stepUsageTrusted = false
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 2000, read: 10_000, output: 30, thinking: 5 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_steer_dirty", name: "mcp_ide-tools_Read", status: "in_progress" })
+      await agent.tool("Read", { path: "/dirty.txt" })
+      const db2 = openSqlite(dbFile)
+      try {
+        // 模拟取消前已插入一笔未消费的新生成行
+        db2.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 88_888, read: 0, output: 9 }))
+      } finally {
+        db2.close()
+      }
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_steer_dirty", name: "mcp_ide-tools_Read", status: "completed" })
+      await agent.waitCancel()
+      return {
+        stopReason: "cancelled",
+        usage: { inputTokens: 2000, cachedReadTokens: 10_000, cachedWriteTokens: 0, outputTokens: 30, thoughtTokens: 5, totalTokens: 12_030 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      // 第二轮正常写入与其 ACP 用量完全吻合的 gen_metadata 行：若第一轮错误标记了
+      // stepUsageReconciled = true，第二轮将把 proc.stepUsageTrusted 保持为 true。
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("INSERT INTO gen_metadata VALUES (2, ?)", genBlob({ input: 500, read: 11_500, output: 12 }))
+      } finally {
+        db.close()
+      }
+      await agent.text("safe fallback")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 500, cachedReadTokens: 11_500, cachedWriteTokens: 0, outputTokens: 12, totalTokens: 12_012 },
+      }
+    })
+
+    const body1 = baseBody()
+    const first = await readSse(await kit.request(body1))
+    const [proc] = [...kit.module.__agyTestAllProcs]
+    const turn1 = proc.turn
+    const steeredBody = continueWithToolResults(body1, first, () => "OK")
+    steeredBody.messages.at(-1).content.push({ type: "text", text: "Steer after dirty tail" })
+    const second = await readSse(await kit.request(steeredBody))
+    assert.equal(second.stopReason, "end_turn")
+    assert.equal(turn1.stepUsageReconciled, false, "存在未消费尾行时不得标记 stepUsageReconciled")
+    assert.equal(proc.stepUsageTrusted, false, "存在未消费 gen_metadata 尾行时必须关闭 stepUsageTrusted")
+    assert.notEqual(second.usage.input_tokens, 88_888, "不能把上一轮残留行误算到新回合")
+  })
+
+  // 子场景 3：尾部虽无新行，但 ACP 累计输入远超已测量的工具步（说明第 2 轮模型调用尚未刷盘即被取消），必须拒绝信任
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 2000, read: 10_000, output: 30, thinking: 5 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_steer_unflushed", name: "mcp_ide-tools_Read", status: "in_progress" })
+      await agent.tool("Read", { path: "/unflushed.txt" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_steer_unflushed", name: "mcp_ide-tools_Read", status: "completed" })
+      await agent.waitCancel()
+      return {
+        stopReason: "cancelled",
+        usage: { inputTokens: 15_000, cachedReadTokens: 10_000, cachedWriteTokens: 0, outputTokens: 50, thoughtTokens: 5, totalTokens: 25_050 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 600, read: 12_000, output: 15 }))
+      } finally {
+        db.close()
+      }
+      await agent.text("after mismatch")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 600, cachedReadTokens: 12_000, cachedWriteTokens: 0, outputTokens: 15, totalTokens: 12_615 },
+      }
+    })
+
+    const body1 = baseBody()
+    const first = await readSse(await kit.request(body1))
+    const [proc] = [...kit.module.__agyTestAllProcs]
+    const turn1 = proc.turn
+    const steeredBody = continueWithToolResults(body1, first, () => "OK")
+    steeredBody.messages.at(-1).content.push({ type: "text", text: "Steer after unflushed call" })
+    const second = await readSse(await kit.request(steeredBody))
+    assert.equal(second.stopReason, "end_turn")
+    assert.equal(turn1.stepUsageReconciled, false, "measuredPrompt 与 ACP 累计输入失配时不得标记 stepUsageReconciled")
+    assert.equal(proc.stepUsageTrusted, false, "measuredPrompt 与 ACP 累计输入失配时必须关闭 stepUsageTrusted")
+  })
+
+  // 子场景 4：同一 Turn 跨多个 prompt（LONGTOOL 延迟回传进入第 2 个 prompt 后再发起工具调用并被 steer），按累计 usage 对账并继续保持 stepUsageTrusted
+  await withKit({ env: { AGY_BRIDGE_IDE_CALL_DEADLINE_MS: "50" } }, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 1500, read: 8500, output: 20, thinking: 4 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_long_1", name: "mcp_ide-tools_Read", status: "in_progress" })
+      await agent.tool("Read", { path: "/slow.txt" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_long_1", name: "mcp_ide-tools_Read", status: "completed" })
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 1500, cachedReadTokens: 8500, cachedWriteTokens: 0, outputTokens: 20, thoughtTokens: 4, totalTokens: 10_020 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 1200, read: 9800, output: 25, thinking: 6 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_step_2", name: "mcp_ide-tools_Read", status: "in_progress" })
+      await agent.tool("Read", { path: "/step2.txt" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_step_2", name: "mcp_ide-tools_Read", status: "completed" })
+      await agent.waitCancel()
+      return {
+        stopReason: "cancelled",
+        usage: { inputTokens: 1200, cachedReadTokens: 9800, cachedWriteTokens: 0, outputTokens: 25, thoughtTokens: 6, totalTokens: 11_025 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("INSERT INTO gen_metadata VALUES (2, ?)", genBlob({ input: 410, read: 20_900, output: 18, thinking: 3 }))
+      } finally {
+        db.close()
+      }
+      await agent.text("multi-prompt steer done")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 410, cachedReadTokens: 20_900, cachedWriteTokens: 0, outputTokens: 18, thoughtTokens: 3, totalTokens: 21_318 },
+      }
+    })
+
+    const body1 = baseBody()
+    const first = await readSse(await kit.request(body1))
+    assert.equal(first.stopReason, "tool_use")
+    await sleep(90)
+
+    const body2 = continueWithToolResults(body1, first, () => "SLOW_DONE")
+    const second = await readSse(await kit.request(body2))
+    assert.equal(second.stopReason, "tool_use")
+
+    const [proc] = [...kit.module.__agyTestAllProcs]
+    const turn1 = proc.turn
+    const steeredBody = continueWithToolResults(body2, second, () => "STEP2_DONE")
+    steeredBody.messages.at(-1).content.push({ type: "text", text: "Steer after multi-prompt turn" })
+    const third = await readSse(await kit.request(steeredBody))
+    assert.equal(third.stopReason, "end_turn")
+    assert.equal(turn1.stepUsageReconciled, true, "多 prompt Turn 应按累计 usage 完成对账")
+    assert.equal(proc.stepUsageTrusted, true, "多 prompt Turn steer 后应继续保持 stepUsageTrusted")
+    assert.deepEqual(plain(third.usage), {
+      input_tokens: 410,
+      cache_read_input_tokens: 20_900,
+      cache_creation_input_tokens: 0,
+      output_tokens: 18,
+      output_tokens_details: { thinking_tokens: 3 },
+    })
+  })
+
+  // 子场景 5：若被取消回合在工具提交后已开始（被抑制的）正文生成，其生成步的 gen_metadata 行可能延后刷盘；即使当前 ACP usage 仍等于工具步读数也不得标记 stepUsageReconciled
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 2400, read: 14_600, output: 35, thinking: 10 }))
+      } finally {
+        db.close()
+      }
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "call_post_gen", name: "mcp_ide-tools_Read", status: "in_progress" })
+      await agent.tool("Read", { path: "/post-gen.txt" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call_post_gen", name: "mcp_ide-tools_Read", status: "completed" })
+      await agent.text("POST_TOOL_GENERATION")
+      await agent.waitCancel()
+      return {
+        stopReason: "cancelled",
+        usage: { inputTokens: 2400, cachedReadTokens: 14_600, cachedWriteTokens: 0, outputTokens: 35, thoughtTokens: 10, totalTokens: 17_035 },
+      }
+    })
+
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 420, read: 15_000, output: 11 }))
+      } finally {
+        db.close()
+      }
+      await agent.text("after post-tool generation")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 420, cachedReadTokens: 15_000, cachedWriteTokens: 0, outputTokens: 11, totalTokens: 15_420 },
+      }
+    })
+
+    const body1 = baseBody()
+    const first = await readSse(await kit.request(body1))
+    const [proc] = [...kit.module.__agyTestAllProcs]
+    const turn1 = proc.turn
+    const steeredBody = continueWithToolResults(body1, first, () => "OK")
+    steeredBody.messages.at(-1).content.push({ type: "text", text: "Steer after post-tool text started" })
+    const second = await readSse(await kit.request(steeredBody))
+    assert.equal(second.stopReason, "end_turn")
+    assert.equal(turn1.stepUsageReconciled, false, "已进入生成输出的取消回合不得标记 stepUsageReconciled")
+    assert.equal(proc.stepUsageTrusted, false, "已进入生成输出的取消回合必须关闭 stepUsageTrusted")
+  })
+})
+
+test("#1166: an agy given the bridge's own --gemini-dir has its steps read from there", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, read = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output), ...(read ? [0x28, ...varint(read)] : []),
+  ])))
+
+  await withKit({ acpHelp: "  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n" }, async (kit) => {
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+    const convDir = path.join(own, "antigravity-cli", "conversations")
+    // the machine's own folder holds a different count, which must not be read
+    const machineDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    fs.mkdirSync(machineDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      for (const dir of [convDir, machineDir]) {
+        const db = openSqlite(path.join(dir, `${agent.sessionId}.db`))
+        try {
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        } finally {
+          db.close()
+        }
+      }
+      for (const [dir, input] of [[convDir, 1800], [machineDir, 9999]]) {
+        const db = openSqlite(path.join(dir, `${agent.sessionId}.db`))
+        try {
+          db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input, read: 18_200, output: 32 }))
+        } finally {
+          db.close()
+        }
+      }
+      await agent.tool("Read", { path: "/step1.ts" })
+      await agent.text("done reading")
+      return { stopReason: "end_turn", usage: { inputTokens: 3900, cachedReadTokens: 38_100, cachedWriteTokens: 0, outputTokens: 82, totalTokens: 3900 + 38_100 + 82 } }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.ok(kit.acpSpawns[0].args.join(" ").includes(`--gemini-dir ${own}`), kit.acpSpawns[0].args.join(" "))
+    assert.equal(responses[0].usage.input_tokens, 1800, JSON.stringify(responses[0].usage))
   })
 })

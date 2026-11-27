@@ -42,6 +42,11 @@ const MODEL_WIRE = {
   "glm-5.3-flash": "anthropic",
 }
 const wireOf = (id) => WIRE[MODEL_WIRE[id]] ?? WIRE.chat
+// alsoOf are the two APIs besides its own a model is served on (below),
+// which magpie relays a client's request to as it was sent rather than
+// translating it to the declared one (m.also; gaubeebangeel on X:
+// OpenDesign's Anthropic request to a chat model went as chat completions)
+const alsoOf = (id) => Object.values(WIRE).filter((w) => w !== wireOf(id))
 // The API a model is declared on is only its default: amr-link serves
 // every model on all three (keyblues, plugins#888: each of the fourteen
 // answered on chat completions and Responses at /v1 and on Anthropic's
@@ -71,8 +76,83 @@ const signFor = (key) => async (input, init = {}) => {
   }
   // the global fetch as it is when the request is sent: the host's own,
   // with its proxy and redirect rules, never one captured at load
-  return globalThis.fetch(input, { ...init, headers: h })
+  const res = await globalThis.fetch(input, { ...init, headers: h })
+  if (!MESSAGES.test(path) || !res.ok || !res.body) return res
+  if (!(res.headers.get("content-type") ?? "").includes("text/event-stream")) return res
+  const out = new Headers(res.headers)
+  out.delete("content-length")
+  out.delete("content-encoding")
+  return new Response(plainThinkingSse(res.body), { status: res.status, statusText: res.statusText, headers: out })
 }
+
+// amr-link opens a thinking turn on Anthropic's messages with a
+// `redacted_thinking` block and then streams `signature_delta` into it,
+// which Claude Code reads as a malformed stream: it aborts the request (the
+// routing log's 499/canceled) and re-asks without streaming, so a third of
+// OpenDesign's requests died that way. A `signature_delta` is legal on a
+// `thinking` block, so amr-link's block is renamed to that; its signature,
+// like the plain-text `thinking_delta`s, goes through untouched, so the id
+// amr-link gave the block is the one sent back on the next turn.
+//
+// Only amr-link's block is renamed. Anthropic's own `redacted_thinking`
+// carries `data` and nothing else; amr-link's also carries `thinking` and
+// `signature`. Every model is served on /messages, Claude's included, and a
+// real redacted block must keep its encrypted `data` — renaming it would
+// hand the next turn an empty thinking block with no encrypted reasoning.
+//
+// The rewrite is per event and incremental: an event split across chunks is
+// held until its blank-line separator arrives, and every event it doesn't
+// touch passes through byte for byte.
+const isAmrRedacted = (b) => b?.type === "redacted_thinking" && typeof b.thinking === "string"
+
+function plainThinkingSse(source) {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ""
+
+  const emit = (block, sep, controller) => {
+    const lines = block.split("\n")
+    const at = lines.findIndex((l) => l.startsWith("data:"))
+    let ev
+    if (at !== -1) {
+      try {
+        ev = JSON.parse(lines[at].replace(/^data: ?/, "").replace(/\r$/, ""))
+      } catch {}
+    }
+    if (ev?.type === "content_block_start" && isAmrRedacted(ev.content_block)) {
+      ev.content_block = { type: "thinking", thinking: "", signature: "" }
+      // the line keeps its own terminator: a CRLF stream stays CRLF
+      lines[at] = `data: ${JSON.stringify(ev)}${lines[at].endsWith("\r") ? "\r" : ""}`
+      controller.enqueue(encoder.encode(lines.join("\n") + sep))
+      return
+    }
+    controller.enqueue(encoder.encode(block + sep))
+  }
+
+  const drain = (controller) => {
+    for (;;) {
+      const lf = pending.indexOf("\n\n")
+      const crlf = pending.indexOf("\r\n\r\n")
+      const [at, sep] = crlf !== -1 && (lf === -1 || crlf < lf) ? [crlf, "\r\n\r\n"] : lf !== -1 ? [lf, "\n\n"] : [-1, ""]
+      if (at === -1) return
+      emit(pending.slice(0, at), sep, controller)
+      pending = pending.slice(at + sep.length)
+    }
+  }
+
+  return source.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      drain(controller)
+    },
+    flush(controller) {
+      pending += decoder.decode()
+      drain(controller)
+      if (pending) controller.enqueue(encoder.encode(pending))
+    },
+  }))
+}
+
 // the provider's own default: a model this plugin doesn't name is asked on
 // chat completions, where ten of the eleven thought
 const NPM = WIRE.chat
@@ -346,6 +426,7 @@ function modelOf(id, m) {
     // the API magpie asks this model on (WIRE above), per model
     api: { npm: wireOf(id) },
     provider: { npm: wireOf(id) },
+    also: alsoOf(id),
     ...(rate && { rate }),
     limit: {
       context: Number.isFinite(context) && context > 0 ? context : 200_000,
@@ -370,6 +451,7 @@ function servedOf(id, m) {
     id,
     name: c.name,
     api: { id, url: LINK, npm: wireOf(id) },
+    also: alsoOf(id),
     status: "active",
     headers: {},
     options: {},
@@ -528,7 +610,7 @@ export const OpenDesignAuthPlugin = async () => {
         // catalog's 232000 for glm-5.3-flash, which amr-link refuses (CAP)
         const out = Number(m.limit?.output)
         const limit = CAP[id] && !(out > 0 && out <= CAP[id]) ? { limit: { ...(m.limit ?? {}), output: CAP[id] } } : {}
-        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
+        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, also: alsoOf(id), ...(rate && { rate }) }
       }
       cfg.provider[ID] = {
         name: "Open Design",
@@ -598,4 +680,4 @@ export const OpenDesignAuthPlugin = async () => {
 
 // _internal is what the tests read through; magpie calls every exported
 // function as a plugin, so only the plugin itself is exported bare.
-export const _internal = { authOf, signFor, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }
+export const _internal = { authOf, signFor, plainThinkingSse, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }

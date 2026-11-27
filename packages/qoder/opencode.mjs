@@ -2,4 +2,4 @@
 // load them: its plugin functions and nothing else (1.x refuses a
 // package whose exports include anything but plugins). OpenCode 2.x
 // loads opencode2.mjs, which runs these.
-export { QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin, QwenWorkEnterpriseAuthPlugin } from "./index.mjs"
+export { QoderAuthPlugin, QoderCNAuthPlugin, QoderTeamAuthPlugin, QwenWorkAuthPlugin, QwenWorkEnterpriseAuthPlugin } from "./index.mjs"

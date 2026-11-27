@@ -5,6 +5,7 @@
 import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { processAlive } from "./proc.mjs";
 import { xdgConfigHome } from "./magpie-files";
 import { errText, type Run, type Task } from "./types";
 
@@ -283,15 +284,7 @@ function parsePid(raw: string): number | null {
   return null;
 }
 
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM 说明进程存在但属于别人，同样算活着
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+const pidAlive = processAlive;
 
 /** 只在自己仍是持有者时删除锁文件；锁已被别人接管/换内容时不动它 */
 async function releaseLock(path: string): Promise<void> {

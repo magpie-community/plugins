@@ -4,8 +4,21 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCollector, acquireLock } from "./collector.mjs";
+import { readJSON, writeJSON } from "./storage.mjs";
 
 const ui = fileURLToPath(new URL("../ui/", import.meta.url));
+
+// The token outlives the service: Magpie restarts its plugin host whenever
+// any plugin updates, and a page already open must keep its token.
+async function serviceToken(dataDir) {
+  const path = join(dataDir, "service-token.json");
+  const kept = await readJSON(path, null).catch(() => null);
+  if (/^[a-f0-9]{64}$/.test(kept?.token)) return kept.token;
+  const token = randomBytes(32).toString("hex");
+  await writeJSON(path, { token });
+  return token;
+}
+
 export async function startServer({
   port = 3497,
   dataDir,
@@ -16,15 +29,15 @@ export async function startServer({
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error("Invalid service port.");
   const release = await acquireLock(dataDir);
-  let collector;
+  let collector, token;
   try {
+    token = await serviceToken(dataDir);
     collector =
       injected || (await createCollector({ dataDir, configDir, options }));
   } catch (e) {
     await release();
     throw e;
   }
-  const token = randomBytes(32).toString("hex");
   let actualPort;
   const send = (res, code, body, type = "application/json") => {
     res.writeHead(code, {
@@ -48,17 +61,18 @@ export async function startServer({
         !origin || origin === "null" || origin === `http://${host}`;
       if (!originOK) return send(res, 403, { error: "Invalid origin." });
       if (url.pathname.startsWith("/api/")) {
+        // Sandboxed pages must also be able to read authentication failures.
+        res.setHeader(
+          "Access-Control-Allow-Origin",
+          origin || `http://${host}`,
+        );
+        res.setHeader("Vary", "Origin");
         if (req.method === "OPTIONS") {
-          res.setHeader(
-            "Access-Control-Allow-Origin",
-            origin || `http://${host}`,
-          );
           res.setHeader(
             "Access-Control-Allow-Headers",
             "Content-Type, X-Amp-Usage-Token",
           );
           res.setHeader("Access-Control-Allow-Methods", "GET, POST");
-          res.setHeader("Vary", "Origin");
           return send(res, 204, "", "text/plain");
         }
         const given = Buffer.from(
@@ -73,11 +87,6 @@ export async function startServer({
             error: "Reopen the Amp usage page to reconnect.",
             code: "reconnect",
           });
-        res.setHeader(
-          "Access-Control-Allow-Origin",
-          origin || `http://${host}`,
-        );
-        res.setHeader("Vary", "Origin");
         if (url.pathname === "/api/status" && req.method === "GET")
           return send(res, 200, collector.view());
         if (req.method !== "POST")

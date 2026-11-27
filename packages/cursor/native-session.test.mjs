@@ -1,5 +1,5 @@
 import "./nonet.mjs"
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { _internal } from "./index.mjs"
@@ -8,6 +8,12 @@ import { bin, text, uint, message, tool, update, setBlob, getBlob, checkpoint, e
 
 const pools = []
 afterEach(async () => { await Promise.all(pools.splice(0).map((p) => p.clear())) })
+
+// these Runs send no count after a step's tool count: none is waited for
+// (plugins#1615)
+const usageWait = NATIVE_LIMITS.usageWait
+beforeEach(() => { NATIVE_LIMITS.usageWait = 0 })
+afterEach(() => { NATIVE_LIMITS.usageWait = usageWait })
 const registered = [{ name: "audit_echo", description: "synthetic", schema: { type: "object" }, schemaText: '{"type":"object"}' }]
 const chat = (extra = {}) => ({ model: "synthetic-model", messages: [{ role: "user", content: "synthetic" }], ...extra })
 function owner(extra = {}, overrides = {}) {
@@ -430,7 +436,7 @@ test("native protocol: a step silent after its first call fails at idle, before 
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call (try again)" })
+  expect(run.error).toMatchObject({ status: 502, message: "Cursor went quiet: no message for 0 s, its last message tool call; stream timed out (try again)" })
   expect(Date.now() - started).toBeLessThan(1000)
 })
 
@@ -472,7 +478,7 @@ test("native protocol: a quiet Run's error says its checkpoint was a repeat, its
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #2 of the Run, number 2 of step 1, 2 in a row, after thinking ×2, text (try again)")
+  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #2 of the Run, number 2 of step 1, 2 in a row, after thinking ×2, text; stream timed out (try again)")
 })
 
 test("native protocol: a checkpoint after the caller's results is the first of the next step (plugins#550)", async () => {
@@ -485,7 +491,7 @@ test("native protocol: a checkpoint after the caller's results is the first of t
     await new Promise(() => {})
   })())
   await until(() => run.error)
-  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #4 of the Run, the first of step 2, after nothing else (try again)")
+  expect(run.error.message).toBe("Cursor went quiet: no message for 0 s, its last message checkpoint #4 of the Run, the first of step 2, after nothing else; stream timed out (try again)")
 })
 
 test("native protocol: Wire trace writes a failed Run, never a cancelled one, and only while on (plugins#550)", async () => {
@@ -510,6 +516,37 @@ test("native protocol: Wire trace writes a failed Run, never a cancelled one, an
     setWireTrace("")
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// plugins#635: InteractionQuery {id 1, web_search_request_query 2 {args 1
+// {search_term 1, tool_call_id 2}}} is read as a web search on both paths'
+// readers; any other query, or one that can't be read, is not
+test("web search: only a web_search_request_query is read, and its answer is an approval (plugins#635)", async () => {
+  const { webSearchQuery, webSearchAnswer } = await import("./native-session.mjs")
+  const args = bin(1, message(text(1, "term"), text(2, "ws1")))
+  for (const parse of [nativeFields, _internal.fields]) {
+    expect(webSearchQuery(message(uint(1, 3), bin(2, args)), parse)).toEqual({ id: 3, args: true })
+    expect(webSearchQuery(message(uint(1, 3), bin(2, Buffer.alloc(0))), parse)).toEqual({ id: 3, args: false })
+    // web_fetch_request_query, ask_question: not a search
+    expect(webSearchQuery(message(uint(1, 3), bin(9, args)), parse)).toBeNull()
+    expect(webSearchQuery(message(uint(1, 3), bin(3, args)), parse)).toBeNull()
+    // a oneof: the last field is the query
+    expect(webSearchQuery(message(uint(1, 3), bin(2, args), bin(9, args)), parse)).toBeNull()
+    // no query at all, or a search that isn't a message
+    expect(webSearchQuery(uint(1, 3), parse)).toBeNull()
+    expect(webSearchQuery(message(uint(1, 3), uint(2, 1)), parse)).toBeNull()
+  }
+  expect(webSearchQuery(Buffer.from([0x0a, 0x7f]))).toBeNull()
+  // AgentClientMessage {interaction_response 6 {id 1, web_search_request_response 2 {approved 1 {}}}}
+  const yes = webSearchAnswer(_internal.pb, { id: 3, args: true })
+  expect(readWire(yes).map((f) => f.no)).toEqual([6])
+  expect(number(nest(yes, 6), 1)).toBe(3)
+  expect(readWire(nest(nest(yes, 6), 2)).map((f) => f.no)).toEqual([1])
+  expect(nest(nest(nest(yes, 6), 2), 1)).toHaveLength(0)
+  // no args: rejected {reason 1}, as cursor-agent answers it
+  const no = webSearchAnswer(_internal.pb, { id: 4, args: false })
+  expect(readWire(nest(nest(no, 6), 2)).map((f) => f.no)).toEqual([2])
+  expect(nest(nest(nest(nest(no, 6), 2), 2), 1).toString()).toBe("Missing web search arguments")
 })
 
 test("Wire trace: scrub takes out what could be an email, id or token (plugins#550)", async () => {

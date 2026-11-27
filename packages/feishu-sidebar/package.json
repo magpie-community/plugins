@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/page-feishu-sidebar",
+  "version": "0.1.0",
+  "description": "Open Magpie Web in the Feishu desktop sidebar with an AppLink",
+  "files": ["page", "README.md"],
+  "keywords": ["magpie", "magpie-page", "feishu"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/feishu-sidebar" },
+  "magpie": {
+    "page": {
+      "title": "Feishu sidebar",
+      "titles": { "zh": "飞书侧边栏" },
+      "file": "page/index.html"
+    },
+    "permissions": []
+  }
+}

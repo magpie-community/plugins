@@ -22,6 +22,13 @@ export const NATIVE_LIMITS = {
   // step's last call; a Run that sent calls and then only heartbeats has
   // stopped, and the caller's next request goes on from the calls' results.
   countWait: 60_000,
+  // How long a step whose calls are all in waits for Cursor's count of
+  // that model call (ModelCallCompletedUpdate, 31) before handing the
+  // calls over without it (plugins#1615). Cursor sends it a checkpoint
+  // after the step's tool count, about 10 ms later in plugins#635's
+  // traces; without it the step said 0 used, and a client or relay
+  // reading the step's usage saw nothing spent.
+  usageWait: 1000,
   drain: 6000,
   replayWait: 120_000,
   blobBytes: 64 << 20,
@@ -133,7 +140,8 @@ export class Quiet {
   fire() {
     const gap = Date.now() - this.since
     const what = this.heard + gap >= this.limits.quiet ? `${this.heartbeats} heartbeats and nothing else for ${Math.round((this.heard + gap) / 1000)} s` : `no message for ${Math.round(gap / 1000)} s`
-    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""} (try again)`
+    // Pi classifies streamed errors by message after the HTTP status is lost.
+    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""}; stream timed out (try again)`
     this.trace?.event("quiet", { heard: this.heard + gap, heartbeats: this.heartbeats })
     this.gone?.()
     this.stop({ status: 502, message: this.why })
@@ -161,6 +169,11 @@ export class Quiet {
   // written then (once)
   failed(error) {
     this.trace?.write(error, this)
+  }
+  // ended is how the Run ended, when it succeeded: its trace is written
+  // only if Cursor asked it to search (plugins#635)
+  ended() {
+    this.trace?.write(null, this)
   }
   // pause stops the clock while the Run waits on the caller's tool results;
   // resume starts it again from nothing, for Cursor's next model call
@@ -244,6 +257,54 @@ let traceDir = () => ""
 export function setWireTrace(dir) {
   traceDir = typeof dir === "function" ? dir : () => dir || ""
 }
+// The web-search test switch (plugins#635, off by default; the plugin's
+// "Cursor web search (test)" option). searchDir is the folder a Run's trace
+// goes to while it is on, "" while off, asked at each Run's start. On, the
+// Run lets Cursor's own web search through (ToolCall.web_search_tool_call,
+// 18) and approves it when Cursor asks, as cursor-agent does when it
+// auto-approves; and a Run in which Cursor asked to search saves its wire
+// trace whether it succeeded or failed. Every other tool of Cursor's own is
+// refused as before.
+let searchDir = () => ""
+export function setWebSearch(dir) {
+  searchDir = typeof dir === "function" ? dir : () => dir || ""
+}
+export function webSearchDir() {
+  try {
+    return String(searchDir() || "")
+  } catch {
+    return ""
+  }
+}
+// webSearchQuery reads an InteractionQuery (AgentServerMessage field 7):
+// id (1, uint32) and the query, a oneof of which web_search_request_query
+// is field 2 (WebSearchRequestQuery: args, 1, a WebSearchArgs of
+// search_term 1 and tool_call_id 2). It is {id, args} for a web search
+// (args false when Cursor sent none), null for any other query or one that
+// can't be read. parse is the path's field reader.
+export function webSearchQuery(data, parse = nativeFields) {
+  try {
+    const fs = parse(data)
+    const id = fs.find((f) => f.num === 1)
+    if (id && (id.wire !== 0 || !Number.isInteger(id.n) || id.n < 0 || id.n > 0xffffffff)) return null
+    // a oneof: the last of its fields is the query
+    const q = fs.filter((f) => f.num !== 1).at(-1)
+    if (!q || q.num !== 2 || q.wire !== 2) return null
+    const args = parse(q.data).some((f) => f.num === 1 && f.wire === 2)
+    return { id: id?.n ?? 0, args }
+  } catch {
+    return null
+  }
+}
+// webSearchAnswer is the AgentClientMessage that answers it: interaction_response
+// (6), an InteractionResponse of the query's id (1) and web_search_request_response
+// (2), a WebSearchRequestResponse that is approved (1, an empty message), or
+// rejected (2, reason 1) when Cursor named nothing to search, as cursor-agent
+// answers that
+export function webSearchAnswer(pb, q) {
+  const res = q.args ? pb().bytes(1, Buffer.alloc(0)) : pb().bytes(2, pb().str(1, "Missing web search arguments"))
+  return pb().bytes(6, pb().varint(1, q.id).bytes(2, res)).done()
+}
 const TRACE_HEAD = 2000 // the Run's first frames, kept
 const TRACE_TAIL = 3000 // and its last, the ones in between counted only
 const TRACE_FILES = 20 // the newest traces kept in the folder
@@ -292,7 +353,13 @@ export class WireTrace {
   static open(meta) {
     let dir = ""
     try { dir = traceDir() } catch {}
-    return dir ? new WireTrace(dir, meta) : null
+    // with Wire trace off, a Run under the web-search test switch is traced
+    // all the same, and saved only if Cursor asked it to search (plugins#635)
+    const search = meta?.search ? String(meta.search) : ""
+    if (!dir && !search) return null
+    const t = new WireTrace(dir || search, meta)
+    t.failures = !!dir
+    return t
   }
   constructor(dir, meta = {}) {
     this.dir = dir
@@ -303,6 +370,16 @@ export class WireTrace {
     this.head = []
     this.tail = []
     this.dropped = 0
+    // failures: a failed Run is saved (Wire trace on); searched: Cursor
+    // asked this Run to search the web (the web-search test switch)
+    this.failures = true
+    this.searched = false
+  }
+  // searchAsked notes that Cursor asked to search: the Run is saved however
+  // it ends (plugins#635)
+  searchAsked() {
+    this.searched = true
+    this.event("web search")
   }
   push(entry) {
     if (this.written) return
@@ -328,10 +405,12 @@ export class WireTrace {
   event(name, extra = {}) {
     this.push({ t: Date.now() - this.started, event: name, ...extra })
   }
-  // write saves the trace once, when the Run failed; a write that fails
-  // leaves the Run's error as it was
+  // write saves the trace once, when the Run failed (error), or when one
+  // that searched succeeded (no error); a write that fails leaves the Run's
+  // error as it was
   write(error, quiet) {
     if (this.written) return
+    if (!error ? !this.searched : !this.failures && !this.searched) return
     this.written = true
     try {
       const at = new Date(this.started).toISOString().replace(/[:.]/g, "-")
@@ -342,7 +421,7 @@ export class WireTrace {
         ...this.meta,
         started: new Date(this.started).toISOString(),
         ms: Date.now() - this.started,
-        error: { status: error?.status ?? 0, message: scrub(error?.message) },
+        error: error ? { status: error?.status ?? 0, message: scrub(error?.message) } : undefined,
         quiet: quiet ? { last: quiet.last, checkpoints: quiet.checkpoints, step: quiet.step, stepCheckpoints: quiet.stepCheckpoints, heartbeats: quiet.heartbeats, heard: quiet.heard, trail: quiet.trail } : undefined,
         frames: [...this.head, ...(this.dropped ? [{ dropped: this.dropped }] : []), ...this.tail],
       }
@@ -494,6 +573,7 @@ export class StepCalls {
     this.started = new Set()
     this.execs = new Set() // the short strings of each exec's args: its tool_call_id among them
     this.partial = new Set() // calls the model is writing in this step
+    this.mcp = new Set() // MCP calls announced by a partial or started update
     this.byCursor = new Set()
     this.listedAfter = false // whether tool_requests_listed came after the latest call/update
   }
@@ -506,6 +586,8 @@ export class StepCalls {
     this.listedAfter = false
     const id = str(uf, 1)
     if (!id) return false
+    const call = field(uf, 2)
+    if (n !== 3 && call && this.parse(call.data).some((f) => f.num === 15)) this.mcp.add(id)
     if (n === 2) this.started.add(id)
     if (n === 7) this.partial.add(id)
     if (n !== 3) return false
@@ -535,6 +617,13 @@ export class StepCalls {
   get completed() {
     return this.byCursor.size
   }
+  // Announced MCP calls still awaiting an exec or a Cursor-side completion.
+  // A checkpoint can omit them while their execs are still on the way.
+  get pendingMcp() {
+    let n = 0
+    for (const id of this.mcp) if (!this.execs.has(id) && !this.byCursor.has(id)) n++
+    return n
+  }
   // writing is how many calls the step wrote (7) that are neither started
   // on the client, sent as an exec, nor completed by Cursor: a call of
   // Cursor's own still running, or one still to be sent
@@ -546,6 +635,7 @@ export class StepCalls {
   // nextStep starts the next step's count
   nextStep() {
     this.partial.clear()
+    this.mcp.clear()
     this.byCursor.clear()
     this.listedAfter = false
   }
@@ -873,6 +963,7 @@ export class NativeSessionPool {
     owner.execs.clear()
     owner.nativeCalls.clear()
     owner.stepUsages.clear()
+    owner.usageOrder = []
     owner.lastStepUsage = null
   }
   async clear() {
@@ -909,6 +1000,7 @@ class NativeSession {
     this.steps = 1
     this.stepSaid = 0
     this.stepUsages = new Map()
+    this.usageOrder = []
     this.lastStepUsage = null
     this.said = 0
     this.wrote = 0
@@ -916,7 +1008,9 @@ class NativeSession {
     this.segment = new Segment(this, prepared.chat)
     this.retain(bytes(prepared.chat))
     this.expireIn(this.limits.lifetime)
-    this.quiet = new Quiet(this.limits, (e) => this.fail(e), { path: "native", model: resolution?.id })
+    // the web-search test switch, as it is at the Run's start (plugins#635)
+    this.search = webSearchDir()
+    this.quiet = new Quiet(this.limits, (e) => this.fail(e), { path: "native", model: resolution?.id, search: this.search })
     this.quiet.nextStep(this.steps)
   }
   // expireIn sets the Run's absolute deadline ms from now: from its start,
@@ -953,6 +1047,7 @@ class NativeSession {
     clearTimeout(this.batchTimer)
     clearTimeout(this.resultTimer)
     clearTimeout(this.drainTimer)
+    clearTimeout(this.usageTimer)
     clearTimeout(this.lifetimeTimer)
     this.quiet.pause()
     this.ac.abort()
@@ -1114,8 +1209,63 @@ class NativeSession {
       measuredOutput: fields.some((f) => f.num === 3),
       hasReasoning: fields.some((f) => f.num === 6),
     }
-    this.stepUsages.set(id || `step:${this.steps}:${this.stepUsages.size}`, entry)
+    const key = id || `step:${this.steps}:${this.stepUsages.size}`
+    if (!this.stepUsages.has(key)) this.usageOrder.push(entry)
+    else this.usageOrder[this.usageOrder.indexOf(this.stepUsages.get(key))] = entry
+    this.stepUsages.set(key, entry)
     this.lastStepUsage = entry
+    // the count of the step whose calls wait to be handed over
+    if (this.state === "awaiting-results" && this.segment.awaitingUsage && this.usageOrder.length >= this.steps) this.handOff(this.segment, entry)
+  }
+  // ownUsage is the count of the step being sealed when Cursor sent it
+  // already: one count per model call, in order, so the step's (the
+  // steps-th) is in once as many have come. A step whose calls were all
+  // answered here has its count sent after the next step began, which is
+  // why lastStepUsage can't tell.
+  ownUsage() {
+    const e = this.usageOrder.length >= this.steps ? this.usageOrder.at(-1) : null
+    return e && !e.billed ? e : null
+  }
+  // billed is what the steps handed over with their own count
+  // (ModelCallCompletedUpdate) already said: the final and a debt leave it
+  // out. unbilled is what the other counts Cursor sent say.
+  billed() {
+    return this.sumOf([...this.stepUsages.values()].filter((e) => e.billed))
+  }
+  unbilled() {
+    return this.sumOf([...this.stepUsages.values()].filter((e) => !e.billed))
+  }
+  sumOf(entries) {
+    const u = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 }
+    for (const e of entries) for (const k of Object.keys(u)) u[k] += e.usage[k] ?? 0
+    return u
+  }
+  // handOff ends a sealed batch's segment: with its step's own count when
+  // Cursor sent one (plugins#1615), else 0 and pending, the turn's final
+  // or a later Run billing it.
+  handOff(segment, entry) {
+    clearTimeout(this.usageTimer)
+    this.usageTimer = null
+    segment.awaitingUsage = false
+    if (segment.closed || this.error) return
+    const counted = entry && (entry.measuredInput || entry.measuredOutput)
+    if (!counted) {
+      segment.finish({ stop: "tool_calls", usage: {
+        prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        magpie_native: { accounting: "pending" },
+      } })
+      return
+    }
+    entry.billed = true
+    this.billedSteps = (this.billedSteps ?? 0) + 1
+    const u = entry.usage
+    const prompt = u.input + u.cacheRead + u.cacheWrite
+    segment.finish({ stop: "tool_calls", usage: {
+      prompt_tokens: prompt, completion_tokens: u.output, total_tokens: prompt + u.output,
+      prompt_tokens_details: { cached_tokens: u.cacheRead, cache_write_tokens: u.cacheWrite },
+      ...(entry.hasReasoning ? { completion_tokens_details: { reasoning_tokens: u.reasoning } } : {}),
+    } })
   }
   // waitForBatch gives the step batchWait from its latest call, answered
   // call, count, text or heartbeat, not from its first. Cursor sends each
@@ -1159,10 +1309,11 @@ class NativeSession {
   // When the count was sent before or between the step's calls, a mid-batch
   // checkpoint after an early call has only the calls sent so far in
   // pending_tool_calls and must not seal the batch early before the
-  // remaining calls arrive.
+  // remaining calls arrive. Even a count after a partial/started MCP update
+  // can precede its exec: a checkpoint omitting that call must wait for it.
   waitedOn(data) {
     const s = this.segment
-    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter) return
+    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter || this.stepCalls.pendingMcp) return
     if (pendingCalls(data) !== s.calls.length) return
     s.waitedOn = true
     this.sealBatch()
@@ -1207,11 +1358,19 @@ class NativeSession {
     this.batches ??= []
     this.batches.push(segment)
     for (const c of segment.calls) this.pool.handles.set(c.id, { owner: this, batch: segment })
-    segment.finish({ stop: "tool_calls", usage: {
-      prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
-      prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
-      magpie_native: { accounting: "pending" },
-    } })
+    // The step's own count comes just after its tool count (plugins#1615):
+    // the calls wait for it, up to usageWait. A Run that sent none in a
+    // step's wait, and none at all, is not waited on again.
+    const own = this.ownUsage()
+    if (own) this.handOff(segment, own)
+    else if (!(this.limits.usageWait > 0) || (this.noStepUsage && !this.stepUsages.size)) this.handOff(segment, null)
+    else {
+      segment.awaitingUsage = true
+      this.usageTimer = later(() => {
+        this.noStepUsage = true
+        this.handOff(segment, null)
+      }, this.limits.usageWait)
+    }
     this.segments++
     this.resultTimer = later(() => this.fail({ status: 410, message: "native tool-result deadline expired" }, "expired"), this.limits.resultWait)
   }
@@ -1316,7 +1475,7 @@ class NativeSession {
     let earlier = null
     if (this.steps > 1) {
       if (last && (last.measuredInput || last.measuredOutput)) {
-        const prev = [...this.stepUsages.values()].filter((e) => e !== last)
+        const prev = [...this.stepUsages.values()].filter((e) => e !== last && !e.billed)
         const sum = (k) => prev.reduce((s, e) => s + e.usage[k], 0)
         const whole = u.input + u.cacheRead + u.cacheWrite
         const share = (total, own) => total > 0 ? Math.min(1, Math.max(own, total / this.steps) / total) : 0
@@ -1347,6 +1506,15 @@ class NativeSession {
         }
         earlier = { input: u.input - own.input, cacheRead: u.cacheRead - own.cacheRead, cacheWrite: u.cacheWrite - own.cacheWrite, output: u.output - own.output }
         Object.assign(u, own)
+      }
+      // The steps handed over with their own count were billed then
+      // (plugins#1615): the turn's totals leave them out, so each counts
+      // once. A sum of the counts left over has them out already.
+      if (this.billedSteps) {
+        const billed = this.billed()
+        const fromTurn = { input: turnInput, cacheRead: turnInput, cacheWrite: turnInput, output: turnOutput }
+        const summed = last && (last.measuredInput || last.measuredOutput)
+        for (const k of Object.keys(earlier)) if (!summed || fromTurn[k]) earlier[k] = Math.max(0, earlier[k] - billed[k])
       }
     }
     // What a later Run collected of this Run's event while this one waited on
@@ -1381,6 +1549,7 @@ class NativeSession {
         } } : {}),
       } })
       this.state = "complete"
+      this.quiet.ended()
       this.pool.release(this)
       this.replayTimer = later(() => this.pool.forget(this), this.limits.replayWait)
     }
@@ -1472,8 +1641,16 @@ class NativeSession {
                 if (pending && !pending.submitted) invalid("Cursor cancelled a pending native tool exec; late results cannot be submitted", 410)
               }
               break
-            case 7:
-              invalid("unsupported native interaction query", 502)
+            case 7: {
+              // interaction_query: Cursor's own web search, approved under
+              // the web-search test switch (plugins#635); anything else, or
+              // the switch off, fails the Run as before
+              const q = this.search ? webSearchQuery(m.data) : null
+              if (!q) invalid("unsupported native interaction query", 502)
+              this.quiet.trace?.searchAsked()
+              await this.reply(webSearchAnswer(pb, q))
+              break
+            }
           }
         }
       }

@@ -117,7 +117,14 @@ the plans again on the next request:
   (`/api/biz/subscription/list`), its requests go to that plan. A model
   the account's gift plans also serve is listed again as
   `<model>-Trial`; asking that entry spends the gift (see below).
-- Otherwise they go to the gift plans.
+- Otherwise they go to the gift plans. A model the gift plans' balance
+  doesn't name (an agent left on GLM-5.2 while the gift serves only
+  GLM-5.3-Flash) would spend none of the free quota, so it is answered
+  with the models the balance names and not sent. The balance is the one
+  the model list read; a model it doesn't name has it read again first.
+  When the plan list can't be read, an account whose last read found no
+  plan stays on the gift plans rather than sending its key to the coding
+  plan's host, which bills a key with no plan pay-as-you-go.
 
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.
@@ -233,7 +240,12 @@ one of the three has been read to its end (or its agent went away), and
 is not sent to be refused. That covers what magpie's queue cannot see —
 a `maxConcurrency` raised past three, two magpie providers on one ZCode
 account, an older host. A request that has waited two minutes is answered
-here with a 429 that says it was not sent and why. Free first skips the
+here with a 429 that says it was not sent and why. Since 0.1.71 it also
+says what it waited behind, as the gate saw it then: how many of the
+account's requests held its slots and how long the oldest had been in
+flight, how many more were waiting, and, when the account is narrowed
+(below), for how much longer and why; a request that had been sent and
+refused before its wait says so (plugins#1572). Free first skips the
 gift while its account's gate is full, so the plain model goes to the
 coding plan rather than queueing.
 
@@ -275,18 +287,36 @@ the slots. An account whose slots are taken elsewhere is narrowed to one
 within a few refusals and then refused alone, so the firewall hold still
 comes before the 405.
 
-## Two accounts at once
+Since 0.1.64 the request that brought about such a narrowing is not
+failed either. Up to 0.1.63 it went back to magpie as a 429 after its
+re-asks, so two sessions on an account served one at a time showed a 429
+every time the narrowing ran out (JJLIN070414 on X), and with one account
+the agent was told it. Now it gives its slot back at once, without the 2s
+re-ask, and waits at the head of the queue until one of the account's
+other requests has ended, then is sent again, as ZCode's own client
+(its dynamic-workflow governor) cuts its cap and queues a capped request
+rather than failing it. The waits share the gate's two minutes, after
+which it is answered here with the queue's 429. A request refused alone,
+or free first's gift (which goes to the coding plan), is answered as
+before.
 
-Three ZCode accounts used at once from one address can get the address
-refused with a 405, where two are served (01huadalang on Discord). So the
-plugin declares `maxAccounts` two, on the auth hook and as
-`magpie.maxAccounts` in its `package.json`: magpie sends requests to the
-first two accounts of the user's list only, and holds the others in
-reserve. One that runs out or fails rests, and the first in reserve takes
-its place until it is back. A user changes the number on the provider in
-magpie (Advanced → Accounts at once, or `magpie provider at-once zcode
-<n>`), 0 for every account at once. A magpie older than the one that
-reads it uses every account, as before.
+## Every account, one address
+
+The plugin declares no `maxAccounts`, so magpie sends requests to every
+ZCode account of the user's: the routing chosen spreads them, and one
+that runs out or fails rests while the others go on. A user who wants
+fewer sets the number on the provider in magpie (Advanced → Accounts at
+once, or `magpie provider at-once zcode <n>`).
+
+What zcode.z.ai's firewall refuses an address for (405, for an hour or
+two) is too many Start Plan requests in flight from it at once, whichever
+accounts they are for. So besides each account's three, the Start Plan
+is sent at most six requests at a time from this computer over all its
+accounts; the rest wait their turn in the plugin, as an account's own do.
+Six is what two accounts sent when 0.1.40 to 0.1.67 declared
+`maxAccounts` two after a 405 with three (01huadalang on Discord), which
+held a user's other accounts in reserve. The coding plan, on another
+host, is held to none of it.
 
 ## The usage card
 
@@ -337,8 +367,12 @@ menu bar pass it over. The name is a fixed sentence magpie can
 translate; the count and the plan's own name are the display. Reading
 the card never claims one. A preview that fails, or lists nothing, adds
 no line at all, and a card that is an error keeps its error. Claim the
-plan in the ZCode app (open it once), or let the daily claim below do it;
-the next read shows it as an ordinary gift bucket.
+plan in the ZCode app (open it once); while ZCode asks its security check
+for a claim, as it does now, the daily claim below posts none. The next
+read shows it as an ordinary gift bucket: its `-Trial` entry is listed and
+free first spends it. Until then a `-Trial` pick that finds no gift is
+refused with the held plan's name and "claim it in the ZCode app", not
+only "no active limited quota" (heduian and bg5eau on X, 11-14).
 
 ## The daily claim
 
@@ -350,20 +384,22 @@ polling with the feed alone, and the feed is gated on the client's
 version, so the plugin asks as the current client (3.17.2) sends — and
 posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. An answer of nothing to claim
-carries an `until` half an hour out, so magpie's loop asks again then,
-and again, all day while the feed names no plan — one GET, nothing
-posted: ZCode drops plans into the feed on its own schedule (a weekend
-banner starting at 19:00 Beijing, say), and one that arrives
-after the day's ask used to sit unclaimed past its short life. The
-other answers stand for the day — but an *ineligible* (code 1004, below)
-is read again in half an hour, as an inactive is: a claimed plan leaves
-the feed, so
-asking again half an hour later would find nothing and flip the card
-from "Checked in today" to "No check-in event now"; a captcha plan
-re-asked makes ZCode demand its captcha again; a done plan re-asked
-posts a claim ZCode already answered. So a second plan the same day,
-after one was claimed, is seen the next day. The answer is judged by
+account's ZCode session, as the app does. ZCode drops plans into the
+feed on its own schedule through the day (a weekend banner starting at
+19:00 Beijing, and another at 19:30, say), and one that arrives after the
+day's ask used to sit unclaimed past its short life. So an answer of
+nothing to claim, a claim, a done and an ineligible each carry an
+`until` half an hour out, and magpie's loop asks again then, all day —
+one GET of the feed each time. A recheck posts only plans the account
+has no answer for yet that day: a plan claimed, answered 1003 or held
+for the captcha is never posted again, so its captcha is not asked for
+again and no claim ZCode already answered is repeated. With nothing new
+after the day's claim, the answer is *done*: the card keeps "Checked in
+today" rather than "No check-in event now" (a claimed plan leaves the
+feed). An ineligible (code 1004, below) is posted again on the next
+recheck, as it may be offered later. The day's answers live in memory
+and end with the Beijing day: after a magpie restart, a plan still in
+the feed is posted once more and answers 1003, *done*. The answer is judged by
 the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to

@@ -51,18 +51,36 @@ export async function targets(port, fetchImpl = fetch) {
 }
 
 // copies lists the command lines of the processes running binary itself
-// (not its helpers), or none where ps can't tell. On Windows it is none:
-// there, Chromium keeps one copy per profile, not per app, so a copy the
-// user opened doesn't keep this one from starting beside it.
-export function copies(binary, platform = process.platform) {
-  if (platform === "win32") return []
+// (not its helpers), or none where they can't be read. On Windows they come
+// from WMI (#1117): there Chromium keeps one copy per profile, so a copy
+// the user opened doesn't keep this one from starting, but the plugin's
+// own copy, still up on its profile, must be found rather than started
+// again.
+export function copies(binary, platform = process.platform, run = execFileSync) {
+  if (platform === "win32") {
+    const exe = path.win32.basename(binary).replace(/'/g, "''")
+    let out = ""
+    try {
+      out = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "Name='${exe}'" -ErrorAction SilentlyContinue | ForEach-Object { $_.CommandLine }`], { encoding: "utf8", timeout: 15000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+    } catch {
+      return []
+    }
+    return String(out).split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.includes("--type="))
+  }
   let out = ""
   try {
-    out = execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+    out = run("ps", ["-axww", "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
   } catch {
     return []
   }
-  return out.split("\n").map((l) => l.trim()).filter((l) => l === binary || l.startsWith(binary + " "))
+  return String(out).split("\n").map((l) => l.trim()).filter((l) => l === binary || l.startsWith(binary + " "))
+}
+
+// portIn is the --remote-debugging-port a command line names, else 0
+export function portIn(line) {
+  const m = /--remote-debugging-port=(\d+)/.exec(line)
+  const n = m ? Number(m[1]) : 0
+  return n > 0 && n < 65536 ? n : 0
 }
 
 // App starts and finds one Chromium-based desktop app run from its own
@@ -76,9 +94,9 @@ export function copies(binary, platform = process.platform) {
 //            that isn't on this profile keeps a single-instance app (as
 //            Doubao is) from starting a second copy at all
 export class App {
-  constructor({ binary, dataDir, owns, args = [], spawn = nodeSpawn, fetchImpl = fetch, others }) {
-    Object.assign(this, { binary, dataDir, owns, args, spawn, fetchImpl })
-    this.others = others ?? (() => copies(binary))
+  constructor({ binary, dataDir, owns, args = [], spawn = nodeSpawn, fetchImpl = fetch, others, platform = process.platform }) {
+    Object.assign(this, { binary, dataDir, owns, args, spawn, fetchImpl, platform })
+    this.others = others ?? (() => copies(binary, platform))
     this.profile = path.join(dataDir, "profile")
     this.portFile = path.join(dataDir, "port")
   }
@@ -100,35 +118,51 @@ export class App {
     return list && this.owns(list) ? port : 0
   }
 
+  // waitOn waits until the pages on port are this app's, then saves port
+  async waitOn(port, until, signal) {
+    while (Date.now() < until) {
+      await sleep(400, signal)
+      const list = await targets(port, this.fetchImpl)
+      if (list && this.owns(list)) {
+        fs.writeFileSync(this.portFile, String(port))
+        return port
+      }
+    }
+    throw Object.assign(Error(`${path.basename(this.binary)} did not open its debugging port in ${Math.round((until - this.startedAt) / 1000)}s`), { code: "app_start_timeout" })
+  }
+
   // start runs the app when it isn't running yet and waits until its pages
   // answer. It never stops or kills anything: a port someone else holds is
-  // left to them and the app is started on another.
+  // left to them and the app is started on another. A copy already up on
+  // this profile is waited for on its own port, never started again: a
+  // single-instance app hands a second launch to it and keeps the old port
+  // (#1117), and the port file is written only once a port is seen to be
+  // this app's.
   async start({ timeout = 45000, signal } = {}) {
     const up = await this.running()
     if (up) return up
     if (!fs.existsSync(this.binary)) throw Object.assign(Error(`${this.binary} is not installed`), { code: "app_missing" })
+    this.startedAt = Date.now()
+    const until = this.startedAt + timeout
+    const mine = `--user-data-dir=${this.profile}`
+    const others = this.others()
+    const own = others.map(portIn).find((n, i) => n && others[i].includes(mine))
+    if (own) return this.waitOn(own, until, signal)
     // A copy the user opened themselves takes the new one's launch and
     // the new one quits: there would be nothing to wait for. Its profile
     // can't be driven either (Chromium allows debugging only off the
-    // default profile), so the user has to quit it.
-    const mine = `--user-data-dir=${this.profile}`
-    if (this.others().some((c) => !c.includes(mine)))
+    // default profile), so the user has to quit it. Windows keeps a copy
+    // per profile, so there it is no hindrance.
+    if (this.platform !== "win32" && others.some((c) => !c.includes(mine)))
       throw Object.assign(Error(`${path.basename(this.binary)} is already running from another profile`), { code: "app_busy" })
     fs.mkdirSync(this.profile, { recursive: true })
     const port = await freePort()
-    fs.writeFileSync(this.portFile, String(port))
     const child = this.spawn(this.binary, [`--remote-debugging-port=${port}`, `--user-data-dir=${this.profile}`, ...this.args], {
       detached: true,
       stdio: "ignore",
     })
     child.unref?.()
-    const until = Date.now() + timeout
-    while (Date.now() < until) {
-      await sleep(400, signal)
-      const list = await targets(port, this.fetchImpl)
-      if (list && this.owns(list)) return port
-    }
-    throw Object.assign(Error(`${path.basename(this.binary)} did not open its debugging port in ${Math.round(timeout / 1000)}s`), { code: "app_start_timeout" })
+    return this.waitOn(port, until, signal)
   }
 }
 

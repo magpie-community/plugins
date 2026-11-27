@@ -605,6 +605,12 @@ function runtimeModel(m) {
 
 // withImages is a list of models with what entries (listed's) say of their
 // images on them; a model they say nothing of is left as it was.
+// fellBack marks a list that isn't the account's own (magpie's plugin
+// host reads Symbol.for("magpie.fellBack"))
+function fellBack(models) {
+  return Object.assign(models, { [Symbol.for("magpie.fellBack")]: true })
+}
+
 function withImages(models, entries) {
   const by = new Map(entries.map((m) => [m.id, m.image]))
   return Object.fromEntries(
@@ -1157,6 +1163,55 @@ function frame(msg) {
   return out
 }
 
+// QUIET is how long Devin may send nothing (no reply head, no byte of a
+// reply) before the request is given up as stalled and answered 504, so
+// the agent or the gateway's next account sends it again. Devin, asked and
+// answering, sends frames all through a reply, thinking included: a real
+// GetChatMessage on Claude Opus 5.5 Max and GPT-6 Astra XHigh (11-16) went
+// at most 13s between frames, and its first came 2.5s after the request.
+// A request Devin took and never answered held the agent with keepalives
+// and nothing else, for 10 to 20 minutes, until the user changed the
+// effort or the conversation (wu_chong4136 on X). Only the wait on Devin
+// counts: a reader that is slow to take the next frame is not Devin's.
+let QUIET = 5 * 60_000
+
+// Quiet is the error a request Devin stopped answering ends with.
+class Quiet extends Error {
+  constructor() {
+    super(`Devin sent nothing for ${QUIET >= 60_000 && QUIET % 60_000 === 0 ? QUIET / 60_000 + " minutes" : QUIET + "ms"}; the request was given up so it can be sent again`)
+    this.status = 504
+  }
+}
+
+// quietFetch is fetch with the reply's head waited on for QUIET at most.
+async function quietFetch(url, init = {}) {
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(new Quiet()), QUIET)
+  try {
+    return await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal })
+  } catch (e) {
+    if (ac.signal.aborted && !init.signal?.aborted) throw ac.signal.reason
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+// quietRead is reader.read(), given up (and the body cancelled) when
+// nothing comes for QUIET.
+async function quietRead(reader) {
+  let t
+  const quiet = new Promise((_, reject) => (t = setTimeout(() => reject(new Quiet()), QUIET)))
+  try {
+    return await Promise.race([reader.read(), quiet])
+  } catch (e) {
+    if (e instanceof Quiet) reader.cancel(e).catch(() => {})
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 // frames reads a Connect stream: each message, or its end with its JSON.
 async function* frames(body) {
   let buf = new Uint8Array(0)
@@ -1173,7 +1228,7 @@ async function* frames(body) {
         if (flags & 1) data = new Uint8Array(gunzipSync(data))
         yield { end: !!(flags & 2), data }
       }
-      const { value, done } = await reader.read()
+      const { value, done } = await quietRead(reader)
       if (done) {
         if (buf.length) throw new Error("unexpected EOF")
         return
@@ -1184,7 +1239,9 @@ async function* frames(body) {
       buf = next
     }
   } finally {
-    reader.releaseLock()
+    try {
+      reader.releaseLock()
+    } catch {}
   }
 }
 
@@ -1458,7 +1515,22 @@ function inlineImage(p) {
   if (p?.type !== "image_url") return null
   const u = typeof p.image_url === "string" ? p.image_url : p.image_url?.url ?? ""
   const d = /^data:([^,]*),(.*)$/s.exec(u)
-  return d && d[2] ? { data: d[2], type: d[1].replace(/;base64$/, "") || "image/png" } : null
+  return d && d[2] ? { data: d[2], type: imageType(d[2], d[1].replace(/;base64$/, "") || "image/png") } : null
+}
+
+// imageType is the type an image's bytes (base64) are, by their first
+// bytes, else the type it was said to be. Devin answers "There is an issue
+// with this request, please try a different model" (invalid_argument) to
+// a PNG said to be a JPEG or a WebP, on every Claude model, and the
+// picture stays in the conversation, so every turn after fails the same:
+// a tool that names a screenshot by its file's extension is enough.
+function imageType(data, said) {
+  const b = Buffer.from(String(data).slice(0, 24), "base64")
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png"
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg"
+  if (b.length >= 6 && b.toString("latin1", 0, 4) === "GIF8") return "image/gif"
+  if (b.length >= 12 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP") return "image/webp"
+  return said
 }
 
 // A chat's tool message holds text alone, so magpie's gateway (buildChat's
@@ -1479,7 +1551,7 @@ function noted(text) {
 
 // build is the GetChatMessage request for a chat completion, to the model
 // uid.
-function build(chat, uid, key) {
+function build(chat, uid, key, opts = {}) {
   const claude = isClaude(uid)
   const msgs = []
   let pending = [] // calls the last reply made, not yet answered
@@ -1523,7 +1595,11 @@ function build(chat, uid, key) {
       // completion has no field for a signature, and Claude's thinking
       // goes back only signed (plugins#665), so Claude gets none, as before.
       const reasoning = claude ? "" : reasoningOf(m)
-      msgs.push({ role: ASSISTANT, text, calls, ...(reasoning ? { thinking: { text: reasoning } } : {}) })
+      // a Gemini reply goes back with its thought signature, as the
+      // devin CLI sends it (thoughts)
+      const signed = opts.unsigned ? null : thoughtFor(uid, calls, text)
+      const thinking = signed ? { text: reasoning, ...signed } : reasoning ? { text: reasoning } : null
+      msgs.push({ role: ASSISTANT, text, calls, ...(thinking ? { thinking } : {}) })
       // a copy: answering a call takes it off pending, never off the
       // reply that made it, which goes to Devin with every call it made
       pending = [...calls]
@@ -1566,7 +1642,9 @@ function build(chat, uid, key) {
       }
     }
     settleResults()
-    const text = texts.join("\n\n")
+    // words that are only white space are none: Devin turns a user prompt
+    // of them away (invalid_argument), as it does an empty one
+    const text = texts.join("\n\n").trim() ? texts.join("\n\n") : ""
     if (!text && !images.length) continue
     answer()
     msgs.push({ role: USER, text, images })
@@ -1640,7 +1718,30 @@ function encodeRequest(msgs, tools, chat, uid, key) {
   }
   const bytes = assemble([], chat.max || 128000) // the server holds max to the model's own
   pingOf.set(bytes, () => assemble([encodeMsg({ role: USER, text: "continue" })], 1))
+  sentOf.set(bytes, { signed: msgs.some((m) => m.thinking?.signature), tokens: estimate(msgs, toolParts) })
   return bytes
+}
+
+// sentOf is what each request carried that its failure is read by: any
+// signed thinking, and about how many tokens its prompt is (estimate)
+const sentOf = new WeakMap()
+
+// estimate is about how many tokens msgs and the tools offered come to,
+// a token counted as four bytes of text and an image as 1,600 tokens (a
+// picture's base64 is no measure of its tokens): text runs under four
+// bytes a token, code nearer three (Devin counted 991,278 tokens of
+// 2,350,000 bytes of Go), so this is low, never high, and it is read
+// against half the window (TOO_LONG_AT).
+function estimate(msgs, toolParts) {
+  let bytes = 0
+  let images = 0
+  for (const m of msgs) {
+    bytes += Buffer.byteLength(m.text ?? "") + Buffer.byteLength(m.thinking?.text ?? "")
+    for (const c of m.calls ?? []) bytes += Buffer.byteLength(c.name ?? "") + Buffer.byteLength(c.args ?? "")
+    images += m.images?.length ?? 0
+  }
+  for (const t of toolParts) bytes += t.length
+  return Math.ceil(bytes / 4) + images * 1600
 }
 
 // pingOf is each request's keepalive ping, made when one is first sent
@@ -1665,6 +1766,7 @@ function encodeMsg(m) {
   if (m.thinking?.signature) {
     b.str(12, m.thinking.signature)
     if (m.thinking.type) b.str(18, m.thinking.type)
+    if (m.thinking.model) b.str(22, m.thinking.model)
   }
   return b.done()
 }
@@ -1682,6 +1784,37 @@ function rememberSigType(signature, type) {
   if (sigTypes.size > SIG_TYPES_KEPT) sigTypes.delete(sigTypes.keys().next().value)
 }
 const sigTypeOf = (signature) => sigTypes.get(signature) ?? "anthropic"
+
+// thoughts is each Gemini reply's thought signature, by the reply's tool
+// call ids (or, for a reply that made none, its text), for the request
+// that sends the reply back. The devin CLI sends a Gemini reply back with
+// its signature (12), its type "gemini" (18) and the model that wrote it
+// (22); without them Devin's Gemini models, deep in a tool loop, answer
+// with usage and nothing else (X, gemini-4-hydrogen in dsh). Neither a
+// chat completion nor a Messages tool_use has a field for it, so it is
+// kept here, as sigTypes are; the most recent are kept.
+const thoughts = new Map()
+const THOUGHTS_KEPT = 4096
+const isGemini = (uid) => /gemini/i.test(String(uid ?? ""))
+const textKey = (text) => "text:" + createHash("sha256").update(String(text).replace(/\s+/g, "")).digest("base64url")
+function rememberThought({ calls, text }, thought) {
+  const keys = calls.length ? calls : text ? [textKey(text)] : []
+  for (const k of keys) {
+    thoughts.delete(k)
+    thoughts.set(k, thought)
+    if (thoughts.size > THOUGHTS_KEPT) thoughts.delete(thoughts.keys().next().value)
+  }
+}
+// thoughtFor is the signature kept for a reply sent back with these calls
+// (Devin's ids) and text, to a Gemini model; null for none.
+function thoughtFor(uid, calls, text) {
+  if (!isGemini(uid)) return null
+  for (const c of calls) {
+    const t = thoughts.get(c.id)
+    if (t) return t
+  }
+  return (!calls.length && text && thoughts.get(textKey(text))) || null
+}
 
 // ---- the reply -----------------------------------------------------------------------
 
@@ -1710,7 +1843,7 @@ function failure(status, text) {
   if (low.includes("content policy")) return { status: 400, message: msg }
   if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
     return { status: 400, message: "input is too long for the model's context: " + msg }
-  if (code === "invalid_argument") return { status: 400, message: msg }
+  if (code === "invalid_argument") return { status: 400, message: msg, code }
   if (code === "unavailable") return { status: 503, message: msg }
   if (code) return { status: 502, message: msg }
   return { status, message: msg }
@@ -1719,17 +1852,19 @@ function failure(status, text) {
 // events turns the reply's frames into chat completion pieces: text,
 // reasoning, each tool call opened with its id and name, its arguments in
 // pieces after, then the finish with the usage.
-async function* events(it) {
+async function* events(it, uid = "") {
   let tools = -1
   let stop = 0
   let said = 0
+  // a Gemini reply's thought signature, to go back with it (thoughts)
+  const own = { calls: [], text: "", signature: "", type: "" }
   const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 }
   for (;;) {
     let r
     try {
       r = await it.next()
     } catch (e) {
-      yield { error: { status: 502, message: "the reply broke off: " + e.message } }
+      yield { error: { status: e instanceof Quiet ? 504 : 502, message: "the reply broke off: " + e.message } }
       return
     }
     if (r.done) break
@@ -1745,17 +1880,23 @@ async function* events(it) {
     for (const x of fields(f.data)) {
       if (x.num === 3 && x.wire === 2 && x.data.length) {
         said += x.data.length
-        yield { text: dec.decode(x.data) }
+        const text = dec.decode(x.data)
+        own.text += text
+        yield { text }
       } else if (x.num === 9 && x.wire === 2 && x.data.length) {
         said += x.data.length
         yield { reasoning: dec.decode(x.data) }
       } else if (x.num === 10 && x.wire === 2 && x.data.length) {
         // delta_signature: the thinking's signature, Claude's opaque state
         // to continue it from (plugins#665); no words of the reply
-        yield { signature: dec.decode(x.data) }
+        const signature = dec.decode(x.data)
+        own.signature += signature
+        yield { signature }
       } else if (x.num === 21 && x.wire === 2 && x.data.length) {
         // delta_signature_type: whose signature it is ("anthropic")
-        yield { signatureType: dec.decode(x.data) }
+        const signatureType = dec.decode(x.data)
+        own.type = signatureType
+        yield { signatureType }
       } else if (x.num === 6 && x.wire === 2) {
         let id = ""
         let name = ""
@@ -1767,7 +1908,9 @@ async function* events(it) {
         }
         if (name) {
           tools++
-          yield { tool: { index: tools, id: id ? outID(id) : "call_" + randomBytes(12).toString("hex"), name } }
+          const tool = { index: tools, id: id ? outID(id) : "call_" + randomBytes(12).toString("hex"), name }
+          own.calls.push(inID(tool.id))
+          yield { tool }
         }
         if (args && tools >= 0) yield { args: { index: tools, text: args } }
       } else if (x.num === 5 && x.wire === 0) stop = x.n
@@ -1786,6 +1929,8 @@ async function* events(it) {
     yield { error: { status: 502, message: "an empty reply (Devin returned no text, reasoning or tool call)" } }
     return
   }
+  if (own.signature && isGemini(uid) && (own.type || "gemini") === "gemini")
+    rememberThought(own, { signature: own.signature, type: own.type || "gemini", model: uid })
   if (!usage.output) usage.output = Math.floor((said + 3) / 4)
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite
   yield {
@@ -1826,23 +1971,47 @@ const rpcHeaders = (key, body) => ({ "Content-Type": "application/connect+proto"
 
 // keep, when given, is the conversation's cache keepalive (keepaliveFor):
 // once the reply has finished, its pings are scheduled.
+//
+// Devin answers "There is an issue with this request, please try a
+// different model" (invalid_argument) to a conversation past the model's
+// window and to a thinking signature it didn't give (another vendor's
+// Claude, or one a client changed), alike. Either stays in the
+// conversation, so every turn after fails the same while a new session
+// works (a1pha1nthefog on X). A request with signed thinking that is
+// turned away is sent again once with no signature, its Claude thinking
+// left out, as Anthropic takes a past turn's; one still turned away at
+// half the model's window or more (TOO_LONG_AT) is told as too long, so
+// the agent compacts the conversation rather than stopping.
 async function roundtrip({ key, server, families, keep }, chat, signal, wire = CHAT_WIRE) {
   const uid = variantFor(families, chat.model, wire.effort(chat))
-  const msg = wire.build(chat, uid, key)
+  let msg = wire.build(chat, uid, key)
+  let r = await askOnce(key, server, msg, signal, uid)
+  if (r.code === "invalid_argument" && sentOf.get(msg)?.signed && !signal?.aborted) {
+    msg = wire.build(chat, uid, key, { unsigned: true })
+    r = await askOnce(key, server, msg, signal, uid)
+  }
+  if (r.code === "invalid_argument") r = tooLongFor(r, sentOf.get(msg)?.tokens ?? 0, windowOf(families, uid), uid)
+  if (!r.it) return r
+  return { it: keep ? keptAfter(r.it, keep, { key, server, msg, sentAt: r.sentAt }) : r.it, uid }
+}
+
+// askOnce sends one GetChatMessage, msg, and answers with its event iterator
+// and when it was sent, or an error ({status, message, code}).
+async function askOnce(key, server, msg, signal, uid) {
   const body = frame(msg)
   // when Devin was asked, which its cache's 5 minutes run from: the pings
   // are timed from it, not from the reply's end (plugins#626)
   const sentAt = now()
   let res
   try {
-    res = await fetch(server + CHAT_RPC, {
+    res = await quietFetch(server + CHAT_RPC, {
       method: "POST",
       headers: rpcHeaders(key, body),
       body,
       signal,
     })
   } catch (e) {
-    return { status: 502, message: e.message }
+    return { status: e instanceof Quiet ? 504 : 502, message: e.message }
   }
   if (!res.ok) return failure(res.status, (await res.text()).slice(0, 1 << 20))
   // an error comes as the stream's end, before anything else: read that
@@ -1852,7 +2021,7 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
   try {
     first = await fr.next()
   } catch (e) {
-    return { status: 502, message: "the reply broke off: " + e.message }
+    return { status: e instanceof Quiet ? 504 : 502, message: "the reply broke off: " + e.message }
   }
   if (first.done) return { status: 502, message: "the reply broke off: EOF" }
   if (first.value.end) {
@@ -1860,15 +2029,33 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
     return e.status < 300 ? { status: 502, message: "an empty reply" } : e
   }
   // 先等到实际内容或错误，才能让网关在空回复时切换渠道。
-  const source = events(prepend(first.value, fr))
+  const source = events(prepend(first.value, fr), uid)
   const head = await source.next()
   if (head.done) return { status: 502, message: "an empty reply" }
   if (head.value.error) {
     await fr.return?.()
     return head.value.error
   }
-  const it = prepend(head.value, source)
-  return { it: keep ? keptAfter(it, keep, { key, server, msg, sentAt }) : it, uid }
+  return { it: prepend(head.value, source), sentAt }
+}
+
+// TOO_LONG_AT is how much of a model's window a request Devin turns away
+// (invalid_argument) must be estimated at to be told as too long: the
+// estimate runs low (estimate), and Devin says nothing of length.
+const TOO_LONG_AT = 0.5
+
+// tooLongFor is e, a request turned away, as too long for the model's
+// window when it was estimated at TOO_LONG_AT of it or more; e otherwise.
+function tooLongFor(e, tokens, window, uid) {
+  if (!window || tokens < window * TOO_LONG_AT) return e
+  return { status: 400, message: `input is too long for the model's context: about ${tokens} tokens or more, for ${uid}'s window of ${window} (Devin answered: ${e.message})` }
+}
+
+// windowOf is the context window of the model uid, from the account's
+// list or else the snapshot's; 0 when neither says.
+function windowOf(families, uid) {
+  for (const fs of [families, SNAPSHOT_FAMILIES]) for (const f of fs ?? []) for (const m of f.models ?? []) if (m.id === uid && m.context) return m.context
+  return 0
 }
 
 // complete answers a chat completion through GetChatMessage.
@@ -1949,7 +2136,7 @@ const marked = (b) => !!(b && typeof b === "object" && b.cache_control && typeof
 function anthropicImage(b) {
   const s = b?.type === "image" ? b.source : null
   if (s?.type !== "base64" || !s.data) return null
-  return { data: s.data, type: s.media_type || "image/png" }
+  return { data: s.data, type: imageType(s.data, s.media_type || "image/png") }
 }
 
 // anthropicEffort is the effort a Messages request asks for, as magpie
@@ -1972,7 +2159,7 @@ function anthropicEffort(req) {
 // (#566). Every boundary is kept, not only the marked ones: a mark moves
 // forward as the history grows, and the prompts it passed must stay as
 // they were sent for the cache to be read (yetone/magpie#3835).
-function buildMessages(req, uid, key) {
+function buildMessages(req, uid, key, opts = {}) {
   const claude = isClaude(uid)
   // Messages alternate roles; a client that sends two of one role in a row
   // means one turn
@@ -2011,15 +2198,18 @@ function buildMessages(req, uid, key) {
         if (thought) [p.thinking, thought] = [thought, null]
         return p
       }
-      for (const b of t.blocks) {
+      for (const [i, b] of t.blocks.entries()) {
         if (b?.type === "text" && typeof b.text === "string") {
           if (b.text) own.push(take({ role: ASSISTANT, text: b.text, calls: [], cache: marked(b) }))
           else if (marked(b) && own.length) own[own.length - 1].cache = true
         } else if (b?.type === "tool_use" && b.name) {
           calls.push({ id: inID(b.id), name: b.name, args: JSON.stringify(b.input ?? {}) })
           mark ||= marked(b)
-        } else if (b?.type === "thinking" && claude && typeof b.signature === "string" && b.signature) {
-          // two in a row: the first has a prompt of its own
+        } else if (b?.type === "thinking" && claude && !opts.unsigned && typeof b.signature === "string" && b.signature) {
+          // Devin rejects a signed thought on an otherwise empty assistant prompt.
+          // A gateway search can leave adjacent thoughts; keep the last one intact.
+          const next = t.blocks[i + 1]
+          if (next?.type === "thinking" && typeof next.signature === "string" && next.signature) continue
           if (thought) own.push(take({ role: ASSISTANT, text: "", calls: [] }))
           thought = { text: typeof b.thinking === "string" ? b.thinking : "", signature: b.signature, type: sigTypeOf(b.signature) }
         } else if (b?.type === "thinking" && !claude && typeof b.thinking === "string" && b.thinking) {
@@ -2033,6 +2223,14 @@ function buildMessages(req, uid, key) {
         own[own.length - 1].calls = calls
         own[own.length - 1].cache ||= mark
       } else if (thought && own.length && !own[own.length - 1].thinking) take(own[own.length - 1])
+      // a Gemini reply goes back with its thought signature, on the
+      // prompt with its calls (or its last words), as the devin CLI sends
+      // it (thoughts)
+      const signed = own.length && !opts.unsigned ? thoughtFor(uid, calls, own.map((p) => p.text).join("")) : null
+      if (signed) {
+        const p = own[own.length - 1]
+        p.thinking = { text: p.thinking?.text ?? "", ...signed }
+      }
       if (!own.length) continue // a turn that only thought
       answer()
       msgs.push(...own)
@@ -2058,7 +2256,9 @@ function buildMessages(req, uid, key) {
         continue
       }
       if (b?.type === "text" && typeof b.text === "string") {
-        if (!b.text) {
+        // a block of white space alone is none: Devin turns a user prompt
+        // of it away (invalid_argument), as it does an empty one
+        if (!b.text.trim()) {
           if (marked(b) && words) words.cache = true
           continue
         }
@@ -2406,7 +2606,7 @@ function hookExit() {
 async function pingOnce(server, key, body, signal) {
   let res
   try {
-    res = await fetch(server + CHAT_RPC, { method: "POST", headers: rpcHeaders(key, body), body, signal })
+    res = await quietFetch(server + CHAT_RPC, { method: "POST", headers: rpcHeaders(key, body), body, signal })
   } catch (e) {
     return { status: 0, error: String(e?.message || e || "fetch failed") }
   }
@@ -2868,6 +3068,8 @@ async function v2Setup(ctx) {
       },
       label: (c) => c?.metadata?.email || "Devin",
     })
+    // a key typed in, as the v1 "api" method saves it (v2Auth reads it)
+    editor.method.update({ integrationID: ID, method: { type: "key", label: "Devin API key (cog_…)" } })
   })
 
   // authFor resolves the active connection's key each call, so a chat goes
@@ -3153,6 +3355,10 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
       methods: [
         { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
+        // a key made in Devin's settings (a service user's cog_…, or a
+        // session token): sent as the sign-ins' token is, never renewed;
+        // the first usage read names the account (syncOrg)
+        { type: "api", label: "Devin API key (cog_…)", placeholder: "cog_…" },
       ],
       // magpie's own switches (OpenCode never reads auth.options)
       options: [
@@ -3230,7 +3436,10 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         const images = await imagesFor(key, server)
         const { free, prices } = await configsFor(key, server)
         const families = await ownFamilies(key, server)
-        if (!families) return withImages(provider.models, listed(familiesOf(SNAPSHOT), Object.keys(provider?.models ?? {}), images))
+        // neither Devin nor the CLI named the account's models: the list
+        // is the snapshot's, so magpie keeps the account's last good list
+        // (and the models the user picked from it) over this one
+        if (!families) return fellBack(withImages(provider.models, listed(familiesOf(SNAPSHOT), Object.keys(provider?.models ?? {}), images)))
         return Object.fromEntries(listed(families, Object.keys(provider?.models ?? {}), images, free, prices).map((m) => [m.id, runtimeModel(m)]))
       },
     },
@@ -3238,4 +3447,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

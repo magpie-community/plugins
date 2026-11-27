@@ -77,9 +77,14 @@ plugin's `fetch` answers them on Cursor's agent API:
   Cursor's `input_tokens` counts the cached prompt too: the cache
   read and written is taken out of it, and given as `cached_tokens` and
   `cache_write_tokens`, so it is counted once; its reasoning tokens are
-  `reasoning_tokens`. A step that calls tools gets no usage in its Run
-  (Cursor tells it only once the tools' results come back in the same
-  Run), so once the Run is closed its usage is read from the dashboard's
+  `reasoning_tokens`. A step that calls tools gets its own count from
+  `ModelCallCompletedUpdate`, which Cursor sends just after the step's
+  tool count: the calls wait for it up to 1 s (plugins#1615). The counts
+  of earlier model calls of the same Run (a step whose calls were all
+  answered here) go as `usage.magpie_deferred`. Without one, a step that
+  calls tools has no usage in its Run (TurnEnded comes only once the
+  tools' results come back in the same Run), so once the Run is closed
+  its usage is read from the dashboard's
   usage events, by the Run's conversation id: it shows in about 2.5 s,
   and is looked for up to 6 s. Far from Cursor it shows later than that
   (yetone/magpie#1053), so the step says 0 used and the conversation owes
@@ -96,6 +101,10 @@ plugin's `fetch` answers them on Cursor's agent API:
   before.
   Failures keep their statuses: 401 to sign in again, 429 at the
   usage limit, 400 for a prompt too long, 403 for a region refusal.
+  Cursor's explicit "The provider refused to serve this request based on
+  the content" is a 400 request refusal even when Cursor labels it
+  unauthenticated. Its message is kept without a sign-in hint; the
+  account is kept, and this does not make the refused request succeed.
 
 Tool results can continue a retained Run in the same plugin process. The owner
 uses the same session/cache key and first user message as `conversation_id`, so
@@ -129,7 +138,22 @@ stateless: 60 seconds with no message at all, or 4 minutes with only
 Cursor's heartbeats (yetone/magpie#2672, where a Run sent some thinking and
 then nothing, and the reply waited until the agent gave up after 5 minutes).
 Only time spent waiting on Cursor counts: a retained Run waiting for the
-caller's tool results is bounded by the 120 seconds above instead.
+caller's tool results is bounded by the 120 seconds above instead. These
+errors explicitly say `stream timed out`, so clients such as Pi that classify
+streamed errors by their message can apply their bounded retry policy. A timeout
+still fails the request; it never turns an incomplete answer into a success.
+
+The optional Pi SDK regression uses a loopback SSE fixture and synthetic data;
+it reads no real credentials and makes no upstream requests. From the repo root,
+pass the directory containing an installed `@earendil-works/pi-coding-agent`:
+
+```sh
+node scripts/cursor-pi-retry.integration.mjs /path/to/pi-coding-agent packages/cursor
+node scripts/cursor-pi-retry.integration.mjs /path/to/pi-coding-agent packages/cursor exhausted
+```
+
+It checks recovery, retry-budget exhaustion, and that a completed tool runs only
+once while partial output from failed attempts stays out of retry context.
 
 Cursor's count of a step's tool calls includes calls the plugin answers itself:
 a tool the request doesn't have is refused to the model, and Cursor's own
@@ -138,8 +162,11 @@ Cursor completes by itself, which it writes and completes in the step but never
 starts on the client or sends to it; those count toward it too. When the count
 comes after the step's calls, a checkpoint whose state waits on exactly the
 calls the caller was given also ends the step (#550); a checkpoint between
-calls after a count sent ahead of them does not seal the batch early. The
-step's calls are the rest.
+calls after a count sent ahead of them does not seal the batch early. A
+partial or started MCP call can also precede the count while its exec follows
+the checkpoint. Until that call arrives as an exec or is completed by Cursor,
+the checkpoint cannot end the step merely because it lists only calls already
+sent. The step's calls are the rest.
 
 These are retention limits. A missing, expired, restarted, busy, incompatible,
 or full owner uses the original history reconstruction and stateless decoder
@@ -150,8 +177,12 @@ write is reported to that request because its outcome may be uncertain. A later
 request can rebuild from its supplied history without submitting the result to
 the old native exec again.
 
-A native tool handoff reports zero usage with `magpie_native.accounting=pending`;
-the final native answer bills the turn's totals. Its own `prompt_tokens` and
+A native tool handoff reports its model call's own count
+(`ModelCallCompletedUpdate`, which Cursor sends just after the step's tool
+count; the calls wait up to `usageWait`, 1 s, for it, plugins#1615). Without
+one it reports zero usage with `magpie_native.accounting=pending`, and a Run
+that sent no count in that wait, and none before, isn't waited on again. The
+final native answer bills the turn's totals, less what handoffs billed. Its own `prompt_tokens` and
 `completion_tokens` are its last model call's count (`ModelCallCompletedUpdate`,
 asked for with `emit_model_call_usage`, else the larger of that call's prompt
 estimate and the turn's mean per call), since a client reads
@@ -169,7 +200,9 @@ each step to a Run's one event as the step ends, so that event is looked for
 only `owedAt` (5 seconds) after the handover; a final waits for it. If its own
 results resume it after all, a count not collected yet is withdrawn, and one
 already collected comes off its final (from the earlier calls' share first),
-so the event is billed once.
+so the event is billed once. A Run with a handoff billed by its own count
+owes no dashboard count, since the event sums every step: abandoned, it
+carries the counts Cursor sent that no step billed.
 
 Dashboard attribution uses event timestamps, rather than when events arrive.
 Older debt is bounded strictly before the native Run's start, and keeps that
@@ -285,6 +318,10 @@ go without the list for 5 minutes instead of each waiting for it again.
 ## Usage
 
 magpie shows Cursor Models, Other Models and Total for the billing period.
+Each window that resets at the billing cycle's end says the cycle's length
+(its start to its end) as its span when Cursor sends the start, so magpie's
+Usage table puts it in the column for that length, and routing reads it as
+a budget of a day or more rather than a rate cap (0.2.49).
 A plan of Cursor's merged billing (`GetPlanInfo`'s `isMerged`, the newer
 plans) has no Other Models pool: its included usage is one allowance every
 model draws on, as the dashboard's "Weekly usage limit" shows it. magpie
@@ -383,13 +420,25 @@ an email, id or token taken out. Look the file over before you attach it.
 
 Turn it off again when you're done.
 
+### Cursor web search (test, #635)
+
+**Cursor web search (test)** under **Plugin options** (`"web_search_test":
+true`) is off by default. It is a test for
+[#635](https://github.com/magpie-community/plugins/issues/635). When on,
+Cursor may search the web itself: magpie approves each search Cursor asks
+for, as cursor-agent does when it auto-approves. Cursor's other tools stay
+refused. Every request in which Cursor asked to search saves its trace in
+`cursor-traces`, whether it worked or failed. The trace is the same shape
+as a Wire trace's, with no search terms or results in it.
+
 Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
 subscription grants Bot access without a paid Cursor plan; see
 [Grok Bot plans and billing](https://cursor.com/help/grok-bot/plans).
 
 ## Not included
 
-- Web search: Cursor's own web search is refused like its other tools.
+- Web search: Cursor's own web search is refused like its other tools,
+  except under the test switch above.
 - Switching between several accounts. OpenCode keeps one sign-in per
   provider.
 - The Responses and Messages APIs: only chat completions are answered.

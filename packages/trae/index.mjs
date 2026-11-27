@@ -41,7 +41,22 @@ const SITES = {
       web: "https://www.trae.cn", // the authorization page
       auth: "https://api.trae.cn", // tokens, the account, credits
       api: "https://trae-api-cn.mchost.guru", // the models
+      console: "https://console.enterprise.trae.cn", // an enterprise (SaaS) account's usage, in yuan
+      // the commercial usage endpoint: the settled charge and the real cache
+      // counters of a turn, which token_usage often reports as 0
+      billing: "https://api5-normal.mchost.guru",
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // which is what tells an enterprise account apart: it bills there, not
+    // on the consumer credits page. Kept apart from hosts.console so a test
+    // can point the requests at a fake and still sign in as an enterprise
+    // account.
+    consoleHost: "console.enterprise.trae.cn",
+    // Trae CN's console was measured to take the IDE's own token: the plugin's
+    // own headers against get_personal_quota answer 200, and a 401 from it
+    // really is a lapsed sign-in. The international console could not be
+    // measured (see its realm below), so it is not allowed to say so.
+    consoleTakesIdeToken: true,
     clientId: "ono9krqynydwx5", // Trae CN's IDE
     // the clients' own renewal, which binds the JWT to a device: ExchangeToken
     // under /trae/api/v3/oauth, signed with the device's P-256 key
@@ -87,9 +102,20 @@ const SITES = {
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
-    // so only a host that is one is taken, else the one gateway
+    // so only a host that is one is taken, else the one gateway.
+    //
+    // The enterprise console an enterprise (SaaS) sign-in names is the
+    // seat's own model host, and a chat there bills the seat pool. Not every
+    // tenant's seat takes chats there: #1127's (shadow1606) answered every
+    // llm_utils_chat with 4245, for every function and model, while
+    // #1155's (kenanor) chats there. A seat the console turns away is
+    // marked (consoleChat: false, kept with the sign-in) and chats on the
+    // consumer gateway, which takes the same login but bills the login's
+    // own credits — so the gateway is the fallback, never the first ask.
+    // The plugin's hostOf applies the mark; this is the host before it.
     apiOf: (a) => {
       const h = traeHost(a?.api)
+      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return a?.consoleChat === false ? SITES["trae-cn"].hosts.api : SITES["trae-cn"].hosts.console
       return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
     // whether a host named by a sign-in is one of the model hosts: an https
@@ -127,6 +153,56 @@ const SITES = {
       label: "credits",
       host: (site) => site.hosts.auth,
       body: { require_usage: true, req_source: 0 },
+      // an enterprise (SaaS) account bills in yuan on Trae's console, not on
+      // the consumer credits page: its allowance is the seat pool the
+      // console names, and what it spent is the models' own cost — two of
+      // the console's pages, not one. A personal account is read as before.
+      //
+      // The consumer page answers such an account too, with a credits
+      // allowance that real calls have been measured not to touch (two calls
+      // through magpie moved the console's spend by ￥0.0002 each and left
+      // the credits at 4.4 of 4700). It is shown beside the seat pool so the
+      // card holds both numbers, but marked aside: the seat pool is what a
+      // request spends, so the credits must not read as allowance magpie can
+      // route on. Whether they are a fallback the seat pool exhausts first
+      // is not known — no account has spent its pool to find out.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        // the console's own period, which is the seat pool's: the usage page
+        // says "席位额度将于 <ResetTime> 重置" from exactly this call, while
+        // get_personal_quota names the allowance and no date at all
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core, credits: page }, a, signIn, { credits, round }) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae CN usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          const windows = []
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) windows.push(seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), yuan, "CNY"))
+          const c = page ? credits(page) : null
+          if (c && !c.unlimited && c.limit > 0) {
+            const w = {
+              name: "Credits",
+              used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)),
+              display: `${round(c.used)} / ${round(c.limit)}`,
+              amount: round(c.used),
+              limit: round(c.limit),
+              unit: "credits",
+              aside: true,
+            }
+            if (c.until) w.resetsAt = new Date(c.until).toISOString()
+            if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
+            windows.push(w)
+          }
+          if (windows.length) out.windows = windows
+          // a pool of nothing and no credits row leave the card nothing to
+          // show: it says what the console and the page answered rather
+          // than standing empty (#1143)
+          else if (!out.balance) return { error: `Trae CN usage: the console gives this seat a pool of ¥${q.limit}, and the credits page ${!page ? "could not be read" : c?.unlimited ? "says unlimited" : "shows no allowance"}`, signIn, user: a.name || a.uid }
+          return out
+        },
+      },
       read: (v, a, signIn, { credits, round }) => {
         const c = credits(v)
         const out = { plan: v.is_credits_billing ? "Credits" : "Free", user: a.name || a.uid, signIn }
@@ -138,6 +214,7 @@ const SITES = {
           // English balance line beside it (yetone/magpie#694)
           const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
           if (c.until) w.resetsAt = new Date(c.until).toISOString()
+          if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
           out.windows = [w]
         }
         return out
@@ -166,7 +243,22 @@ const SITES = {
       us: "https://coreva-normal.trae.ai", // the models, US
       pay: "https://api-sg-central.trae.ai", // usage
       usPay: "https://api-us-east.trae.ai", // usage, the US deployment
+      console: "https://console.enterprise.trae.ai", // an enterprise (SaaS) account's usage, in dollars
+      // No billing host: api5-normal.trae.ai does not resolve (NXDOMAIN on
+      // this machine, 1.1.1.1 and 8.8.8.8), and no Global IDE's own host was
+      // measured. A realm without one reads no settlement, rather than asking
+      // a host that never answers (TRAE_USAGE_API_HOST still names one).
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // as on Trae CN: it bills there, not on the dollar billing's page. Kept
+    // apart from hosts.console for the same reason as Trae CN's.
+    consoleHost: "console.enterprise.trae.ai",
+    // Not measured: no international enterprise account could be found, and
+    // console.enterprise.trae.ai answers a foreign realm's token with 请先登录
+    // exactly as it answers no token at all, so whether it refuses the token
+    // or wants a console session is unknown. Until an account says otherwise,
+    // its 401 is a failed read, never a lapsed sign-in.
+    consoleTakesIdeToken: false,
     clientId: "ono9krqynydwx5",
     appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
     ideVersion: "3.5.51", // named to the international IDE's current build
@@ -222,6 +314,36 @@ const SITES = {
       // Forbidden here
       host: (site, a) => (/^US(?:[-_ ]|$)/i.test(String(a?.region ?? "")) || /api-us/i.test(String(a?.api ?? "")) ? site.hosts.usPay : site.hosts.pay),
       body: {},
+      // An enterprise (SaaS) account bills on Trae's enterprise console
+      // here too, on the same three pages Trae CN's console has and in
+      // dollars. The international deployment has no consumer credits page
+      // (its own page is the dollar billing's), so the card is the seat
+      // pool alone.
+      //
+      // NOT VERIFIED against a real account: no international enterprise
+      // account was available, and console.enterprise.trae.ai answers
+      // another realm's token with 请先登录 — as it answers no token at all,
+      // so whether it refuses the token or wants a console session is not
+      // known either. The paths and fields below are the CN console's shape
+      // read off the international console's own build, which names
+      // seat_pool_currency_quota, the models' total_cost_currency and
+      // ResetTime exactly as Trae CN's does. Whether such an account's
+      // console answers at all is not known.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core }, a, signIn) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae Global usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) out.windows = [seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), DOLLARS, "usd")]
+          // a pool of nothing leaves the card nothing to show (#1143)
+          else return { error: `Trae Global usage: the console gives this seat a pool of $${q.limit}`, signIn, user: a.name || a.uid }
+          return out
+        },
+      },
       read: (v, a, signIn, { round }) => {
         const d = dollarUsageOf(v)
         if (!d) return { error: "Trae Global usage: no entitlement pack in the answer", signIn, user: a.name }
@@ -255,6 +377,32 @@ function traeHost(h) {
     return (u.origin + u.pathname).replace(/\/+$/, "")
   } catch {
     return ""
+  }
+}
+
+// namedHost is a host as a sign-in's callback names it, read as https when
+// it names no scheme: Trae CN's enterprise console names its own as a bare
+// hostname ("console.enterprise.trae.cn"), and that seat's sign-in was
+// kept with no host at all and chatted on the consumer gateway, which
+// serves it no c-* model and answers glm-5.4 with 1005 (plugins#1516). A
+// value with a scheme is kept as named, so http and the rest are still
+// refused by traeHost.
+function namedHost(h) {
+  const t = String(h ?? "").trim()
+  return t && !/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? "https://" + t : t
+}
+
+// saasToken: the access token is an enterprise (SaaS) seat's, as its JWT's
+// scope says ({"scope":"saas","tenant_id":"tob_online",…}, plugins#1516).
+// A tenant's token may hold its claims under data ({"data":{"scope":"saas",
+// …},"exp":…}), and the scope is read there too
+function saasToken(token) {
+  try {
+    const p = JSON.parse(Buffer.from(String(token).split(".")[1], "base64url").toString())
+    const scope = typeof p?.scope === "string" ? p.scope : p?.data?.scope
+    return String(scope ?? "").toLowerCase() === "saas"
+  } catch {
+    return false
   }
 }
 
@@ -418,6 +566,8 @@ function toAuth(s, site) {
     ...(traeHost(s.host) ? { host: traeHost(s.host) } : {}),
     ...(authHostOf(s.authHost, site) ? { authHost: authHostOf(s.authHost, site) } : {}),
     ...(s.account && Object.keys(s.account).length ? { account: s.account } : {}),
+    // an enterprise seat its console turned a chat away from (4245)
+    ...(s.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -434,11 +584,14 @@ function fromAuth(auth, site) {
     machineId: auth.machineId || "",
     devicePublicKey: auth.devicePublicKey || "",
     devicePrivateKey: auth.devicePrivateKey || "",
-    api: auth.api || "",
+    // a seat kept with no host (before 0.2.54 a console naming its host bare
+    // left both out, plugins#1516) is its console's, as its token says
+    api: auth.api || (!auth.host && saasToken(auth.access) ? traeHost(namedHost(site.consoleHost)) : ""),
     region: site.regionOf(auth),
-    host: auth.host || "",
+    host: auth.host || (!auth.api && saasToken(auth.access) ? traeHost(namedHost(site.consoleHost)) : ""),
     authHost: authHostOf(auth.authHost, site),
     account: auth.account && typeof auth.account === "object" ? auth.account : {},
+    ...(auth.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -637,10 +790,14 @@ const page = (ok, title, text) => `<!doctype html><meta charset="utf-8"><meta na
 // signedIn reads trae.cn's callback: userJwt (the token pair) and userInfo
 // (the account), or, from its older page, a refresh token alone, which is
 // exchanged for the pair
-async function signedIn(q, device, site) {
+async function signedIn(q, device, site, { enterprise = false } = {}) {
   const jwt = parseJSON(q.get("userJwt"))
   const info = parseJSON(q.get("userInfo"))
-  const host = q.get("host") || info.Host || ""
+  // the enterprise console's page names its Api host; one that names none
+  // still names its console, which is the seat's host
+  // (bare or not: namedHost), the first that is a Trae host
+  const named = [q.get("host"), info.Host, ...(enterprise ? [q.get("consoleHost"), site.consoleHost] : [])]
+  const host = named.map((h) => traeHost(namedHost(h))).find(Boolean) ?? ""
   let s = {
     token: jwt.Token ?? jwt.token ?? "",
     refresh: jwt.RefreshToken ?? jwt.refreshToken ?? q.get("refreshToken") ?? "",
@@ -675,8 +832,18 @@ async function signedIn(q, device, site) {
 }
 
 // browserSignIn is the IDE's sign-in: trae.cn's authorization page, back
-// to a callback on 127.0.0.1 (the page takes no other kind)
-async function browserSignIn(site) {
+// to a callback on 127.0.0.1 (the page takes no other kind).
+//
+// enterprise opens the realm's enterprise console's own authorization page
+// (console.enterprise.trae.cn/authorization, the same parameters and the
+// same callback) instead of the consumer site's. Since November 2026 trae.cn's
+// page sends a signed-out browser to a Doubao/Feishu account sign-in
+// (accounts.doubao.com) with no way to an enterprise one, so a seat that
+// signs in with its TRAE enterprise email, the console's Doubao/Feishu tab
+// or the tenant's SSO has to start on the console (@yalifesign on X). The
+// console's page calls back with userJwt, userInfo, refreshToken and host
+// (its own Api host), which signedIn reads as before.
+async function browserSignIn(site, { enterprise = false } = {}) {
   const device = newDevice(site)
   const trace = randomUUID()
   let over = false
@@ -706,7 +873,7 @@ async function browserSignIn(site) {
     }
     if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", `${site.webHost} sent no token; start the sign-in again.`))
     try {
-      const s = await signedIn(q, device, site)
+      const s = await signedIn(q, device, site, { enterprise })
       finish({ ...toAuth(s, site), type: "success" })
       html(page(true, "You're signed in", `${s.name || s.uid || `Your ${site.name} account`} is signed in. You can close this tab.`))
     } catch (e) {
@@ -749,8 +916,10 @@ async function browserSignIn(site) {
     hide_saas_login: "false",
   })
   return {
-    url: `${site.hosts.web}/authorization?${q}`,
-    instructions: `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
+    url: `${enterprise ? site.hosts.console : site.hosts.web}/authorization?${q}`,
+    instructions: enterprise
+      ? `Sign in to your ${site.name} enterprise seat in the browser (enterprise email, Doubao/Feishu or your company's SSO) and allow the sign-in. It finishes here by itself.`
+      : `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
     method: "auto",
     callback: () => done,
   }
@@ -1500,8 +1669,11 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
-  const config = max?.base ?? req.model
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
+  // an enterprise model is asked by its own config_name, as Trae's client
+  // asks it: the id it is listed under can be its twin id (twinId), which
+  // Trae doesn't know
+  const config = enterpriseModel(entry) && entry.config_name != null ? String(entry.config_name) : max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
     function: fn,
@@ -1510,15 +1682,77 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     ...(modelName ? { model_name: modelName } : {}),
     stream: true, // Trae answers in SSE either way
     request_id: randomUUID(),
+    // session_id is the conversation's, as the IDE keeps one per conversation
+    // (plugins#58): Trae counts a conversation by the session its requests
+    // name, and one user send that takes several steps (a tool result sent
+    // back, a retry, another function answering) is one conversation, not
+    // several. It is also the session the commercial record of a turn is
+    // booked under, which is why that record is read as a conversation's and
+    // each turn takes its share of it (turnBilling).
     session_id: session || randomUUID(),
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
   if (effort) body.reasoning_effort = effort
+  // the reply limit is always sent when the list gives the model one, as
+  // Trae's own client does: its agent's ModelConfig carries the detail's
+  // max_tokens with every model (ai-agent, "[ModelConfig] Received
+  // config_name=, model_name=, …, max_tokens="). Asked with none, an
+  // enterprise seat's every reply stopped at exactly 2000 output tokens,
+  // where the same model in Trae wrote more (@liuyuexue2020 on X,
+  // AI/deekseek-v4.1-flash, 0.2.43), most likely the limit Trae gives a
+  // request naming none (no seat to measure it on). An enterprise
+  // model has no __dev detail for most to come from, so its own detail's
+  // max_tokens is the one.
+  if (!(most > 0) && enterpriseModel(entry)) most = Number(enterpriseDetail(entry)?.max_tokens) || 0
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
+  else if (most > 0) body.max_tokens = most
   if (max?.window) {
-    if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
+  }
+  // an enterprise's built-in model says where its config comes from beside
+  // config_name, at the top of the body: Trae CN 3.4.20's own llm_utils_chat
+  // request (libharness, worktree/branch_name.rs, asked with the user's
+  // selected model) is usage, function, messages, conversation_id,
+  // access_type, config_name, model_name, config_source, is_custom_model,
+  // provider. Without them Trae looks the config up among its own presets
+  // and answers 4001 "the param is invalid" on every function (#1258, an
+  // enterprise seat on console.enterprise.trae.cn, 0.2.41, which sent them
+  // under user_message_context.model_info, the agent task's shape). Not yet
+  // seen answering from a real enterprise seat: a Trae preset is sent as
+  // before.
+  //
+  // model_name and provider are the entry's model detail's: Trae's list
+  // types (libharness CloudModelConfigInfo / CloudModelDetailInfo) carry
+  // provider on each model_detail_list item, beside its model_name, and
+  // not on the config, and an enterprise model's detail has no __dev name
+  // for modelName to come from. 0.2.42 read provider off the config and
+  // sent no model_name, so both were missing, and the reporter's seat got
+  // 4023 "We're sorry, something went wrong" on every function (#1258,
+  // AI/deekseek-v4.1-flash and volc/deepseek-v4-1-flash).
+  if (enterpriseModel(entry)) {
+    body.config_source = ENTERPRISE
+    body.is_custom_model = true
+    const detail = enterpriseDetail(entry)
+    if (!body.model_name && detail?.model_name) body.model_name = String(detail.model_name)
+    const provider = entry.provider || detail?.provider
+    if (provider) body.provider = String(provider)
+    // the reply limit again, where Trae's own client puts it for an
+    // enterprise model: its agent task (libharness 3.4.22, AgentSpec and
+    // CreateTaskRequest) carries enterprise_custom_hyper_params
+    // {max_tokens, prompt_max_tokens, multimodal} beside config_source and
+    // is_custom_model, and no top-level max_tokens. 0.2.44 sent the top-level
+    // one only, and the reporter's seat still stopped at exactly 2000 with
+    // max_tokens 4096 asked, on four models (@liuyuexue2020 on X). Inferred
+    // from the binary, not measured: no enterprise seat to try it on.
+    if (body.max_tokens > 0) {
+      const hyper = { max_tokens: body.max_tokens }
+      const prompt = Number(detail?.prompt_max_tokens) || 0
+      if (prompt > 0) hyper.prompt_max_tokens = prompt
+      const sees = seesOf(entry)
+      if (sees !== null) hyper.multimodal = sees
+      body.enterprise_custom_hyper_params = hyper
+    }
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -1529,6 +1763,220 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     if (typeof req.parallel_tool_calls === "boolean") body.parallel_tool_calls = req.parallel_tool_calls
   }
   return body
+}
+
+// ---- an enterprise model's own endpoint ------------------------------------
+//
+// directOf is where Trae's own client sends an enterprise model's chat, when
+// the model's detail says: an enterprise custom model whose provider is
+// custom_openai_compatible carries custom_config {base_url, ak, auth_type,
+// status, client_connect, custom_model_id, is_custom_base_url}, and Trae CN
+// 3.4.22 POSTs the chat straight to base_url (an OpenAI chat/completions
+// URL) with Authorization "Bearer <ak>" (auth_type 0), X-Model-Provider
+// the detail's provider, User-Agent hertz, the detail's model_name as model
+// and its max_tokens (plugins#1366, the reporter's captures of 2026-11-24:
+// tokenerpgw.asiainfo.com/erp/v1/chat/completions, max_tokens 32768, 8274
+// and 12182 completion tokens, finish_reason stop). llm_utils_chat cuts the
+// same model at 2000 a round (TRAE_CUT). null for anything else — another
+// auth_type, a model switched off, a field missing, a URL that isn't a chat
+// completions one — which goes through llm_utils_chat as before.
+const DIRECT_PROVIDER = "custom_openai_compatible"
+function directOf(entry) {
+  if (!enterpriseModel(entry)) return null
+  const d = enterpriseDetail(entry)
+  const c = d?.custom_config
+  if (!c || typeof c !== "object" || c.status !== true) return null
+  if (c.auth_type !== 0 && c.auth_type !== "0") return null
+  const provider = String(d.provider || entry.provider || "")
+  if (provider !== DIRECT_PROVIDER || !d.model_name) return null
+  const ak = typeof c.ak === "string" ? c.ak.trim() : ""
+  if (!ak) return null
+  let url
+  try {
+    url = new URL(String(c.base_url ?? "").trim())
+  } catch {
+    return null
+  }
+  if (!/^https?:$/.test(url.protocol) || !/\/chat\/completions\/?$/.test(url.pathname)) return null
+  return { url: url.href, ak, provider, model: String(d.model_name), most: Number(d.max_tokens) || 0 }
+}
+
+// akKey names an ak without keeping it: the one its endpoint turned away
+const akKey = (ak) => createHash("sha256").update(ak).digest("hex").slice(0, 16)
+
+// directBody is the request for an enterprise model's own endpoint: the
+// caller's OpenAI chat as it came, under the detail's model name, its
+// max_tokens held to the detail's as llm_utils_chat's is, always streamed
+// with the usage (as Trae's client asks it; a caller that didn't ask a
+// stream gets the reply whole from openai)
+const DIRECT_PASSED = ["temperature", "top_p", "stop", "presence_penalty", "frequency_penalty", "seed", "response_format"]
+function directBody(req, dir) {
+  const body = { model: dir.model }
+  const asked = req.max_completion_tokens ?? req.max_tokens
+  if (Number.isFinite(asked) && asked > 0) body.max_tokens = dir.most > 0 ? Math.min(Math.floor(asked), dir.most) : Math.floor(asked)
+  else if (dir.most > 0) body.max_tokens = dir.most
+  body.stream = true
+  if (Array.isArray(req.tools) && req.tools.length) {
+    body.tools = req.tools
+    if (req.tool_choice !== undefined) body.tool_choice = req.tool_choice
+    if (typeof req.parallel_tool_calls === "boolean") body.parallel_tool_calls = req.parallel_tool_calls
+  }
+  body.stream_options = { include_usage: true }
+  for (const k of DIRECT_PASSED) if (req[k] !== undefined && req[k] !== null) body[k] = req[k]
+  body.messages = req.messages
+  return body
+}
+
+// directHeaders are Trae's client's for the endpoint (the reporter's
+// capture): the X-AhaNet-* / x-bridge-transport / x-rust-request-timeout
+// ones it also carried are its own network layer's, not the endpoint's
+const directHeaders = (dir, rid) => ({
+  "Content-Type": "application/json",
+  "User-Agent": "hertz",
+  "X-Model-Provider": dir.provider,
+  "x-request-id": "req_" + rid,
+  Authorization: "Bearer " + dir.ak,
+})
+
+// directParts turns an OpenAI chat completion's chunks (or one whole
+// completion) into the answer's parts: text, reasoning (reasoning_content,
+// or vLLM's reasoning, as the reporter's endpoint sends it), the tool calls
+// gathered by index and sent whole at the end, the usage and the finish
+async function* directParts(events) {
+  const calls = new Map()
+  let lastKey = null
+  let finish = ""
+  for await (const { data } of events) {
+    if (data === "[DONE]") break
+    if (!data || typeof data !== "object") continue
+    if (data.error) {
+      const e = errorOf(data)
+      yield { error: e.message || "the endpoint returned an error", code: e.code || null }
+      return
+    }
+    for (const ch of Array.isArray(data.choices) ? data.choices : []) {
+      const d = (ch?.delta && typeof ch.delta === "object" ? ch.delta : ch?.message) ?? {}
+      const r = [d.reasoning_content, d.reasoning].find((v) => typeof v === "string" && v)
+      if (r) yield { reasoning: r }
+      if (typeof d.content === "string" && d.content) yield { text: d.content }
+      for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) {
+        const key = Number.isInteger(tc?.index) ? tc.index : tc?.id && ![...calls.values()].some((c) => c.id === tc.id) ? `id:${tc.id}` : lastKey ?? 0
+        lastKey = key
+        const c = calls.get(key) ?? { id: "", name: "", arguments: "" }
+        if (tc?.id) c.id = String(tc.id)
+        if (tc?.function?.name && !c.name) c.name = String(tc.function.name)
+        const a = tc?.function?.arguments
+        if (typeof a === "string") c.arguments += a
+        else if (a && typeof a === "object") c.arguments += JSON.stringify(a)
+        calls.set(key, c)
+      }
+      finish = finishOf(ch) || finish
+    }
+    const u = tokensOf(data.usage)
+    if (u) yield { usage: u }
+  }
+  for (const c of calls.values()) yield { call: { id: c.id || callId(), name: c.name, arguments: c.arguments || "{}" } }
+  if (finish) yield { finish }
+}
+
+// directRefused is, per model, the ak its endpoint turned away (401, 403),
+// by akKey: the endpoint isn't asked again until the list gives another
+const directRefused = new Map()
+
+// askDirect asks an enterprise model's own endpoint (directOf) and is its
+// answer as an OpenAI chat completion, or null when the endpoint didn't
+// answer one (not reached, an error status, not a stream or a completion,
+// an error before anything was written): the request then goes through
+// llm_utils_chat as before. The ak is never written: the debug line says
+// how long it is.
+async function askDirect(req, dir, base, ac, site) {
+  const sent = directBody(req, dir)
+  const rid = randomUUID()
+  const dbg = traeDebug()
+  if (dbg) console.error(`trae debug: request ${rid} POST ${dir.url} direct ak_chars=${dir.ak.length} ${JSON.stringify(debugBody(sent))}`)
+  let res
+  try {
+    res = await fetch(dir.url, { method: "POST", headers: directHeaders(dir, rid), body: JSON.stringify(sent), signal: ac.signal })
+  } catch (e) {
+    if (ac.signal.aborted) throw e
+    if (dbg) console.error(`trae debug: request ${rid} not answered (${e?.name ?? "error"}); asking llm_utils_chat`)
+    return null
+  }
+  const type = res.headers.get("content-type") ?? ""
+  if (dbg) console.error(`trae debug: request ${rid} answered ${res.status} ${type}`)
+  if (!res.ok || !res.body) {
+    if (res.status === 401 || res.status === 403) directRefused.set(base, akKey(dir.ak))
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+  let events
+  if (/event-stream/i.test(type)) events = sse(res.body)
+  else if (/json/i.test(type)) {
+    const whole = parseJSON(await res.text())
+    events = (async function* () {
+      yield { data: whole }
+    })()
+  } else {
+    await res.body.cancel().catch(() => {})
+    return null
+  }
+  const it = directParts(events)
+  const got = await first(it)
+  if (got.held.some((p) => p.error) || (got.done && !got.held.length)) {
+    if (dbg) console.error(`trae debug: request ${rid} answered no reply; asking llm_utils_chat`)
+    await it.return?.().catch(() => {})
+    return null
+  }
+  let parts = chain(got.held, it)
+  if (dbg) parts = debugEnd(rid, parts, sent.max_tokens || 0, 0)
+  return openai(req, parts, () => ac.abort(), site, sent.max_tokens || 0, 0)
+}
+
+// MAGPIE_TRAE_DEBUG=1 in magpie's environment writes each chat request the
+// plugin sends and how Trae's answer ended to stderr, which magpie keeps in
+// app.log (plugins#1366: a seat's replies stopped at 2000 output tokens,
+// and the reporter could see only TLS to Trae). Read on every request, so
+// it is on for the next one after a restart and off by default. What goes
+// out is the URL and the body with nothing of the user's in it: each
+// message is its role and its length, each tool its name. The headers,
+// which carry the sign-in, are never written.
+const traeDebug = () => !!process.env.MAGPIE_TRAE_DEBUG && process.env.MAGPIE_TRAE_DEBUG !== "0"
+
+function debugBody(sent) {
+  const out = { ...sent }
+  if (Array.isArray(sent.messages)) {
+    out.messages = sent.messages.map((m) => ({ role: m?.role, chars: JSON.stringify(m?.content ?? "").length, ...(m?.tool_calls ? { tool_calls: m.tool_calls.length } : {}) }))
+  }
+  if (Array.isArray(sent.tools)) out.tools = sent.tools.map((t) => t?.function?.name ?? t?.name ?? "?")
+  return out
+}
+
+function debugSent(url, rid, sent) {
+  if (traeDebug()) console.error(`trae debug: request ${rid} POST ${url} ${JSON.stringify(debugBody(sent))}`)
+}
+
+// debugEnd passes the answer's parts on and, when the stream ends, writes
+// what Trae said of it: its finish (Trae's "stop", or none, reads as ""),
+// its usage, and the reply's length
+async function* debugEnd(rid, parts, limit, cut) {
+  let usage = null
+  let finish = ""
+  let text = 0
+  let reasoning = 0
+  const calls = []
+  try {
+    for await (const p of parts) {
+      if (p.usage) usage = p.usage
+      if (p.finish) finish = p.finish
+      if (p.text) text += p.text.length
+      if (p.reasoning) reasoning += p.reasoning.length
+      if (p.call) calls.push(p.call)
+      yield p
+    }
+  } finally {
+    const end = ending(calls, finish, usage, limit, cut)
+    console.error(`trae debug: reply ${rid} trae_finish=${JSON.stringify(finish)} usage=${JSON.stringify(usage)} text_chars=${text} reasoning_chars=${reasoning} calls=${calls.length}${end.dropped ? ` cut_calls=${end.dropped}` : ""} finish_sent=${end.finish}`)
+  }
 }
 
 // sse reads Trae's events: {event, data} for each, data parsed when JSON
@@ -1644,6 +2092,174 @@ function tokensOf(u) {
   return out
 }
 
+// A turn's settled charge is the only place Trae names what it really spent:
+// token_usage often names no cache (or a 0 read) while Trae still bills the
+// turn at its cache price, and the credits the turn used are in the same
+// record (credits_by_source, a string with the precision credits_float
+// rounds away). The record is the conversation's, not the turn's: since
+// plugins#58 the session_id a request carries is the conversation's, and
+// Trae books every turn of it under that one session. So a turn's share is
+// the record now, less the record this plugin last read for the same
+// conversation. A turn with no baseline yet - the conversation's first one
+// here, or a caller that names no conversation and so gets a session of its
+// own per request - reports the record as it is when it holds only that
+// turn's own prompt and reply (ownCharge), and the reading it takes is the
+// baseline of the turns after it. The realm must name a billing host to be
+// read at all: Trae Global's commercial host is not known, so it reads none.
+const BILLING_PATH = "/api/v1/commercial/get_session_usage"
+// BILLING_TIMEOUT is the longest one read may take: no answer is held by a
+// connection that hangs. BILLING_WAIT is how long an answer's end waits for
+// the record at all: a stream's is short, because a settled record arrives
+// with the answer and a stream's end must not be held back for it; a body's
+// is the longer one, since nothing closes early there. BILLING_SETTLE is how
+// long a record still being written is asked again, within that wait.
+const BILLING_TIMEOUT = 2000
+const BILLING_WAIT = { stream: 400, body: 2500 }
+const BILLING_SETTLE = [150, 300, 600]
+const BILLING_KEPT = 512 // conversations whose last reading is remembered
+const BILLING_CREDITS = ["credits_float", "creditsFloat", "credits_consumed", "consumed_credits", "credit_cost", "credits_cost", "amount_float", "amountFloat"]
+const numOrNull = (v) => {
+  const x = typeof v === "string" ? Number(v.trim()) : Number(v)
+  return v != null && Number.isFinite(x) ? x : null
+}
+
+// readings is each conversation's last settled record, by account and
+// session. Two accounts answering one conversation are two conversations to
+// Trae (#58), so each keeps its own reading.
+const readings = new Map()
+
+// signalWithTimeout is signal, plus one abort of its own after ms.
+function signalWithTimeout(signal, ms) {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), ms)
+  const onAbort = () => ctl.abort()
+  if (signal) {
+    if (signal.aborted) ctl.abort()
+    else signal.addEventListener("abort", onAbort, { once: true })
+  }
+  return {
+    signal: ctl.signal,
+    done() {
+      clearTimeout(timer)
+      signal?.removeEventListener?.("abort", onAbort)
+    },
+  }
+}
+
+// recordOf reads the conversation's record once, within budget ms. null when
+// Trae refuses it, or names nothing settled yet: an empty record is one still
+// being written, not a turn that spent nothing.
+async function recordOf(a, site, session, signal, budget) {
+  // a realm with no billing host (Trae Global) has no settlement to read, and
+  // no request is made for one
+  const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing
+  if (!host) return false
+  const url = String(host).replace(/\/+$/, "") + BILLING_PATH
+  const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.token }
+  const t = signalWithTimeout(signal, Math.max(50, Math.min(BILLING_TIMEOUT, budget)))
+  try {
+    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ session_id: session }), signal: t.signal })
+    // a 4xx is a record this turn will not get: asking again will not settle
+    // it. A 429 or a 5xx may settle, and is asked again within the wait.
+    if (!res.ok) return res.status === 429 || res.status >= 500 ? null : false
+    const payload = await res.json()
+    const data = payload.data && typeof payload.data === "object" ? payload.data : payload
+    const code = String(data.code ?? payload.code ?? 0)
+    if (code !== "0") return false // a rejected record will not settle during this turn
+    const bill = data.user_usage_group_by_session ?? data.userUsageGroupBySession ?? data
+    const info = bill?.extra_info ?? bill?.extraInfo ?? {}
+    const bySource = bill?.credits_by_source ?? bill?.creditsBySource
+    const fromSource = bySource && typeof bySource === "object" ? Object.values(bySource).map(numOrNull).filter((v) => v != null) : []
+    const number = (keys) => {
+      for (const k of keys) {
+        const v = numOrNull(bill?.[k])
+        if (v != null) return v
+      }
+      return null
+    }
+    const credits = fromSource.length ? fromSource.reduce((x, y) => x + y, 0) : number(BILLING_CREDITS)
+    const cacheRead = numOrNull(info.cache_read_token ?? info.cacheReadToken)
+    const input = numOrNull(info.input_token ?? info.inputToken)
+    const output = numOrNull(info.output_token ?? info.outputToken)
+    // an empty envelope is a record still being written: keep waiting
+    if ((credits || 0) > 0 || (input || 0) > 0 || (output || 0) > 0 || (cacheRead || 0) > 0) return { credits, cacheRead, input, output }
+    return null
+  } catch {
+    return null
+  } finally {
+    t.done()
+  }
+}
+
+// total is what a reading comes to: its tokens, cache and charge together.
+// Every one of them only grows within a conversation, so two readings of the
+// same total are the same record, and one that went back is another record.
+const total = (r) => (r?.input ?? 0) + (r?.output ?? 0) + (r?.cacheRead ?? 0) + (r?.credits ?? 0)
+
+// remember keeps a reading as the conversation's baseline, keeping the map
+// from growing without bound.
+function remember(key, record) {
+  if (!readings.has(key) && readings.size >= BILLING_KEPT) readings.delete(readings.keys().next().value)
+  readings.set(key, record)
+}
+
+// ownCharge says a reading is this turn's own charge: its prompt is the one
+// this turn sent, no earlier turn's added, and its reply no more than this
+// one's. Trae counts a session's turns into one record, so only a record with
+// just this turn's prompt in it can be reported without a baseline.
+function ownCharge(record, usage) {
+  const asked = Number(usage?.prompt_tokens) || 0
+  const wrote = Number(usage?.completion_tokens) || 0
+  if (!(asked > 0) || record.input == null) return false
+  if (Math.abs(record.input - asked) > Math.max(64, asked * 0.02)) return false
+  return record.output == null || record.output <= wrote + 64
+}
+
+// turnBilling is one turn's share of the conversation's record. wait bounds
+// how long the answer's end waits for it, so a slow settlement costs the
+// answer a bounded delay at most, never an open connection. A record that
+// hasn't moved past the last reading is one still being written - Trae has the
+// earlier turns in it already, and this one's charge is not there yet - so it
+// is asked again within the wait, and a turn that never moved reports nothing
+// rather than a false 0: its share is then taken with the next turn's, which
+// is what keeps a real cache hit from reading as a 0% miss.
+async function turnBilling(a, site, session, { usage = null, signal = null, wait = BILLING_WAIT.body } = {}) {
+  if (!session) return null
+  const key = (a.uid || a.accountId || "") + "|" + session
+  const before = readings.get(key) ?? null
+  const saw = before ? total(before) : null
+  const deadline = Date.now() + wait
+  let record = null
+  for (let attempt = 0; ; attempt++) {
+    record = await recordOf(a, site, session, signal, deadline - Date.now())
+    if (record === false) return null // a record Trae refused: asking again will not settle it
+    if (record && (saw === null || total(record) > saw)) break // this turn's charge is in it
+    if (record && total(record) < saw) {
+      // its books went back: another record (a new period, a reset), not
+      // this turn's share. It becomes the baseline, and this turn reports
+      // nothing of Trae's.
+      remember(key, record)
+      return null
+    }
+    const pause = BILLING_SETTLE[attempt]
+    if (!pause || Date.now() + pause >= deadline) break
+    await new Promise((r) => setTimeout(r, pause))
+  }
+  if (traeDebug()) console.error(`trae debug: billing ${String(session).slice(0, 8)} ${record ? `in=${record.input} out=${record.output} cache=${record.cacheRead} credits=${record.credits}` : "no settled record"}${before ? " (a baseline is held)" : ""}`)
+  if (!record || (saw !== null && total(record) <= saw)) return null // never moved: keep the old baseline
+  remember(key, record)
+  if (!before) {
+    // no baseline for this conversation: a record that holds only this turn's
+    // own prompt and reply is this turn's charge - a conversation this plugin
+    // has not read before, or one whose session names the turn (a caller that
+    // names no conversation) - and is reported as it is. One that holds more
+    // is the conversation's, and is only the baseline of the turns after it.
+    return ownCharge(record, usage) ? { credits: record.credits, cacheRead: record.cacheRead } : null
+  }
+  const share = (now, then) => Math.max(0, (now ?? 0) - (then ?? 0))
+  return { credits: share(record.credits, before.credits), cacheRead: share(record.cacheRead, before.cacheRead) }
+}
+
 let callSeq = 0
 const callId = () => "call_" + randomBytes(12).toString("hex") + (callSeq++).toString(36)
 
@@ -1691,6 +2307,38 @@ class TextTools {
       const sm = this.buf.match(STRAY_AT)
       const s = sm ? sm.index : -1
       const x = this.buf.search(XML_AT)
+      const j = jsonCallAt(this.buf, this.sent + text)
+      if (j >= 0 && [i, d, r, x, s].every((y) => y < 0 || j < y)) {
+        // OpenAI's own wire shape written as text, {"tool_calls":[{…}]} on
+        // a line of its own (plugins#1114): whole and readable, its calls;
+        // cut short, a failure; in code or not readable, text
+        const head = this.buf.slice(0, j)
+        const brace = this.buf.indexOf("{", j)
+        const o = quoted(this.sent + text + head) ? -2 : objectEnd(this.buf, brace)
+        if (o === -1 && !end) {
+          text += head
+          this.buf = this.buf.slice(j)
+          break
+        }
+        if (o === -1) {
+          this.buf = ""
+          text += head
+          this.sent += text
+          return { text, calls, reasoning, error: CUT_SHORT }
+        }
+        const got = o > 0 ? jsonCalls(this.buf.slice(brace, o)) : null
+        if (!got) {
+          text += this.buf.slice(0, brace + 1)
+          this.buf = this.buf.slice(brace + 1)
+          continue
+        }
+        text += head
+        calls.push(...got)
+        this.mark = this.sent.length + text.length
+        this.buf = this.buf.slice(o)
+        this.after = true
+        continue
+      }
       if (s >= 0 && [i, d, r, x].every((y) => y < 0 || s < y)) {
         // a close with no call open, with what GLM left before it
         // (}}</tool_call>, magpie#1945): not the answer, dropped; in code,
@@ -1853,7 +2501,7 @@ class TextTools {
       this.buf = ""
     } else {
       // keep back an opened block, or what may be the start of one
-      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD)].filter((x) => x >= 0)
+      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD), jsonCallAt(this.buf, this.sent + text), jsonHoldAt(this.buf, this.sent + text)].filter((x) => x >= 0)
       let keep = at.length ? this.buf.length - Math.min(...at) : 0
       if (!keep) for (let k = Math.min(MARK_MAX - 1, this.buf.length); k > 0; k--) if (MARKS.some((m) => m.startsWith(this.buf.slice(-k)))) { keep = k; break }
       // and braces, brackets, quotes or a > a close may still come after
@@ -2007,6 +2655,46 @@ class TextTools {
     if (/^\s*[\w.:-]{1,128}\s*<arg_key>/.test(body)) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
     return { text: true }
   }
+}
+
+// A {"tool_calls":[{ at a line's start (plugins#1114); before refers to
+// what came before buf, the start of a line only after a line break or
+// blanks.
+const JSON_CALL_AT = /(^|\n)[ \t]*\{\s*"tool_calls"\s*:\s*\[\s*\{/g
+const JSON_CALL_KEY = '{"tool_calls":[{'
+const atLineStart = (before) => !/\S/.test(before.slice(before.lastIndexOf("\n") + 1))
+
+// jsonCallAt is where in buf the line holding such an object starts, or -1
+function jsonCallAt(buf, before) {
+  for (const m of buf.matchAll(JSON_CALL_AT)) {
+    const at = m.index + m[1].length
+    if (at > 0 || atLineStart(before)) return at
+  }
+  return -1
+}
+
+// jsonHoldAt is where buf's last line starts when it may still grow into
+// one (its indent alone too), or -1
+function jsonHoldAt(buf, before) {
+  const k = buf.lastIndexOf("\n") + 1
+  if (k === 0 && !atLineStart(before)) return -1
+  const line = buf.slice(k)
+  return line && JSON_CALL_KEY.startsWith(line.replace(/\s+/g, "")) ? k : -1
+}
+
+// jsonCalls reads such an object's calls: {"name","arguments"} entries or
+// OpenAI's {"type":"function","function":{…}}; null when there are none or
+// one has no name
+function jsonCalls(s) {
+  const list = looseJSON(s)?.tool_calls
+  if (!Array.isArray(list) || !list.length) return null
+  const out = []
+  for (const e of list) {
+    const f = e?.function ?? e
+    if (!f || typeof f.name !== "string" || !f.name) return null
+    out.push({ name: f.name, arguments: callArgs(f) })
+  }
+  return out
 }
 
 const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
@@ -2634,6 +3322,234 @@ function done(a) {
 // any other is queueing, metadata or timing
 const ANSWER = new Set(["", "output", "message", "delta", "content", "text", "answer", "chunk", "output_delta", "message_delta"])
 
+// TRAE_CUT is the reply length Trae stops an enterprise model's chat at
+// whatever limit it is asked for: four models of one seat each answered
+// exactly 2000 completion tokens, finish_reason "stop", mid-sentence, with
+// max_tokens 4096 asked (@liuyuexue2020 on X, 0.2.44)
+const TRAE_CUT = 2000
+
+// cutFinish is the finish an answer that came to its limit ends with: Trae
+// says "stop" (or nothing) of a reply it cut, so an agent took a half
+// answer for a whole one. A reply that used every token it was let have
+// (limit, the max_tokens sent; or cut, Trae's own TRAE_CUT for an
+// enterprise model, 0 for a preset, which wasn't seen cut) ended for length.
+//
+// Trae's completion_tokens count the reasoning too, and the reasoning isn't
+// held to max_tokens: GLM-5.3 answered "OK" to max_tokens 16 with
+// completion_tokens 55, 52 of them reasoning, and Trae's own finish "stop"
+// (plugins#1503). So a reply came to its limit when the count is the limit
+// exactly, or what it said past its reasoning reached it; a count past the
+// limit by reasoning alone is a whole reply.
+function cutFinish(finish, usage, limit, cut = 0) {
+  if (finish && finish !== "stop") return finish
+  const c = Number(usage?.completion_tokens) || 0
+  const r = Number(usage?.completion_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens) || 0
+  if (c > 0 && ((limit > 0 && (c === limit || c - r >= limit)) || (cut > 0 && c === cut))) return "length"
+  return finish
+}
+
+// wholeArgs says a call's arguments are whole JSON, as the agent reads them
+function wholeArgs(a) {
+  try {
+    JSON.parse(a)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ending is how a reply with these calls ends: a reply Trae cut (it came
+// to its limit, or Trae said length) whose call it cut too goes out
+// without that call and ends for length, the text before it kept. Sent as
+// a call, the agent ran a call with half its arguments, or stopped on it
+// and sent nothing more: an enterprise seat's reply of exactly 2000 tokens,
+// one call, tool_calls, and no next request (plugins#1366, 0.2.47). A whole
+// call in a cut reply is the model's and goes out as one.
+function ending(calls, finish, usage, limit, cut) {
+  const ended = cutFinish(finish, usage, limit, cut) || "stop"
+  if (ended === "length") {
+    const kept = calls.filter((c) => wholeArgs(c.arguments))
+    if (kept.length < calls.length) return { calls: kept, finish: "length", dropped: calls.length - kept.length }
+  }
+  return { calls, finish: calls.length ? "tool_calls" : ended, dropped: 0 }
+}
+
+// GO_ON is the turn a reply Trae cut is asked to go on with, after the
+// text it had written so far as the assistant's own
+const GO_ON = "Continue exactly where your previous message stopped. Do not repeat anything already written and do not add any preface."
+
+// THINK_ON is the turn a reply is asked again with when Trae cut every
+// round of it in the model's reasoning, nothing written yet: there is no
+// text to go on from, and asked the same, the model reasons the same
+// length again (plugins#1366, 0.2.51: AI/GLM-5.3-Flash and
+// AI/deekseek-v4.1-flash, round 1 completion_tokens=2000 with
+// reasoning_tokens 1983 and 1999, text_chars=0). It names neither magpie
+// nor Trae's limit: it goes to the model
+const THINK_ON = "Your previous reply ran out of room while you were still reasoning, before you wrote any answer. Do not start your reasoning over: keep what is left of it short, then write the answer or make the tool call directly."
+
+// CUT_ROUNDS bounds the asks one reply takes: 16 of TRAE_CUT is 32000
+// tokens, an enterprise model's usual max_tokens
+const CUT_ROUNDS = 16
+
+// tune holds the waits tests shorten. keepEvery: how long an enterprise
+// model's stream may go with nothing sent before it is sent an SSE
+// comment. A reply Trae cut is asked on (continued), and nothing comes
+// while the next ask waits for its first word; the agent, or a proxy
+// before it, took the quiet for a dead stream and reconnected
+// (plugins#1366, 0.2.49, Codex). magpie hears the comment as the plugin
+// still answering, and keeps its own agent alive (a Responses agent gets
+// response.in_progress, which Codex's idle timeout counts).
+const tune = { keepEvery: 2000 }
+
+// THOUGHT_ROUNDS bounds the asks in a row Trae cut in the model's
+// reasoning, nothing written: a reasoning model asked to go on reasons
+// again first, and a round can go to the cut in it (plugins#1366, 0.2.49:
+// round 1 text_chars=1834, round 2 text_chars=0 reasoning_chars=7683,
+// both completion_tokens=2000). Its reasoning isn't sent back, so a model
+// that never gets past it would spend every round on it. A reply that
+// wrote nothing in as many rounds ends as an error saying so (reasoned),
+// not as an empty reply cut for length.
+const THOUGHT_ROUNDS = 3
+
+// reasoned is the error a reply ends with that went rounds in a row only
+// reasoning, every one cut at Trae's round limit, and wrote nothing: the
+// gateway would call it an empty reply, which says nothing of why
+function reasoned(model, rounds, cut, why = "") {
+  const who = model ? `${model} ` : "the model "
+  return `${who}wrote no answer: it spent ${rounds} round${rounds === 1 ? "" : "s"} in a row only reasoning, each cut at Trae's ${cut}-token round limit for enterprise models${why ? `, and the next ask ${why}` : ""}. Try a shorter task or another model.`
+}
+
+// addUsage is two asks' usage as one: each ask is billed on its own, so
+// both its prompt and its reply count
+function addUsage(a, b) {
+  if (!a) return b
+  if (!b) return a
+  const out = {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
+  }
+  const cached = (u) => Number(u.prompt_tokens_details?.cached_tokens) || 0
+  if (a.prompt_tokens_details || b.prompt_tokens_details) out.prompt_tokens_details = { cached_tokens: cached(a) + cached(b) }
+  if (a.magpie_cache_unknown || b.magpie_cache_unknown) out.magpie_cache_unknown = true
+  return out
+}
+
+// continued is an enterprise model's reply carried past Trae's cut. Trae's
+// llm_utils_chat ends an enterprise model's reply at exactly TRAE_CUT
+// output tokens whatever max_tokens it is sent (top-level, or under
+// enterprise_custom_hyper_params, plugins#1366: 32768 sent, 2000 back).
+// Trae's own client never asks it for a long reply: its chat with an
+// enterprise model is the agent task (create_agent_task), whose cloud
+// swaps in Trae's own system prompt and tools, and its own llm_utils_chat
+// asks (titles, commit messages, branch names) carry no output limit at
+// all (libharness 3.4.22), so there is no field of Trae's own to send.
+// So a round that came to the cut with text written and no whole call is
+// asked again (more: the request with that text as the assistant's and
+// GO_ON after it), and what it answers is sent on as the same reply,
+// until a round ends short of the cut, makes a whole call, the asked
+// limit is spent, or CUT_ROUNDS is reached. A round cut in its reasoning or
+// in a call, nothing written in it, is asked on too once an earlier round
+// wrote text to go on from (up to THOUGHT_ROUNDS in a row). A reply whose
+// rounds so far only reasoned, no text and no call, is asked again with
+// THINK_ON (up to THOUGHT_ROUNDS too), and one that still wrote nothing
+// ends as the error reasoned says (plugins#1366, 0.2.52). A call cut
+// mid-arguments is dropped from the round it was cut in: the next round
+// writes it whole.
+// A later round that fails (an error, a stream broken off, nothing written
+// short of the cut) ends the asking: the text written stays, and the reply
+// ends for length, not as an error. The usage sent is every round's
+// together; a reply still cut at the end ends for length.
+async function* continued(answer, limit, cut, more, model = "") {
+  let text = ""
+  let total = null
+  let parts = answer
+  let thought = 0 // the rounds in a row that wrote no text
+  let onlyThought = 0 // the rounds, from the first, that only reasoned
+  let why = "" // how the last ask failed, for reasoned
+  for (let round = 1; ; round++) {
+    let usage = null
+    let finish = ""
+    let whole = 0
+    let wrote = false
+    let failed = false
+    const held = []
+    try {
+      for await (const p of parts) {
+        if (p.error) {
+          // a later ask that failed leaves the reply as Trae cut it
+          if (round === 1) {
+            yield p
+            return
+          }
+          failed = true
+          why = `failed: ${p.error}`
+          break
+        }
+        if (p.usage) {
+          usage = p.usage
+          continue
+        }
+        if (p.finish) {
+          finish = p.finish
+          continue
+        }
+        if (p.call && !wholeArgs(p.call.arguments)) {
+          held.push(p)
+          continue
+        }
+        if (p.call) whole++
+        if (p.text) {
+          text += p.text
+          wrote = true
+        }
+        yield p
+      }
+    } catch (e) {
+      // a later ask whose stream broke off leaves the reply as Trae cut
+      // it, as one that answered an error does: thrown on, the text
+      // written went to the agent as a 502 (plugins#1366, 0.2.50); the
+      // first ask's is the reply's own failure
+      if (round === 1) throw e
+      failed = true
+      why = `broke off: ${e?.message ?? e}`
+    }
+    total = addUsage(total, usage)
+    const atCut = cut > 0 && Number(usage?.completion_tokens) === cut && (!finish || finish === "length")
+    // a later ask that wrote nothing and made no call, short of the cut
+    // (only reasoning ended early, or nothing at all), is no end of the
+    // reply either: the text before it is still cut (plugins#1366, 0.2.50)
+    const answeredNothing = round > 1 && !wrote && !whole && !held.length && !atCut
+    const wasCut = failed || answeredNothing || atCut
+    const left = limit > 0 ? limit - (Number(total?.completion_tokens) || 0) : 0
+    thought = wrote ? 0 : thought + 1
+    // a round that only reasoned to the cut, with no text before it: asked
+    // again with THINK_ON (more, text "")
+    const thinking = !text && atCut && !whole && !held.length
+    if (thinking) onlyThought++
+    if (answeredNothing && !text && !why) why = "answered nothing"
+    const ask = !failed && !answeredNothing && wasCut && (text || thinking) && thought < THOUGHT_ROUNDS && !whole && round < CUT_ROUNDS && (limit <= 0 || left > 0) && more
+    const next = ask ? await more(text, left, round + 1).catch(() => null) : null
+    if (next) {
+      parts = next
+      continue
+    }
+    if (ask && !text) why = "was not answered"
+    // asked again (or about to be) and still nothing written: the reply is
+    // an error that says why, not an empty one cut for length
+    if (!text && onlyThought && (round > 1 || ask) && !whole && !held.length) {
+      if (total) yield { usage: total }
+      yield { error: reasoned(model, onlyThought, cut, why), code: "reasoning_only" }
+      return
+    }
+    if (!wasCut || round === 1) yield* held
+    if (total) yield { usage: total }
+    if (wasCut && round > 1) yield { finish: "length" }
+    else if (finish) yield { finish }
+    return
+  }
+}
+
 // finishOf is OpenAI's finish_reason for the one Trae's last event gives,
 // "" for none it says or one it has no word for
 function finishOf(d) {
@@ -2674,68 +3590,87 @@ async function* parts(events, tools = []) {
     return { call: { ...c, name, arguments: unwrapped(c.arguments, name, tools) } }
   }
   let finish = ""
-  for await (const { event, data } of events) {
-    const name = eventName(event)
-    const d = data && typeof data === "object" ? data : {}
-    if (data === "[DONE]") break
-    if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
-      const e = errorOf(d)
-      // the realm answering is named by the caller, which knows it; a bare
-      // word here reads as neither realm's
-      yield { error: e.message || "Trae returned an error", code: e.code }
-      return
-    }
-    if (name === "token_usage") {
-      const u = tokensOf(d.usage ?? d)
-      if (u) yield { usage: u }
-      continue
-    }
-    if (name === "done" || name === "response_done" || name === "stream_done") {
+  // with MAGPIE_TRAE_DEBUG, what Trae sent that nothing here reads: the
+  // events of other names, and the string fields of the answer's events
+  // past the ones read (plugins#1366, 0.2.51: reasoning_tokens 1983 with
+  // reasoning_chars=0 — was the reasoning sent under another name?)
+  const unread = traeDebug() ? new Map() : null
+  const note = (k, n) => unread && unread.set(k, (unread.get(k) ?? 0) + n)
+  try {
+    for await (const { event, data } of events) {
+      const name = eventName(event)
+      const d = data && typeof data === "object" ? data : {}
+      if (data === "[DONE]") break
+      if (unread) {
+        if (!ANSWER.has(name) && !["error", "token_usage", "done", "response_done", "stream_done"].includes(name)) note(`event:${name}`, JSON.stringify(data ?? "").length)
+        else if (ANSWER.has(name)) {
+          const read = new Set(["reasoning_content", "reasoning", "response", "content", "delta", "finish_reason", "stop_reason", "finishReason"])
+          for (const [k, v] of Object.entries(d)) if (!read.has(k) && typeof v === "string" && v) note(`${name || "data"}.${k}`, v.length)
+          const dl = d.delta && typeof d.delta === "object" ? d.delta : {}
+          for (const [k, v] of Object.entries(dl)) if (!read.has(k) && typeof v === "string" && v) note(`${name || "data"}.delta.${k}`, v.length)
+        }
+      }
+      if (name === "error" || (name !== "output" && d.code && d.message && !d.response && !d.content)) {
+        const e = errorOf(d)
+        // the realm answering is named by the caller, which knows it; a bare
+        // word here reads as neither realm's
+        yield { error: e.message || "Trae returned an error", code: e.code, extra: d.extra ?? null, plan: planOf(d) }
+        return
+      }
+      if (name === "token_usage") {
+        const u = tokensOf(d.usage ?? d)
+        if (u) yield { usage: u }
+        continue
+      }
+      if (name === "done" || name === "response_done" || name === "stream_done") {
+        const u = tokensOf(d.usage)
+        if (u) yield { usage: u }
+        finish = finishOf(d) || finish
+        break
+      }
+      if (!ANSWER.has(name)) continue
+      const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
+      // the reasoning's own fields, in the order Trae has put it under: an
+      // empty one is no answer, so the next is asked (an event carrying both
+      // reasoning_content: "" and reasoning: "…" says the thought in the second)
+      const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
+      if (said) {
+        const r = th.add(said)
+        if (r) yield { reasoning: r }
+      }
+      let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
+      // the IDE's own progress notes, not the model's
+      if (/^(Building prompt:|Completed building prompt)/.test(text)) text = ""
+      if (text) {
+        const r = tt.push(text)
+        const t = r.reasoning && th.add(r.reasoning)
+        if (t) yield { reasoning: t }
+        if (r.text) yield { text: r.text }
+        for (const c of r.calls) yield call({ ...c, id: callId() })
+        if (r.error) {
+          yield { error: r.error, code: null }
+          return
+        }
+      }
+      for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) nc.push(tc)
       const u = tokensOf(d.usage)
       if (u) yield { usage: u }
       finish = finishOf(d) || finish
-      break
     }
-    if (!ANSWER.has(name)) continue
-    const delta = d.delta && typeof d.delta === "object" ? d.delta : {}
-    // the reasoning's own fields, in the order Trae has put it under: an
-    // empty one is no answer, so the next is asked (an event carrying both
-    // reasoning_content: "" and reasoning: "…" says the thought in the second)
-    const said = [d.reasoning_content, d.reasoning, delta.reasoning_content, delta.reasoning].find((v) => typeof v === "string" && v) ?? ""
-    if (said) {
-      const r = th.add(said)
-      if (r) yield { reasoning: r }
+    const r = tt.push("", true)
+    const t = r.reasoning && th.add(r.reasoning)
+    if (t) yield { reasoning: t }
+    if (r.text) yield { text: r.text }
+    for (const c of r.calls) yield call({ ...c, id: callId() })
+    if (r.error) {
+      yield { error: r.error, code: null }
+      return
     }
-    let text = typeof d.response === "string" ? d.response : typeof d.content === "string" ? d.content : typeof delta.content === "string" ? delta.content : typeof d.delta === "string" ? d.delta : ""
-    // the IDE's own progress notes, not the model's
-    if (/^(Building prompt:|Completed building prompt)/.test(text)) text = ""
-    if (text) {
-      const r = tt.push(text)
-      const t = r.reasoning && th.add(r.reasoning)
-      if (t) yield { reasoning: t }
-      if (r.text) yield { text: r.text }
-      for (const c of r.calls) yield call({ ...c, id: callId() })
-      if (r.error) {
-        yield { error: r.error, code: null }
-        return
-      }
-    }
-    for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) nc.push(tc)
-    const u = tokensOf(d.usage)
-    if (u) yield { usage: u }
-    finish = finishOf(d) || finish
+    for (const c of nc.take(tools)) yield call(c)
+    if (finish) yield { finish }
+  } finally {
+    if (unread?.size) console.error(`trae debug: unread ${JSON.stringify(Object.fromEntries(unread))} (chars)`)
   }
-  const r = tt.push("", true)
-  const t = r.reasoning && th.add(r.reasoning)
-  if (t) yield { reasoning: t }
-  if (r.text) yield { text: r.text }
-  for (const c of r.calls) yield call({ ...c, id: callId() })
-  if (r.error) {
-    yield { error: r.error, code: null }
-    return
-  }
-  for (const c of nc.take(tools)) yield call(c)
-  if (finish) yield { finish }
 }
 
 // first reads events up to the first that is the answer's, so an answer
@@ -2761,13 +3696,34 @@ async function* chain(held, it) {
 }
 
 // failure is the response for an error Trae answered with
-function failure(site, status, code, message) {
+// ctx, when given, says what was asked: an error that isn't a lapse or a
+// quota names it, so a 502 says which model, where and through what
+function failure(site, status, code, message, ctx = "") {
   message = message || statusLine(status)
   if (status === 401 || lapsedCode(code, site) || (status === 403 && lapsedWords.test(message))) {
     return errorResponse(401, `${site.realm}'s sign-in has expired (${message}); sign in again`, "expired")
   }
   if (status === 429 || quotaCode(code, site) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `${site.realm}: ${message}`)
-  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}`)
+  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}${ctx ? `; ${ctx}` : ""}`)
+}
+
+// the settled turn record fills the two readings token_usage leaves out: the
+// credits the turn spent and the cache it really read. A cache the stream
+// named wins; the commercial count is only used when the stream gave none.
+function withBilling(usage, bill) {
+  if (!usage || !bill) return usage
+  // magpie's ledger reads the settled charge as `credit` (singular) on the
+  // usage object (yetone/magpie#4328, as kiro reports it). Keep `credits`
+  // beside it for clients that name it that way.
+  if (bill.credits != null) {
+    usage.credit = bill.credits
+    usage.credits = bill.credits
+  }
+  if (bill.cacheRead != null && !usage.prompt_tokens_details?.cached_tokens && !usage.cache_read_input_tokens) {
+    usage.prompt_tokens_details = { ...(usage.prompt_tokens_details ?? {}), cached_tokens: bill.cacheRead }
+    delete usage.magpie_cache_unknown
+  }
+  return usage
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
@@ -2775,7 +3731,7 @@ function failure(site, status, code, message) {
 // moment the agent goes away (a tool call made, a request cancelled): a
 // generator's return can't break a read that is already waiting, so the
 // fetch itself is what has to be stopped
-async function openai(req, it, abort, site) {
+async function openai(req, it, abort, site, limit = 0, cut = 0, billing = null) {
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
   const model = req.model
@@ -2793,10 +3749,12 @@ async function openai(req, it, abort, site) {
       if (p.usage) usage = p.usage
       if (p.finish) finish = p.finish
     }
-    const message = { role: "assistant", content: text || (calls.length ? null : "") }
+    const end = ending(calls, finish, usage, limit, cut)
+    if (usage && billing) withBilling(usage, await billing(usage))
+    const message = { role: "assistant", content: text || (end.calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
-    if (calls.length) message.tool_calls = calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
-    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : finish || "stop" }] }
+    if (end.calls.length) message.tool_calls = end.calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
+    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: end.finish }] }
     if (usage) body.usage = usage
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
   }
@@ -2809,14 +3767,30 @@ async function openai(req, it, abort, site) {
   // account's failure reads as Trae Global's
   const error = (message, code = null) => enc.encode(`data: ${JSON.stringify({ error: { message: `${site.realm}: ${message}`, type: "api_error", code } })}\n\n`)
   let gone = false
+  let keep = null
   const stream = new ReadableStream({
     async start(ctl) {
       let calls = 0
+      const sent = []
+      // a call whose arguments aren't whole JSON is held to the end: only
+      // then is it known whether Trae cut the reply in it (ending)
+      const held = []
       let usage = null
       let finish = ""
       let failed = false
+      let quietFrom = Date.now()
       const put = (b) => {
+        quietFrom = Date.now()
         if (!gone) ctl.enqueue(b)
+      }
+      // an enterprise model's reply may be asked on (continued): the
+      // stream is kept alive while the next ask waits (tune.keepEvery)
+      keep = cut > 0 ? setInterval(() => {
+        if (!gone && Date.now() - quietFrom >= tune.keepEvery) put(enc.encode(": keepalive\n\n"))
+      }, tune.keepEvery) : null
+      const putCall = (c) => {
+        sent.push(c)
+        put(chunk({ tool_calls: [{ index: calls++, id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }] }))
       }
       try {
         put(chunk({ role: "assistant", content: "" }))
@@ -2829,12 +3803,20 @@ async function openai(req, it, abort, site) {
           }
           if (p.text) put(chunk({ content: p.text }))
           if (p.reasoning) put(chunk({ reasoning_content: p.reasoning }))
-          if (p.call) put(chunk({ tool_calls: [{ index: calls++, id: p.call.id, type: "function", function: { name: p.call.name, arguments: p.call.arguments } }] }))
+          if (p.call) {
+            if (wholeArgs(p.call.arguments)) putCall(p.call)
+            else held.push(p.call)
+          }
           if (p.usage) usage = p.usage
           if (p.finish) finish = p.finish
         }
         if (!failed) {
-          put(chunk({}, calls ? "tool_calls" : finish || "stop"))
+          const end = ending([...sent, ...held], finish, usage, limit, cut)
+          if (!end.dropped) for (const c of held) putCall(c)
+          put(chunk({}, end.finish))
+          // the settled charge is read after the finish, so a bill Trae
+          // settles a moment later doesn't hold the answer's end back
+          if (usage && billing) withBilling(usage, await billing(usage))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
       } catch (e) {
@@ -2842,6 +3824,7 @@ async function openai(req, it, abort, site) {
           put(error(e?.message ?? e))
         } catch {}
       }
+      clearInterval(keep)
       try {
         put(enc.encode("data: [DONE]\n\n"))
         if (!gone) ctl.close()
@@ -2849,6 +3832,7 @@ async function openai(req, it, abort, site) {
     },
     cancel() {
       gone = true
+      clearInterval(keep)
       abort?.()
       it.return?.()
     },
@@ -2859,17 +3843,81 @@ async function openai(req, it, abort, site) {
 // a model or function this account's chat_v3 doesn't take: another may
 const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 
+// planOf is the plan a refusal names in its extra: Trae CN answers a model
+// the account's plan doesn't offer with 1005 and {"plan":2}, though its list
+// names the model (plugins#1501: glm-5.4 for a Credits account whose
+// glm-5.3 answers). That is the model's refusal, not the account's: it
+// goes out as a 403 that says the model isn't available, which magpie
+// rests that model alone for, never the account. null when it names none.
+function planOf(d) {
+  let x = d?.extra
+  if (typeof x === "string") {
+    try {
+      x = JSON.parse(x)
+    } catch {
+      return null
+    }
+  }
+  return x && typeof x === "object" && x.plan != null ? x.plan : null
+}
+const planOfText = (text) => {
+  try {
+    const v = JSON.parse(text)
+    return planOf(v?.error && typeof v.error === "object" ? v.error : v)
+  } catch {
+    return null
+  }
+}
+
+// keptRefusal is the refusal a request that no function answered ends
+// with: a plan's refusal one function gave outlives another's generic one,
+// so 1005 {"plan":2} isn't lost behind the last function's 4001
+// (plugins#1501). A 1005 naming no plan is kept no longer than before: a
+// function may give it for a model it doesn't serve.
+const keptRefusal = (why, next) => (why?.plan != null && next.plan == null ? why : next)
+
 // ---- the model lists ------------------------------------------------------------
 
 // chatModel: an entry of a function's list that is a model to chat with.
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
+//
+// An enterprise's own built-in models are the exception: Trae CN's client
+// (3.4.20, ai-modules-chat ModelConfigSource) marks each entry's
+// config_source Trae 1, Enterprise 2 or Personal 3, and shows the
+// Enterprise ones as "Enterprise-builtin" for every seat of the tenant —
+// served by Trae with the tenant's provider, so a seat picks them like its
+// own. Not being Trae's presets (is_preset false), they come out as custom
+// models (is_custom_model) and were dropped with the personal ones, whose
+// provider key lives in the user's IDE only (plugins#1258, 0.2.41).
+// One the admin switched off (status false) stays out, as in the IDE.
+const ENTERPRISE = 2
+const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
+// enterpriseDetail is the model detail an enterprise model is asked by: its
+// __dev one when it names one, else the first that names a model
+const enterpriseDetail = (m) => devModel(m) ?? (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => d?.model_name)
+// twinId is the id an enterprise model is listed under when a Trae preset
+// has its config_name too: its provider, TWIN, then the name, as the
+// enterprise console writes it (aliyuncs//kimi-k3.1-pro). Trae CN's lists
+// can give one config_name twice, a preset (config_source 1) and the
+// tenant's own model (config_source 2) with a provider of its own, and
+// Trae's client tells them apart by config_source; keyed by the name alone,
+// the preset's __dev entry won the tie and the enterprise one could not be
+// asked at all (plugins#1605, shex816: kimi-k3.1-pro, the preset 4222 on
+// that seat and its aliyuncs twin served in Trae's client). Only a twin is
+// renamed: an enterprise model no preset shares a name with keeps its
+// config_name as its id (AI/deekseek-v4.1-flash, #1258), and the preset
+// keeps the bare name, which is what a request for it asked before.
+const TWIN = "//"
+const twinId = (m) => (String(m?.provider || enterpriseDetail(m)?.provider || "").trim() || "enterprise") + TWIN + String(m?.config_name ?? "")
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
-  if (!id || /^custom_model/i.test(id)) return false
+  if (!id) return false
   if (m.usage && m.usage !== "chat_completion") return false
   if (m.config_switch === false) return false
+  if (enterpriseModel(m)) return m.status !== false && !(site?.hidesInvisible && m.is_invisible_to_user === true)
+  if (/^custom_model/i.test(id)) return false
   if (m.is_custom_model === true || m.display_config?.is_custom_model === true) return false
   // the IDE's own picker hides these: Auto-mode routing channels and
   // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
@@ -2907,6 +3955,24 @@ const maxModel = (...ms) => {
 // MAX is the suffix of a model's Max: deepseek-v4.1-flash-max is
 // deepseek-v4.1-flash in Max mode
 const MAX = "-max"
+
+// WIDENED is, per site, the models whose base entry was measured serving a
+// prompt past its dev budget: only these advertise the Max window on the base
+// entry (yetone/magpie#5809). A model without that evidence keeps its dev
+// budget, which can only make an agent compact early. Every measurement was
+// on Trae CN; Trae Global is its own deployment and none of its models was
+// measured, so it keeps dev. Extend it as models are tested.
+const WIDENED = { "trae-cn": new Set([
+  "deepseek-v4.1-flash",
+  "deepseek-v4-flash",
+  "glm-5.4",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "glm-5.3-flashx",
+  "glm-5.2",
+  "doubao-seed-2.1-pro",
+  "doubao-seed-evolving",
+]) }
 
   // traeRateOf is a model's consumption multiplier, from the account's list:
   // display_contact_config is a JSON string naming the rate now and the full
@@ -3057,12 +4123,16 @@ const effortOf = (levels, effort) => {
 // ---- usage ------------------------------------------------------------------------
 
 // credits adds up the account's entitlement packs as the IDE shows them:
-// each pack with a credit limit (-1 unlimited) and what it used
-function credits(v) {
+// each pack with a credit limit (-1 unlimited) and what it used. until is
+// the soonest end of a pack that still has credits left and has not ended:
+// a spent daily pack or one already past its end changes nothing on the
+// account, so it does not name the date the credits turn over (#718, #1157).
+function credits(v, now = Date.now()) {
   let limit = 0
   let used = 0
   let unlimited = false
   let soonest = 0
+  let lapsing = 0
   for (const p of v?.user_entitlement_pack_list ?? []) {
     const bi = p?.entitlement_base_info ?? {}
     const l = Number(bi?.quota?.credits_limit)
@@ -3072,12 +4142,143 @@ function credits(v) {
     else if (l >= 0) limit += l
     if (u > 0) used += u
     const end = whenOf(bi.end_time ?? bi.expire_time ?? p.end_time)
-    if (end && (!soonest || end < soonest)) soonest = end
+    const left = l === -1 || (l > 0 && u < l)
+    if (!(end && end > now && left)) continue
+    // what a finite pack has left is lost at its end, whether or not a
+    // new pack follows: lapsing is the credits that go at the soonest end
+    // (#718: a TraeCode CN account's sign-in rewards are 31-day packs of
+    // 100, one a day)
+    const rest = l === -1 ? 0 : Math.max(0, l - Math.max(0, u))
+    if (!soonest || end < soonest) (soonest = end), (lapsing = rest)
+    else if (end === soonest) lapsing += rest
   }
-  return { limit, used, unlimited, until: soonest }
+  return { limit, used, unlimited, until: soonest, lapsing }
 }
 
 const round = (n) => Math.round(n * 100) / 100
+
+// yuan is money as Trae CN's console counts it, in yuan. The consumer
+// window's unit is a bare word ("credits"); a currency the card can't name
+// in a unit goes in display, as Cursor's and JoyCode's do.
+const yuan = (n) => "¥" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// dollars is the same money as the international console counts it. The
+// console's own build picks the symbol by deployment (volcengine ¥,
+// byteplus $), so each realm's console is asked with its own.
+const DOLLARS = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// seatUsageWindow is the seat pool's window, which both realms' consoles
+// name the same way: the pool as the limit and the models' own cost as what
+// was spent, in the realm's money, resetting when the console's period does.
+// The count rides on the window (amount of limit), as the consumer window's
+// does, so magpie says it in the window's row; display carries the currency
+// the card's own row can't name (yetone/magpie#694).
+//
+// A spend the console did not answer (used === null) is not a spend of
+// nothing: the window says no percent and no amount, and its display names
+// the pool with a question mark, so magpie reads the account as unknown
+// rather than as one that has spent none of its allowance.
+function seatUsageWindow(pool, used, until, money, unit) {
+  const w = {
+    name: "Seat Usage",
+    display: used === null ? `? / ${money(pool.limit)}` : `${money(used)} / ${money(pool.limit)}`,
+    limit: round(pool.limit),
+    unit,
+  }
+  if (used === null) w.used = null
+  else {
+    w.used = Math.round(Math.max(0, Math.min(100, (used / pool.limit) * 100)) * 100) / 100
+    w.amount = round(used)
+  }
+  if (until) w.resetsAt = until
+  return w
+}
+
+// PAYGO_UNLIMITED is the console's "no limit": a pay-as-you-go pool is
+// handed this instead of a real one (9999999999), which is not a limit a
+// card should show. The seat pool is the limit that matters.
+const PAYGO_UNLIMITED = 1e9
+
+// seatPoolOf reads an enterprise account's allowance as its console has it:
+// the seat pool, in the realm's money (seat_pool_currency_quota). A pool the
+// console hands PAYGO_UNLIMITED is no limit at all, as the consumer page's
+// -1 is. A pool the console names as null or "" is no pool either: Number()
+// would read both as 0, which would draw an allowance of nothing rather than
+// say the console named none.
+function seatPoolOf(v) {
+  const q = v?.user_model_quota
+  if (!q) return null
+  const raw = q.seat_pool_currency_quota
+  if (raw === null || raw === undefined || raw === "") return null
+  const limit = Number(raw)
+  if (!Number.isFinite(limit)) return null
+  if (limit < 0 || limit >= PAYGO_UNLIMITED) return { limit: 0, unlimited: true }
+  return { limit, unlimited: false }
+}
+
+// seatSpentOf adds up what an enterprise account's models cost, in the
+// realm's money: each model's total_cost_currency in the seat's usage
+// detail. The console gives no total of its own
+// (seat_total_cost_currency is null), so this is the sum, and a model the
+// answer leaves out costs nothing.
+//
+// Only the account's own seat is counted. The console answers an
+// administrator with every seat in the tenant, and adding those up would
+// show one person's card the whole tenant's spend; the account's own seat is
+// the one the quota names (user_model_quota.user_id), which a real console
+// sends. A seat the account's cannot be told apart — several seats and no id
+// to pick by — is not guessed at.
+//
+// null when there is nothing to add up honestly: no usage list at all (the
+// read failed, and a failed read is not a spend of zero), or several seats
+// with no way to say which is the account's.
+function seatSpentOf(v, uid) {
+  const list = v?.user_usage_list
+  if (!Array.isArray(list)) return null
+  const me = uid === undefined || uid === null || uid === "" ? null : String(uid)
+  const ids = new Set(list.map((u) => (u?.user_id === undefined || u?.user_id === null ? "" : String(u.user_id))).filter((s) => s !== ""))
+  let seats = list
+  if (ids.size > 0) {
+    // the seats carry ids: take the account's own. With no id from the quota,
+    // a single seat's answer is that seat; several seats' is not knowable.
+    const want = me ?? (ids.size === 1 ? [...ids][0] : null)
+    if (want === null) return null
+    seats = list.filter((u) => String(u?.user_id ?? "") === want)
+    if (seats.length === 0) return null
+  }
+  let used = 0
+  for (const u of seats) {
+    for (const m of u?.in_seat_detail?.chat_usage_details ?? []) {
+      const c = Number(m?.total_cost_currency)
+      if (Number.isFinite(c) && c > 0) used += c
+    }
+  }
+  return used
+}
+
+// entResetOf is when an enterprise account's seat pool refills, as an ISO
+// string: the console's ResetTime. The usage page reads the same field for
+// its "席位额度将于 <date> 重置" line, so the card and the page name one
+// date. whenOf reads it, which takes the milliseconds the console sends and
+// the seconds a stand-in may. Absent when the console gives none.
+function entResetOf(v) {
+  const t = whenOf(v?.Data?.ResetTime)
+  return t > 0 ? new Date(t).toISOString() : null
+}
+
+// isEnterprise: the sign-in named the realm's enterprise console as the
+// account's host, which is what an enterprise (SaaS) sign-in does — the
+// console serves that account's models and holds its usage. A personal
+// account names the consumer hosts, or none.
+function isEnterprise(a, site) {
+  const named = String(site?.consoleHost ?? "").toLowerCase()
+  if (!named || !a?.host) return false
+  try {
+    return new URL(String(a.host)).hostname.toLowerCase() === named
+  } catch {
+    return false
+  }
+}
 
 // dollarUsageOf reads an account's entitlement pack as the dollar billing
 // has it (the international deployment): the period's allowance in dollars
@@ -3118,6 +4319,12 @@ const makePlugin = (site) => async ({ client }) => {
   // the reasoning levels it takes (reasoning_effort_config)
   const liveEntry = new Map()
   const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
+  // the id each entry of the last read is listed under (idOf): its
+  // config_name, or an enterprise twin's twinId; and each preset that has
+  // an enterprise twin, by its id, so a refusal of the preset names the twin
+  const listedAs = new WeakMap()
+  const idOf = (m) => listedAs.get(m) ?? String(m.config_name)
+  const twins = new Map()
   // when each account's list was last read, and what that read returned:
   // {at, p, done, expired}. A read that answered, failed or hung all leave
   // their stamp, so a list that fails or leaves the model out costs one read
@@ -3195,6 +4402,40 @@ const makePlugin = (site) => async ({ client }) => {
     else if (strict && was.expired) rec = await runRead(a, who)
     else rec = was
     return { models: rec.done, expired: rec.expired }
+  }
+
+  // the enterprise seats whose console turned a chat away (4245) in this
+  // run, by account: the mark is kept with the sign-in too, and this holds
+  // it when that save fails
+  const consoleRefused = new Set()
+  // hostOf is the account's model host, with that mark applied
+  const hostOf = (a) => {
+    const h = apiOf(a, site)
+    if (site.hosts.console && h === site.hosts.console && consoleRefused.has(a.uid || a.name)) return site.hosts.api
+    return h
+  }
+  // onConsole: the host is the enterprise console, where a 4245 is the
+  // seat's console refusing chats rather than this model or function
+  const onConsole = (host) => !!site.hosts.console && host === site.hosts.console && host !== site.hosts.api
+  const consoleRefuses = (code) => String(code) === "4245"
+
+  // askedOf says what a refused chat asked for: the model, the functions
+  // tried and the host, and whether the account's list has the model at all.
+  // A model typed in by hand that the list doesn't name is the likeliest
+  // cause of a refusal, and the list is read for it (once per REREAD_MS)
+  // only on this failing path.
+  const askedOf = async (a, id, entry, fns, host) => {
+    let listed = !!entry && liveEntry.has(id)
+    if (!listed) {
+      await readList(a).catch(() => {})
+      entry = liveEntry.get(id) ?? null
+      listed = !!entry
+    }
+    const kind = enterpriseModel(entry) ? "enterprise built-in model" : "model"
+    let out = `${kind} ${id} asked through ${fns.join(", ")} on ${host.replace(/^https?:\/\//, "")}`
+    if (!listed && liveEntry.size) out += `; this account's model list doesn't have ${id}, so Trae may not serve it under that id`
+    else if (!enterpriseModel(entry) && twins.has(id)) out += `; this account's enterprise has a model of its own named ${id}, listed as ${twins.get(id)}`
+    return out
   }
 
   const save = async (auth) => {
@@ -3427,6 +4668,70 @@ const makePlugin = (site) => async ({ client }) => {
     return { outcome: "claimed", ...(credit > 0 ? { credit } : {}) }
   }
 
+  // enterpriseUsage reads an enterprise (SaaS) account's usage: the seat
+  // pool and what the account's models cost (get_personal_quota and
+  // get_user_model_usage on the realm's console, in the realm's money). On
+  // Trae CN the consumer credits page is read beside them for the card's
+  // second row — that realm's console is what such an account bills on, and
+  // the credits page answers it too with an allowance real calls have been
+  // measured not to touch. The international realm has no such page.
+  const enterpriseUsage = async (a, signIn) => {
+    const ent = site.usage.ent
+    const ask = async (path) => {
+      const r = await post(a, site.hosts.console + path, {})
+      const e = errorOf(r.v)
+      // A console known to take the IDE's own token answers a lapsed sign-in
+      // with 401 or the realm's lapsed code, and that is the sign-in's
+      // trouble. A console that is not known to (the international one, which
+      // no such account could be found to ask) is not allowed to say so: its
+      // refusal is reported as the read's error and the sign-in stands,
+      // because a console that wants its own session would otherwise mark
+      // every one of that realm's enterprise accounts expired, and signing in
+      // again would not clear it.
+      if (r.status === 401 || lapsedCode(e.code, site)) {
+        return site.consoleTakesIdeToken ? { gone: true } : { error: e.message || statusLine(r.status) }
+      }
+      if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: e.message || statusLine(r.status) }
+      return { v: r.v }
+    }
+    let quota
+    try {
+      quota = await ask(ent.quota.path)
+    } catch (e) {
+      return { error: `${site.realm} usage: ` + (e?.message ?? e), signIn }
+    }
+    if (quota.gone) return { error: `${a.name || a.uid}: ${site.realm}'s sign-in has expired — sign in again`, signIn: "expired" }
+    if (quota.error) return { error: `${site.realm} usage: ${quota.error}`, signIn, user: a.name }
+    // the spend page is the second half of the count: when it fails, the
+    // allowance is still worth showing but the spend is unknown, and the
+    // window says so (used: null) rather than reading as nothing spent — a
+    // failed read is not a spend of zero
+    let spent = { v: {} }
+    try {
+      const got = await ask(ent.spent.path)
+      if (!got.gone && !got.error) spent = got
+    } catch {}
+    // the console's own period, for the date the pool refills: a failure
+    // there costs the card its reset date and nothing else
+    let core = { v: {} }
+    try {
+      const got = await ask(ent.core.path)
+      if (!got.gone && !got.error) core = got
+    } catch {}
+    // the credits page is the card's second row, never the count: a failure
+    // there leaves the seat pool standing. Trae Global has no such page —
+    // its own usage page is the dollar billing's, read above as the pool.
+    let page = null
+    if (site.usage.kind === "credits") {
+      try {
+        const r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
+        const e = errorOf(r.v)
+        if (r.status === 200 && (!e.code || String(e.code) === "0")) page = r.v
+      } catch {}
+    }
+    return ent.read({ quota: quota.v, spent: spent.v, core: core.v, credits: page }, a, signIn, { credits, round })
+  }
+
   const usage = async (getAuth) => {
     let a
     try {
@@ -3435,6 +4740,9 @@ const makePlugin = (site) => async ({ client }) => {
       return { error: e.message, signIn: e instanceof Expired ? "expired" : "kept" }
     }
     const signIn = a.renewed ? "renewed" : "kept"
+    // an enterprise (SaaS) account bills on the realm's own console, not on
+    // the page its realm otherwise bills on
+    if (site.usage.ent && isEnterprise(a, site)) return enterpriseUsage(a, signIn)
     let r
     try {
       r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
@@ -3451,7 +4759,7 @@ const makePlugin = (site) => async ({ client }) => {
   // SOLO CN's ai-agent asks (batch_get_detail_param): {function: entries}.
   // null when Trae answers it with no lists.
   const batchLists = async (a) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/batch_get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/batch_get_detail_param", {
       functions: site.functions, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
       mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
     })
@@ -3470,7 +4778,7 @@ const makePlugin = (site) => async ({ client }) => {
 
   // listOf is one function's model list, as the IDE asks for it
   const listOf = async (a, fn) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/get_detail_param", {
       function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true, mode_type: null, agent_type: null,
     })
     if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
@@ -3515,11 +4823,16 @@ const makePlugin = (site) => async ({ client }) => {
     // entry is misnamed: its name is another model's in the same list, and
     // other lists name it otherwise.
     const nameOf = (m) => String(m.display_config?.display_name || m.display_name || m.display_model_name || m.config_name)
+    // an enterprise model a preset shares its config_name with is its twin,
+    // listed under twinId; every other entry under its config_name
+    const presets = new Set()
+    for (const fn of site.functions) for (const m of lists[fn] ?? []) if (chatModel(m, site) && !enterpriseModel(m)) presets.add(String(m.config_name))
+    const keyOf = (m) => (enterpriseModel(m) && presets.has(String(m.config_name)) ? twinId(m) : String(m.config_name))
     const names = new Map() // id → the names its lists give it, and how many give each
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m, site)) continue
-        const id = String(m.config_name), name = nameOf(m)
+        const id = keyOf(m), name = nameOf(m)
         const by = names.get(id) ?? new Map()
         by.set(name, (by.get(name) ?? 0) + 1)
         names.set(id, by)
@@ -3538,8 +4851,8 @@ const makePlugin = (site) => async ({ client }) => {
       agreed.set(id, most.length === 1 ? most[0][0] : "")
     }
     const misnamed = (fn, m) => {
-      const id = String(m.config_name), name = nameOf(m)
-      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && String(o.config_name) !== id && nameOf(o) === name)
+      const id = keyOf(m), name = nameOf(m)
+      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && keyOf(o) !== id && nameOf(o) === name)
     }
     // a function's entry is worth more when it names a __dev model, then
     // when it isn't misnamed, then when it carries the name its lists agree
@@ -3552,17 +4865,20 @@ const makePlugin = (site) => async ({ client }) => {
     // entry that names none while a sibling names some would leave the model
     // with no level to pick although Trae serves it with levels — doubling
     // the three keeps them decisive and lets this only break a tie.
-    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
+    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(keyOf(m)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m, site)) continue
-        const id = String(m.config_name)
+        const id = keyOf(m)
         const was = out.get(id)
         if (!was || worth(fn, m) > was.worth) out.set(id, { m, fn, worth: worth(fn, m) })
       }
     }
+    twins.clear()
     for (const [id, { m, fn }] of out) {
+      listedAs.set(m, id)
+      if (id !== String(m.config_name)) twins.set(String(m.config_name), id)
       listedBy.set(id, fn)
       liveEntry.set(id, m)
       const sees = seesOf(m)
@@ -3576,7 +4892,7 @@ const makePlugin = (site) => async ({ client }) => {
       // model, the entries carrying the agreed name first: Trae books the
       // Max under that name too
       const plain = (e) => (nameOf(e.m) === agreed.get(id) ? 0 : 1)
-      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))].sort((a, b) => plain(a) - plain(b))
+      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && keyOf(o) === id).map((o) => ({ m: o, fn: f })))].sort((a, b) => plain(a) - plain(b))
       const max = maxModel(...entries.map((e) => e.m))
       maxes.set(id, max)
       if (max) {
@@ -3586,6 +4902,18 @@ const makePlugin = (site) => async ({ client }) => {
       } else {
         listedBy.delete(id + MAX)
         modelNames.delete(id + MAX)
+      }
+    }
+    // an enterprise model listed under its config_name answers to its twin id
+    // as well, so an id saved while a preset shared its name keeps reaching it
+    // once Trae lists the preset no more
+    for (const [id, { m }] of out) {
+      if (!enterpriseModel(m)) continue
+      const alias = twinId(m)
+      if (alias === id || out.has(alias)) continue
+      for (const [map, from, to] of [[listedBy, id, alias], [liveEntry, id, alias], [sight, id, alias], [modelNames, id, alias], [listedBy, id + MAX, alias + MAX], [modelNames, id + MAX, alias + MAX]]) {
+        if (map.has(from)) map.set(to, map.get(from))
+        else map.delete(to)
       }
     }
     // this account's list has just answered: recorded, so a request that wants
@@ -3609,11 +4937,15 @@ const makePlugin = (site) => async ({ client }) => {
   // reads capabilities.reasoning alone, host.js). The fallback list stays
   // the authority where it has an entry.
   const modelOf = (provider, m) => {
-    const id = String(m.config_name)
+    const id = idOf(m)
     const was = provider.models?.[id] ?? {}
-    // context_window_tokens: dev is what a request gets, max only in Max mode
+    // context_window_tokens: dev is the budget Trae's own agent asks with;
+    // the model's window is its Max one, put on the entry by provider.models
+    // below (yetone/magpie#5809)
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
-    const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
+    // output: the detail requests are served by (an enterprise model's own
+    // when it has no __dev one)
+    const out = Number((enterpriseModel(m) ? enterpriseDetail(m) : devModel(m))?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
     const input = (k) => (MODEL.modalities?.input ?? []).includes(k)
     // the list's multimodal says whether the model takes images, over the
@@ -3683,11 +5015,16 @@ const makePlugin = (site) => async ({ client }) => {
           // re-throwing that same object carries its unhandled state with it
           if (expired) throw new Expired(expired.message)
           if (!ms.length) return provider.models
-          const ids = new Set(ms.map((m) => String(m.config_name)))
+          const ids = new Set(ms.map(idOf))
           return Object.fromEntries(ms.flatMap((m) => {
-            const id = String(m.config_name)
+            const id = idOf(m)
             const own = modelOf(provider, m)
             const max = maxes.get(id)
+            // the window the model takes, not the budget Trae's own agent asks
+            // with: dev is what the IDE compacts to, and a request past it is
+            // served, not refused — but only where that was measured
+            // (yetone/magpie#5809)
+            if (max && WIDENED[site.id]?.has(id.toLowerCase())) own.limit = { ...own.limit, context: Math.max(own.limit.context, max.window) }
             if (!max || ids.has(id + MAX)) return [[id, own]]
             // its Max, a model of its own: the window and output Max mode gives
             const was = provider.models?.[id + MAX] ?? {}
@@ -3712,7 +5049,7 @@ const makePlugin = (site) => async ({ client }) => {
         const a0 = fromAuth(await getAuth(), site)
         if (!a0) return {}
         return {
-          baseURL: apiOf(a0, site) + "/v1",
+          baseURL: hostOf(a0) + "/v1",
           apiKey: "trae", // the engine's placeholder; the request carries the JWT
           async fetch(input, init = {}) {
             const r0 = input instanceof Request ? input : null
@@ -3732,6 +5069,13 @@ const makePlugin = (site) => async ({ client }) => {
             }
             const signIn = a.renewed ? "renewed" : "kept"
             const who = a.uid || a.name
+            // a twin id asked before the list was read here: Trae knows it by
+            // no name, so the list is read (once per REREAD_MS) for its entry
+            {
+              const asked = String(req.model)
+              const base = asked.endsWith(MAX) ? asked.slice(0, -MAX.length) : asked
+              if (base.includes(TWIN) && !liveEntry.has(base)) await readList(a)
+            }
             // the function that lists the model first, then the one that
             // served this account last, then the rest
             const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...site.functions].filter(Boolean))]
@@ -3785,53 +5129,148 @@ const makePlugin = (site) => async ({ client }) => {
             // the account answering it, so a failover inside one conversation
             // is not one Trae reads as another's
             const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})), who)
-            for (const fn of [...new Set(fns)]) {
-              const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
-                method: "POST",
-                headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
-                signal: ac.signal,
-              })
-              if (!res.ok) {
-                const text = await res.text()
-                const e = errorOf(text)
-                last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
-                if (res.status === 400 && wrongFunction(e.code)) continue
-                break
+            // an enterprise seat chats on its console, which bills the seat
+            // pool. One whose console turns chats away (4245, #1127) is
+            // marked, kept with its sign-in, and the same request is asked
+            // once more on the consumer gateway; its list is read from there
+            // next.
+            // what the last refusal was, and where it was asked: the error
+            // the agent gets names the model, the functions and the host
+            let why = null
+            const tried = []
+            const entry = liveEntryOf(base)
+            // an enterprise model with its own endpoint is asked there, as
+            // Trae's client asks it (directOf); one that endpoint doesn't
+            // answer goes on through llm_utils_chat below
+            const dir = max ? null : directOf(entry)
+            if (dir && directRefused.get(base) !== akKey(dir.ak)) {
+              const out = await askDirect(req, dir, base, ac, site)
+              if (out) {
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
               }
-              const ct = res.headers.get("content-type") ?? ""
-              if (!ct.includes("event-stream") && ct.includes("json")) {
-                // an answer that isn't a stream is an error in a 200
-                const e = errorOf(await res.text())
-                last = failure(site, 502, e.code, e.message)
-                if (wrongFunction(e.code)) continue
-                break
-              }
-              const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
-              const { held, done } = await first(it)
-              const err = held.find((p) => p.error)
-              if (err) {
-                last = failure(site, 502, err.code, err.error)
-                if (wrongFunction(err.code)) {
-                  // another function may take it: this answer's read goes
-                  // with the function it came from, not left hanging
-                  it.return?.()
-                  res.body.cancel?.().catch(() => {})
-                  continue
-                }
-                break
-              }
-              fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
-              out.headers.set("X-Magpie-Sign-In", signIn)
-              return out
             }
+            for (let round = 0; round < 2; round++) {
+              const host = hostOf(a)
+              let refused = false
+              for (const fn of [...new Set(fns)]) {
+                tried.push(fn)
+                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                const rid = randomUUID()
+                debugSent(host + "/api/agent/v3/llm_utils_chat", rid, sent)
+                const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                  method: "POST",
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": rid }),
+                  body: JSON.stringify(sent),
+                  signal: ac.signal,
+                })
+                if (traeDebug()) console.error(`trae debug: request ${rid} answered ${res.status} ${res.headers.get("content-type") ?? ""}`)
+                if (!res.ok) {
+                  const text = await res.text()
+                  const e = errorOf(text)
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused ${res.status} code=${e.code} message=${JSON.stringify(e.message)}`)
+                  why = keptRefusal(why, { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host, plan: planOfText(text) })
+                  last = failure(site, why.status, why.code, why.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (res.status === 400 && wrongFunction(e.code)) continue
+                  break
+                }
+                const ct = res.headers.get("content-type") ?? ""
+                if (!ct.includes("event-stream") && ct.includes("json")) {
+                  // an answer that isn't a stream is an error in a 200
+                  const body = await res.text()
+                  const e = errorOf(body)
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused code=${e.code} message=${JSON.stringify(e.message)}`)
+                  why = keptRefusal(why, { status: 502, code: e.code, message: e.message, host, plan: planOfText(body) })
+                  last = failure(site, why.status, why.code, why.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (wrongFunction(e.code)) continue
+                  break
+                }
+                const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
+                const { held, done } = await first(it)
+                const err = held.find((p) => p.error)
+                if (err) {
+                  if (traeDebug()) console.error(`trae debug: request ${rid} function ${fn} refused in the stream code=${err.code} message=${JSON.stringify(err.error)} extra=${JSON.stringify(err.extra ?? null)}`)
+                  why = keptRefusal(why, { status: 502, code: err.code, message: err.error, host, plan: err.plan ?? null })
+                  last = failure(site, why.status, why.code, why.message)
+                  if (onConsole(host) && consoleRefuses(err.code)) {
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    refused = true
+                    break
+                  }
+                  if (wrongFunction(err.code)) {
+                    // another function may take it: this answer's read goes
+                    // with the function it came from, not left hanging
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    continue
+                  }
+                  break
+                }
+                fnOf.set(who, fn)
+                const cut = enterpriseModel(entry) ? TRAE_CUT : 0
+                const answer = done ? held : chain(held, it)
+                const got = traeDebug() ? debugEnd(rid, answer, sent.max_tokens || 0, cut) : answer
+                // the next ask of a reply Trae cut (continued): the same
+                // request, function, host and session, with the text so far
+                // as the assistant's, asked for what is left of the limit.
+                // null when Trae doesn't answer it with a stream: the reply
+                // then ends cut, as one ask's did.
+                const more = async (text, left, round) => {
+                  const asked = Date.now()
+                  const again = {
+                    ...req,
+                    max_completion_tokens: undefined,
+                    max_tokens: left > 0 ? left : undefined,
+                    // a reply with no text yet (every round so far only
+                    // reasoned) has nothing to go on from: it is asked again
+                    // with THINK_ON after the request's own turns
+                    messages: [...(Array.isArray(req.messages) ? req.messages : []), ...(text ? [{ role: "assistant", content: text }, { role: "user", content: GO_ON }] : [{ role: "user", content: THINK_ON }])],
+                  }
+                  const body = chatBody(again, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
+                  const id = randomUUID()
+                  debugSent(host + "/api/agent/v3/llm_utils_chat", id, body)
+                  const r = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                    method: "POST",
+                    headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": id }),
+                    body: JSON.stringify(body),
+                    signal: ac.signal,
+                  })
+                  if (traeDebug()) console.error(`trae debug: request ${id} answered ${r.status} ${r.headers.get("content-type") ?? ""} round=${round} wait_ms=${Date.now() - asked}`)
+                  if (!r.ok || !(r.headers.get("content-type") ?? "").includes("event-stream")) {
+                    r.body?.cancel?.().catch(() => {})
+                    return null
+                  }
+                  const p = parts(sse(r.body), Array.isArray(req.tools) ? req.tools : [])
+                  return traeDebug() ? debugEnd(id, p, body.max_tokens || 0, cut) : p
+                }
+                // this turn's share of the conversation's record, read when the
+                // answer ends: a stream waits only a little for it, a body as
+                // long as the record may settle
+                const bill = (usage) => turnBilling(a, site, sent.session_id, { usage, signal: ac.signal, wait: req.stream ? BILLING_WAIT.stream : BILLING_WAIT.body })
+                const out = await openai(req, cut ? continued(got, sent.max_tokens || 0, cut, more, req.model) : got, () => ac.abort(), site, sent.max_tokens || 0, cut, bill)
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
+              }
+              if (!refused) break
+              consoleRefused.add(who)
+              a = { ...a, consoleChat: false }
+              await save(toAuth(a, site))
+              readAt.delete(who)
+            }
+            if (why?.plan != null && last.status !== 401) last = errorResponse(403, `${site.realm}: the model is not available to this account's plan (code ${why.code}, plan ${why.plan}); ${await askedOf(a, base, entry, [...new Set(tried)], why.host)}`)
+            else if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
           },
         }
       },
-      methods: [{ type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) }],
+      methods: [
+        { type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) },
+        { type: "oauth", label: `${site.name} enterprise account (browser)`, authorize: () => browserSignIn(site, { enterprise: true }) },
+      ],
     },
   }
 }
@@ -3840,4 +5279,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling, twinId }

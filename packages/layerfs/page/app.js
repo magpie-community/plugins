@@ -60,6 +60,9 @@
   if (!projects.length) {
     $("stage").hidden = true; $("controls").hidden = true; $("stats").hidden = true; $("agents").hidden = true;
     $("empty").hidden = false; $("empty").textContent = t.noData;
+    // the service's empty answer reloads too, so the first provision
+    // shows up without the reader reopening the page
+    if (embedded) setTimeout(() => location.reload(), 5000);
     return;
   }
   $("stamp").textContent = data.sample ? t.sample : `${t.recorded} ${String(data.generatedAt || "").replace("T", " ").slice(0, 19)} · ${data.backend || ""}`;

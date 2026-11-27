@@ -311,9 +311,48 @@ test("a saved backdrop is made sound before it is drawn", () => {
   expect(B.meta("nope").id).toBe("teal")
 })
 
+test("a picture of the reader's own can be removed, and a card drawn on it goes back to teal (netube99 on X)", () => {
+  const mine = B.norm({ bg: "custom", image: "data:image/jpeg;base64,AAAA", pad: 40, blur: 6 })
+  // app.js's dropPicture is pick({ image: "" }): the saved options lose the picture
+  expect(B.norm({ ...mine, image: "" })).toEqual({ bg: "teal", pad: 40, blur: 6, dim: 0, image: "" })
+  // a picture not in use goes, and the backdrop picked stays
+  expect(B.norm({ ...mine, bg: "kraft", image: "" })).toMatchObject({ bg: "kraft", image: "" })
+  const app = read("app.js")
+  expect(app).toContain('pick({ image: "" })')
+  // the badge is a button of its own, beside the picture's swatch, never in it
+  expect(app).toContain("own.append(b, del)")
+  const css = read("style.css")
+  // shown on hover only where there is hover, and on focus, and always where there isn't
+  expect(css).toContain("@media (hover: hover) and (pointer: fine) { .sw-own:hover .sw-del")
+  expect(css).toContain(".sw-own:focus-within .sw-del")
+  expect(css).toContain("@media not all and (hover: hover) and (pointer: fine) { .sw-del")
+})
+
 test("the blur and dim sliders stay put while a slider is dragged (#957)", () => {
   // classList.toggle(name, undefined) flips the class, so a pattern's photo
   // must be false, not missing, or every input event hides or shows them
   for (const id of [...B.list.map((b) => b.id), "custom"]) expect([id, typeof B.meta(id).photo]).toEqual([id, "boolean"])
   expect(read("app.js")).toContain('pop.classList.toggle("photo", B.meta(bg.bg).photo === true)')
+})
+
+test("a day or a span in the past still lists every later day in the menu, not today right above it (shangyuan0818 on X)", () => {
+  // usage:day's days stop at the date read (usageapi.SpanOf), so a week
+  // ending 11-04, read on 11-09, knows nothing of 11-06 to 11-09
+  const past = { ...day, from: "2026-10-29", date: "2026-11-04", days: day.days.filter((d) => d.date <= "2026-11-04") }
+  const latest = day.days
+  const dates = (list) => list.map((d) => d.date)
+  expect(dates(V.menuDays(past.days, past.today, latest))).toEqual(["2026-11-09", "2026-11-08", "2026-11-07", "2026-11-06", "2026-11-01"])
+  // today with no calls yet is still first, and no day is listed twice
+  const quiet = latest.slice(0, -1)
+  expect(dates(V.menuDays(past.days, "2026-11-09", quiet))).toEqual(["2026-11-09", "2026-11-08", "2026-11-07", "2026-11-06", "2026-11-01"])
+  // the latest read's numbers win for a day both know
+  expect(V.menuDays([{ date: "2026-11-01", tokens: 5 }], "2026-11-09", [{ date: "2026-11-01", tokens: 9 }]).at(-1).tokens).toBe(9)
+  // with no read of today's days the menu doesn't pretend: it lists the
+  // days it has, and no today above a gap
+  expect(dates(V.menuDays(past.days, past.today, null))).toEqual(["2026-11-01"])
+  // the day read stays in the menu however long the list
+  const many = Array.from({ length: 300 }, (_, i) => ({ date: V.shift("2026-11-09", -i), tokens: 1 })).reverse()
+  const old = V.shift("2026-11-09", -200)
+  expect(V.menuDays(many.filter((d) => d.date <= old), "2026-11-09", many).some((d) => d.date === old)).toBe(true)
+  expect(read("app.js")).toContain("V.menuDays(")
 })

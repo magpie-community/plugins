@@ -378,6 +378,18 @@ test("the 900 px grid keeps every visible cell in its own column", () => {
   assert.match(block, /\.provider-main \.errors-cell/);
 });
 
+test("phone widths keep page padding small and model rows readable", () => {
+  const source = read(uiDir, "style.css");
+  const start = source.indexOf("@media (max-width: 700px)");
+  const end = source.indexOf("@media (prefers-reduced-motion: reduce)", start);
+  const compact = source.slice(start, end);
+  assert.match(compact, /body\s*\{[^}]*padding:\s*12px 8px;/);
+  assert.match(compact, /\.panel-head\s*\{[^}]*padding:\s*10px;/);
+  assert.match(compact, /\.model-row\s*\{[^}]*padding:\s*7px 8px 8px 12px;/);
+  assert.match(compact, /\.segs\s*\{[^}]*flex:\s*1 1 auto;/);
+  assert.match(compact, /\.head-tools\s*>\s*\.icon\s*\{[^}]*flex:\s*0 0 26px;/);
+});
+
 test("the narrow summary wraps its token split instead of cutting it", () => {
   const css = read(uiDir, "style.css");
   const block = css.slice(css.indexOf("@media (max-width: 700px)"));

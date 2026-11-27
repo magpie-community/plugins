@@ -74,9 +74,9 @@ Each model is served on the one API droid uses for it:
 | API | Models |
 |---|---|
 | Anthropic Messages (`/api/llm/a`) | Fable 5.2, Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
-| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Beam 1.0 |
-| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
+| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.2 Astra/Sol, GPT-6.1 Sol/Terra, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6.2 Astra/Sol, GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Muse Spark Open, Beam 1.0 |
+| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
 Flash (1017 too), Kimi K3 and GLM-5.2 (GLM-5.2 Fast too) have `none`, droid's
@@ -89,9 +89,22 @@ account with no special access, at its registry's limits, efforts and
 multipliers. Fable 5.2 asks for the same data-retention terms as Fable 5.1
 in droid; it is placed after the other non-Fast models so magpie's first 24
 stay as they were (#119). Muse Spark 1.2 is on Fireworks but in droid's
-standard pool, so Droid Core's windows don't count it. GPT-6.1 Terra and
-Muse Spark Open (feature-flagged), GPT-6.1 Sol Ultra Fast (high-cost terms)
-and Muse Spark 1.3 (Responses on Google, which the plugin doesn't send) are
+standard pool, so Droid Core's windows don't count it. GPT-6.1 Sol Ultra
+Fast (high-cost terms) and Muse Spark 1.3 (Responses on Google, which the
+plugin doesn't send) are not included.
+
+droid has no endpoint that lists models: its model list is compiled into
+each release, and Factory's feature flags only switch entries of it on. So
+the plugin's list follows droid's releases, and its tests hold it to the
+newest picker saved in testdata. Up to droid 1.21.1 that adds GPT-6.2 Astra
+and Sol (each also in Fast Mode), GPT-6.1 Terra, Gemini 4 Neon and Muse
+Spark Open, and xhigh on Gemini 4 Hydrogen. Each is behind a Factory feature
+flag, as Gemini 4 Argon is, so an account it isn't on for may be refused it;
+Factory doesn't serve GPT-6.2 Astra in its EU region or Gemini 4 Neon in its
+US one. Gemini 4 Neon goes without sampling parameters (temperature, topP,
+topK), as droid sends it. Muse Spark Open, like Muse Spark 1.2, is in the
+standard pool. GPT-6.2 Astra Ultra Fast (high-cost terms) and GPT-6.2 Sol
+Ultra Fast (the ultrafast service tier, which the plugin doesn't send) are
 not included.
 
 DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
@@ -112,7 +125,10 @@ droid's own dates for it hold. A promotion that has ended is no discount at
 all.
 
 Gemini's requests go to Factory's generate route with the model in the
-body, droid's line opening the system instruction. Gemini 4 Argon is behind
+body, droid's line opening the system instruction. The client's prompt,
+user turns and tool descriptions are adapted there as on Factory's other
+routes, so Codex or pi on a Gemini model reads to Factory as it does on
+GPT or Claude. Gemini 4 Argon is behind
 a Factory feature flag in droid 0.241.1, so an account it isn't on for may
 be refused it.
 
@@ -169,6 +185,56 @@ usage is gone is still tried, and Factory may serve a Droid Core model
 from Core or Extra usage. Readings lag, so the last requests before a
 window fills still go out; to never spend Extra usage, turn it off in
 Factory.
+
+## Tool names Factory refuses
+
+Since 2026-11-17 Factory refuses (403 `content_policy_rejected`) any request
+that declares a tool under certain exact names, on every route, and the list
+moves. As of 2026-11-18 it holds Claude Code's `Bash`, `Write`, `Agent` and
+`TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate`, OpenCode's and pi's `bash`,
+`read`, `edit`, `write`, `glob`, `grep` and `task`, `run_shell`, `Shell`,
+`StrReplace`, and the names first used in their place (`BashTool`,
+`bash_tool`, ...). On 2026-11-19 two accounts also saw `web_search`,
+`read_file` and `execute_command` refused, and each of these names behind
+leading underscores (`_read`); dsh declares seven of them. The plugin
+declares such a tool under droid's own name for the job (`Execute` for `Bash`, `Create` for `Write`,
+`Task` for `Agent`, `Read` for `read`, ...), or, when droid has none or the
+request already declares it, under its own name with a suffix drawn from the
+process (`TaskCreate_3f9a`). It renames the tool's earlier calls and
+`tool_choice` to match and gives the caller its own name back in every reply,
+streamed or not. The lists are in `tool-names.mjs`.
+
+Factory adds names without notice. A request refused while it declares tools
+goes once more with every tool renamed the same way (droid's own names kept).
+That includes MCP tools, because Factory can start refusing one of their
+exact names too. If that is taken, the same tool set goes renamed in full for
+the rest of the process; if it is refused again, the refusal is about what the
+request says, and that is the answer.
+
+## DeepSeek Harness (dsh)
+
+Factory refuses some of dsh's fixed lines. The plugin sends its identity
+line as "You are an AI agent.", its model line as "Current model: X.",
+"harness" in the prompt, tool descriptions and skill catalog as "runtime",
+and its Web GUI's "The browser provides no implicit DOM, route, or
+screenshot context." with "gives". The rest of dsh's prompt and the user's
+own words go as written. A refusal that comes back on a new session's first
+turn is in what the agent sends every turn (its prompt, instruction files,
+skills or tools); turn skills, MCP servers and plugins off, then on again a
+few at a time, to find which.
+
+## Codex
+
+Codex names itself in its prompt's fixed identity sentences, as dsh does.
+The plugin sends "You are a coding agent running in the Codex CLI, …
+Codex CLI is an open source project led by OpenAI." (the prompt every
+non-OpenAI model gets) as "You are a coding agent running in a
+terminal-based coding assistant.", drops "Within this context, Codex refers
+to …", and sends "You are Codex, an agent based on GPT-6.", "As Codex, you
+are …" and its other GPT openings without the name. Only these sentences,
+each at the start of a line of a system or developer prompt, change: the
+rest of Codex's prompt, its skill list and the user's own words go as
+written.
 
 ## Claude Code through magpie
 

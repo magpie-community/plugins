@@ -28,7 +28,7 @@
 //
 // OpenCode speaks chat completions to it (@ai-sdk/openai-compatible); the
 // fetch here answers them.
-import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWireTrace, StepCalls } from "./native-session.mjs"
+import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWebSearch, setWireTrace, StepCalls, webSearchAnswer, webSearchDir, webSearchQuery } from "./native-session.mjs"
 import { isDeepStrictEqual } from "node:util"
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
@@ -647,6 +647,20 @@ const INCLUDED_ONLY = "included_only"
 // magpie's folder (plugins#550): see WireTrace for what one holds.
 const WIRE_TRACE = "wire_trace"
 
+// WEB_SEARCH is a test switch (off by default) for plugins#635: on, a Run
+// lets Cursor's own web search through and approves it when Cursor asks,
+// and a Run in which Cursor asked to search saves its frames as Wire trace
+// does, whether it succeeded or failed. Off, Cursor's web search is refused
+// like its other tools.
+const WEB_SEARCH = "web_search_test"
+
+// allowedTools is x-cursor-agent-allowed-tools: names of ToolCall's oneof
+// fields. Only the caller's tools (MCP), and Cursor's web search
+// (web_search_tool_call, 18) under the web-search test switch.
+function allowedTools(search) {
+  return "mcp_tool_call,get_mcp_tools_tool_call" + (search ? ",web_search_tool_call" : "")
+}
+
 // enterpriseUsage is the allowance GetCurrentPeriodUsage leaves out on an
 // Enterprise account. That call answers with only the billing cycle there;
 // the website's usage-summary has individualUsage.overall, in cents, and
@@ -678,7 +692,7 @@ async function enterpriseUsage(tok, includedOnly = false) {
     if (typeof used !== "number" || !Number.isFinite(used) || used < 0) return undefined
     if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) return undefined
     const end = Date.parse(data.billingCycleEnd ?? "")
-    const resets = Number.isFinite(end) ? { resetsAt: new Date(end).toISOString() } : {}
+    const resets = Number.isFinite(end) ? { resetsAt: new Date(end).toISOString(), ...cycleSpan(data.billingCycleStart, data.billingCycleEnd) } : {}
     const od = data.teamUsage?.onDemand
     const spent = typeof od?.used === "number" && Number.isFinite(od.used) && od.used >= 0
     const unlimited = od?.enabled === true && od.limit === null
@@ -714,6 +728,17 @@ async function enterpriseUsage(tok, includedOnly = false) {
   }
 }
 
+// cycleSpan is the billing cycle's length in seconds, as span, when Cursor
+// sends its start beside its end (epoch ms, or ISO from usage-summary).
+// Every window that resets at the cycle's end runs that long, so magpie's
+// Usage table puts it in the column for its length (#1499) and routing
+// reads it as a budget of a day or more, not a rate cap.
+function cycleSpan(start, end) {
+  const at = (v) => (/^[+-]?\d+$/.test(String(v ?? "")) ? Number(v) : Date.parse(v ?? ""))
+  const s = at(start), e = at(end)
+  return Number.isFinite(s) && Number.isFinite(e) && e > s ? { span: Math.round((e - s) / 1000) } : {}
+}
+
 // usage is the account's windows this billing period. ids are the models it
 // can be asked for, each counted by the pool Cursor bills it to. An account
 // that may spend on-demand once its included usage is gone (fottencity on
@@ -746,7 +771,7 @@ async function usage(tok, ids, includedOnly = false, plan = undefined) {
     return { windows: windows ?? [], credits: credits(undefined, await grants, ids, {}).windows }
   }
   const ms = /^[+-]?\d+$/.test(data.billingCycleEnd ?? "") ? Number(data.billingCycleEnd) : 0
-  const resets = ms > 0 ? { resetsAt: new Date(ms).toISOString() } : {}
+  const resets = ms > 0 ? { resetsAt: new Date(ms).toISOString(), ...cycleSpan(data.billingCycleStart, data.billingCycleEnd) } : {}
   const bucket = new Set((data.autoBucketModels ?? []).map(poolBase))
   const inPool = (model) => {
     model = poolBase(model)
@@ -1672,6 +1697,9 @@ function statusOf(status, code, msg) {
   const low = msg.toLowerCase()
   // magpie names the provider before the message itself
   const out = (status, message) => ({ status, message })
+  // Cursor labels this prompt refusal unauthenticated too. Asking the user
+  // to sign in again would misdiagnose a request error as an account fault.
+  if (low.includes("the provider refused to serve this request based on the content")) return out(400, msg)
   if (regional(msg)) return out(403, msg + " — Cursor serves your team only in some regions and turned this request away; signing in again won't change that")
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))
@@ -2880,7 +2908,11 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
   // handed is this Run's step owed at a later Run's start while this one
   // waited on results (handover): owed, collected (and what), or withdrawn
   let handed = null
-  const owes = () => started && native.segments > 0 && !native.finalUsage && convID && canRead(tok)
+  // A Run whose tool steps were handed over with their own count
+  // (plugins#1615) owes no dashboard event: the event sums every step of the
+  // Run, billed ones too. What it owes is the counts it was sent and didn't
+  // bill (carried, at abandon).
+  const owes = () => started && native.segments > 0 && !native.finalUsage && convID && canRead(tok) && !native.billedSteps
   native.accounting = {
     started() { started = true },
     // A later Run of the conversation began (NativeSessionPool.create) while
@@ -2934,6 +2966,9 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
         // laterRunAt: a later Run of this conversation began while this one
         // was live (NativeSessionPool.create); its events are not this debt
         owe(debtKey, { since, n: 1, ready: Date.now() + STEP_WAIT.owedAt, before: native.laterRunAt })
+      } else if (native.billedSteps && !native.finalUsage && convID) {
+        const u = native.unbilled()
+        if (u.input + u.output + u.cacheRead + u.cacheWrite > 0) owe(debtKey, { carry: u })
       }
     },
   }
@@ -2956,7 +2991,7 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(native.search),
     },
     native.ac.signal,
     // Over HTTP/1.1 the history's blobs go up H1.atOnce at a time, as
@@ -3043,6 +3078,8 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   // could have run up
   const book = ledger(tok, cid, since, signal, !!convID)
   const { first, blobs } = buildRun(conv.msgs, conv.last, tools, id, cid, { maxMode, params })
+  // the web-search test switch, as it is at the Run's start (plugins#635)
+  const search = webSearchDir()
   const o = await open(
     base,
     {
@@ -3055,7 +3092,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(search),
     },
     signal,
   )
@@ -3064,7 +3101,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   let closed = false
   let heartbeat
   // a Run Cursor stops answering ends, as a retained one does (#2672)
-  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why })
+  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why, search })
   const send = (msg) => {
     if (!closed && !req.destroyed && req.writable) {
       quiet.trace?.frame("out", msg)
@@ -3109,11 +3146,13 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
     stepUsage: book.own,
     owedUsage: book.owed,
     note: (name) => quiet.trace?.event(name),
+    search: search ? () => quiet.trace?.searchAsked() : null,
   })
   const wrapped = (async function* () {
     try {
       for await (const v of it) {
         if (v?.error) quiet.failed(v.error)
+        else if (v?.stop) quiet.ended()
         yield v
       }
     } finally {
@@ -3139,7 +3178,10 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, countWait = NATIVE_LIMITS.countWait }) {
+// countMisses: stateless steps in a row whose own count didn't come in
+// usageWait (decode's tail)
+const countMisses = { n: 0 }
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, search, countWait = NATIVE_LIMITS.countWait, usageWait = NATIVE_LIMITS.usageWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -3159,7 +3201,28 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
     listed = 0
     answered = 0
     step.nextStep()
+    steps++
     return false
+  }
+  // The Run's model calls so far (steps), and Cursor's count of each
+  // (ModelCallCompletedUpdate, 31), in order (modelCounts). A step's own
+  // comes just after its tool count (plugins#1615), so once its calls are
+  // all in the step waits for it (handing, tail), up to usageWait; the Run
+  // was closed before it came, and a step kept for its conversation said 0.
+  let steps = 1
+  const modelCounts = []
+  let handing = false
+  // earlierCounts: the counts of this Run's steps whose calls were all
+  // answered here, which go apart, as magpie_deferred
+  let earlierCounts = null
+  const take31 = (uf) => {
+    if (!ended && uf.some((f) => f.num >= 2 && f.num <= 6)) modelCounts.push(usageOf(uf, 1))
+  }
+  const own = () => {
+    if (counted || ended || modelCounts.length < steps) return
+    usage = modelCounts.at(-1)
+    counted = true
+    for (const u of modelCounts.slice(0, -1)) earlierCounts = addUsage(earlierCounts, u)
   }
   let said = 0
   // wrote: the reply's text alone; a turn of thinking only says nothing
@@ -3214,13 +3277,42 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
   // owed); and with what the conversation's earlier steps owed, which a
   // step that ends the turn waits for
   const settled = async () => {
+    if (calls > 0 && !ended) own()
     if (calls > 0 && !ended && !counted && stepUsage) {
       close?.()
       const u = await stepUsage().catch(() => null)
       if (u) usage = u
       counted = u === false || !!u
     }
-    return finish(owedUsage ? await owedUsage(calls === 0).catch(() => null) : null)
+    const more = owedUsage ? await owedUsage(calls === 0).catch(() => null) : null
+    return finish(earlierCounts ? addUsage(addUsage(ZERO(), more), earlierCounts) : more)
+  }
+  // tail reads on, for the step's own count only, until it comes, the
+  // stream ends or usageWait passes. Once 3 steps in a row had none in
+  // time, only every 10th waits, as the dashboard's misses go.
+  const tail = async () => {
+    if (calls === 0 || ended || counted || modelCounts.length >= steps) return
+    if (countMisses.n >= 3 && countMisses.n % 10 !== 0) return void countMisses.n++
+    const until = Date.now() + usageWait
+    while (modelCounts.length < steps) {
+      const ms = until - Date.now()
+      if (ms <= 0) return void countMisses.n++
+      const next = Promise.resolve(it.next())
+      next.catch(() => {})
+      let timer
+      const r = await Promise.race([next, new Promise((res) => {
+        timer = setTimeout(() => res({ cut: true }), ms)
+        timer.unref?.()
+      })]).finally(() => clearTimeout(timer))
+      if (r.cut) return void countMisses.n++
+      if (r.done || r.value.end) return
+      try {
+        for (const m of fields(r.value.data)) if (m.num === 1) for (const u of fields(m.data)) if (u.num === 31) take31(fields(u.data))
+      } catch {
+        return
+      }
+    }
+    countMisses.n = 0
   }
   const closeExec = (id) => send(pb().bytes(5, pb().bytes(1, pb().varint(1, id))).done())
   // A step whose calls came and whose count never does: Cursor sent the
@@ -3273,10 +3365,15 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
         return
       }
       for (const m of fields(f.data)) {
+        if (handing && m.num !== 1) continue
         switch (m.num) {
           case 1: // interaction_update
             for (const u of fields(m.data)) {
               const uf = fields(u.data)
+              if (handing) {
+                if (u.num === 31) take31(uf)
+                continue
+              }
               switch (u.num) {
                 case 1: {
                   // text
@@ -3311,26 +3408,17 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
                 case 27: // how many tool calls the step makes, sent before or after them
                   listed = pbNum(uf, 1)
                   step.listed()
-                  if (stepDone()) {
-                    yield await settled()
-                    return
-                  }
+                  if (stepDone()) handing = true
                   break
-                case 31: // model_call_completed: the step's own token usage
-                  if (!ended && uf.some((f) => f.num >= 2 && f.num <= 6)) {
-                    usage = usageOf(uf, 1)
-                    counted = true
-                  }
+                case 31: // model_call_completed: a model call's own token usage
+                  take31(uf)
                   break
                 case 2: // a call started on the client
                 case 3: // a call completed: by Cursor itself when it never started here
                 case 7: // a call the model is writing
                   // still named in an empty reply's list: only their ids are read
                   count(seen.updates, u.num)
-                  if (step.update(u.num, uf) && (note?.("completed by Cursor"), stepDone())) {
-                    yield await settled()
-                    return
-                  }
+                  if (step.update(u.num, uf) && (note?.("completed by Cursor"), stepDone())) handing = true
                   break
                 default:
                   count(seen.updates, u.num)
@@ -3345,22 +3433,21 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
               said += call.args.length
               yield { tool: { index: calls++, ...call } }
             } else if (!fields(m.data).some((e) => e.num === 10)) answered++
-            if (stepDone()) {
-              // every call made: the caller runs them
-              yield await settled()
-              return
-            }
+            // every call made: the caller runs them
+            if (stepDone()) handing = true
             break
           }
           case 3:
             // conversation_checkpoint_update: Cursor's state. Once the step
             // has its count after the calls, a state waiting on just the
             // calls handed to the caller is a step Cursor has finished: what
-            // more the count says will not come (plugins#550)
-            if (listed && step.listedAfter && calls > 0 && pendingCalls(m.data, fields) === calls) {
+            // more the count says will not come (plugins#550). An announced
+            // MCP call without an exec or completion must still be awaited,
+            // even if this checkpoint omits it.
+            if (listed && step.listedAfter && !step.pendingMcp && calls > 0 && pendingCalls(m.data, fields) === calls) {
               note?.("waited on")
-              yield await settled()
-              return
+              handing = true
+              break
             }
             count(seen.messages, m.num)
             break
@@ -3381,9 +3468,27 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
             }
             break
           }
+          case 7: {
+            // interaction_query: Cursor's own web search, approved under the
+            // web-search test switch (plugins#635); anything else, or the
+            // switch off, goes unanswered as before
+            const q = search ? webSearchQuery(m.data, fields) : null
+            if (!q) {
+              count(seen.messages, m.num)
+              break
+            }
+            search()
+            send(webSearchAnswer(pb, q))
+            break
+          }
           default:
             count(seen.messages, m.num)
         }
+      }
+      if (handing) {
+        await tail()
+        yield await settled()
+        return
       }
     }
     if (calls > 0) {
@@ -3718,6 +3823,14 @@ export async function CursorAuthPlugin(input) {
       return ""
     }
   })
+  // the web-search test switch (plugins#635): the same folder, "" while off
+  setWebSearch(() => {
+    try {
+      return input?.magpie?.option?.(ID, WEB_SEARCH) === true && input.directory ? join(input.directory, "cursor-traces") : ""
+    } catch {
+      return ""
+    }
+  })
   return {
     auth: {
       provider: ID,
@@ -3764,6 +3877,12 @@ export async function CursorAuthPlugin(input) {
           label: "Wire trace",
           description:
             "For a bug report: when a Cursor request fails, saves the shape of what Cursor sent and what was sent back (each frame's kind, field numbers, size and time) to the cursor-traces folder in magpie's folder. No prompt or reply text, tool names or arguments, tokens, headers or account ids are written. The newest 20 are kept.",
+        },
+        {
+          key: WEB_SEARCH,
+          label: "Cursor web search (test)",
+          description:
+            "A test for plugins#635: lets Cursor search the web itself and approves each search it asks for, and saves the trace of every request in which Cursor searched, as Wire trace does, whether it worked or not. Cursor's other tools stay refused.",
         },
       ],
       // magpie's: how much of the plan's included usage is gone (the plan
@@ -3835,4 +3954,4 @@ export async function CursorAuthPlugin(input) {
 }
 
 // for tests
-export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, countMisses, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

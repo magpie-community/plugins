@@ -200,6 +200,7 @@ export async function availableModels(settings = {}) {
 // reasoning levels). Prices, modalities and the rest are decoration the
 // provider hook adds from the catalog, so they are not repeated here.
 const SEED = [
+  ["gemini-4-neon", "Gemini 4 Neon", 1048576, 65536, ["low", "medium", "high", "xhigh"]],
   ["gemini-4-argon", "Gemini 4 Argon", 1048576, 65536, ["low", "medium", "high"]],
   ["gemini-3.8-flash", "Gemini 3.8 Flash", 1048576, 65536, ["low", "medium", "high"]],
   ["gemini-3.7-flash", "Gemini 3.7 Flash", 1048576, 65536, ["low", "medium", "high"]],

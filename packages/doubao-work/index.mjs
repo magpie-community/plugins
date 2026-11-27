@@ -5,8 +5,8 @@
 // request into the input, and reads the reply as Doubao renders it. The
 // client's tools are asked for as <tool_call> text blocks and given back
 // as OpenAI tool_calls. See README.md for what that costs.
-import { Doubao, DoubaoError, MODELS, choose, usageOf } from "./doubao.mjs"
-import { completion, sse } from "./openai.mjs"
+import { Doubao, DoubaoError, EFFORTS, MODELS, choose, lookup, maySpend, quotaOf, usageOf } from "./doubao.mjs"
+import { completion, errorOf, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
 
 const ID = "doubao-work"
@@ -16,6 +16,28 @@ const BUSY = (name) => `${name}正在运行。${name}同时只能开一个，插
 
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
+
+// spent is the answer for Doubao's spent allowance (doubao_quota): a 429
+// with Doubao's words and, when the notice said, when it is back, as
+// resets_at in the error and as Retry-After, for magpie to rest the
+// account that long.
+const spent = (e) => {
+  const headers = { "Content-Type": "application/json" }
+  const at = Number(e?.resetsAt)
+  if (at > Date.now()) headers["Retry-After"] = String(Math.ceil((at - Date.now()) / 1000))
+  return new Response(JSON.stringify({ error: errorOf(e) }), { status: 429, headers })
+}
+
+// variantsOf offers a model's 推理强度 levels as reasoning efforts
+// (低 low, 中 medium, 高 high, 极高 xhigh, 最高 max).
+function variantsOf(m) {
+  const out = {}
+  for (const name of m?.efforts ?? []) {
+    const e = EFFORTS.find(([n]) => n === name)
+    if (e) out[e[1]] = { reasoningEffort: e[1] }
+  }
+  return Object.keys(out).length ? out : null
+}
 
 // models are named as Doubao's menu names them: magpie adds the
 // provider's name. Each says it takes text only, or magpie would ask
@@ -30,6 +52,10 @@ function models(table = MODELS) {
       reasoning: true,
       attachment: false,
       modalities: { input: ["text"], output: ["text"] },
+      // the multiple of the plan's allowance a request costs, as the menu
+      // writes it next to the model (none when it says none)
+      ...(m.rate > 0 ? { rate: m.rate } : {}),
+      ...(variantsOf(m) ? { variants: variantsOf(m) } : {}),
     }
   return out
 }
@@ -44,6 +70,7 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
   const failed = (e) => {
     if (e?.signIn) throw e
     if (e?.name === "AbortError" || e?.name === "TimeoutError") throw e
+    if (e?.code === "doubao_quota") return spent(e)
     const status = String(e?.code ?? "").startsWith("app_") ? 503 : e?.status ?? 502
     return json(status, e?.code === "app_busy" ? BUSY(pick().app.name) : String(e?.message ?? e), e?.code ?? "doubao_error")
   }
@@ -61,12 +88,53 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
     provider: {
       id: ID,
       async models() {
-        return models(modelTable(doubao))
+        // a list never read from the menu is read now, so an account that
+        // signed in before the plugin read menus isn't left with three
+        if (typeof doubao?.ensureList === "function") await doubao.ensureList({ signal: AbortSignal.timeout(25000) })
+        const out = models(modelTable(doubao))
+        // a menu still never read (Doubao closed, or the read failed) gives
+        // the built-in three or an older cache: not the account's list, so
+        // magpie keeps the one it had and the models picked from it
+        if (typeof doubao?.modelList !== "function" || doubao.tableAt === 0) out[Symbol.for("magpie.fellBack")] = true
+        return out
       },
     },
     auth: {
       provider: ID,
       maxConcurrency: 1,
+      // the plan's allowance, read through the app's own page
+      usage: async () => {
+        const fail = (error) => ({ plan: "", windows: [], error, signIn: "kept" })
+        let read
+        try {
+          read = await doubao.quota({ signal: AbortSignal.timeout(25000) })
+        } catch (e) {
+          return fail(e?.code === "app_busy" ? BUSY(pick().app.name) : String(e?.message ?? e))
+        }
+        if (read?.error) return fail("读取豆包额度失败：" + read.error)
+        if (read?.status === 401 || read?.status === 403) return fail("豆包登录已过期，请重新登录豆包工作窗口。")
+        const u = quotaOf(read)
+        if (!u) return fail("豆包额度回复里没有额度数据（HTTP " + (read?.status ?? "?") + "）")
+        if (!u.windows.length) return fail("当前套餐没有额度限制数据")
+        return u
+      },
+      // Doubao's daily 签到, pressed through the app's page (doubao.mjs
+      // checkinOf) once a day by magpie, or by Check in now. A closed
+      // window is not opened for it (#1117): it fails, and magpie asks
+      // again later.
+      checkin: async () => {
+        try {
+          return await doubao.checkin({ signal: AbortSignal.timeout(25000) })
+        } catch (e) {
+          const code = String(e?.code ?? "")
+          if (code === "app_busy") return { outcome: "failed", message: BUSY(pick().app.name) }
+          if (code === "app_closed") return { outcome: "failed", message: "豆包工作窗口没有打开：签到在它打开时进行，magpie 稍后再试。" }
+          // the app or its window, not a request: said as it is; a request
+          // nothing answered is thrown
+          if (code.startsWith("app_") || (code.startsWith("doubao_") && code !== "doubao_network")) return { outcome: "failed", message: String(e?.message ?? e) }
+          throw e
+        }
+      },
       methods: [
         {
           type: "oauth",
@@ -114,14 +182,18 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
           const model = String(body.model ?? "auto").replace(/^doubao-work\//, "")
-          if (!modelTable(doubao)[model]) return json(404, `没有模型 ${model}。`, "model_not_found")
+          const known = lookup(modelTable(doubao), model) || (typeof doubao?.known === "function" && (await doubao.known(model, { signal })))
+          if (!known) return json(404, `没有模型 ${model}。豆包工作的模型有：${Object.keys(modelTable(doubao)).join("、")}。`, "model_not_found")
+          // the client's reasoning effort, as OpenAI's chat completions or
+          // the Responses API write it
+          const effort = String(body.reasoning_effort ?? body.reasoning?.effort ?? "")
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = (r) => usageOf(r?.usage) || Math.ceil(prompt.length / 3)
           try {
             if (body.stream)
-              return await sse({ id, model, signal, newId, promptTokens, ask: (onUpdate, sig) => doubao.ask(prompt, { model, signal: sig, onUpdate }) })
-            const final = await doubao.ask(prompt, { model, signal })
+              return await sse({ id, model, signal, newId, promptTokens, hold: maySpend, ask: (onUpdate, sig) => doubao.ask(prompt, { model, effort, signal: sig, onUpdate }) })
+            const final = await doubao.ask(prompt, { model, effort, signal })
             return Response.json(completion({ id, model, final, promptTokens: promptTokens(final), newId }))
           } catch (e) {
             return failed(e)

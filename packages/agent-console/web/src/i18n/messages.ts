@@ -26,6 +26,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       waitAuth: "等待授权", showRequest: "查看授权请求", running: "运行中 {s}s", error: "出错",
       closedResume: "已关闭 · 发送消息将续接", threadInfo: "对话信息",
       panelChanges: "改动（Ctrl+J）", panelFiles: "文件", panelTerminal: "终端",
+      openInIde: "用 IDE 打开项目", openedInIde: "已用 {ide} 打开", openInIdeFail: "无法用 IDE 打开：",
     },
     sidebar: {
       newProject: "新建项目", collapse: "收起侧栏", expand: "展开侧栏", filterPlaceholder: "过滤对话标题", searchTitle: "搜索（Ctrl+K）",
@@ -152,6 +153,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     },
     panel: {
       changes: "改动", files: "文件", terminal: "终端", closeTitle: "关闭（Ctrl+J）",
+      revealMac: "在 Finder 中显示", revealWin: "在资源管理器中显示", revealLinux: "在文件管理器中显示", revealFail: "无法显示：",
       pickProject: "先选一个项目", notGit: "这个项目不是 git 仓库", clean: "工作区干净",
       branch: "当前分支", loadingDiff: "加载 diff…", diffTooLarge: "diff 超过 1MB，不显示",
       discardTitle: "放弃改动", discardUntracked: "放弃 {path} 的改动？\n未跟踪文件会被移到回收目录（trash/discarded），不会直接删除。",
@@ -245,6 +247,7 @@ export const messages: Record<LocaleId, MessageTree> = {
       waitAuth: "Waiting for approval", showRequest: "Show the request", running: "Running {s}s", error: "Error",
       closedResume: "Closed · send a message to resume", threadInfo: "Conversation info",
       panelChanges: "Changes (Ctrl+J)", panelFiles: "Files", panelTerminal: "Terminal",
+      openInIde: "Open project in IDE", openedInIde: "Opened in {ide}", openInIdeFail: "Couldn't open in an IDE: ",
     },
     sidebar: {
       newProject: "New project", collapse: "Collapse sidebar", expand: "Expand sidebar", filterPlaceholder: "Filter conversations", searchTitle: "Search (Ctrl+K)",
@@ -369,6 +372,7 @@ export const messages: Record<LocaleId, MessageTree> = {
     },
     panel: {
       changes: "Changes", files: "Files", terminal: "Terminal", closeTitle: "Close (Ctrl+J)",
+      revealMac: "Reveal in Finder", revealWin: "Show in Explorer", revealLinux: "Show in file manager", revealFail: "Couldn't show it: ",
       pickProject: "Select a project first", notGit: "This folder is not a git repository", clean: "Working tree clean",
       branch: "Current branch", loadingDiff: "Loading diff…", diffTooLarge: "Diff is over 1MB — not shown",
       discardTitle: "Discard changes", discardUntracked: "Discard changes to {path}?\nUntracked files move to trash/discarded.",
