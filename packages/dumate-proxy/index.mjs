@@ -338,10 +338,10 @@ export const DuMateProxyPlugin = async (input = {}) => {
       provider: PROVIDER_ID,
       single: false,
       icon: ICON,
-      importFrom: "从文件导入账号：分两次分别选 auth.json 和 cookie-key.txt，两个文件一次选完也可以",
+      importFrom: "从文件导入账号：选 dumate-import.json，或分两次选 auth.json 和 cookie-key.txt",
       importFroms: {
-        zh: "分两次选择 auth.json 和 cookie-key.txt；两个文件一次选完也可以。",
-        en: "Choose auth.json and cookie-key.txt one after the other, or both at once.",
+        zh: "选 dumate-import.json 一次导入；也可分两次选 auth.json 和 cookie-key.txt。",
+        en: "Choose dumate-import.json, or auth.json and cookie-key.txt one after the other.",
       },
       async import(texts) {
         const files = (Array.isArray(texts) ? texts : []).filter((text) => typeof text === "string" && text.trim())
