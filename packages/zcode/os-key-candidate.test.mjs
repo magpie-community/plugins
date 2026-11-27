@@ -21,8 +21,11 @@ let credentialReads = 0
 // wrapper prints the blob as base64 (the password UTF-16LE within).
 let faking = false
 const { execFileSync: realExecFileSync, execSync: realExecSync } = cp
+// A Mac's `security` reads ZCode's item by service alone, one item for
+// both folders, and is asked once: it answers with the active key.
 function execFileSync(...args) {
   if (!faking) return realExecFileSync(...args)
+  if (args[0] === "security") return credentialReads++, activeKey
   return credentialReads++ === 0 ? oldKey : activeKey
 }
 function execSync(...args) {

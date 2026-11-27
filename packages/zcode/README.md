@@ -81,6 +81,15 @@ over Anthropic's Messages API. Provider id: `zcode`.
     what it saved when it was added; when that session has run out, it
     asks to be signed in again. It never sends one account's requests with
     another's credentials: to use both, add the app's sign-in once for each.
+  - ZCode 3.18 locks its credentials with a key it keeps in the system's
+    keychain ("ZCode Credential Encryption"). The plugin reads that key
+    only while you add this sign-in, once, so your system may ask you to
+    allow it then. The key is kept with the sign-in, and nothing else (a
+    request, the model list, the usage card, the daily check-in) reads
+    the keychain again. If you deny the prompt, the sign-in says so and
+    nothing asks again until you add it again. A sign-in added before
+    this, or moved from magpie's built-in, uses what it saved; its card
+    says to add the sign-in again to follow ZCode.
 - **GLM Coding Plan API key**
   - Paste a key (`<id>.<secret>`) and say which site it is from.
   - A key reaches the GLM Coding Plan alone. ZCode's gift plans (the
@@ -102,7 +111,9 @@ In OpenCode's `auth.json` (magpie: `plugin-auth.json`), under `zcode`:
 - **A pasted key** is kept as an `api` entry, with the site in `metadata`.
 
 The plugin never writes ZCode's own credential store. It reads it only for
-the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`).
+the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`, and
+`osKey`, ZCode 3.18's key as the keychain gave it when the sign-in was
+added).
 
 ## How requests are routed
 

@@ -1145,6 +1145,7 @@ const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
 function giftSignIn(s, key) {
   if (!s.jwt) {
     if (key) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+    if (s.source === "zcode" && ownStoreLocked()) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: LOCKED_SIGN_IN }
     if (s.source === "zcode" && ownStoreUnreadable()) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: UNREADABLE_SIGN_IN }
     return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
   }
@@ -1731,16 +1732,21 @@ function napiEntriesOf() {
   return napiEntries
 }
 
-// napiKeyring reads the entry through a bundled keyring module; "" when it
-// can't. linux's store matches ZCode's own choice.
+// napiKeyring reads the entry through a bundled keyring module: { key } when
+// it gave one, { refused } when a module answered anything but "no such
+// entry" (a denied or cancelled Keychain prompt, a locked keyring), {}
+// when none had it. linux's store matches ZCode's own choice.
 function napiKeyring(account) {
   for (const Entry of napiEntriesOf() ?? []) {
     try {
       const p = new Entry(KEYRING_SERVICE, account, { linux: { store: "secret-service" } }).getPassword()
-      if (typeof p === "string" && KEYRING_PASSWORD.test(p)) return p
-    } catch {}
+      if (typeof p === "string" && KEYRING_PASSWORD.test(p)) return { key: p }
+    } catch (e) {
+      // the keyring crate's NoEntry: "No matching entry found in secure storage"
+      if (!/no matching entry|not found|no entry/i.test(String(e?.message ?? e))) return { refused: "the keyring said no" }
+    }
   }
-  return ""
+  return {}
 }
 
 // WIN_CRED_PS reads a Windows Credential Manager entry through PowerShell's
@@ -1785,14 +1791,9 @@ const WIN_CRED_PS = [
   "[CredHelper]::Read($t)",
 ].join("\n")
 
-// winCredKey reads the entry's password from Windows Credential Manager;
-// "" when it can't. Failures rest a while, so a request without the store
-// doesn't spawn a shell each time.
-const winCredTried = new Map()
+// winCredKey reads the entry's password from Windows Credential Manager,
+// which never asks the user; { key } or {}.
 function winCredKey(target) {
-  const was = winCredTried.get(target)
-  if (was && (was.password || Date.now() - was.at < 300_000)) return was.password
-  let password = ""
   try {
     const script = WIN_CRED_PS.replace("__TARGET__", target.replace(/'/g, "''"))
     const out = execSync(`powershell -NoProfile -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`, {
@@ -1804,20 +1805,18 @@ function winCredKey(target) {
     const blob = Buffer.from(out, "base64")
     for (const enc of ["utf16le", "utf8"]) {
       const p = blob.toString(enc).replace(/\0+$/, "")
-      if (KEYRING_PASSWORD.test(p)) {
-        password = p
-        break
-      }
+      if (KEYRING_PASSWORD.test(p)) return { key: p }
     }
   } catch {}
-  winCredTried.set(target, { at: Date.now(), password })
-  return password
+  return {}
 }
 
-// cliKey runs a store's own CLI reader and takes the password it prints,
-// when it is a key's shape; "" when it isn't, or the reader said nothing.
-// A Mac's `security` may ask once for the entry's keychain ACL — ZCode
-// holds it — which the user allows and is not asked again.
+// cliKey runs a store's own CLI reader: { key } when it printed a key's
+// shape, {} when the store has no such entry or there is no reader, and
+// { refused } for any other end — a Mac's `security` exits 44 for an
+// entry not found, and anything else (the user denied or cancelled the
+// Keychain prompt, or left it past the timeout) is the user's answer,
+// never asked again on the plugin's own.
 function cliKey(cmd) {
   try {
     const out = execFileSync(cmd[0], cmd.slice(1), {
@@ -1827,9 +1826,12 @@ function cliKey(cmd) {
       windowsHide: true,
     })
     const p = String(out ?? "").trim()
-    return KEYRING_PASSWORD.test(p) ? p : ""
-  } catch {
-    return ""
+    return KEYRING_PASSWORD.test(p) ? { key: p } : {}
+  } catch (e) {
+    if (e?.code === "ENOENT") return {}
+    if (cmd[0] === "security" && e?.status === 44) return {}
+    if (cmd[0] === "secret-tool" && e?.status === 1 && !String(e?.stderr ?? "").trim()) return {}
+    return { refused: `${cmd[0]} answered ${e?.signal ?? e?.status ?? "an error"}` }
   }
 }
 
@@ -1839,35 +1841,91 @@ function cliKey(cmd) {
 // (find-generic-password, by service alone: ZCode's own item keeps no
 // account), a Linux desktop's Secret Service (secret-tool, by the
 // attributes ZCode's keyring writes; alone by service as a fallback).
-// "" when the store, or a reader for it, isn't there.
-function storeKey(account) {
-  const napi = napiKeyring(account)
-  if (napi) return napi
-  if (process.platform === "win32") return winCredKey(`${account}.${KEYRING_SERVICE}`)
-  if (process.platform === "darwin") return cliKey(["security", "-q", "find-generic-password", "-s", KEYRING_SERVICE, "-w"])
-  if (process.platform === "linux")
-    return cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE, "username", account]) || cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE])
-  return ""
+// { key }, { refused } (see cliKey), or {} when the store, or a reader
+// for it, has none. Each read is made once per sign-in (ask.read): the
+// Mac's read by service alone is one read for every account.
+function storeKey(account, ask) {
+  const once = (id, read) => {
+    if (!ask.read.has(id)) ask.read.set(id, read())
+    return ask.read.get(id)
+  }
+  const napi = once(`napi\0${account}`, () => napiKeyring(account))
+  if (napi.key || napi.refused) return napi
+  if (process.platform === "win32") return once(`win\0${account}`, () => winCredKey(`${account}.${KEYRING_SERVICE}`))
+  if (process.platform === "darwin") return once("security", () => cliKey(["security", "-q", "find-generic-password", "-s", KEYRING_SERVICE, "-w"]))
+  if (process.platform === "linux") {
+    const by = once(`secret-tool\0${account}`, () => cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE, "username", account]))
+    if (by.key || by.refused) return by
+    return once("secret-tool", () => cliKey(["secret-tool", "lookup", "service", KEYRING_SERVICE]))
+  }
+  return {}
+}
+
+// ZCode's enc:v2:os key sits in the system's keychain, which is another
+// app's secret: reading it may put up a prompt ("magpie-bun wants to use
+// … ZCode Credential Encryption"), and a read on a timer or for each
+// request put it up again and again, after ZCode had quit too, each time
+// the last answer was a no. So the store is read only while the user adds
+// the ZCode app's sign-in (askingStore), each entry once, and never
+// again on the plugin's own: a no, a cancel or no answer is the user's
+// answer, not something to retry. The key it gives is kept with the
+// sign-in (its osKey) and here by its hash (osKeys); every other read —
+// a request, the models, the usage card, the check-in — opens ZCode's
+// credentials with a key kept, or not at all.
+const osKeys = new Map()
+const keyHash = (k) => createHash("sha256").update(k).digest("hex").slice(0, 24)
+
+// keepOsKey holds a key a sign-in kept (base64url), for this process.
+function keepOsKey(text) {
+  if (typeof text !== "string" || !KEYRING_PASSWORD.test(text)) return
+  const k = Buffer.from(text, "base64url")
+  if (k.length === 32) osKeys.set(keyHash(k), k)
+}
+
+// askingStore runs fn with the store open to one read per entry, as the
+// user's adding the sign-in asks; refused says whether the store said no.
+let storeAsk = null
+function askingStore(fn) {
+  const ask = { read: new Map(), refused: "" }
+  storeAsk = ask
+  try {
+    return { value: fn(), refused: ask.refused }
+  } finally {
+    storeAsk = null
+  }
 }
 
 // osKey is the credential store's key whose hash the envelope names, or
-// null without one. Each envelope hash rests five minutes after a miss, so
-// a moved data folder with its own entry is still checked.
-const osKeyState = new Map()
+// null without one: a key kept, else — only inside askingStore — the
+// store's, read once.
 function osKey(hash) {
-  const was = osKeyState.get(hash)
-  if (was && (was.key || Date.now() - was.at < 300_000)) return was.key
-  let key = null
+  const kept = osKeys.get(hash)
+  if (kept) return kept
+  const ask = storeAsk
+  if (!ask || ask.refused) return null
   for (const account of credAccounts()) {
-    const p = storeKey(account)
-    if (!p) continue
-    const candidate = Buffer.from(p, "base64url")
-    if (createHash("sha256").update(candidate).digest("hex").slice(0, 24) !== hash) continue
-    key = candidate
-    break
+    const r = storeKey(account, ask)
+    if (r.refused) {
+      ask.refused = r.refused
+      return null
+    }
+    if (!r.key) continue
+    const candidate = Buffer.from(r.key, "base64url")
+    if (candidate.length !== 32) continue
+    osKeys.set(keyHash(candidate), candidate)
+    if (keyHash(candidate) === hash) return candidate
   }
-  osKeyState.set(hash, { at: Date.now(), key })
-  return key
+  return null
+}
+
+// osKeyOf is the kept key (base64url) that opens credentials.json's
+// enc:v2:os values, for a sign-in to keep; "" without one.
+function osKeyOf(store) {
+  for (const v of Object.values(store ?? {})) {
+    const m = typeof v === "string" ? V2.exec(v) : null
+    if (m?.[1] === "os" && osKeys.get(m[2])) return osKeys.get(m[2]).toString("base64url")
+  }
+  return ""
 }
 
 // envKey is the enc:v2:env key, sha256 of the secret ZCode's own reader
@@ -1942,6 +2000,31 @@ function decrypt(key, v) {
 // bound to the system's own key store, and that store — nor
 // ZCODE_CREDENTIAL_SECRET — gave the key (#1196). With one, they read.
 const UNREADABLE_SIGN_IN = "ZCode 3.18 keeps its sign-in in a new form this plugin can't read yet: add the account with a Z.ai or BigModel sign-in"
+
+// LOCKED_SIGN_IN is a ZCode app's sign-in that holds no key for ZCode
+// 3.18's credentials: the keychain is read only when the sign-in is added
+// (askingStore), so one added before, or moved from magpie's built-in,
+// uses what it saved until it is added again.
+const LOCKED_SIGN_IN = "ZCode 3.18 locks its sign-in with a key in the system's keychain, read only when you add this sign-in: add ZCode app's sign-in again to follow ZCode"
+
+// STORE_REFUSED is the sign-in's failure when the keychain didn't give
+// ZCode's key: the user denied or cancelled the prompt, or left it.
+const STORE_REFUSED = "The system's keychain didn't give ZCode's key (\"ZCode Credential Encryption\"): it was denied or not answered. Add the sign-in again and allow it, or sign in to Z.ai or BigModel here"
+
+// ownStoreLocked says whether credentials.json holds an enc:v2 value
+// whose key isn't at hand (a kept os key, or the env's).
+function ownStoreLocked(store = readJSON(join(zcodeDir(), "credentials.json"))) {
+  if (!store || typeof store !== "object") return false
+  try {
+    for (const value of Object.values(store)) {
+      const match = typeof value === "string" ? V2.exec(value) : null
+      if (match && !(match[1] === "os" ? osKey(match[2]) : envKey())) return true
+    }
+    return false
+  } catch {
+    return true
+  }
+}
 
 // ownStoreUnreadable says whether ZCode's credentials.json holds values
 // in a form decrypt can't read: an enc: form it knows nothing of, or an
@@ -2190,9 +2273,14 @@ function planFullUntil(key) {
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
 // it is switched to; null when it has none of them.
+//
+// A store whose enc:v2 values it can't open is unknown, not empty: null,
+// so a sign-in keeps what it saved rather than a part read (a key from
+// config.json with no session, no account name).
 function ownSignIn() {
   const store = readJSON(join(zcodeDir(), "credentials.json"))
   if (!store || typeof store !== "object") return null
+  if (ownStoreLocked(store)) return null
   const key = secret()
   let s = { key: "", base: "" }
   for (const [name, v] of Object.entries(store)) {
@@ -2234,13 +2322,15 @@ function ownSignIn() {
 function asZCode() {
   return {
     url: "",
-    instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account.",
+    instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account. ZCode 3.18 locks its sign-in with a key in the system's keychain (\"ZCode Credential Encryption\"): it is read once now, and your system may ask you to allow it.",
     method: "auto",
     async callback() {
-      const own = ownSignIn()
-      if (!own) return { type: "failed", error: ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
+      // the one time the keychain is read: the user is adding this sign-in
+      const { value: own, refused } = askingStore(() => ownSignIn())
+      if (!own) return { type: "failed", error: refused ? STORE_REFUSED : ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
       const { user, uid, ...s } = own
-      const state = { source: "zcode", device: anyDevice, ...s }
+      const osKey = osKeyOf(readJSON(join(zcodeDir(), "credentials.json")))
+      const state = { source: "zcode", device: anyDevice, ...s, ...(osKey ? { osKey } : {}) }
       return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user, ...(uid ? { uid } : {}) }
     },
   }
@@ -2254,6 +2344,9 @@ function stateOf(auth) {
       s = JSON.parse(auth.refresh)
     } catch {}
     if (s.source === "zcode") {
+      // ZCode 3.18's key, as this sign-in read it when it was added: the
+      // keychain itself is never read here (see osKeys)
+      keepOsKey(s.osKey)
       // ZCode's own, read now, while ZCode is signed in to this same
       // account. Signed out, or signed in to another account since, it is
       // what it was when this was signed in: another account's key would
@@ -2267,7 +2360,7 @@ function stateOf(auth) {
       const legacyName = String(auth.accountId ?? "") === "ZCode" && !auth.uid
       if (own && (own.user === String(auth.accountId ?? "") || legacyName) && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
         const { user, uid: _uid, ...now } = own
-        s = { source: "zcode", device: s.device, plan: s.plan, ...now }
+        s = { source: "zcode", device: s.device, plan: s.plan, ...(s.osKey ? { osKey: s.osKey } : {}), ...now }
       }
     }
     const site = siteOf(s.site)
@@ -4014,4 +4107,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, osKeys, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }
