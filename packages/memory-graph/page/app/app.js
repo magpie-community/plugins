@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// 页面控制器：拉数据、筛选、轮询构建进度、维护悬浮卡与状态栏。
+// Page controller: renders graph, filters, polls status when same-origin, and manages detail cards.
 
 (function () {
   const token = document.querySelector('meta[name="memory-graph-token"]')?.content || "";
@@ -150,7 +149,7 @@
     allEdges: null,
     byId: new Map(),
     adj: new Map(),
-    edgeList: [],
+    visible: new Set(),
     status: { phase: "scanning" },
     builtAt: "",
     lastInteraction: Date.now(),
@@ -219,6 +218,9 @@
     onCopy(id) {
       toast(id ? t(`已复制 ${id}`, `Copied ${id}`) : t("复制失败，请手动选中", "Copy failed, select manually"));
     },
+    onNotice(text) {
+      if (text) toast(text);
+    },
     onClose() {
       card = null;
       graph.select(null);
@@ -231,6 +233,7 @@
       adj: state.adj,
       byId: state.byId,
       edgeFor: (a, b) => graph.edgeBetween(a, b),
+      isVisible: (id) => state.visible.has(id),
     };
   }
 
@@ -250,6 +253,25 @@
     if (!card && !tip.visible) return;
     card = null;
     tip.close();
+  }
+
+  function syncOpenCard(visible, refresh = false) {
+    if (!card || !tip.visible) return;
+    if (card.type === "node") {
+      const node = state.byId.get(card.id);
+      if (!node || (visible && !visible.has(card.id))) {
+        closeCard();
+        return;
+      }
+      if (refresh) openNodeCard(node);
+      return;
+    }
+    const edge = graph.edgeBetween(card.a, card.b);
+    if (!edge || (visible && (!visible.has(card.a) || !visible.has(card.b)))) {
+      closeCard();
+      return;
+    }
+    if (refresh) openEdgeCard(edge);
   }
 
   // 缩放 / 平移 / 拖拽 / 布局微动时，让卡片跟着节点走。
@@ -348,7 +370,6 @@
       state.adj.get(edge.a)?.add(edge.b);
       state.adj.get(edge.b)?.add(edge.a);
     }
-    state.edgeList = edges;
   }
 
   function scopeGroup(scope) {
@@ -363,6 +384,13 @@
     state.data = data;
     if (Array.isArray(data.allEdges)) state.allEdges = data.allEdges;
     state.builtAt = data.builtAt || "";
+    if (typeof data.phase === "string" || typeof data.lastError === "string") {
+      state.status = {
+        ...state.status,
+        ...(typeof data.phase === "string" ? { phase: data.phase } : {}),
+        ...(typeof data.lastError === "string" ? { lastError: data.lastError } : {}),
+      };
+    }
     if (Number.isFinite(Number(data.minSimilarity))) {
       state.filters.minSim = Number(data.minSimilarity);
       if (els.optMinSim) els.optMinSim.value = state.filters.minSim.toFixed(2);
@@ -374,7 +402,10 @@
     } else {
       graph.setData(data.nodes, data.edges);
     }
-    applyFilters();
+    applyFilters({ refreshCard: true });
+    if (!keepLayout && card?.type === "node" && state.byId.has(card.id) && state.visible.has(card.id)) {
+      graph.select(card.id);
+    }
     renderLegend(data);
     renderBadges();
     setStatus();
@@ -423,9 +454,8 @@
     }
   }
 
-  function filterEdgesLocally(minSim) {
-    if (!state.data || !Array.isArray(state.allEdges)) return;
-    const filtered = state.allEdges.filter(
+  function computeFilteredEdges(nodes, allEdges, minSim) {
+    const filtered = allEdges.filter(
       (e) => e.lineage || e.source === "lineage" || Number(e.sim) >= minSim,
     );
     const deg = new Map();
@@ -437,15 +467,21 @@
       strength.set(e.a, (strength.get(e.a) || 0) + s);
       strength.set(e.b, (strength.get(e.b) || 0) + s);
     }
-    for (const n of state.data.nodes) {
+    for (const n of nodes) {
       n.degree = deg.get(n.id) || 0;
       n.strengthSum = Number((strength.get(n.id) || 0).toFixed(4));
     }
+    return filtered;
+  }
+
+  function filterEdgesLocally(minSim) {
+    if (!state.data || !Array.isArray(state.allEdges)) return;
+    const filtered = computeFilteredEdges(state.data.nodes, state.allEdges, minSim);
     state.data.edges = filtered;
     state.data.minSimilarity = minSim;
     buildIndexes(state.data.nodes, filtered);
     graph.updateEdges(filtered);
-    applyFilters();
+    applyFilters({ refreshCard: true });
     setStatus();
   }
 
@@ -463,7 +499,7 @@
           ),
         );
       } else {
-        showBanner(t(`加载失败：${error.message}`, `Failed to load: ${error.message}`), () => load());
+        showBanner(t(`加载失败：${error.message}`, `Failed to load: ${error.message}`), () => retry());
       }
     }
   }
@@ -477,7 +513,7 @@
     load();
   }
 
-  function applyFilters() {
+  function applyFilters({ refreshCard = false } = {}) {
     const data = state.data;
     if (!data) return;
 
@@ -499,7 +535,9 @@
       visible.add(node.id);
     }
 
-    graph.setVisible(visible, null);
+    state.visible = visible;
+    graph.setVisible(visible);
+    syncOpenCard(visible, refreshCard);
 
     let edgeCount = 0;
     for (const edge of data.edges) {
@@ -863,9 +901,18 @@
 
   async function rebuild() {
     if (isOpaqueOrigin) {
+      if (!token) {
+        showBanner(
+          t(
+            "页面口令缺失或已失效，请从 magpie 的插件入口重新打开记忆图谱。",
+            "Page token missing or expired. Please reopen Memory Graph from magpie.",
+          ),
+        );
+        return;
+      }
       const currentTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
       location.replace(
-        `/?refresh=1&minSim=${state.filters.minSim.toFixed(2)}&theme=${currentTheme}&lang=${lang}`,
+        `/?refresh=1&t=${encodeURIComponent(token)}&minSim=${state.filters.minSim.toFixed(2)}&theme=${currentTheme}&lang=${lang}`,
       );
       return;
     }
@@ -1014,7 +1061,7 @@
         closeMenu();
       } else if (!editing && (event.key === "0" || event.key.toLowerCase() === "f")) {
         graph.zoomToFit();
-      } else if (!editing && (event.key === "/" || (event.metaKey && event.key.toLowerCase() === "k"))) {
+      } else if (!editing && (event.key === "/" || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k"))) {
         event.preventDefault();
         els.q.focus();
       }
@@ -1035,12 +1082,40 @@
   }
 
   applyTheme(initialTheme());
+  if (location.search) {
+    try {
+      const clean = new URL(location.href);
+      if (clean.searchParams.has("t") || clean.searchParams.has("refresh")) {
+        clean.searchParams.delete("t");
+        clean.searchParams.delete("refresh");
+        history.replaceState(null, "", clean.pathname + (clean.search || ""));
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   applyI18n();
   bind();
+  const rawMinSim = new URLSearchParams(location.search).get("minSim");
+  const parsedMinSim = rawMinSim !== null && rawMinSim !== "" ? Number(rawMinSim) : NaN;
+  const urlMinSim = Number.isFinite(parsedMinSim) ? Math.max(0.35, Math.min(0.9, parsedMinSim)) : null;
+  if (urlMinSim !== null) {
+    state.filters.minSim = urlMinSim;
+    if (els.optMinSim) els.optMinSim.value = urlMinSim.toFixed(2);
+    if (els.minSimVal) els.minSimVal.textContent = urlMinSim.toFixed(2);
+  }
   if (window.__INITIAL_GRAPH__) {
     const initial = window.__INITIAL_GRAPH__;
     state.allEdges = Array.isArray(initial.allEdges) ? initial.allEdges : (initial.edges || []);
-    renderGraphData(initial);
+    const effectiveInitial =
+      urlMinSim !== null
+        ? {
+            ...initial,
+            edges: computeFilteredEdges(initial.nodes || [], state.allEdges, urlMinSim),
+            minSimilarity: urlMinSim,
+          }
+        : initial;
+    renderGraphData(effectiveInitial);
   } else {
     load();
   }

@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// 带路页：插件页面在 sandbox + connect-src 'none' 里，不能 fetch，
+// Hand-off launcher: runs in magpie's sandboxed iframe and redirects to the local service.
 // 唯一能做的就是把自己导航到插件自己的本地服务。
 //
 // 服务现在是「先 listen 再初始化」，所以正常情况下毫秒级就能进；
@@ -41,7 +40,7 @@
 
   try {
     const given = window.magpie?.service;
-    if (typeof given === "string" && /^https?:\/\//.test(given)) service = given;
+    if (typeof given === "string" && /^https?:\/\//.test(given)) service = given.replace(/\/+$/, "");
   } catch {
     /* 旧版 magpie 没有 service */
   }
@@ -55,6 +54,13 @@
   }
 
   const base = service || `http://127.0.0.1:${port}`;
+  let displayPort = String(port);
+  try {
+    const parsed = new URL(base);
+    displayPort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  } catch {
+    /* keep fallback port */
+  }
   const query = new URLSearchParams();
   if (theme) query.set("theme", theme);
   if (effectiveLang) query.set("lang", effectiveLang);
@@ -71,8 +77,33 @@
     }
   }
 
+  let retryBound = false;
+  function showRetry() {
+    if (!retry) return;
+    retry.classList.add("on");
+    if (retryBound) return;
+    retryBound = true;
+    retry.addEventListener("click", () => {
+      retry.classList.remove("on");
+      say(t("正在重试…", "Retrying…"));
+      tries = 0;
+      if (!go()) {
+        say(t("跳转失败。", "Navigation failed."), "err");
+        showRetry();
+        return;
+      }
+      setTimeout(() => {
+        if (document.visibilityState === "hidden") return;
+        say(t(`还是没连上（端口 ${displayPort}）。`, `Still unable to connect (port ${displayPort}).`), "err");
+        showRetry();
+      }, 4000);
+    });
+  }
+
   if (!go()) {
     say(t("跳转失败。", "Navigation failed."), "err");
+    showRetry();
+    return;
   }
   say(t("正在打开记忆图谱…", "Opening Memory Graph…"));
 
@@ -80,7 +111,7 @@
   // 所以这里的重试只会在「导航没生效」时发生。
   setTimeout(() => {
     if (document.visibilityState === "hidden") return;
-    say(t(`正在等待本地服务…（端口 ${port}）`, `Waiting for local service… (port ${port})`));
+    say(t(`正在等待本地服务…（端口 ${displayPort}）`, `Waiting for local service… (port ${displayPort})`));
     if (tries < 2) go();
   }, 3000);
 
@@ -93,24 +124,11 @@
     if (document.visibilityState === "hidden") return;
     say(
       t(
-        `还没连上本地服务（端口 ${port}）。确认 magpie 已启用「记忆图谱」插件；若端口被别的程序占用，可在插件选项里改 port。`,
-        `Could not connect to local service (port ${port}). Ensure the "Memory Graph" plugin is enabled in magpie; if the port is in use, change "port" in plugin options.`,
+        `还没连上本地服务（端口 ${displayPort}）。确认 magpie 已启用「记忆图谱」插件；若端口被别的程序占用，可在插件选项里改 port。`,
+        `Could not connect to local service (port ${displayPort}). Ensure the "Memory Graph" plugin is enabled in magpie; if the port is in use, change "port" in plugin options.`,
       ),
       "err",
     );
-    if (retry) {
-      retry.classList.add("on");
-      retry.addEventListener("click", () => {
-        retry.classList.remove("on");
-        say(t("正在重试…", "Retrying…"));
-        tries = 0;
-        go();
-        setTimeout(() => {
-          if (document.visibilityState === "hidden") return;
-          say(t(`还是没连上（端口 ${port}）。`, `Still unable to connect (port ${port}).`), "err");
-          retry.classList.add("on");
-        }, 4000);
-      });
-    }
+    showRetry();
   }, 14000);
 })();

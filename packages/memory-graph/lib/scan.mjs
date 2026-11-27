@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// 扫描 magpie 的记忆目录，按「stat 快路径 → 整文件 sha256」做增量。
+// Scans magpie's memory directory incrementally via stat fast-path and sha256.
 
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -47,7 +46,7 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
       const key = statKey(info);
       const prev = cacheNodes[id];
 
-      if (prev && prev.stat === key && prev.hash && prev.body !== undefined) {
+      if (prev && prev.stat === key && prev.hash && prev.body !== undefined && Array.isArray(prev.vecHashes)) {
         nodes.set(id, prev);
         return;
       }
@@ -55,16 +54,22 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
       const raw = await readFile(full, "utf8");
       const hash = hashOf(raw);
 
-      if (prev && prev.hash === hash && prev.body !== undefined) {
+      if (prev && prev.hash === hash && prev.body !== undefined && Array.isArray(prev.vecHashes)) {
         nodes.set(id, { ...prev, stat: key, mtime: info.mtimeMs });
         return;
       }
 
       const meta = parseMemory(id, raw);
       const body = meta.body || "";
+      const fullBody = body.trim();
+      const fullWhy = String(meta.why || "").trim();
+      const vecHashes = [];
+      if (fullBody && fullWhy) vecHashes.push(hashOf(`${fullBody}\n${fullWhy}`));
+      if (fullBody) vecHashes.push(hashOf(fullBody));
       const node = {
         id,
         hash,
+        vecHashes,
         stat: key,
         mtime: info.mtimeMs,
         size: info.size,
@@ -110,17 +115,11 @@ export async function scanMemories(dir, { cacheNodes = {}, concurrency = 8 } = {
           title: id,
           body: "",
           bodyTruncated: false,
-          parseWarn: true,
         });
       }
     }
   });
 
   const removed = Object.keys(cacheNodes).filter((id) => !nodes.has(id));
-  const stats = { total: nodes.size, active: 0, superseded: 0, candidate: 0, archived: 0 };
-  for (const node of nodes.values()) {
-    if (stats[node.status] !== undefined) stats[node.status]++;
-  }
-
-  return { nodes, added, changed, removed, warnings, stats, dir };
+  return { nodes, added, changed, removed, warnings };
 }

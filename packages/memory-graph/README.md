@@ -1,5 +1,3 @@
-本文由AI自动生成
-
 # @magpie-community/page-memory-graph
 
 Draws the memories magpie already saved as an Obsidian-style graph inside magpie's window. Edges are computed locally from **semantic cosine similarity** — reusing magpie's built-in multilingual embedding vectors (`MEV1` `vectors.bin`), with a zero-dependency local TF-IDF + CJK bigram + tag Jaccard fallback when vectors are absent, plus dashed lineage edges for `supersededBy` memories.
@@ -41,14 +39,14 @@ Writes only its own derived cache:
 - `⚙` floating panel to tune node size, edge thickness, repel force, link distance, and label zoom threshold;
 - Top-bar **similarity slider (`0.35 ~ 0.90`)** to filter edges live;
 - Click legend dots to toggle kind filters; click a node or edge for its glassmorphic detail card (`supersededBy` jumps straight to the newer memory);
-- Double-click a node to focus 2 hops; `/` or `⌘K` focuses search; `Esc` closes and resets.
+- Double-click a node to focus 2 hops; `/` or `⌘K` / `Ctrl+K` focuses search; `Esc` closes and resets.
 
 ## Options
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `port` | `3491` | local page service; declared in `magpie.page.service` |
-| `minSimilarity` | `0.6` | default cosine similarity threshold (`0.35`–`0.95`) |
+| `minSimilarity` | `0.6` | default cosine similarity threshold (`0.35`–`0.90`) |
 | `maxNodes` | `1000` | render cap (`0` for unlimited) |
 | `idleMinutes` | `5` | go to sleep after this many idle minutes; `0` never sleeps |
 

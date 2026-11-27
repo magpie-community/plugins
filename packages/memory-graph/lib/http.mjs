@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// Transport layer: loopback-only binding; Host / Origin / Token gates.
+// Transport layer: loopback-only binding; Host / Origin / Dest / Token gates.
 
 import { timingSafeEqual } from "node:crypto";
 
@@ -44,6 +43,12 @@ export function isCorsRequest(req) {
   return String(req.headers["sec-fetch-mode"] || "").toLowerCase() === "cors";
 }
 
+export function htmlDestAllowed(req) {
+  const dest = String(req.headers["sec-fetch-dest"] || "").toLowerCase();
+  if (!dest) return true;
+  return dest === "document" || dest === "iframe";
+}
+
 export function corsHeaders(req, port) {
   const origin = String(req.headers.origin ?? "");
   const headers = {
@@ -58,10 +63,14 @@ export function corsHeaders(req, port) {
   return headers;
 }
 
-export function tokenOK(req, token) {
-  const got = Buffer.from(String(req.headers[TOKEN_HEADER] || ""));
+export function tokenMatch(candidate, token) {
+  const got = Buffer.from(String(candidate || ""));
   const want = Buffer.from(String(token || ""));
   return got.length > 0 && got.length === want.length && timingSafeEqual(got, want);
+}
+
+export function tokenOK(req, token) {
+  return tokenMatch(req.headers[TOKEN_HEADER], token);
 }
 
 export function send(
@@ -81,21 +90,20 @@ export function send(
   res.end(body);
 }
 
-export async function readBody(req, limit = 4096) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > limit) throw new Error("Request body too large");
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function injectToken(html, token) {
+  const safe = escapeHtml(token);
   return String(html).replace(
     /<meta name="memory-graph-token" content="[^"]*"\s*\/?>/i,
-    () => `<meta name="memory-graph-token" content="${token}">`,
+    () => `<meta name="memory-graph-token" content="${safe}">`,
   );
 }
 

@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// 悬浮详情卡：延迟出现、靠近光标、越界翻转、可滚动静止、移入卡片不消失。
+// Detail card for selected memory nodes and similarity/lineage edges.
 
 (function () {
   const langParam = new URLSearchParams(location.search).get("lang");
@@ -60,6 +59,21 @@
     if (!text) return "";
     const parts = text.split("/").filter(Boolean);
     return parts.length <= 2 ? text : `…/${parts.slice(-2).join("/")}`;
+  }
+
+  function formatScope(scope) {
+    const text = String(scope || "");
+    if (!text) return "";
+    if (text === "global") return t("全局", "Global");
+    if (text.startsWith("project:")) {
+      const rest = text.slice(8);
+      return rest ? t(`项目 · ${rest}`, `Project · ${rest}`) : t("项目", "Project");
+    }
+    if (text.startsWith("agent:")) {
+      const rest = text.slice(6);
+      return rest ? t(`Agent · ${rest}`, `Agent · ${rest}`) : "Agent";
+    }
+    return text;
   }
 
   const MAX_LINKS = 6;
@@ -230,11 +244,14 @@
       kind.textContent = KIND_LABEL[node.kind] || node.kind || KIND_LABEL.unknown;
       kind.dataset.kind = node.kind || "unknown";
       el.dataset.kind = node.kind || "unknown";
+      idButton.disabled = false;
+      idButton.title = t("复制记忆 id", "Copy memory ID");
+      idButton.style.cursor = "";
       idButton.textContent = node.id;
 
       title.textContent = node.title || node.id;
 
-      addMeta(t("范围", "Scope"), node.scopeLabel || node.scope);
+      addMeta(t("范围", "Scope"), formatScope(node.scope));
       addMeta(t("状态", "Status"), STATUS_LABEL[node.status] || node.status);
       addMeta(t("来源", "Origin"), node.origin);
       if (node.status === "superseded" && node.supersededBy) {
@@ -246,7 +263,25 @@
         jump.textContent = node.supersededBy;
         jump.addEventListener("click", () => {
           const target = ctx.byId?.get(node.supersededBy);
-          if (target) handlers.onFocus?.(target);
+          if (!target) {
+            handlers.onNotice?.(
+              t(
+                `未找到记忆 ${node.supersededBy}（不在当前图谱中）`,
+                `Memory ${node.supersededBy} is not in the current graph`,
+              ),
+            );
+            return;
+          }
+          if (ctx.isVisible && !ctx.isVisible(target.id)) {
+            handlers.onNotice?.(
+              t(
+                "目标记忆已被当前筛选隐藏，请清空筛选后再跳转",
+                "Target memory is hidden by active filters",
+              ),
+            );
+            return;
+          }
+          handlers.onFocus?.(target);
         });
         span.appendChild(jump);
         meta.appendChild(span);
@@ -338,11 +373,11 @@
           who.className = "who";
           who.textContent = peer.title || peer.id;
 
-          const meta = document.createElement("span");
-          meta.className = "s";
-          meta.textContent = formatSim(edge);
+          const simText = document.createElement("span");
+          simText.className = "s";
+          simText.textContent = formatSim(edge);
 
-          row.append(dot, who, meta);
+          row.append(dot, who, simText);
           row.addEventListener("click", () => handlers.onFocus?.(peer));
           links.appendChild(row);
         }
@@ -361,6 +396,9 @@
       kind.textContent = edge.source === "lineage" ? t("演进", "Lineage") : t("语义关联", "Semantic link");
       kind.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
       el.dataset.kind = edge.source === "lineage" ? "procedure" : "reference";
+      idButton.disabled = true;
+      idButton.title = "";
+      idButton.style.cursor = "default";
       idButton.textContent = `${edge.a} ↔ ${edge.b}`;
       const a = ctx.byId?.get(edge.a);
       const b = ctx.byId?.get(edge.b);
@@ -406,13 +444,11 @@
 
     function open(node, ctx, point) {
       renderNode(node, ctx);
-      currentId = node.id;
       show(point);
     }
 
     function openEdge(edge, ctx, point) {
       renderEdge(edge, ctx);
-      currentId = "";
       show(point);
     }
 
@@ -431,9 +467,6 @@
       openEdge,
       anchor,
       close,
-      get id() {
-        return currentId;
-      },
       get visible() {
         return !el.hidden;
       },

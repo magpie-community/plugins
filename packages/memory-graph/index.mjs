@@ -1,7 +1,6 @@
-// 本文由AI自动生成
 // Plugin host entry: binds a loopback-only HTTP server on 127.0.0.1 for the memory graph UI.
 
-import { createServer, request as httpRequest } from "node:http";
+import { request as httpRequest } from "node:http";
 import { mkdir } from "node:fs/promises";
 
 import { createBuilder } from "./lib/build.mjs";
@@ -11,7 +10,7 @@ import {
   memoryDir as defaultMemoryDir,
   vectorsDir as defaultVectorsDir,
 } from "./lib/paths.mjs";
-import { handleRequest, json } from "./lib/server.mjs";
+import { listenLoopback } from "./lib/server.mjs";
 
 const PLUGIN_ID = "memory-graph";
 const DEFAULT_PORT = 3491;
@@ -19,7 +18,7 @@ const DEFAULT_IDLE_MS = 5 * 60 * 1000;
 
 let TOKEN = "";
 let BUILDER = null;
-let SERVER = null;
+let SERVER_HANDLE = null;
 let SETTINGS = null;
 let INIT = null;
 let INIT_ERROR = "";
@@ -31,10 +30,35 @@ let LAST_ACTIVE = Date.now();
 let STARTED_AT = Date.now();
 let SWEEPER = null;
 let RECONCILE = null;
+let STOPPED = false;
+let BOOT_EPOCH = 0;
+let SLEEP_CANCEL = null;
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+const number = (value, fallback) => {
+  if (value === null || value === undefined || typeof value === "boolean") return fallback;
+  if (typeof value === "string" && !value.trim()) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+function abortableSleep(ms, epoch) {
+  if (STOPPED || epoch !== BOOT_EPOCH) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (SLEEP_CANCEL === cancel) SLEEP_CANCEL = null;
+      resolve(ok);
+    };
+    const cancel = () => finish(false);
+    const timer = setTimeout(() => finish(!STOPPED && epoch === BOOT_EPOCH), ms);
+    timer.unref?.();
+    SLEEP_CANCEL = cancel;
+  });
+}
 
 // Only 2xx/3xx traffic keeps the service awake; stale pages hitting 401 should not reset idle timer.
 function touch(status) {
@@ -46,9 +70,8 @@ function touch(status) {
   console.log("[memory-graph] request received, woken up");
 }
 
-function listen(port) {
-  const ctx = {
-    getPort: () => port,
+function buildCtx() {
+  return {
     getToken: () => TOKEN,
     getBuilder: () => BUILDER,
     ensureInit,
@@ -61,22 +84,6 @@ function listen(port) {
     }),
     onTouch: touch,
   };
-  return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      handleRequest(req, res, ctx).catch((error) => {
-        try {
-          json(req, res, port, 500, { error: String(error?.message || error) });
-        } catch {
-          /* response already sent */
-        }
-      });
-    });
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => {
-      server.removeListener("error", reject);
-      resolve({ server, port });
-    });
-  });
 }
 
 function probeHealth(port, timeoutMs = 1500) {
@@ -90,14 +97,21 @@ function probeHealth(port, timeoutMs = 1500) {
     const request = httpRequest(
       { hostname: "127.0.0.1", port, path: "/api/health", method: "GET", timeout: timeoutMs },
       (response) => {
-        let text = "";
-        response.setEncoding("utf8");
+        const chunks = [];
+        let bytes = 0;
+        const maxBytes = 64 * 1024;
         response.on("data", (chunk) => {
-          text += chunk;
+          bytes += chunk.length;
+          if (bytes > maxBytes) {
+            response.destroy();
+            finish(null);
+            return;
+          }
+          chunks.push(chunk);
         });
         response.on("end", () => {
           try {
-            finish(JSON.parse(text));
+            finish(JSON.parse(Buffer.concat(chunks).toString("utf8")));
           } catch {
             finish(null);
           }
@@ -152,22 +166,28 @@ function startSweeper() {
   SWEEPER.unref?.();
 }
 
-function startReconcile(port) {
-  if (RECONCILE) return;
+function startReconcile(port, epoch) {
+  if (RECONCILE || STOPPED || epoch !== BOOT_EPOCH) return;
   RECONCILE = setInterval(async () => {
-    if (!ATTACHED) return;
+    if (STOPPED || epoch !== BOOT_EPOCH || !ATTACHED) return;
     const health = await probeHealth(port);
+    if (STOPPED || epoch !== BOOT_EPOCH) return;
     if (health?.plugin === PLUGIN_ID) return;
     clearInterval(RECONCILE);
     RECONCILE = null;
     try {
-      const { server } = await listen(port);
-      SERVER = server;
+      const handle = await listenLoopback(port, buildCtx());
+      if (STOPPED || epoch !== BOOT_EPOCH) {
+        await handle.close().catch(() => {});
+        return;
+      }
+      SERVER_HANDLE = handle;
       ATTACHED = false;
       SERVER_STARTED(port);
     } catch {
+      if (STOPPED || epoch !== BOOT_EPOCH) return;
       ATTACHED = true;
-      startReconcile(port);
+      startReconcile(port, epoch);
     }
   }, 15000);
   RECONCILE.unref?.();
@@ -178,34 +198,39 @@ function SERVER_STARTED(port) {
   LAST_ACTIVE = Date.now();
   console.log(`[memory-graph] listening on http://127.0.0.1:${port}`);
   startSweeper();
-  ensureInit()
-    .then(() => BUILDER?.run())
-    .catch((error) => console.error("[memory-graph] init failed:", error?.message || error));
 }
 
-async function claim(port) {
+async function claim(port, epoch) {
   let delay = 500;
   const deadline = Date.now() + 60000;
   for (;;) {
+    if (STOPPED || epoch !== BOOT_EPOCH) return { handle: null, attached: false };
     try {
-      const { server } = await listen(port);
-      return { server, attached: false };
+      const handle = await listenLoopback(port, buildCtx());
+      if (STOPPED || epoch !== BOOT_EPOCH) {
+        await handle.close().catch(() => {});
+        return { handle: null, attached: false };
+      }
+      return { handle, attached: false };
     } catch (error) {
+      if (STOPPED || epoch !== BOOT_EPOCH) return { handle: null, attached: false };
       if (error?.code !== "EADDRINUSE") throw error;
       const health = await probeHealth(port);
+      if (STOPPED || epoch !== BOOT_EPOCH) return { handle: null, attached: false };
       if (health?.plugin === PLUGIN_ID) {
         console.log(
-          `[memory-graph] port ${port} already owned by pid ${health.pid}, attaching`,
+          `[memory-graph] port ${port} already owned by another memory-graph instance, attaching`,
         );
-        startReconcile(port);
-        return { server: null, attached: true };
+        startReconcile(port, epoch);
+        return { handle: null, attached: true };
       }
       if (Date.now() > deadline) {
         throw new Error(
           `Port ${port} is occupied by another process (health check did not match memory-graph) after 60s; configure a different port in plugin options`,
         );
       }
-      await sleep(delay);
+      const awake = await abortableSleep(delay, epoch);
+      if (!awake) return { handle: null, attached: false };
       delay = Math.min(delay * 2, 4000);
     }
   }
@@ -213,6 +238,7 @@ async function claim(port) {
 
 function boot(port, settings) {
   if (BOOTED) return BOOTED;
+  const epoch = BOOT_EPOCH;
 
   BOOTED = (async () => {
     SETTINGS = settings;
@@ -220,45 +246,63 @@ function boot(port, settings) {
     await mkdir(settings.dataDir, { recursive: true });
     await cleanupTempFiles(settings.dataDir);
     TOKEN = await serviceToken(settings.dataDir);
+    if (STOPPED || epoch !== BOOT_EPOCH) return null;
 
-    const bound = await claim(port);
+    const bound = await claim(port, epoch);
+    if (STOPPED || epoch !== BOOT_EPOCH) {
+      if (bound.handle) await bound.handle.close().catch(() => {});
+      return null;
+    }
     ATTACHED = bound.attached;
-    if (!ATTACHED) {
-      SERVER = bound.server;
+    if (!ATTACHED && bound.handle) {
+      SERVER_HANDLE = bound.handle;
       SERVER_STARTED(port);
     }
     return bound;
   })().catch((error) => {
     console.error("[memory-graph] boot failed:", error?.message || error);
-    INIT_ERROR = String(error?.message || error);
-    return null;
+    BOOTED = null;
+    throw error;
   });
 
   return BOOTED;
 }
 
-function stop() {
+async function stop() {
+  STOPPED = true;
+  BOOT_EPOCH += 1;
+  SLEEP_CANCEL?.();
+  SLEEP_CANCEL = null;
   clearInterval(SWEEPER);
   clearInterval(RECONCILE);
   SWEEPER = null;
   RECONCILE = null;
-  if (SERVER) {
-    SERVER.close();
-    SERVER = null;
+  if (SERVER_HANDLE) {
+    await SERVER_HANDLE.close();
+    SERVER_HANDLE = null;
   }
+  BUILDER = null;
+  INIT = null;
   BOOTED = null;
+  ATTACHED = false;
+  ASLEEP = false;
 }
 
 export default {
   id: "magpie-memory-graph",
   server: async (_input, options = {}) => {
-    const candidate = Number(options?.port);
-    const port = Number.isFinite(candidate) && candidate > 0 && candidate < 65536 ? candidate : DEFAULT_PORT;
+    STOPPED = false;
+    INIT_ERROR = "";
+    ATTACHED = false;
+    ASLEEP = false;
+    const candidate = number(options?.port, DEFAULT_PORT);
+    const port =
+      Number.isInteger(candidate) && candidate >= 1 && candidate <= 65535 ? candidate : DEFAULT_PORT;
 
     const rawMaxNodes = number(options?.maxNodes, 1000);
     const settings = {
       port,
-      minSimilarity: clamp(number(options?.minSimilarity, 0.6), 0.35, 0.95),
+      minSimilarity: clamp(number(options?.minSimilarity, 0.6), 0.35, 0.9),
       concurrency: clamp(number(options?.concurrency, 8), 1, 12),
       maxNodes: rawMaxNodes === 0 ? 0 : clamp(rawMaxNodes, 20, 5000),
       idleMs: clamp(number(options?.idleMinutes, 5), 0, 240) * 60000,
@@ -270,7 +314,7 @@ export default {
     settings.memoryDir = settings.memoryDir || defaultMemoryDir();
     settings.vectorsPath = settings.vectorsPath || defaultVectorsDir();
 
-    boot(port, settings);
+    await boot(port, settings);
     return {};
   },
   stop,

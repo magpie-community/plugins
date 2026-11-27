@@ -1,5 +1,4 @@
-// 本文由AI自动生成
-// 无第三方依赖的 SVG 力导向图：布局、缩放、平移、拖拽、悬浮与聚焦。
+// Dependency-free SVG force-directed graph: layout, zoom, pan, drag, hover, and focus.
 
 (function () {
   const NS = "http://www.w3.org/2000/svg";
@@ -457,19 +456,14 @@
       reheat(0.45);
     }
 
-    function setVisible(set, allowedEdges = null) {
+    function setVisible(set) {
       visible = new Set(set);
       for (const node of nodes) {
         node.hidden = !visible.has(node.id);
         node.el?.classList.toggle("hidden", node.hidden);
       }
       for (const edge of edges) {
-        const pair = keyOf(edge.a, edge.b);
-        edge.hidden = !(
-          visible.has(edge.a) &&
-          visible.has(edge.b) &&
-          (!allowedEdges || allowedEdges.has(pair))
-        );
+        edge.hidden = !(visible.has(edge.a) && visible.has(edge.b));
         edge.el?.classList.toggle("hidden", edge.hidden);
         edge.hit?.classList.toggle("hidden", edge.hidden);
       }
@@ -485,11 +479,6 @@
       updateLabels();
       zoomToFit();
       reheat(0.45);
-    }
-
-    function highlight(id) {
-      hovered = id;
-      paint();
     }
 
     function select(id) {
@@ -638,7 +627,6 @@
       if (lastClick.id === node.id && now - lastClick.at < 360) {
         lastClick = { id: "", at: 0 };
         onFocus?.(node);
-        focus(node.id);
         return;
       }
       lastClick = { id: node.id, at: now };
@@ -694,20 +682,15 @@
       updateEdges,
       setVisible,
       setVisual,
-      highlight,
       select,
       focus,
       reset,
       zoomToFit,
       zoomBy,
       reheat,
-      neighbors,
       screenPoint,
       edgeScreenPoint,
       edgeBetween: (a, b) => edgeMap.get(keyOf(a, b)) || null,
-      get selected() {
-        return selected;
-      },
     };
   }
 

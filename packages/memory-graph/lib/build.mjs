@@ -1,33 +1,19 @@
-// 本文由AI自动生成
-// 建图编排：扫描记忆目录 → 读取 magpie 本地 MEV1 向量库 → 毫秒级计算余弦/词法相似度 → 落派生缓存。
-//
-// 纯本地只读计算，不调用外部 API，不依赖 memory_search MCP。
+// Graph builder orchestrator: scans memory directory, loads local MEV1 vectors,
+// computes cosine/lexical similarity asynchronously, and persists derived cache.
 
 import {
-  AI_computeSimilarityEdges,
-  AI_findVectorsFile,
-  AI_loadVectors,
-} from "./AI_similarity.mjs";
+  computeSimilarityEdges,
+  findVectorsFile,
+  loadVectors,
+} from "./similarity.mjs";
 import { SCHEMA, loadCache, saveCache } from "./cache.mjs";
 import { buildPayload } from "./graph.mjs";
 import { scanMemories } from "./scan.mjs";
 
 const EDGE_FLOOR = 0.35;
 
-function countNodes(nodes, vectorInfo) {
-  const all = Object.values(nodes || {});
-  return {
-    total: all.length,
-    active: all.filter((node) => node.status === "active").length,
-    superseded: all.filter((node) => node.status === "superseded").length,
-    candidate: all.filter((node) => node.status === "candidate").length,
-    archived: all.filter((node) => node.status === "archived").length,
-    vectorized: vectorInfo?.matched || 0,
-  };
-}
-
 export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
-  let cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, stats: {}, builtAt: null };
+  let cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, builtAt: null };
   let nodes = {};
   let loaded = false;
   let running = null;
@@ -37,8 +23,6 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
 
   let state = {
     phase: "idle",
-    done: 0,
-    total: 0,
     startedAt: 0,
     lastBuiltAt: 0,
     lastError: "",
@@ -48,40 +32,41 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
 
   async function load() {
     if (loaded) return;
-    cache = await loadCache(dir);
-    nodes = cache.nodes || {};
-    const needsBody = Object.values(nodes).some((node) => node && node.body === undefined);
+    const loadedCache = await loadCache(dir);
+    if (sleeping) return;
+    let nextNodes = loadedCache.nodes || {};
+    const needsBody = Object.values(nextNodes).some((node) => node && node.body === undefined);
     if (needsBody && memoryDir) {
       try {
         const concurrency = Math.max(1, Math.min(12, Number(options.concurrency) || 8));
-        const scan = await scanMemories(memoryDir, { cacheNodes: nodes, concurrency });
-        nodes = Object.fromEntries(scan.nodes);
+        const scan = await scanMemories(memoryDir, { cacheNodes: nextNodes, concurrency });
+        if (sleeping) return;
+        nextNodes = Object.fromEntries(scan.nodes);
       } catch {
-        /* 记忆目录不可读时保留缓存元数据 */
+        /* Keep cached metadata if memory directory is unreadable */
       }
     }
+    if (sleeping) return;
+    cache = loadedCache;
+    nodes = nextNodes;
     loaded = true;
   }
 
-  function counts() {
-    return countNodes(nodes, cache.vectorInfo);
-  }
-
-  function persist(edges, vectorInfo, final) {
+  function persist(edges, vectorInfo) {
     const task = persistChain.then(async () => {
       const payload = {
         builtAt: new Date().toISOString(),
         nodes,
         edges,
         vectorInfo,
-        stats: countNodes(nodes, vectorInfo),
       };
       try {
         await saveCache(dir, payload);
         cache = { ...payload, v: SCHEMA };
+        return true;
       } catch (error) {
         state.lastError = `Failed to write cache: ${error?.message || error}`;
-        if (final) state.complete = false;
+        return false;
       }
     });
     persistChain = task.catch(() => {});
@@ -95,8 +80,6 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     state = {
       ...state,
       phase: "scanning",
-      done: 0,
-      total: 0,
       startedAt: Date.now(),
       lastError: "",
       complete: true,
@@ -118,9 +101,9 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
       let totalVectors = 0;
 
       try {
-        vectorFile = await AI_findVectorsFile(vectorsPath);
+        vectorFile = await findVectorsFile(vectorsPath);
         if (vectorFile) {
-          const loadedVec = await AI_loadVectors(vectorFile.path);
+          const loadedVec = await loadVectors(vectorFile.path);
           vectorMap = loadedVec.vectors;
           dim = loadedVec.dim;
           totalVectors = loadedVec.count;
@@ -132,7 +115,11 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
         });
       }
 
-      const computed = AI_computeSimilarityEdges(nodes, vectorMap, { floor: EDGE_FLOOR });
+      const computed = await computeSimilarityEdges(nodes, vectorMap, {
+        floor: EDGE_FLOOR,
+        maxNodes: options.maxNodes,
+        maxEdgesPerNode: 12,
+      });
       const vectorInfo = {
         path: vectorFile?.path || "",
         mtimeMs: vectorFile?.mtimeMs || 0,
@@ -142,14 +129,12 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
         totalVisible: computed.totalVisible,
       };
 
-      state.total = computed.totalVisible;
-      state.done = computed.totalVisible;
       state.phase = "writing";
 
-      await persist(computed.edges, vectorInfo, true);
+      const persisted = await persist(computed.edges, vectorInfo);
       state.phase = "idle";
       state.lastBuiltAt = Date.now();
-      state.complete = true;
+      state.complete = persisted;
     })()
       .catch((error) => {
         state.phase = "error";
@@ -170,7 +155,6 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
         const concurrency = Math.max(1, Math.min(12, Number(options.concurrency) || 8));
         const scan = await scanMemories(memoryDir, { cacheNodes: nodes, concurrency });
         diskChanged = Boolean(scan.added.length || scan.changed.length || scan.removed.length);
-        nodes = Object.fromEntries(scan.nodes);
       } catch {
         diskChanged = false;
       }
@@ -178,7 +162,7 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
 
     let vectorsChanged = false;
     try {
-      const vecFile = await AI_findVectorsFile(vectorsPath);
+      const vecFile = await findVectorsFile(vectorsPath);
       const prevMtime = cache.vectorInfo?.mtimeMs || 0;
       const prevPath = cache.vectorInfo?.path || "";
       if ((vecFile?.path || "") !== prevPath || (vecFile?.mtimeMs || 0) !== prevMtime) {
@@ -196,7 +180,10 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     if (running) return false;
 
     const now = Date.now();
-    if (now - lastCheck < 15000) return false;
+    const throttleMs = Number.isFinite(Number(options.refreshThrottleMs))
+      ? Number(options.refreshThrottleMs)
+      : 15000;
+    if (now - lastCheck < throttleMs) return false;
     lastCheck = now;
 
     const changed = await checkChanged();
@@ -208,9 +195,11 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
   }
 
   async function ensureFresh({ force = false } = {}) {
+    if (sleeping) wake();
     await load();
     if (running) {
       await running;
+      if (sleeping) wake();
       if (!force) return false;
     }
 
@@ -219,15 +208,17 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
     if (needsBuild) {
       run();
       if (running) await running;
+      if (sleeping) wake();
       return true;
     }
+    if (sleeping) wake();
     return false;
   }
 
   function sleep() {
     if (running || sleeping) return false;
     nodes = {};
-    cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, stats: {}, builtAt: cache.builtAt };
+    cache = { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, builtAt: cache.builtAt };
     loaded = false;
     sleeping = true;
     state.phase = "asleep";
@@ -242,6 +233,7 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
   }
 
   async function getGraph({ minSimilarity } = {}) {
+    if (sleeping) wake();
     await load();
     const effectiveOptions =
       minSimilarity !== undefined ? { ...options, minSimilarity } : options;
@@ -249,36 +241,32 @@ export function createBuilder({ dir, memoryDir, vectorsPath, options = {} }) {
       nodes,
       edges: cache.edges,
       vectorInfo: cache.vectorInfo,
-      stats: cache.stats,
       builtAt: cache.builtAt,
       options: effectiveOptions,
       state,
-      memoryDir,
     });
   }
 
   async function getInlineGraph({ minSimilarity } = {}) {
     const payload = await getGraph({ minSimilarity });
+    const keptIds = new Set(payload.nodes.map((n) => n.id));
+    const allEdges = (cache.edges || []).filter((e) => keptIds.has(e.a) && keptIds.has(e.b));
     return {
       ...payload,
-      allEdges: cache.edges || [],
+      allEdges,
     };
   }
 
   function getStatus() {
-    const totals = counts();
     return {
       ok: true,
       engine: "similarity",
       phase: state.phase,
       asleep: sleeping,
-      done: state.done,
-      total: state.total,
       startedAt: state.startedAt ? new Date(state.startedAt).toISOString() : null,
       lastBuiltAt: cache.builtAt,
       lastError: state.lastError,
       complete: state.complete,
-      counts: totals,
       vectorInfo: cache.vectorInfo,
       cached: Boolean(cache.builtAt),
       memoryDir,

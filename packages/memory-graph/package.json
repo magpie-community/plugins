@@ -37,7 +37,7 @@
     "magpie": ">=0.1.1340"
   },
   "magpie": {
-    "name": "记忆图谱",
+    "name": "Memory Graph",
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmNzY2ZSIvPgogIDxnIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLW9wYWNpdHk9Ii41NSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPgogICAgPHBhdGggZD0iTTIwIDIyIDQ0IDE4TTIwIDIyIDMwIDQ0TTQ0IDE4IDMwIDQ0TTQ0IDE4IDUwIDM2TTMwIDQ0IDUwIDM2Ii8+CiAgPC9nPgogIDxnIGZpbGw9IiNmZmZmZmYiPgogICAgPGNpcmNsZSBjeD0iMjAiIGN5PSIyMiIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNDQiIGN5PSIxOCIgcj0iNiIvPgogICAgPGNpcmNsZSBjeD0iMzAiIGN5PSI0NCIgcj0iNSIvPgogICAgPGNpcmNsZSBjeD0iNTAiIGN5PSIzNiIgcj0iNCIvPgogIDwvZz4KPC9zdmc+Cg==",
     "summary": {
       "en": "Draws your magpie memories as an Obsidian-style graph linked by true semantic cosine similarity (reusing magpie's local multilingual vectors with zero-dep TF-IDF fallback). Live similarity threshold slider, superseded lineage edges, read-only.",

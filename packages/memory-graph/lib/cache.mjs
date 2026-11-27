@@ -1,15 +1,12 @@
-// 本文由AI自动生成
-// 派生缓存：graph-cache.json 只存「扫描到的节点」和「每条记忆的 search 命中顺序」。
-// 边永远由命中顺序现算，所以改 topK、改阈值不需要重新查询；
-// 删掉整个文件也只是下次重算，不会丢 magpie 的任何原生记忆。
+// Derived cache: stores scanned node metadata and similarity edges.
 
 import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-export const SCHEMA = 2;
+export const SCHEMA = 3;
 
-export async function readJSON(path, fallback = null) {
+async function readJSON(path, fallback = null) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
@@ -41,7 +38,7 @@ export async function cleanupTempFiles(dir) {
         .map((name) => unlink(join(dir, name)).catch(() => {})),
     );
   } catch {
-    /* 目录不存在或无权限时忽略 */
+    /* Ignore if directory does not exist or is unreadable */
   }
 }
 
@@ -54,10 +51,10 @@ export async function loadCache(dir) {
       try {
         await rename(path, `${path}.v${String(raw.v ?? "unknown")}.bak`);
       } catch {
-        /* 备份失败也继续，缓存坏了不该挡住页面 */
+        /* Continue even if backup fails; corrupt cache should not block the page */
       }
     }
-    return { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, stats: {}, builtAt: null };
+    return { v: SCHEMA, nodes: {}, edges: [], vectorInfo: null, builtAt: null };
   }
 
   return {
@@ -65,7 +62,6 @@ export async function loadCache(dir) {
     nodes: raw.nodes && typeof raw.nodes === "object" ? raw.nodes : {},
     edges: Array.isArray(raw.edges) ? raw.edges : [],
     vectorInfo: raw.vectorInfo && typeof raw.vectorInfo === "object" ? raw.vectorInfo : null,
-    stats: raw.stats && typeof raw.stats === "object" ? raw.stats : {},
     builtAt: typeof raw.builtAt === "string" ? raw.builtAt : null,
   };
 }

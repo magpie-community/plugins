@@ -1,8 +1,8 @@
-// 本文由AI自动生成
-// 本地语义相似度引擎：
-// 1. 优先读取 magpie 内置多语言向量库（MEV1 格式 vectors.bin），计算精确余弦相似度；
-// 2. 对未向量化的节点自动回退到零依赖本地 TF-IDF（中文二元词 + 英文词元）+ 标签 Jaccard 相似度；
-// 3. 对 supersededBy 节点自动生成演进关联边。
+// Local semantic similarity engine:
+// 1. Reuses magpie's built-in multilingual vectors (MEV1 vectors.bin) for exact cosine similarity.
+// 2. Falls back to zero-dependency TF-IDF (CJK bigrams + word tokens) + tag Jaccard overlap.
+// 3. Adds dashed lineage edges for supersededBy memories.
+// 4. Time-slices O(n^2) loops so the shared plugin host event loop never stalls.
 
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { join } from "node:path";
 const MEV1_MAGIC = "MEV1";
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-export async function AI_findVectorsFile(basePath) {
+export async function findVectorsFile(basePath) {
   if (!basePath) return null;
   try {
     const info = await stat(basePath);
@@ -27,7 +27,7 @@ export async function AI_findVectorsFile(basePath) {
     const info = await stat(direct);
     if (info.isFile()) best = { path: direct, mtimeMs: info.mtimeMs };
   } catch {
-    /* 继续扫描子目录 */
+    /* scan subdirectories */
   }
 
   try {
@@ -41,16 +41,16 @@ export async function AI_findVectorsFile(basePath) {
           best = { path: candidate, mtimeMs: info.mtimeMs };
         }
       } catch {
-        /* 忽略无 vectors.bin 的目录 */
+        /* ignore directories without vectors.bin */
       }
     }
   } catch {
-    /* 忽略不可读目录 */
+    /* ignore unreadable directories */
   }
   return best;
 }
 
-export async function AI_loadVectors(filePath) {
+export async function loadVectors(filePath) {
   if (!filePath) return { dim: 0, vectors: new Map(), count: 0 };
   const buf = await readFile(filePath);
   if (buf.length < 8 || buf.subarray(0, 4).toString("ascii") !== MEV1_MAGIC) {
@@ -65,13 +65,19 @@ export async function AI_loadVectors(filePath) {
     const hash = buf.subarray(off, off + 32).toString("hex");
     const vec = new Float32Array(dim);
     let norm2 = 0;
+    let valid = true;
     for (let i = 0; i < dim; i++) {
       const x = buf.readFloatLE(off + 32 + i * 4);
+      if (!Number.isFinite(x)) {
+        valid = false;
+        break;
+      }
       vec[i] = x;
       norm2 += x * x;
     }
+    if (!valid) continue;
     const norm = Math.sqrt(norm2);
-    if (norm > 0) {
+    if (norm > 0 && Number.isFinite(norm)) {
       for (let i = 0; i < dim; i++) vec[i] /= norm;
       vectors.set(hash, vec);
     }
@@ -79,8 +85,14 @@ export async function AI_loadVectors(filePath) {
   return { dim, vectors, count: vectors.size };
 }
 
-export function AI_matchNodeVector(node, vectorMap) {
+export function matchNodeVector(node, vectorMap) {
   if (!vectorMap || !vectorMap.size || !node) return null;
+  if (Array.isArray(node.vecHashes)) {
+    for (const h of node.vecHashes) {
+      const hit = vectorMap.get(h);
+      if (hit) return hit;
+    }
+  }
   const body = String(node.body || "").trim();
   const why = String(node.why || "").trim();
   const title = String(node.title || "").trim();
@@ -186,18 +198,47 @@ function tagJaccard(a, b) {
   return inter / (a.size + b.size - inter);
 }
 
-export function AI_bandOfSimilarity(sim) {
+function bandOfSimilarity(sim) {
   if (sim >= 0.75) return 3;
   if (sim >= 0.65) return 2;
   return 1;
 }
 
-export function AI_computeSimilarityEdges(nodes, vectorMap = new Map(), { floor = 0.35 } = {}) {
-  const visibleNodes = Object.values(nodes || {}).filter(
+function insertTopK(heap, candidate, limit) {
+  heap.push(candidate);
+  if (heap.length <= limit) return;
+  let minIdx = 0;
+  for (let i = 1; i < heap.length; i++) {
+    if (heap[i].sim < heap[minIdx].sim) minIdx = i;
+  }
+  heap.splice(minIdx, 1);
+}
+
+export async function computeSimilarityEdges(
+  nodes,
+  vectorMap = new Map(),
+  { floor = 0.35, maxNodes = 1000, maxEdgesPerNode = 12 } = {},
+) {
+  let visibleNodes = Object.values(nodes || {}).filter(
     (node) => node && (node.status === "active" || node.status === "superseded"),
   );
+  const cap =
+    maxNodes === "" || maxNodes === null || maxNodes === undefined || typeof maxNodes === "boolean"
+      ? NaN
+      : Number(maxNodes);
+  if (Number.isFinite(cap) && cap > 0 && visibleNodes.length > cap) {
+    visibleNodes.sort(
+      (a, b) =>
+        (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1) ||
+        String(b.updated || "").localeCompare(String(a.updated || "")) ||
+        (b.mtime || 0) - (a.mtime || 0),
+    );
+    visibleNodes = visibleNodes.slice(0, cap);
+  }
+  const totalVisible = visibleNodes.length;
+
   const visibleIds = new Set(visibleNodes.map((node) => node.id));
-  const denseVecs = visibleNodes.map((node) => AI_matchNodeVector(node, vectorMap));
+  const denseVecs = visibleNodes.map((node) => matchNodeVector(node, vectorMap));
   const vectorMatched = denseVecs.filter(Boolean).length;
   const needsLexical = vectorMatched < visibleNodes.length;
   const lexicalVecs = needsLexical ? buildLexicalVectors(visibleNodes) : null;
@@ -205,14 +246,14 @@ export function AI_computeSimilarityEdges(nodes, vectorMap = new Map(), { floor 
     ? visibleNodes.map((node) => new Set((node.tags || []).map((t) => String(t).toLowerCase())))
     : null;
 
-  const pairMap = new Map();
   const minFloor = Math.max(0.05, Math.min(0.95, Number(floor) || 0.35));
+  const edgeCap = Math.max(1, Number(maxEdgesPerNode) || 12);
+  const perNode = Array.from({ length: visibleNodes.length }, () => []);
 
+  let sliceStart = Date.now();
   for (let i = 0; i < visibleNodes.length; i++) {
-    const ni = visibleNodes[i];
     const vi = denseVecs[i];
     for (let j = i + 1; j < visibleNodes.length; j++) {
-      const nj = visibleNodes[j];
       const vj = denseVecs[j];
 
       let sim = 0;
@@ -228,15 +269,31 @@ export function AI_computeSimilarityEdges(nodes, vectorMap = new Map(), { floor 
 
       if (sim < minFloor) continue;
       const rounded = Math.round(sim * 1000) / 1000;
+      insertTopK(perNode[i], { peer: j, sim: rounded, source }, edgeCap);
+      insertTopK(perNode[j], { peer: i, sim: rounded, source }, edgeCap);
+    }
+    if (Date.now() - sliceStart >= 8) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      sliceStart = Date.now();
+    }
+  }
+
+  const pairMap = new Map();
+  for (let i = 0; i < visibleNodes.length; i++) {
+    const ni = visibleNodes[i];
+    for (const item of perNode[i]) {
+      const nj = visibleNodes[item.peer];
       const [a, b] = ni.id < nj.id ? [ni.id, nj.id] : [nj.id, ni.id];
-      pairMap.set(`${a}|${b}`, {
-        a,
-        b,
-        sim: rounded,
-        s: AI_bandOfSimilarity(rounded),
-        source,
-        lineage: false,
-      });
+      const key = `${a}|${b}`;
+      if (!pairMap.has(key)) {
+        pairMap.set(key, {
+          a,
+          b,
+          sim: item.sim,
+          s: bandOfSimilarity(item.sim),
+          source: item.source,
+        });
+      }
     }
   }
 
@@ -269,6 +326,6 @@ export function AI_computeSimilarityEdges(nodes, vectorMap = new Map(), { floor 
   return {
     edges,
     vectorMatched,
-    totalVisible: visibleNodes.length,
+    totalVisible,
   };
 }

@@ -1,11 +1,11 @@
-// 本文由AI自动生成
-// magpie 记忆文件的 frontmatter 解析。
+// YAML frontmatter parser for magpie memory markdown files.
 //
-// 不引第三方 YAML：magpie 只写出固定的一小组形态（标量、inline 数组、
-// 块序列、sources 里的 map 列表、quote 块标量）。解析失败不抛错，
-// 单条记忆降级为「正文 + 空元数据」，不能因为一条坏文件毁掉整张图。
+// Avoids third-party YAML dependencies: magpie only emits a fixed subset of YAML
+// (scalars, inline arrays, block sequences, map lists in sources, and block scalars).
+// Parse failures never throw; a single memory degrades to body + empty metadata
+// so one malformed file cannot break the entire graph.
 
-const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/;
 
 const KINDS = new Set([
   "profile",
@@ -20,11 +20,11 @@ const KINDS = new Set([
 
 const STATUSES = new Set(["active", "candidate", "superseded", "archived"]);
 
-export function splitFrontmatter(raw) {
+function splitFrontmatter(raw) {
   const text = String(raw ?? "");
   const hit = FRONTMATTER.exec(text);
   if (!hit) return { yaml: "", body: text };
-  return { yaml: hit[1], body: text.slice(hit[0].length) };
+  return { yaml: hit[1] || "", body: text.slice(hit[0].length) };
 }
 
 function trimBlank(lines) {
@@ -91,6 +91,13 @@ function scalar(raw) {
   return unquote(text);
 }
 
+function blockIndicator(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (trimmed === "|" || trimmed === "|-") return "|";
+  if (trimmed === ">" || trimmed === ">-") return ">";
+  return "";
+}
+
 function foldBlock(lines, style) {
   const body = trimBlank(lines);
   if (!body.length) return "";
@@ -109,6 +116,44 @@ function foldBlock(lines, style) {
   return text.replace(/\n+$/, "");
 }
 
+function indentOf(line) {
+  return (line.match(/^[ \t]*/) || [""])[0].length;
+}
+
+function collectIndentedBlock(lines, startIndex, minIndentExclusive) {
+  const block = [];
+  let j = startIndex;
+  while (j < lines.length) {
+    const next = lines[j];
+    if (!next.trim()) {
+      block.push(next);
+      j++;
+      continue;
+    }
+    if (indentOf(next) <= minIndentExclusive) break;
+    block.push(next);
+    j++;
+  }
+  return { block, nextIndex: j };
+}
+
+function collectListItemBlock(lines, startIndex, listIndent, keyIndent) {
+  const block = [];
+  let j = startIndex;
+  while (j < lines.length && (/^[ \t]/.test(lines[j]) || !lines[j].trim())) {
+    const next = lines[j];
+    if (next.trim()) {
+      const nextIndent = indentOf(next);
+      if (/^[ \t]*-[ \t]?/.test(next) && nextIndent <= listIndent + 1) break;
+      if (nextIndent <= keyIndent && /^[ \t]*[A-Za-z_][\w-]*:[ \t]*/.test(next)) break;
+      if (nextIndent <= listIndent) break;
+    }
+    block.push(next);
+    j++;
+  }
+  return { block, nextIndex: j };
+}
+
 function parseMap(lines, indent) {
   const out = {};
   for (let i = 0; i < lines.length; i++) {
@@ -119,35 +164,18 @@ function parseMap(lines, indent) {
     const key = hit[1];
     const value = hit[2];
 
-    if (value === "|" || value === ">") {
-      const block = [];
-      let j = i + 1;
-      while (j < lines.length && (/^[ \t]/.test(lines[j]) || !lines[j].trim())) {
-        block.push(lines[j]);
-        j++;
-      }
-      out[key] = foldBlock(block, value);
-      i = j - 1;
+    const style = blockIndicator(value);
+    if (style) {
+      const { block, nextIndex } = collectIndentedBlock(lines, i + 1, indent);
+      out[key] = foldBlock(block, style);
+      i = nextIndex - 1;
       continue;
     }
 
     if (!value.trim()) {
-      const block = [];
-      let j = i + 1;
-      while (j < lines.length) {
-        const next = lines[j];
-        if (!next.trim()) {
-          block.push(next);
-          j++;
-          continue;
-        }
-        const nextIndent = (next.match(/^[ \t]*/) || [""])[0].length;
-        if (nextIndent <= indent) break;
-        block.push(next);
-        j++;
-      }
+      const { block, nextIndex } = collectIndentedBlock(lines, i + 1, indent);
       out[key] = parseBlock(block);
-      i = j - 1;
+      i = nextIndex - 1;
       continue;
     }
 
@@ -164,30 +192,20 @@ function parseList(lines, indent) {
     const line = lines[i];
     if (!line.trim()) continue;
     const item = /^[ \t]*-[ \t]?(.*)$/.exec(line);
-    const lineIndent = (line.match(/^[ \t]*/) || [""])[0].length;
+    const lineIndent = indentOf(line);
 
     if (item && lineIndent <= indent + 1) {
       if (current !== null) items.push(current);
       const rest = item[1];
       const pair = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(rest);
       if (pair) {
-        current = { [pair[1]]: scalar(pair[2]) };
-        if (pair[2] === "|" || pair[2] === ">") {
-          const block = [];
-          let j = i + 1;
-          while (j < lines.length && (/^[ \t]/.test(lines[j]) || !lines[j].trim())) {
-            const next = lines[j];
-            if (
-              /^[ \t]*-[ \t]?/.test(next) &&
-              (next.match(/^[ \t]*/) || [""])[0].length <= indent + 1
-            ) {
-              break;
-            }
-            block.push(next);
-            j++;
-          }
-          current[pair[1]] = foldBlock(block, pair[2]);
-          i = j - 1;
+        const style = blockIndicator(pair[2]);
+        current = { [pair[1]]: style ? "" : scalar(pair[2]) };
+        if (style) {
+          const itemIndent = line.length - rest.length;
+          const { block, nextIndex } = collectListItemBlock(lines, i + 1, indent, itemIndent);
+          current[pair[1]] = foldBlock(block, style);
+          i = nextIndex - 1;
         }
       } else {
         current = scalar(rest);
@@ -198,22 +216,11 @@ function parseList(lines, indent) {
     if (current && typeof current === "object" && !Array.isArray(current)) {
       const pair = /^[ \t]*([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
       if (!pair) continue;
-      if (pair[2] === "|" || pair[2] === ">") {
-        const block = [];
-        let j = i + 1;
-        while (j < lines.length && (/^[ \t]/.test(lines[j]) || !lines[j].trim())) {
-          const next = lines[j];
-          if (
-            /^[ \t]*-[ \t]?/.test(next) &&
-            (next.match(/^[ \t]*/) || [""])[0].length <= indent + 1
-          ) {
-            break;
-          }
-          block.push(next);
-          j++;
-        }
-        current[pair[1]] = foldBlock(block, pair[2]);
-        i = j - 1;
+      const style = blockIndicator(pair[2]);
+      if (style) {
+        const { block, nextIndex } = collectListItemBlock(lines, i + 1, indent, lineIndent);
+        current[pair[1]] = foldBlock(block, style);
+        i = nextIndex - 1;
       } else {
         current[pair[1]] = scalar(pair[2]);
       }
@@ -229,12 +236,12 @@ function parseBlock(lines) {
   if (!body.length) return null;
   const first = body.find((line) => line.trim());
   if (!first) return null;
-  const indent = (first.match(/^[ \t]*/) || [""])[0].length;
+  const indent = indentOf(first);
   if (/^[ \t]*-[ \t]?/.test(first)) return parseList(body, indent);
   return parseMap(body, indent);
 }
 
-export function parseYaml(yaml) {
+function parseYaml(yaml) {
   const lines = String(yaml ?? "").replace(/\r\n?/g, "\n").split("\n");
   const out = {};
   let i = 0;
@@ -254,13 +261,14 @@ export function parseYaml(yaml) {
     const value = hit[2];
     i++;
 
-    if (value === "|" || value === ">") {
+    const style = blockIndicator(value);
+    if (style) {
       const block = [];
       while (i < lines.length && (/^[ \t]/.test(lines[i]) || !lines[i].trim())) {
         block.push(lines[i]);
         i++;
       }
-      out[key] = foldBlock(block, value);
+      out[key] = foldBlock(block, style);
       continue;
     }
 
@@ -308,15 +316,17 @@ export function parseMemory(id, raw) {
 
   const kind = KINDS.has(text(meta.kind)) ? text(meta.kind) : "unknown";
   const status = STATUSES.has(text(meta.status)) ? text(meta.status) : "active";
-  const tags = Array.isArray(meta.tags) ? unique(meta.tags) : [];
+  const tags = Array.isArray(meta.tags)
+    ? unique(meta.tags.map((t) => text(t).slice(0, 64))).slice(0, 30)
+    : [];
   const sources = Array.isArray(meta.sources)
     ? meta.sources
         .filter((item) => item && typeof item === "object" && !Array.isArray(item))
         .slice(0, 3)
         .map((item) => ({
-          agent: text(item.agent),
-          session: text(item.session),
-          dir: text(item.dir),
+          agent: text(item.agent).slice(0, 200),
+          session: text(item.session).slice(0, 200),
+          dir: text(item.dir).slice(0, 200),
           quote: text(item.quote).slice(0, 200),
         }))
     : [];
@@ -332,7 +342,7 @@ export function parseMemory(id, raw) {
     status,
     origin: text(meta.origin),
     tags,
-    why: text(meta.why),
+    why: text(meta.why).slice(0, 1000),
     created: text(meta.created),
     updated: text(meta.updated),
     supersededBy,
