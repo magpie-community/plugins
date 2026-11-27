@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -116,6 +117,26 @@ describe("sign-in methods", () => {
     expect(result.type).toBe("success")
     expect(result.access).toBe("pasted-token")
     expect(await method.authorize({ token: "" })).toMatchObject({ type: "failed" })
+  })
+
+  test("manual paste fills a distinct identity from current-user, so two pastes do not overwrite each other", async () => {
+    // the fake accepts any token the web sign-in handed out: arm one, paste
+    // it, and current-user names the account like it does for a web sign-in
+    fake.state.webTokens.add("pasted-a")
+    const method = plugin.auth.methods.find((m) => m.label.includes("Paste"))
+    const ok = await (await method.authorize({ token: "pasted-a" })).callback()
+    expect(ok.accountId).toBe("网页用户")
+    expect(ok.uid).toBe("42")
+    expect(fake.state.currentUserCalls).toBe(1)
+
+    // a token current-user refuses still signs in: the fallback fingerprint
+    // keeps the identity distinct instead of the shared "手动粘贴" slot
+    const fallback = await (await method.authorize({ token: "0123456789abcdef" })).callback()
+    expect(fallback.type).toBe("success")
+    expect(fallback.accountId).toBe("手动粘贴")
+    // the fingerprint is the token's hash, not a slice of the token itself
+    expect(fallback.uid).toBe(`manual-${createHash("sha256").update("0123456789abcdef").digest("hex").slice(0, 8)}`)
+    expect(fake.state.currentUserCalls).toBe(2)
   })
 
   test("web sign-in: login-config names the entry, poll-token hands the token once claimed", async () => {

@@ -16,7 +16,7 @@ magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录�
 - **登录**：
   - `网页登录`：插件问 `login-config` 取官方登录页，浏览器完成登录后，插件按官方客户端同款 **poll-token 通道**每秒轮询 `?sid` 直接拿 token——服务端对服务端，无监听端口、不受浏览器私有网络检查（PNA）影响；再问一次 `current-user` 补 uid/昵称（失败不影响登录）。
   - `妙手桌面端登录态`：每次请求前实时读 `~/.meituan-catpaw/auth.json`（mtime 缓存 5 分钟内；重开妙手即自动刷新）。
-  - `手动粘贴 token`。
+  - `手动粘贴 token`：粘完问一次 `current-user` 补 uid/昵称（与网页登录同款，失败不影响登录，回退 token 哈希指纹，不留 token 本身的任何片段）——每个粘贴账号有独立身份，多个粘贴账号不会互相覆盖。
 - **无续期接口**：token 过期后 401，网页登录重新发起一次即可；桌面端登录态则在妙手里重新登录（下一请求自动读新 token）。
 - **聊天**：`round → event → turn` 三步会话机；上游 SSE 帧为累积式，插件做差分转 OpenAI delta（`content` + `reasoning_content`），流式与非流式都支持。
 - **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表打底，再按妙手桌面端的做法向网关取账号的模型清单（`POST /api/agent/maas/model-types`，缓存 5 分钟），官方新增的模型（如 LongCat 2.5）无需发版即出现；取不到清单时用静态表。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。
