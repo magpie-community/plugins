@@ -32,7 +32,10 @@ export function fakeTrae(siteId = "trae-cn") {
   const origin = `http://127.0.0.1:${server.port}`
   const hosts = _internal.SITES[siteId].hosts
   const was = { ...hosts }
-  Object.assign(hosts, { web: origin, auth: origin, api: origin, console: origin, us: origin, pay: origin, usPay: origin, billing: origin })
+  Object.assign(hosts, { web: origin, auth: origin, api: origin, console: origin, us: origin, pay: origin, usPay: origin })
+  // a realm with a billing host of its own (Trae CN) reads the settlement
+  // there; one without it (Trae Global) must see none here either
+  if ("billing" in was) hosts.billing = origin
   return {
     origin,
     site: _internal.SITES[siteId],

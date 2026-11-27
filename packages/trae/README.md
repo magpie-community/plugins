@@ -176,13 +176,21 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
     named no cache read (0.2.58). A cache count the stream did name wins;
     a refused or failed lookup leaves the answer unchanged. The host is
-    `TRAE_USAGE_API_HOST` when set, else the realm's own. A read has a
+    `TRAE_USAGE_API_HOST` when set, else the realm's own — and Trae CN is the
+    one realm that has one: Trae Global's commercial host is not known
+    (`api5-normal.trae.ai` does not resolve), so its turns read no settlement
+    at all rather than ask a host that never answers. A read has a
     timeout of its own (2 s), and an answer's end waits for it only as long
     as its wait allows: 400 ms for a stream, whose end must not be held back
     by a record that settles slowly, and 2.5 s for a body, which closes
     nothing early. An enterprise model asked at its own endpoint (0.2.53) is
     the tenant's own service, which Trae books nothing for: its usage is that
     endpoint's own, and no settlement is read.
+    Two requests of one conversation in flight together (a title asked
+    beside the body, a subagent) each read the record from the same last
+    reading, so the earlier turn's share can be counted in both; Trae's own
+    totals stay right, and reads are not serialized because a turn would
+    then wait behind another's read.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,

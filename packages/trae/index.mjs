@@ -244,7 +244,10 @@ const SITES = {
       pay: "https://api-sg-central.trae.ai", // usage
       usPay: "https://api-us-east.trae.ai", // usage, the US deployment
       console: "https://console.enterprise.trae.ai", // an enterprise (SaaS) account's usage, in dollars
-      billing: "https://api5-normal.trae.ai", // the commercial usage endpoint, as on CN
+      // No billing host: api5-normal.trae.ai does not resolve (NXDOMAIN on
+      // this machine, 1.1.1.1 and 8.8.8.8), and no Global IDE's own host was
+      // measured. A realm without one reads no settlement, rather than asking
+      // a host that never answers (TRAE_USAGE_API_HOST still names one).
     },
     // the console an enterprise (SaaS) sign-in names as its account's host,
     // as on Trae CN: it bills there, not on the dollar billing's page. Kept
@@ -2094,9 +2097,12 @@ function tokensOf(u) {
 // plugins#58 the session_id a request carries is the conversation's, and
 // Trae books every turn of it under that one session. So a turn's share is
 // the record now, less the record this plugin last read for the same
-// conversation. The first turn of a conversation has no baseline to take,
-// and reports only what Trae's own stream said; the reading it takes is the
-// baseline of the turns after it.
+// conversation. A turn with no baseline yet - the conversation's first one
+// here, or a caller that names no conversation and so gets a session of its
+// own per request - reports the record as it is when it holds only that
+// turn's own prompt and reply (ownCharge), and the reading it takes is the
+// baseline of the turns after it. The realm must name a billing host to be
+// read at all: Trae Global's commercial host is not known, so it reads none.
 const BILLING_PATH = "/api/v1/commercial/get_session_usage"
 // BILLING_TIMEOUT is the longest one read may take: no answer is held by a
 // connection that hangs. BILLING_WAIT is how long an answer's end waits for
@@ -2141,7 +2147,10 @@ function signalWithTimeout(signal, ms) {
 // Trae refuses it, or names nothing settled yet: an empty record is one still
 // being written, not a turn that spent nothing.
 async function recordOf(a, site, session, signal, budget) {
-  const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing || site.hosts.api
+  // a realm with no billing host (Trae Global) has no settlement to read, and
+  // no request is made for one
+  const host = process.env.TRAE_USAGE_API_HOST || site.hosts.billing
+  if (!host) return false
   const url = String(host).replace(/\/+$/, "") + BILLING_PATH
   const headers = { "content-type": "application/json", authorization: "Cloud-IDE-JWT " + a.token }
   const t = signalWithTimeout(signal, Math.max(50, Math.min(BILLING_TIMEOUT, budget)))
@@ -5219,4 +5228,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling }

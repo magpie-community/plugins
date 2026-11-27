@@ -4,7 +4,7 @@
 // share of it: the record now, less the record last read for the conversation.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { TraeCNAuthPlugin } from "./index.mjs"
+import { TraeCNAuthPlugin, TraeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn, sse } from "./fake.mjs"
 
 let f
@@ -84,6 +84,8 @@ test("a cache the stream named is not overwritten by the commercial record", asy
   const usage = await usageOf(await s.turn())
   expect(usage.cache_read_input_tokens).toBe(8192)
   expect(usage.credit).toBe(0.12)
+  // the record's count must not be written beside it: one cache read, not two
+  expect(usage.prompt_tokens_details?.cached_tokens).toBeUndefined()
 })
 
 test("a commercial record that cannot be read leaves the answer alone", async () => {
@@ -170,6 +172,120 @@ test("a conversation this plugin hasn't read is a baseline, not this turn's", as
   // five turns of it: its prompt is far more than this turn's own
   f.route("POST /api/v1/commercial/get_session_usage", () => json(record(5)))
   const usage = await usageOf(await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, { session: "ses_seen" }))
+  expect(usage.credit).toBeUndefined()
+  expect(usage.magpie_cache_unknown).toBe(true)
+})
+
+// The realm's own billing host: Trae CN has one, Trae Global has not been
+// measured (api5-normal.trae.ai does not resolve), so a Global turn must not
+// ask for a settlement at all.
+test("a Trae Global turn reads no settlement: that realm has no billing host", async () => {
+  f = fakeTrae("trae-global")
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [{ function: "chat_v3", config_info_list: [{ config_name: "kimi-k2.5", usage: "chat_completion", is_preset: true }] }] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]]))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "kimi-k2.5", stream: true, messages: [{ role: "user", content: "hi" }] }) })
+  expect(res.status).toBe(200)
+  await res.text()
+  expect(f.seen.filter((r) => r.path === "/api/v1/commercial/get_session_usage").length).toBe(0)
+})
+
+// The second turn's charge lands only after that turn's wait is over (the
+// fifth read of the test): the turn reports nothing - no credit, no
+// cached_tokens, magpie_cache_unknown kept - rather than a false 0, and the
+// third turn's share then covers both turns.
+test("a record that lands after the wait is not reported as this turn's 0", async () => {
+  f = fakeTrae()
+  let turns = 0
+  let reads = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", () => {
+    turns++
+    return sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]])
+  })
+  f.route("POST /api/v1/commercial/get_session_usage", () => {
+    reads++
+    // turn 1's charge is in the record by its own read; turn 2's only after
+    // its wait, which the fifth read is past
+    return json(record(reads <= 4 ? 1 : turns))
+  })
+  const session = "ses_late2"
+  const turn = () => ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }, { session })
+  const first = await usageOf(await turn())
+  expect(first.credit).toBe(0.12) // its own charge, from its own record
+  const second = await usageOf(await turn())
+  expect(second.credit).toBeUndefined()
+  expect(second.magpie_cache_unknown).toBe(true)
+  const third = await usageOf(await turn())
+  expect(third.credit).toBe(0.24) // both turns now that the record has moved
+  expect(third.prompt_tokens_details.cached_tokens).toBe(8192)
+  expect(third.magpie_cache_unknown).toBeUndefined()
+})
+
+// Its books going back is another record (a new period, a reset): the turn
+// takes it as the baseline and reports nothing of it.
+test("a record that went back is a new baseline, not this turn's charge", async () => {
+  f = fakeTrae()
+  let reads = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]]))
+  f.route("POST /api/v1/commercial/get_session_usage", () => {
+    reads++
+    const settled = reads <= 1 ? 5 : reads <= 3 ? 1 : 2
+    return json(record(settled))
+  })
+  const session = "ses_back"
+  const turn = () => ask({ model: "glm-5", stream: true, messages: [{ role: "user", content: "hi" }] }, { session })
+  // five turns of the conversation, none of them this plugin's: a baseline
+  const first = await usageOf(await turn())
+  expect(first.credit).toBeUndefined()
+  // the record went back to one turn: another record, reported as nothing
+  const second = await usageOf(await turn())
+  expect(second.credit).toBeUndefined()
+  expect(second.magpie_cache_unknown).toBe(true)
+  // and from that baseline the next turn's share is a turn's
+  const third = await usageOf(await turn())
+  expect(third.credit).toBe(0.12)
+})
+
+// Two accounts of one conversation are two conversations to Trae (#58), and
+// each keeps its own last reading: one account's record must not be taken as
+// the other's baseline.
+test("two accounts of one session keep their own readings", async () => {
+  f = fakeTrae()
+  const calls = new Map()
+  f.route("POST /api/v1/commercial/get_session_usage", (r) => {
+    const token = String(r.headers.get("authorization") ?? "").replace("Cloud-IDE-JWT ", "")
+    const n = (calls.get(token) ?? 0) + 1
+    calls.set(token, n)
+    return json(record(token === "jwt-a" ? n : 5))
+  })
+  const site = _internal.SITES["trae-cn"]
+  const a = { token: "jwt-a", uid: "u-a" }
+  const b = { token: "jwt-b", uid: "u-b" }
+  const session = "ses_accounts"
+  // a's first read is its own record: this plugin has no baseline, so it is one
+  expect(await _internal.turnBilling(a, site, session, { wait: 400 })).toBeNull()
+  // b's first read: b has no baseline of its own, and a's is not it
+  expect(await _internal.turnBilling(b, site, session, { wait: 400 })).toBeNull()
+  // a's next turn, from its own baseline
+  const share = await _internal.turnBilling(a, site, session, { wait: 400 })
+  expect(share.credits).toBe(0.12)
+  expect(share.cacheRead).toBe(4096)
+})
+
+// A record Trae refuses (a 4xx, or a code in the envelope) will not settle
+// during the turn: it is asked for once, not retried.
+test("a record Trae refuses is asked for once", async () => {
+  f = fakeTrae()
+  let reads = 0
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["token_usage", ZERO_CACHE], ["done", { finish_reason: "stop" }]]))
+  f.route("POST /api/v1/commercial/get_session_usage", () => {
+    reads++
+    return json({ code: 40001, message: "invalid session" })
+  })
+  const usage = await usageOf(await ask({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, { session: "ses_refused" }))
+  expect(reads).toBe(1)
   expect(usage.credit).toBeUndefined()
   expect(usage.magpie_cache_unknown).toBe(true)
 })
