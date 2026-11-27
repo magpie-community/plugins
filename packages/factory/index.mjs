@@ -61,10 +61,18 @@ const E4 = ["low", "medium", "high", "xhigh"]
 // account with no special access: Fable 5.2, Kimi K3.1 Pro, Nemotron 3.5
 // Super, MiniMax M3.1 Flash, Inkling, Muse Spark 1.2, Beam 1.0, and GPT-6
 // Sol, GPT-6 Luna, GPT-5.6 Sol and GLM-5.2 Fast (GLM-5.2 Fast at its own
-// limits). Left out: GPT-6.1 Terra and Muse Spark Open (feature flags droid
-// lists them under only once on), GPT-6.1 Sol Ultra Fast (high-cost terms,
-// as Astra's), and Muse Spark 1.3 (Responses on Google, a route the plugin
-// has no wire for).
+// limits). Left out: GPT-6.1 Sol Ultra Fast (high-cost terms, as Astra's)
+// and Muse Spark 1.3 (Responses on Google, a route the plugin has no wire
+// for). droid has no endpoint that lists models: its registry is compiled
+// in, and Factory's feature flags only switch entries of it on, so this
+// list is brought up to each droid release's (testdata/droid-1.21.1-
+// models.txt, whose picker models.test.mjs holds the list to). droid
+// 1.14.0 to 1.21.1 add GPT-6.2 Astra and Sol with their Fast Modes, Gemini
+// 4 Neon, and offer GPT-6.1 Terra and Muse Spark Open, each behind a
+// feature flag of Factory's as Argon, Carbon and Hydrogen are: an account
+// it isn't on for may be refused it (will930128 on X, #1297). Left out:
+// GPT-6.2 Astra Ultra Fast (high-cost terms) and GPT-6.2 Sol Ultra Fast
+// (the ultrafast service tier, which the plugin doesn't send).
 const MODELS = [
   ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
   ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
@@ -123,7 +131,13 @@ const MODELS = [
   ["gemini-4-carbon", "Gemini 4 Carbon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
   // Droid 1.10.0 adds Hydrogen, the head of the Flash line, behind Factory's
   // Gemini4Hydrogen feature flag (#1073).
-  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, E4, true, 0.6],
+  // droid 1.14.0 to 1.21.1's, after the rest for the same reason
+  ["gpt-6.2-astra", "GPT-6.2 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 3.2],
+  ["gpt-6.2-sol", "GPT-6.2 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
+  ["gpt-6.1-terra", "GPT-6.1 Terra", RESPONSES, "openai", 1050000, 128000, E6, true, 0.4],
+  ["gemini-4-neon", "Gemini 4 Neon", GEMINI, "google", 1048576, 65536, E4, true, 1.2],
+  ["muse-spark-open", "Muse Spark Open", CHAT, "baseten", 1040000, 131072, E5, true, 0.5],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -140,6 +154,8 @@ const MODELS = [
   ["gpt-6-luna-fast", "GPT-6 Luna Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
   ["gpt-5.6-sol-fast", "GPT-5.6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 4],
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
+  ["gpt-6.2-astra-fast", "GPT-6.2 Astra Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 6.4],
+  ["gpt-6.2-sol-fast", "GPT-6.2 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 1.6],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 // Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
@@ -563,9 +579,45 @@ const DSH_MODEL_LINE = /(^|\n)You are a coding agent powered by the ([^\n]+?) mo
 // its paragraph.
 const DSH_BROWSER = "The browser provides no implicit DOM, route, or screenshot context."
 const DSH_BROWSER_COMPAT = "The browser gives no implicit DOM, route, or screenshot context."
+// Codex names itself in its base instructions (Codex 0.171/0.172 send them
+// as the first developer item, magpie's chat translation as the system
+// prompt): the prompt for a model Codex has no prompt of its own for, which
+// every non-OpenAI model gets ("You are a coding agent running in the Codex
+// CLI, ... Codex CLI is an open source project led by OpenAI." and "Within
+// this context, Codex refers to ..."), and its GPT prompts ("You are Codex,
+// an agent based on GPT-6.", the older "You are Codex, based on GPT-5. You
+// are running as a coding agent in the Codex CLI on a user's computer.", "As Codex, you are ...", "a vivid inner life as
+// Codex"). plugins#1603 (gengyubo, factory 0.1.58, Codex 0.172.0 on
+// deepseek-v4.1-flash-1017): every turn content_policy_rejected, with
+// "harness" already sent as runtime and the retry's tools renamed in full,
+// so what is left of Codex's own in every turn is its wording. Factory's
+// check refuses other agents' fixed identity sentences (pi's and omp's
+// openings, dsh's identity line above, Claude Code's, which droidChat sends
+// as droid's line), and from 11-17 it refused Codex's own tool names, so
+// these sentences go without the name. Only they change, each at the start
+// of a line of a system or developer prompt; the rest of Codex's prompt,
+// its skill list and the user's own words go as written.
+const CODEX_CLI_OPENING = /(^|\n)You are a coding agent running in the Codex CLI, a terminal-based coding assistant\. Codex CLI is an open source project led by OpenAI\./
+const CODEX_CLI_COMPAT = "You are a coding agent running in a terminal-based coding assistant."
+const CODEX_REFERS = /\n\nWithin this context, Codex refers to the open-source agentic coding interface \(not the old Codex language model built by OpenAI\)\.(?=\n|$)/
+const CODEX_GPT_OPENING = /(^|\n)You are Codex, (?:(an? (?:coding |AI )?agent) )?based on (GPT-[0-9][0-9.]*?)\.(?=\s|$)/
+const CODEX_RUNNING = "You are running as a coding agent in the Codex CLI on a user's computer."
+const CODEX_RUNNING_COMPAT = "You are running as a coding agent on a user's computer."
+const CODEX_PERSONALITY = /(^|\n)As Codex, you are /g
+const CODEX_INNER_LIFE = /(^|\n)You have a vivid inner life as Codex:/g
+function codexIdentity(text) {
+  if (!text.includes("Codex")) return text
+  return text.replace(CODEX_CLI_OPENING, (_, at) => at + CODEX_CLI_COMPAT)
+    .replace(CODEX_REFERS, "")
+    .replace(CODEX_GPT_OPENING, (_, at, kind, model) => at + "You are " + (kind ?? "an agent") + " based on " + model + ".")
+    .replace(CODEX_RUNNING, CODEX_RUNNING_COMPAT)
+    .replace(CODEX_PERSONALITY, (_, at) => at + "You are ")
+    .replace(CODEX_INNER_LIFE, (_, at) => at + "You have a vivid inner life:")
+}
+
 function clientOpening(text) {
   if (typeof text !== "string") return text
-  return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT)
+  return codexIdentity(text).replace(PI_OPENING, (_, at) => at + PI_COMPAT)
     .replace(DSH_OPENING, (_, at) => at + DSH_COMPAT)
     .replace(DSH_MODEL_LINE, (_, at, model) => at + "Current model: " + model + ".")
     .replaceAll(DSH_BROWSER, DSH_BROWSER_COMPAT)
@@ -769,6 +821,11 @@ const GEMINI_CALL = /\/models\/([^/:]+):(?:stream)?generateContent$/i
 // model's place is the one difference from droid that grows with the body:
 // droid always sends it first (testdata/droid-1.14.0-gemini-body.txt).
 const GEMINI_ORDER = ["model", "contents", "systemInstruction", "tools", "generationConfig"]
+// NO_SAMPLING are the Gemini models droid asks with no sampling parameters
+// (omitSamplingParameters in its apiRequest): it sends every other one
+// temperature 1, topP 0.95 and topK 64, these none
+// (testdata/droid-1.21.1-models.txt). geminiBody leaves a client's out too.
+const NO_SAMPLING = new Set(["gemini-4-neon"])
 function geminiBody(model, body) {
   const text = bodyText(body)
   if (text == null) return body
@@ -781,12 +838,18 @@ function geminiBody(model, body) {
   if (!m || typeof m !== "object" || Array.isArray(m)) return body
   m.model = model
   delete m.stream
+  const gc = m.generationConfig
+  if (NO_SAMPLING.has(model) && gc && typeof gc === "object") for (const k of ["temperature", "topP", "topK", "top_p", "top_k"]) delete gc[k]
   let si = m.systemInstruction
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
   delete si.role
+  // the client's prompt, its user turns and its tools' descriptions are
+  // adapted as on Factory's other routes (droidBody, anthropicBody):
+  // magpie hands a Responses, chat or Messages request for a Gemini model
+  // here, and Factory's policy check reads it the same on this route
   const parts = Array.isArray(si.parts) ? si.parts.map((part) =>
-    part && typeof part.text === "string" ? { ...part, text: zcodeRuntimeContext(part.text) } : part) : []
+    part && typeof part.text === "string" ? { ...part, text: promptText(part.text) } : part) : []
   si.parts = parts
   if (!(typeof parts[0]?.text === "string" && parts[0].text.startsWith(DROID_LINE))) {
     const texts = []
@@ -799,6 +862,8 @@ function geminiBody(model, body) {
     si.parts = [{ text: joined.trim() === "" ? DROID_LINE : DROID_LINE + "\n" + joined }, ...rest]
   }
   m.systemInstruction = si
+  geminiTurns(m.contents)
+  if (Array.isArray(m.tools)) for (const t of m.tools) if (t && typeof t === "object") toolDescriptions(t.functionDeclarations)
   // Gemini's route has no tool-output adaptation: escape every refused
   // phrase in its parts (functionResponse, systemInstruction) here.
   escapeDeep(m, REFUSED_PHRASES)
@@ -806,6 +871,22 @@ function geminiBody(model, body) {
   for (const k of GEMINI_ORDER) if (m[k] !== undefined) ordered[k] = m[k]
   for (const [k, v] of Object.entries(m)) if (!(k in ordered)) ordered[k] = v
   return JSON.stringify(ordered)
+}
+
+// geminiTurns adapts the text parts of contents' user turns as
+// promptOpenings adapts a Responses or chat user message's: pi's summary,
+// Claude Code's reminders, Codex's AGENTS.md and environment blocks. The
+// model's turns, function calls and responses stay as they are (a
+// functionResponse is escaped with the rest of the body).
+function geminiTurns(contents) {
+  if (!Array.isArray(contents)) return
+  for (const c of contents) {
+    if (!c || typeof c !== "object" || c.role !== "user" || !Array.isArray(c.parts)) continue
+    for (const p of c.parts) {
+      if (!p || typeof p !== "object" || typeof p.text !== "string" || p.thought) continue
+      p.text = userText(piSummary(p.text))
+    }
+  }
 }
 
 // ---- request size -------------------------------------------------------------
@@ -1046,10 +1127,10 @@ async function deviceSignIn() {
 // is a balance in cents.
 
 // CORE are the models Droid Core's windows count: those of a vendor other
-// than Anthropic, OpenAI, xAI and Google, but Muse Spark 1.2, Meta's on
-// Fireworks, which droid keeps out of the core pool (no billingPool "core").
-// Standard's count every other model.
-const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream) && m.id !== "muse-spark-1.2").map((m) => m.id)
+// than Anthropic, OpenAI, xAI and Google, but Meta's Muse Spark models
+// (1.2 on Fireworks, Open on Baseten), which droid keeps out of the core
+// pool (no billingPool "core"). Standard's count every other model.
+const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream) && !m.id.startsWith("muse-")).map((m) => m.id)
 
 // statusLine is a status as Go's HTTP client names it, "403 Forbidden".
 const statusLine = (status) => `${status} ${STATUS_CODES[status] ?? ""}`.trim()
@@ -1215,7 +1296,8 @@ function harnessText(text) {
 
 // toolDescriptions puts each tool's description, and its schema's
 // descriptions, through harnessText: Anthropic's tools[].description and
-// input_schema, chat's tools[].function, Responses' tools[]. False when
+// input_schema, chat's tools[].function, Responses' tools[], Gemini's
+// functionDeclarations (parameters or parametersJsonSchema). False when
 // nothing changed.
 function schemaDescriptions(schema, depth = 0) {
   if (!schema || typeof schema !== "object" || depth > 32) return false
@@ -1240,7 +1322,7 @@ function toolDescriptions(tools) {
       const adapted = harnessText(fn.description)
       if (adapted !== fn.description) (fn.description = adapted), (changed = true)
     }
-    for (const key of ["input_schema", "parameters"]) if (schemaDescriptions(fn[key])) changed = true
+    for (const key of ["input_schema", "parameters", "parametersJsonSchema"]) if (schemaDescriptions(fn[key])) changed = true
   }
   return changed
 }
@@ -1286,9 +1368,26 @@ function systemContext(text) {
   if (SYSTEM_TOKEN_OPENING.test(text) || SYSTEM_SKILL_CONTEXT.test(text)) return announcedContext(text)
   if (HOOK_OUTPUT.test(text) || text.startsWith(DEFERRED_TOOLS_OPENING)) {
     const at = text.indexOf(HOOK_CONTEXT)
-    return at < 0 ? text : text.slice(0, at + 1) + generatedContext(text.slice(at + 1))
+    if (at < 0) return text
+    const head = HOOK_OUTPUT.test(text) ? text.slice(0, at + 1) : listedSkills(text.slice(0, at + 1))
+    return head + generatedContext(text.slice(at + 1))
   }
   return generatedContext(text)
+}
+
+// Claude Code 2.1.327 sends one system message that opens with the
+// deferred tools, then the agent types and the skill list, and only then
+// the environment (@dannykkg on X, 2026-11-24). The list sits before the
+// environment, where generatedContext doesn't look. Adapt the entry only
+// when the paragraph before it is the exact skill header, and stop at the
+// first hook paragraph: a hook owns what follows it.
+function listedSkills(head) {
+  const parts = head.split("\n\n")
+  for (let i = 1; i < parts.length; i++) {
+    if (HOOK_NOTIFICATION.test(parts[i])) break
+    if (parts[i - 1] === "The following skills are available for use with the Skill tool:" && parts[i].startsWith("- ")) parts[i] = configSkillText(parts[i])
+  }
+  return parts.join("\n\n")
 }
 
 // Runtime notifications can precede a skill update, so the message opening
@@ -1695,10 +1794,23 @@ function sanitizeBody(body) {
 // Claude Code 403 while Codex worked on the same account).
 
 // claudeIdentity opens text with droid's line in place of Claude Code's
-// fixed first line, when text is that line alone or opens with it.
+// fixed first line, when text is that line alone or opens with it. magpie
+// joins a Messages system's blocks with nothing between them when it
+// translates a request for /api/llm/o, so a subagent's prompt (Claude Code
+// 2.1.327: the identity block, then "You are an agent for Claude Code, …"
+// with no newline of its own) reached Factory as "…Claude Agent SDK.You
+// are an agent …", and the identity went as it was. The line glued to the
+// next block is the same line; the longest identity it opens with is the
+// one, and droid's line goes on its own line before the rest.
 function claudeIdentity(text) {
-  const identity = [...CLAUDE_IDENTITIES].find((line) => text === line || text.startsWith(line + "\n"))
-  return identity ? DROID_LINE + text.slice(identity.length) : text
+  const identity = [...CLAUDE_IDENTITIES].filter((line) => text.startsWith(line)).sort((a, b) => b.length - a.length)[0]
+  if (!identity) return text
+  const rest = text.slice(identity.length)
+  if (rest === "" || rest.startsWith("\n")) return DROID_LINE + rest
+  // glued to the next block with nothing between: the gateway joined them.
+  // A space or other text after the line is the user's own sentence.
+  if (/^[A-Z]/.test(rest)) return DROID_LINE + "\n" + rest
+  return text
 }
 
 // ZCode embeds its generated environment paragraph, with unindented bullets,
@@ -1722,9 +1834,31 @@ function zcodeRuntimeContext(text) {
   })
 }
 
+// Claude Code 2.1.327 sends its environment as a system message after the
+// first user turn ("# Environment\nYou have been invoked in the following
+// environment: \n - Primary working directory: …"). Translated for
+// /api/llm/o, magpie folds a system message sent before any reply into the
+// system prompt, after a blank line, so the paragraph sat in the prompt,
+// where only an environment at its start (ZCode's) changed, and every
+// Claude Code request on a chat or Responses model carried the opening
+// Factory refuses (@dannykkg on X, 11-24: "the environment info not
+// handled"). Only a whole generated paragraph changes: the heading, the
+// fixed sentence and its bulleted lines, at the start of the prompt or
+// after a blank line, followed by a blank line or the end, outside a
+// fence; every value stays.
+const CLAUDE_ENV_PARAGRAPH = /(^|\n\n)(# Environment\nYou have been invoked in the following environment:[ \t]*(?:\n {1,2}- [^\n]*)+)(?=\n\n|\n?$)/g
+function claudeEnvironment(text) {
+  return text.replace(CLAUDE_ENV_PARAGRAPH, (block, lead, paragraph, offset) => {
+    if (insideFence(text, offset + lead.length)) return block
+    return lead + paragraph
+      .replace("# Environment", "# Runtime context")
+      .replace("You have been invoked in the following environment:", "The session environment is:")
+  })
+}
+
 // promptText adapts a system prompt's text.
 function promptText(text) {
-  return harnessText(configSkillText(clientOpening(systemModelLine(claudeIdentity(zcodeRuntimeContext(text))))))
+  return harnessText(configSkillText(clientOpening(systemModelLine(claudeIdentity(claudeEnvironment(zcodeRuntimeContext(text)))))))
 }
 
 // systemMessageText adapts a system message's text after the prompt.
@@ -1752,7 +1886,27 @@ function userBlockText(text) {
   }
   if (SKILL_REMINDER.test(text)) return configSkillText(text)
   if (DSH_SKILL_CATALOG.test(text)) return harnessText(text)
-  return text
+  return foldedSystemText(text)
+}
+
+// A system message Claude Code sends after a reply (2.1.327, after
+// /compact and in a subagent: the deferred tools, the agent types, the
+// skills, the environment, the model line and the date, as one message)
+// is folded by magpie into a user turn as one reminder when it translates
+// the request for /api/llm/o or rebuilds it for /api/llm/a. As a reminder
+// none of the whole-block patterns above match it, and its environment,
+// model line and update-config sentence went to Factory as they were. It
+// is adapted as the system message it was (systemMessageText), and only
+// one that opens as Claude Code's generated system messages open: the
+// deferred-tools announcement, a startup hook's output or the
+// environment paragraph.
+function foldedSystemText(text) {
+  if (!text.startsWith(REMINDER_OPEN) || !text.endsWith(REMINDER_CLOSE)) return text
+  const inner = text.slice(REMINDER_OPEN.length, -REMINDER_CLOSE.length)
+  if (inner.includes(REMINDER_OPEN) || inner.includes(REMINDER_CLOSE)) return text
+  if (!inner.startsWith(DEFERRED_TOOLS_OPENING) && !HOOK_OUTPUT.test(inner) && !SYSTEM_ENV_CONTEXT.test(inner + "\n")) return text
+  const adapted = systemMessageText(inner)
+  return adapted === inner ? text : REMINDER_OPEN + adapted + REMINDER_CLOSE
 }
 
 // dsh (@deepseek-ai/dsh-tool-skill) announces its skills in a user turn, a
@@ -2534,4 +2688,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { harnessText, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { harnessText, clientOpening, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }

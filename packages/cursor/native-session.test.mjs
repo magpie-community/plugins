@@ -1,5 +1,5 @@
 import "./nonet.mjs"
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { _internal } from "./index.mjs"
@@ -8,6 +8,12 @@ import { bin, text, uint, message, tool, update, setBlob, getBlob, checkpoint, e
 
 const pools = []
 afterEach(async () => { await Promise.all(pools.splice(0).map((p) => p.clear())) })
+
+// these Runs send no count after a step's tool count: none is waited for
+// (plugins#1615)
+const usageWait = NATIVE_LIMITS.usageWait
+beforeEach(() => { NATIVE_LIMITS.usageWait = 0 })
+afterEach(() => { NATIVE_LIMITS.usageWait = usageWait })
 const registered = [{ name: "audit_echo", description: "synthetic", schema: { type: "object" }, schemaText: '{"type":"object"}' }]
 const chat = (extra = {}) => ({ model: "synthetic-model", messages: [{ role: "user", content: "synthetic" }], ...extra })
 function owner(extra = {}, overrides = {}) {

@@ -51,17 +51,32 @@ A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
 marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode keeps it in
 `auth.json`; magpie keeps it in `plugin-auth.json`. The access token is
-refreshed a minute before it ends, and the new one is saved. If the refresh
-fails, the old token is used while it lasts.
+refreshed a minute before it ends, and the new one is saved; one minted to
+live long (the browser sign-in's access token lasts 28 days, its refresh
+token 30) is instead renewed before a request while it still has 10 days
+left, or once it is a day old. WorkBuddy's own app renews its sign-in each
+time it starts, and each renewal gives a new refresh token with a new
+window (30 days or more), so since 0.2.42 a sign-in used at least once
+a month is never signed out; up to 0.2.41 one used only while its token
+still had more than 10 days left was, every month (plugins#1598). A renewal that
+names no end for its new refresh token takes the token's own, else
+leaves it unknown rather than keeping the old one's. WorkBuddy AI's
+sign-in ends a year after it was made, renewed or not. If
+the refresh fails, the old token is used while it lasts; an early renewal
+that fails is tried again after a minute, and after twice as long for each
+failure in a row.
 
 In magpie (0.1.684 or later) the plugin also gives `auth.refresh` with
-`refreshLead` of 5 minutes: magpie renews a browser sign-in (an hour's
-token) 5 minutes before it ends, once for the account, before its
-requests, models and usage ask, and saves what it gives. It goes through
-the same one-refresh-at-a-time as a request's refresh, so a refresh token
-is never spent twice. A failed renewal, a refresh token past its end
-included, doesn't mark the account, as the built-in never did; magpie
-tries again later, and the old token is used meanwhile.
+`refreshLead` of 5 minutes: magpie renews a browser sign-in 5 minutes
+before it ends, once for the account, before its requests, models and
+usage ask, and saves what it gives. The lead stays short because a
+sign-in whose token lives less than the lead would be due again as soon
+as it was renewed; a long-lived one is renewed 10 days ahead by a
+request, as above. It goes through the same
+one-refresh-at-a-time as a request's refresh, so a refresh token is never
+spent twice. A failed renewal, a refresh token past its end included,
+doesn't mark the account, as the built-in never did; magpie tries again
+later, and the old token is used meanwhile.
 OpenCode doesn't call `auth.refresh`; the check before each request stays.
 
 An enterprise (team) account is asked for as the enterprise. A browser
@@ -161,6 +176,33 @@ model on Messages therefore lists `max` in its levels even where
 `/v1/messages/count_tokens` **is not served** (404). magpie treats a 404 on
 count_tokens as "no counter" (`unsupportedCount`) and answers with its own
 estimate.
+
+Since 0.2.44 a model asked on Messages that WorkBuddy serves on chat only
+(any but the Claude ones above on the China build, every model on WorkBuddy
+AI) is told so: its 400, 404 or 500 becomes a 400 `invalid_request_error`
+that says to send it as a chat completions request. Before, it came back as
+WorkBuddy's bare "not supported".
+
+**A chat's reasoning signature goes back with its turn (since 0.2.44).** A
+streamed chat chunk may carry `delta.extra_fields`, WorkBuddy's own field:
+`reasoning_detail` (`content_signature`, `text`) and `_meta`. WorkBuddy's
+client merges them across a turn's chunks (records one level deep, as its
+`mergeExtraFields` does) and sends them back next request on that assistant
+message, as `extra_fields` beside `reasoning`. An agent's SDK keeps neither
+(OpenCode's drops unknown delta fields), so the signature was lost (reported
+on X by @Anotiaww). The plugin now keeps each reply's merged `extra_fields`
+and its reasoning, and puts them back on the assistant message they came
+with: found by its tool call ids, or its text when it has none, within one
+conversation, account and model, never across them. A message that already
+has `extra_fields` goes as it is, and the agent's own reasoning text is kept
+when it sent one. A model that signs nothing (every free model, measured
+2026-11-27) sends `extra_fields: null`, so nothing is kept or added. The
+server's types, read off its errors that day: `extra_fields` is a
+`v2.ExtraFields`, `reasoning_detail` a `v2.ReasoningDetail` whose
+`content_signature` and `text` are strings, `_meta` a `v2.Meta`; other keys
+are ignored. A kept signature WorkBuddy refuses (11159) is dropped and the
+chat sent again without it. They are kept in memory (2048 turns, 64 MB), so
+a restart forgets them and the next turn goes without, as before.
 
 Each chat carries WorkBuddy's headers:
 - `Authorization`, `X-User-Id`, `X-Domain`, `X-Product: SaaS`, `X-IDE-Type: WorkBuddy`;
@@ -270,6 +312,18 @@ that model with one space as its content, as the same model on QwenWork
 serves it (#1213). A turn with text, and every other model, go as they
 came; `kimi-k3` takes the empty turn.
 
+WorkBuddy sends `"tool_calls": []` on every streamed delta, including
+reasoning. OpenAI-compatible clients treat any present `tool_calls` field as
+the end of the active reasoning block, which can create thousands of tiny
+reasoning parts and make OpenCode Desktop freeze when restoring a session.
+Since 0.2.38 the plugin removes only that empty list from forwarded deltas;
+real tool calls and unaffected events pass through unchanged (#1532).
+
+Since 0.2.41 the forwarded reasoning deltas are also held and emitted as one
+event, flushed on 8 KB, on a 300 ms clock, or when the block ends, so a long
+answer no longer becomes thousands of parts and the message is not rewritten
+per delta. The text is unchanged; only the chunk boundaries move (#1393).
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
@@ -377,6 +431,13 @@ sends its model requests (`RequestBodyGzip` in both builds' product.json).
 Claude's Messages route goes as it came, and so does anything that isn't a
 chat completion: magpie's drawings (`/v2/images/generations`,
 `/v2/images/edits`) go as plain JSON, which is all the images API reads.
+So do its videos (#1585): the models the config tags `text-to-video` or
+`image-to-video` (kling-video-v3, minimax-video-h3) are started at
+`/v2/videos/generations` and polled at `/v2/videos/tasks` as WorkBuddy's
+own CLI does, signed like a chat. magpie shapes those requests itself
+(magpie's `internal/gateway/video_workbuddy.go`); the plugin only signs and
+sends them. With "Free models only" on, a video is never started, since
+each costs credits.
 
 A model's price is its `credits` ("x0.29") and the config's
 `modelPromotions`. A discount for whole days (Step-5-Preview's 独家限免) is
@@ -422,6 +483,32 @@ sent as `/root/the agent harness/Work/` before), and so does the name in a
 path or a file name anywhere. Tools' results, commands and names such as
 `DSH_HOME` or `~/.dsh` go as they were.
 Whether this keeps an account from being banned is not known.
+
+### Speech and transcription
+
+Since 0.2.43 each site also lists two models that don't chat (#1617):
+
+| Model | Route | WorkBuddy's API |
+|---|---|---|
+| `workbuddy-tts` | `/v1/audio/speech` | `POST /agenttool/v1/tts`, `{"text"}`, answered as SSE `audio` events of base64 16 kHz mono PCM16 |
+| `workbuddy-transcribe` | `/v1/audio/transcriptions` | `POST /agenttool/v1/asr`, multipart `audio`, answered `{code, msg, text}` |
+
+Both are the APIs WorkBuddy's own app calls for read-aloud and voice
+input (`workbuddy-server`'s tts and asr services), with the same headers,
+on the account's endpoint. WorkBuddy takes no voice, model or speed: one
+voice is all there is, and `voice` and `speed` are ignored.
+
+- Speech: text is sent in pieces of at most 1000 bytes, cut at the end of a
+  sentence, as the app does (WorkBuddy refuses more than 1800). The answer
+  is `wav` (16 kHz) for every format but `pcm`, which is raw 24 kHz PCM16 as
+  OpenAI's. Asking for `mp3`, `opus`, `aac` or `flac` gets WAV too, with
+  its own Content-Type.
+- Transcription: the file goes as sent; the app sends 16 kHz mono WAV.
+  `response_format` is `json` or `text`; `verbose_json`, `srt` and `vtt`
+  are refused, since WorkBuddy gives no timings. `/v1/audio/translations`
+  is refused.
+- With "Free models only" on, neither is listed and their requests are
+  refused before they're sent: WorkBuddy names no price for them.
 
 ## Credits in magpie
 
@@ -474,8 +561,11 @@ to continue using it.
 That is a token allowance of its own — per account, per 24 hours, about 1e8
 tokens, counted as prompt + cache-read + completion. Nothing the vendor
 answers with reports it, so the plugin rebuilds the current window from
-magpie's `usage.jsonl` and gives it to the card as **Free model tokens**
-beside **Credits**. `quota alert` and `magpie quota` show it too; before,
+magpie's `usage.jsonl` and gives it to the card as
+**deepseek-v4.1-flash tokens (est.)** (~100M) beside **Credits**, while the
+account's model list has deepseek-v4.1-flash at x0.00. Once the list prices
+it or drops it, the card goes, and no other free model takes its count or
+cap: nothing has measured another model's window (plugins#1567). `quota alert` and `magpie quota` show it too; before,
 the card read 0% on an account that was already refused.
 
 What is measured, and what is easy to read wrongly:

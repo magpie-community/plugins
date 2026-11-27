@@ -202,7 +202,7 @@ test("a model with a Max context is listed a second time, as its Max, which asks
   const p = { models: { ..._internal.MODELS } }
   const live = await hooks.provider.models(p, { auth: signedIn() })
   expect(Object.keys(live)).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-max", "glm-5.2"])
-  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 116000, output: 16000 })
+  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 1000000, output: 16000 })
   expect(live["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1000000, output: 64000 })
   expect(live["deepseek-v4.1-flash-max"].name).toBe("DeepSeek-V4.1-Flash (Max)")
   const opts = await hooks.auth.loader(async () => signedIn())
@@ -243,7 +243,7 @@ test("a Max the lists split between them is listed, and asked where its __max mo
   const p = { models: { ..._internal.MODELS } }
   const live = await hooks.provider.models(p, { auth: signedIn() })
   expect(Object.keys(live)).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-max", "DeepSeek-V4-Flash-Official"])
-  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 200000, output: 64000 })
+  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 1000000, output: 64000 })
   expect(live["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1000000, output: 128000 })
   expect(live["deepseek-v4.1-flash-max"].name).toBe("DeepSeek-V4.1-Flash (Max)")
   const opts = await hooks.auth.loader(async () => signedIn())

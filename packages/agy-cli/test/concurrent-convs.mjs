@@ -241,3 +241,56 @@ test("an earlier message really changed still starts a new session, masked value
   const { drops } = await runMasked({ conversations: 1, steer: false, edit: true })
   assert.deepEqual(drops.map((row) => row.reason), ["history_mismatch"], JSON.stringify(drops))
 })
+// DSH opens every session with the same notice ("The user changed the
+// approval policy ...") before the user's own request, and names the
+// session's folder after it. Two sessions in two folders had one key (system
+// and first message alike), shared one agy, and each one's request was
+// refused with 503 "this conversation still has an unfinished response"
+// while the other's response ran. The folder is part of the key.
+test("two DSH sessions with the same opening notice in different folders get their own agy", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const dirs = ["A", "B"].map((name) => fs.mkdtempSync(path.join(os.tmpdir(), `agy-dsh-${name}-`)))
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      const text = (agent.prompt || []).map((p) => p.text || "").join("")
+      return stepper(text.includes("TASK-A") ? "a" : "b", 2)(agent)
+    }
+    const notice = { role: "user", content: [{ type: "text", text: 'The user changed the approval policy from "ask the user for approval" to "never ask the user for approval".' }] }
+    const convs = ["A", "B"].map((name, i) => ({
+      name,
+      body: baseBody({ metadata: { user_id: "dsh-main" }, messages: [
+        notice,
+        { role: "user", content: `Current working directory: "${dirs[i]}".\nTASK-${name} read everything` },
+      ] }),
+      parsed: null,
+    }))
+    const advance = async (conv) => {
+      if (conv.parsed) {
+        const call = conv.parsed.content.find((block) => block.type === "tool_use")
+        assert.ok(call, `${conv.name}: ${JSON.stringify(conv.parsed)}`)
+        conv.body = { ...conv.body, messages: [
+          ...conv.body.messages,
+          { role: "assistant", content: [call] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: `ok ${call.id}` }] },
+        ] }
+      }
+      const response = await kit.request(conv.body)
+      assert.equal(response.status, 200, `${conv.name}: ${response.status} ${response.status === 200 ? "" : await response.clone().text()}`)
+      conv.parsed = await readSse(response)
+    }
+    for (let i = 0; i <= 2; i++) await Promise.all(convs.map(advance))
+    for (const conv of convs) assert.equal(conv.parsed.stopReason, "end_turn", `${conv.name}: ${JSON.stringify(conv.parsed)}`)
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true })
+  }
+  const drops = stderr.lines.filter((row) => row.action === "drop_live")
+  assert.deepEqual(drops, [], JSON.stringify(drops))
+  const opened = stderr.lines.filter((row) => row.action === "session_new")
+  assert.equal(opened.length, 2, JSON.stringify(opened))
+})

@@ -9,7 +9,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import {
-  baseBody, continueWithToolResults, createBridgeKit, readSse, sleep,
+  baseBody, continueWithToolResults, createBridgeKit, READ_TOOL, readSse, sleep,
 } from "./testkit.mjs"
 
 const USAGE = { inputTokens: 100, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 5, totalTokens: 105 }
@@ -469,7 +469,7 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     assert.equal(kit.acpSpawns.length, 1)
   })
 
-  // 3x unmatched tool results (NO_PROGRESS_REPEAT_LIMIT) while steering must stay 409 and never reclaim
+  // unmatched tool results while steering are busy (503, try again) and never reclaim
   await withKit({}, async (kit) => {
     kit.prompts.push(async (agent) => {
       agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
@@ -499,7 +499,7 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     }
     const steerRes = await settleResponse(steerReq)
 
-    assert.deepEqual(boguses.map((r) => r.status), [409, 409, 409])
+    assert.deepEqual(boguses.map((r) => r.status), [503, 503, 503])
     assert.equal(steerRes.status, 200)
     assert.equal(steerRes.text, "survived unmatched repeats")
     assert.equal(kit.acpSpawns.length, 1)
@@ -613,3 +613,58 @@ test("steerInSession: deferred self-poll commit wait, foreign ACP tool isolation
 })
 
 
+
+// plugins#1371 (_paper_hands on X): Claude Code with deferred tools declares
+// each one ToolSearch loads only from the next request on, a tool-result
+// request of the same turn. agy checks a call against the tools listed when
+// its prompt began (#942), so that step ends; the session must not: the next
+// prompt goes into it after agy has listed the grown catalog. Before, every
+// load dropped the session and replayed the whole history into a new one.
+test("steerInSession: a tool ToolSearch loads mid-turn keeps the session; the next prompt sees it", async () => {
+  await withKit({}, async (kit) => {
+    const SEARCH = { name: "ToolSearch", description: "Fetches deferred tools", input_schema: { type: "object", properties: { query: { type: "string" } } } }
+    const LOADED = { name: "mcp__fake__tool_7", description: "Fake tool 7", input_schema: { type: "object", properties: { id: { type: "string" } } } }
+    let secondPrompt = null
+    let listedBeforeSecond = null
+    kit.prompts.push(async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
+      const reply = await agent.tool("ToolSearch", { query: "select:mcp__fake__tool_7" })
+      assert.match(reply?.result?.content?.[0]?.text || "", /Loaded tool: mcp__fake__tool_7/)
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" })
+      await agent.waitCancel()
+      return { stopReason: "cancelled", usage: USAGE }
+    })
+    kit.prompts.push(async (agent) => {
+      secondPrompt = { sessionId: agent.sessionId, text: agent.prompt.map((p) => p.text || "").join("\n") }
+      listedBeforeSecond = kit.listings.at(-1)?.tools || []
+      await agent.tool("mcp__fake__tool_7", { id: "r7" })
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    kit.defaultPrompt = async (agent) => {
+      await agent.text(`done:${agent.index}`)
+      return { stopReason: "end_turn", usage: USAGE }
+    }
+
+    const body = baseBody({ tools: [READ_TOOL, SEARCH] })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.content.find((b) => b.type === "tool_use")?.name, "ToolSearch")
+    const firstSession = kit.acpLog.find((e) => e.method === "session/prompt")?.params?.sessionId
+    const second = continueWithToolResults(body, first, () => [{ type: "tool_reference", tool_name: "mcp__fake__tool_7" }])
+    second.tools = [READ_TOOL, SEARCH, LOADED]
+    const res = await readSse(await kit.request(second))
+
+    assert.equal(kit.acpSpawns.length, 1, "no new agy")
+    assert.equal(kit.acpLog.filter((e) => e.method === "session/new").length, 1, "no new session")
+    assert.equal(secondPrompt?.sessionId, firstSession, "the next prompt goes into the same session")
+    assert.ok(listedBeforeSecond.includes("mcp__fake__tool_7"), `agy listed the loaded tool first: ${listedBeforeSecond}`)
+    assert.match(secondPrompt.text, /can be called now: mcp__fake__tool_7/)
+    assert.doesNotMatch(secondPrompt.text, /conversation_history|start the task/, "nothing replayed")
+    const calls = res.content.filter((b) => b.type === "tool_use")
+    assert.deepEqual(calls.map((b) => b.name), ["mcp__fake__tool_7"])
+
+    const third = continueWithToolResults(second, res, () => "record 7: ok")
+    const done = await readSse(await kit.request(third))
+    assert.equal(done.stopReason, "end_turn")
+    assert.equal(kit.acpLog.filter((e) => e.method === "session/new").length, 1)
+  })
+})

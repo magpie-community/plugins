@@ -1099,3 +1099,43 @@ test("the page is declared and shipped", () => {
   for (const f of ["index.html", "app.js", "i18n.js", "style.css"]) expect(readdirSync(new URL("./page/", import.meta.url))).toContain(f)
   expect(pkg.files).toEqual(expect.arrayContaining(["page/*.html", "page/*.js", "page/*.css"]))
 })
+
+// ---- claude 2.1.330: progress summaries written from short notes ----
+// 2.1.330 writes a subagent's progress label from short notes when the small
+// fast model may write it (a first-party API key) or on Bedrock / Vertex /
+// Foundry / a gateway: one user message (<task>, <recent_steps>,
+// <started_not_finished>, then "Describe the agent's most recent action"),
+// its own system prompt, and no tools. Otherwise it still forks the agent's
+// transcript with the "Describe your most recent action" prompt, as 2.1.325.
+// Both recorded from the TUI with a background agent running 2 x 40 s.
+const C330 = "claude-2.1.330", c330 = (name) => fxIn(C330, name)
+
+test("captured 2.1.330: notes-based progress summaries carry no tools, so they never open or end a turn", async () => {
+  for (const n of ["agent-notes-04", "agent-notes-06"]) {
+    const b = c330(n).body
+    expect(lastText(b)).toContain("Describe the agent's most recent action in 3-5 words")
+    expect(b.messages.length).toBe(1)
+    expect(hasTools(b, "anthropic")).toBe(false)
+    expect(ending(c330(n).reply, "anthropic").done).toBe(true)
+  }
+  expect(await replayIn(C330, "anthropic", "agent-notes", 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("captured 2.1.330: transcript-based progress summaries are still side calls", async () => {
+  for (const n of ["agent-progress-04", "agent-progress-06"]) expect(progressSummary(c330(n).body, "anthropic")).toBe(true)
+  for (const n of ["agent-progress-01", "agent-progress-02", "agent-progress-05", "agent-progress-08"]) expect(progressSummary(c330(n).body, "anthropic")).toBe(false)
+  expect(await replayIn(C330, "anthropic", "agent-progress", 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+})
+
+test("captured 2.1.330: a long background agent run with summaries between its rounds pushes once, when the agent reports back", async () => {
+  // 01-02 the main conversation launches the agent; 03, 05, 07 are the
+  // agent's rounds (05 and 06 sent again, as a longer run would); 04 and 06
+  // the summaries; 08 the task-notification the main conversation answers
+  for (const prefix of ["agent-notes", "agent-progress"]) {
+    reset(() => clock, fakeTimers); calls = []
+    const F = (i) => `${prefix}-0${i}`
+    const got = await steps([[0, F(1)], [0, F(2)], [0, F(3)], [0.5, F(4)], [0.5, F(5)], [0.5, F(6)], [16, F(5)], [20, F(6)], [20, F(7)], [0, F(8)]].map(([g, n]) => [g, c330(n)]))
+    expect(got).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+  }
+})

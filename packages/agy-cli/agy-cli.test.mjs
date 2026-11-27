@@ -18,21 +18,44 @@ for (const [name, mocks] of [
   ["platform.mjs", true],
   ["compat.mjs", true],
   ["prefill.mjs", false],
+  ["images.mjs", false],
   ["usage.mjs", true],
   ["signin.mjs", false],
   ["catalog.mjs", false],
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
   ["tool-summary.mjs", false],
+  ["call-mcp-tool.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
   ["repeat-batch.mjs", false],
+  ["unmatched-results.mjs", false],
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],
   ["spare.mjs", false],
+  ["account-scope.mjs", false],
+  ["stateless-reuse.mjs", false],
   ["tools-listed.mjs", false],
+  ["slash-commands.mjs", false],
   ["concurrent-convs.mjs", false],
+  ["masking-drift.mjs", false],
+  ["spilled-output.mjs", false],
+  ["web-search.mjs", false],
+  ["tool-result-prefill.mjs", false],
+  ["tool-step-retry.mjs", false],
+  ["image-bytes.mjs", false],
+  ["dsh-replay-state.mjs", false],
+  ["duplicate-result-notice.mjs", false],
+  ["image-slim.mjs", false],
+  ["transient-history.mjs", false],
+  ["prompt-suggestion.mjs", false],
+  ["seed-replay.mjs", false],
+  ["session-continuity.mjs", false],
+  ["park-reread.mjs", false],
+  ["same-opening.mjs", false],
+  ["claude-code-sessions.mjs", false],
+  ["media-input.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
@@ -46,6 +69,12 @@ for (const [name, mocks] of [
 
 test("test/re2-pattern-unit.mjs", () => {
   const { code, output } = run([path.join(dir, "re2-pattern-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)
+
+test("test/image-signature-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "image-signature-unit.mjs")], 60_000)
   expect(output).toMatch(/ALL OK/)
   expect(code).toBe(0)
 }, 70_000)

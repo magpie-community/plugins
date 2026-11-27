@@ -34,6 +34,8 @@ async function plugin() {
 const OFFERED = ["claude-opus-5-5-fast", "claude-opus-5-fast", "claude-opus-4-8-fast", "gpt-5.5-fast", "gpt-5.4-fast", "gpt-5.3-codex-fast"]
 // droid 1.7.0's, offered as it lists them (index.mjs, above MODELS)
 const OFFERED_170 = ["gpt-6-sol-fast", "gpt-6-luna-fast", "gpt-5.6-sol-fast", "glm-5.2-fast"]
+// droid 1.21.1's (models.test.mjs)
+const OFFERED_1211 = ["gpt-6.2-astra-fast", "gpt-6.2-sol-fast"]
 
 test("droid's Fast Mode models are offered at their base model's limits and efforts", async () => {
   const { models } = await plugin()
@@ -140,6 +142,6 @@ test("the Fast Mode models come after every other model, so magpie's first 24 ar
   const ids = Object.keys(models)
   const first = ids.findIndex((id) => id.endsWith("-fast"))
   expect(ids.slice(first).every((id) => id.endsWith("-fast"))).toBe(true)
-  expect(ids.slice(first)).toEqual([...OFFERED, ...OFFERED_170])
+  expect(ids.slice(first)).toEqual([...OFFERED, ...OFFERED_170, ...OFFERED_1211])
   for (const id of ["gpt-5.3-codex", "grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"]) expect(ids.slice(0, 24)).toContain(id)
 })

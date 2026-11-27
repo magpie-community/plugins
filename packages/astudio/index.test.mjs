@@ -1237,6 +1237,42 @@ const fakeChrome = (cookies = []) => ({
   close: async () => {},
 })
 
+test("browserExecutable uses the Windows default browser command", async () => {
+  const expected = "D:\\Portable Chrome++\\chrome.exe"
+  const runs = []
+  const executable = await astroBrowser.browserExecutable({
+    platform: "win32",
+    env: {},
+    run: (file, args) => {
+      runs.push({ file, args })
+      return `"${expected}" --single-argument %1`
+    },
+    accessImpl: async (path) => {
+      if (path !== expected) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+    },
+  })
+  assert.equal(executable, expected)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].file, "powershell.exe")
+})
+
+test("browserExecutable parses quoted and bare Windows browser commands", () => {
+  assert.equal(astroBrowser.executableFromWindowsCommand('"C:\\Chrome\\chrome.exe" --single-argument %1'), "C:\\Chrome\\chrome.exe")
+  assert.equal(astroBrowser.executableFromWindowsCommand("C:\\Edge\\msedge.exe --single-argument %1"), "C:\\Edge\\msedge.exe")
+  assert.equal(astroBrowser.executableFromWindowsCommand(""), null)
+})
+
+test("browserLaunchArgs adds --portable for a Chrome++ portable directory", async () => {
+  const executable = "D:\\Chrome++\\chrome.exe"
+  const args = await astroBrowser.browserLaunchArgs(executable, ["--user-data-dir=C:\\profile"], {
+    platform: "win32",
+    accessImpl: async (path) => {
+      if (path !== "D:\\Chrome++\\chrome++.ini") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+    },
+  })
+  assert.deepEqual(args, ["--portable", "--user-data-dir=C:\\profile"])
+})
+
 test("harvestAstronSession prefers the most specific domain and needs ssoSessionId plus account_id", async () => {
   const cookies = [
     { name: "token", value: "t-other", domain: ".example.com" },

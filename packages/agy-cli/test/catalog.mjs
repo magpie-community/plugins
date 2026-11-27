@@ -5,13 +5,16 @@
 // 全部经真实仓内 index.mjs 的 plugin.provider.models() / fetch 入口，边界替身见 testkit.mjs。
 
 import { test } from "node:test"
+import { tokenFile } from "../account.mjs"
+import { DUE_FOR_RENEWAL } from "../usage.mjs"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import {
-  BASE_MODEL_ROWS, CATALOG_TTL_MS, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
+  BASE_MODEL_ROWS, CATALOG_TTL_MS, MESSAGES_URL, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
 } from "./testkit.mjs"
 
 const FAST_BUDGET_MS = 750 // 计划给的调度容差；补丁内部等待预算是 500ms，远低于 Magpie 的 2s。
@@ -33,6 +36,40 @@ async function withKit(options, fn) {
   } finally {
     await kit.dispose()
   }
+}
+
+// agy -p /usage as the fake agy answers it: the quota of the account that
+// run's agy reads, the kept home's token file under that home (accountEnv
+// sets SSH_CONNECTION there), else agy's keyring (options.storedSignIn).
+// asked gets each read's account; refuse(email) makes agy say its sign-in
+// no longer works.
+function usageThroughAgy(options, { asked, left = () => 0.9, refuse = () => false }) {
+  const readBy = (opts) => {
+    const home = opts?.env?.SSH_CONNECTION ? opts.env.HOME : null
+    if (home) {
+      try { return JSON.parse(fs.readFileSync(tokenFile(home), "utf8")).id_token_email } catch { return null }
+    }
+    return JSON.parse(Buffer.from(String(options.storedSignIn).trim().replace(/^go-keyring-base64:/, ""), "base64").toString()).id_token_email
+  }
+  return (_file, args, opts) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.12\n" }
+    if (args[0] !== "-p") return 1
+    const email = readBy(opts)
+    asked.push(email)
+    if (refuse(email)) return { code: 1, stdout: "Error: oauth2: \"invalid_grant\" \"Token has been expired or revoked.\"\n" }
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [{
+      name: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ id: "w", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: left(email) }],
+    }] } } }) }
+  }
+}
+
+// the plugin asks Google nothing itself for usage: only agy does
+function noFetch() {
+  const fetched = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => { fetched.push(String(url)); throw new Error("no network in tests") }
+  return { fetched, restore: () => { globalThis.fetch = realFetch } }
 }
 
 async function timed(fn) {
@@ -92,6 +129,433 @@ test("agy 没存登录时不在后台跑 agy models、不起探测会话，请�
     await settle(kit)
     assert.ok(kit.modelsSpawns.length >= 1, "有登录却没跑 agy models")
   })
+})
+
+// ownsh1p on X: two accounts in the local agy CLI, and the usage overview
+// showed the first one's balance on both cards. Both were saved as agy's
+// own (no home of their own: Switch to another Google account before
+// 0.1.67, or a sign-in in a terminal), and agy's keyring holds one of
+// them, so each read, and each request, was that one's.
+test("an account of agy's own that agy no longer holds shows no other account's usage, nor sends as it", async () => {
+  const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29." + email, refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: email,
+  })).toString("base64") + "\n"
+  const asked = []
+  const options = { platform: "darwin", storedSignIn: keyring("b@example.com"), modelsBehavior: DYNAMIC_OK }
+  options.onSpawn = usageThroughAgy(options, { asked, left: email => email === "a@example.com" ? 0.9 : 0.25 })
+  const net = noFetch()
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "B@example.com" } }
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(ua.windows, [], JSON.stringify(ua))
+      assert.equal(ua.signIn, "expired")
+      assert.match(ua.error, /signed in to another Google account now, not to a@example\.com/)
+      assert.match(ua.error, /Add another Google account/)
+      assert.deepEqual(asked, [], "a's card was read with b's sign-in")
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.error, undefined, JSON.stringify(ub))
+      assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), JSON.stringify(asked))
+
+      // a's requests would go out as b
+      const la = await kit.plugin.auth.loader(async () => a)
+      const refused = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.equal(refused.status, 401)
+      assert.equal(refused.headers.get("X-Magpie-Sign-In"), "expired")
+      assert.match(await refused.text(), /not to a@example\.com/)
+      assert.equal(kit.acpSpawns.length, 0, "a's request ran agy")
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const served = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401)
+      await served.text()
+
+      // agy holds a again (signed in to it in a terminal): a's card reads
+      // a's quota, and says its sign-in works again
+      options.storedSignIn = keyring("a@example.com")
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const again = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(again.error, undefined, JSON.stringify(again))
+      assert.equal(again.signIn, "renewed")
+      assert.equal(again.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), JSON.stringify(asked))
+      // b was kept while agy held it: its card reads b's own quota now
+      asked.length = 0
+      const bNow = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(bNow.error, undefined, JSON.stringify(bNow))
+      assert.equal(bNow.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), JSON.stringify(asked))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
+// ownsh1p on X again (为什么不能两个都显示额度呢): an account of agy's own
+// that agy held once keeps its own sign-in, so when agy holds another its
+// card reads its own quota, and its requests run agy with its own sign-in,
+// never the held one's. A kept sign-in Google no longer takes says to sign
+// in again. agy's keyring is never written.
+test("an account of agy's own that agy held once reads its own usage, and sends as itself, once agy holds another", async () => {
+  const signIn = (email, expiry = "0001-01-01T00:00:00Z") => ({
+    token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry },
+    auth_method: "consumer", id_token_email: email,
+  })
+  const keyring = email => "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn(email))).toString("base64") + "\n"
+  const asked = []
+  let refused = false
+  const options = { platform: "darwin", storedSignIn: keyring("a@example.com"), modelsBehavior: DYNAMIC_OK }
+  options.onSpawn = usageThroughAgy(options, {
+    asked, left: email => email === "a@example.com" ? 0.9 : 0.25, refuse: email => refused && email === "a@example.com",
+  })
+  const net = noFetch()
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "A@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "b@example.com" } }
+      // agy holds a: a's card reads the keyring, and a is kept
+      const first = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(first.error, undefined, JSON.stringify(first))
+      const ids = fs.readdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts"))
+      assert.equal(ids.length, 1)
+      assert.match(ids[0], /^own[0-9a-f]{24}$/)
+      const keptFile = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", ids[0], ".gemini", "antigravity-cli", "antigravity-oauth-token")
+      assert.deepEqual(JSON.parse(fs.readFileSync(keptFile, "utf8")), signIn("a@example.com"))
+      assert.equal(fs.statSync(keptFile).mode & 0o777, 0o600)
+
+      // a sign-in in a terminal: agy holds b now
+      options.storedSignIn = keyring("b@example.com")
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(ua.error, undefined, JSON.stringify(ua))
+      assert.notEqual(ua.signIn, "expired")
+      assert.equal(ua.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), asked.join())
+      asked.length = 0
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+      assert.ok(asked.length > 0 && asked.every(h => h === "b@example.com"), asked.join())
+
+      // a's request runs agy in a's kept home, b's in agy's own
+      const la = await kit.plugin.auth.loader(async () => a)
+      const served = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.length > 0)
+      assert.ok(kit.acpSpawns.every(s => s.env.HOME === path.dirname(path.dirname(path.dirname(keptFile)))), "a's request ran outside its kept home")
+      const before = kit.acpSpawns.length
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const servedB = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      await servedB.text()
+      assert.ok(kit.acpSpawns.slice(before).every(s => s.env.HOME !== kit.acpSpawns[0].env.HOME), "b's request ran in a's kept home")
+
+      // a's kept access token has ended: agy isn't run for usage (it renews
+      // the token on a's next chat), and nobody asks Google
+      fs.writeFileSync(keptFile, JSON.stringify(signIn("a@example.com", "2020-01-01T00:00:00Z")))
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const due = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(due.windows, [])
+      assert.equal(due.error, DUE_FOR_RENEWAL)
+      assert.notEqual(due.signIn, "expired")
+      assert.deepEqual(asked, [])
+
+      // agy says Google no longer takes a's kept sign-in: a's card says to sign in again
+      fs.writeFileSync(keptFile, JSON.stringify(signIn("a@example.com", "2099-01-01T00:00:00Z")))
+      refused = true
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const gone = await kit.plugin.auth.usage(async () => a, {})
+      assert.deepEqual(gone.windows, [])
+      assert.equal(gone.signIn, "expired")
+      assert.match(gone.error, /not to A@example\.com/)
+      assert.deepEqual(asked, ["a@example.com"])
+      // agy's keyring was only read
+      assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || c.args[0] === "find-generic-password"))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
+// mayne_wong on X: magpie's gateway run as a LaunchDaemon searches only
+// System.keychain, so agy's sign-in in the login keychain reads as none
+// there (44) while the window reads it. An account of agy's own the window
+// kept runs in its kept home there; one it never kept is told why, not to
+// sign in again (which the window answered with "already signed in").
+test("out of the login keychain's reach (a LaunchDaemon), an account of agy's own runs with the sign-in the window kept", async () => {
+  const signIn = (email) => ({
+    token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: email,
+  })
+  const asked = []
+  const options = {
+    platform: "darwin", modelsBehavior: DYNAMIC_OK,
+    storedSignIn: "go-keyring-base64:" + Buffer.from(JSON.stringify(signIn("a@example.com"))).toString("base64") + "\n",
+  }
+  options.onSpawn = usageThroughAgy(options, { asked })
+  const net = noFetch()
+  try {
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const b = { type: "oauth", key: "agy", metadata: { email: "b@example.com" } }
+      // the window, in the login session: a is read from the keyring, and kept
+      const first = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(first.error, undefined, JSON.stringify(first))
+      const accounts = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts")
+      const keptHome = path.join(accounts, fs.readdirSync(accounts)[0])
+
+      // the gateway, as a LaunchDaemon: the login keychain is there, but not searched
+      fs.mkdirSync(path.join(kit.env.HOME, "Library", "Keychains"), { recursive: true })
+      fs.writeFileSync(path.join(kit.env.HOME, "Library", "Keychains", "login.keychain-db"), "")
+      options.storedSignIn = "missing"
+      options.keychains = '    "/Library/Keychains/System.keychain"\n'
+      kit.clock.advance(60_000)
+      asked.length = 0
+      const ua = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(ua.error, undefined, JSON.stringify(ua))
+      assert.equal(ua.windows.find(w => !w.model)?.used, 10)
+      assert.ok(asked.length > 0 && asked.every(h => h === "a@example.com"), asked.join())
+      const la = await kit.plugin.auth.loader(async () => a)
+      const served = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.length > 0)
+      assert.ok(kit.acpSpawns.every(s => s.env.HOME === keptHome), "a's request ran outside its kept home")
+
+      // b was never kept: told why, not to sign in again
+      const before = kit.acpSpawns.length
+      const lb = await kit.plugin.auth.loader(async () => b)
+      const refused = await lb.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.equal(refused.status, 401)
+      const why = await refused.text()
+      assert.match(why, /LaunchDaemon/)
+      assert.match(why, /magpie daemon install/)
+      assert.doesNotMatch(why, /sign in again in magpie/)
+      assert.equal(kit.acpSpawns.length, before, "agy was run where it can't read its sign-in")
+      const ub = await kit.plugin.auth.usage(async () => b, {})
+      assert.equal(ub.signIn, "expired")
+      assert.match(ub.error, /LaunchDaemon/)
+      assert.doesNotMatch(ub.error, /Sign in again/)
+      // the keychain was only read
+      assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || ["find-generic-password", "list-keychains"].includes(c.args[0])))
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
+// The first request after a start, before anything read agy's keyring,
+// isn't sent as the account agy holds either.
+test("an account of agy's own: the first request after a start waits for the keyring read", async () => {
+  const keyring = "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29.b", refresh_token: "1//b", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "b@example.com",
+  })).toString("base64") + "\n"
+  await withKit({ platform: "darwin", storedSignIn: keyring, modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    const la = await kit.plugin.auth.loader(async () => ({ type: "oauth", key: "agy", metadata: { email: "a@example.com" } }))
+    const refused = await la.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+    assert.equal(refused.status, 401)
+    assert.match(await refused.text(), /not to a@example\.com/)
+    assert.equal(kit.acpSpawns.length, 0, "a's first request ran agy as b")
+    await settle(kit)
+  })
+})
+
+// plugins#1599 (RainintoWine, Windows, agy 1.5.18): two accounts of agy's
+// own, each kept (own<hash> holds its own sign-in), and agy's keyring held
+// a banned account's token with no id_token_email in it. Whose it was
+// couldn't be told, so it was taken for each account's own: both cards
+// showed one quota to the minute, and every request went out as the banned
+// account (403 ToS) whichever account magpie switched to.
+const KEPT = (env, email) => path.join(env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts",
+  "own" + createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 24))
+const signInOf = (email, extra = {}) => ({
+  token: { access_token: "ya29." + email, refresh_token: "1//" + email, expiry: "2099-01-01T00:00:00Z", token_type: "Bearer" },
+  auth_method: "consumer", id_token_email: email, ...extra,
+})
+function writeSignIn(home, value) {
+  fs.mkdirSync(path.dirname(tokenFile(home)), { recursive: true })
+  fs.writeFileSync(tokenFile(home), JSON.stringify(value), { mode: 0o600 })
+}
+// agy 1.5.18's /usage, as the account the run's agy reads: a home's token
+// file (accountEnv), else the keyring, which is banned@'s
+function usageByAccount(asked) {
+  return (_file, args, opts) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.18\n" }
+    if (args[0] !== "-p") return 1
+    const home = opts?.env?.SSH_CONNECTION ? opts.env.HOME : null
+    const email = home ? JSON.parse(fs.readFileSync(tokenFile(home), "utf8")).id_token_email : "banned@example.com"
+    asked.push(email)
+    const left = { "a@example.com": 0.9, "b@example.com": 0.25 }[email] ?? 0.5
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups: [{
+      name: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ id: "w", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: left }],
+    }] } } }) }
+  }
+}
+// Windows Credential Manager's gemini:antigravity as the plugin's
+// PowerShell reads it
+const windowsKeyring = value => "OK " + Buffer.from(JSON.stringify(value)).toString("base64") + "\r\n"
+const UNNAMED = [["id_token_email empty", { id_token_email: "" }], ["id_token_email missing", { id_token_email: undefined }]]
+
+for (const [shape, unnamed] of UNNAMED) {
+  test(`#1599 agy's sign-in names no account (${shape}): each account of agy's own runs with its own kept sign-in`, async () => {
+    const asked = []
+    const options = {
+      platform: "win32", modelsBehavior: DYNAMIC_OK, onSpawn: usageByAccount(asked),
+      storedSignIn: windowsKeyring(signInOf("banned@example.com", unnamed)),
+    }
+    const net = noFetch()
+    try {
+      await withKit(options, async (kit) => {
+        writeSignIn(KEPT(kit.env, "a@example.com"), signInOf("a@example.com"))
+        writeSignIn(KEPT(kit.env, "b@example.com"), signInOf("b@example.com"))
+        const bannedHome = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "915399657c1c4d17")
+        writeSignIn(bannedHome, signInOf("banned@example.com"))
+        const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+        const b = { type: "oauth", key: "agy", metadata: { email: "b@example.com" } }
+
+        const ua = await kit.plugin.auth.usage(async () => a, {})
+        assert.equal(ua.error, undefined, JSON.stringify(ua))
+        assert.equal(ua.windows.find(w => !w.model)?.used, 10)
+        assert.ok(asked.length > 0 && asked.every(e => e === "a@example.com"), `a's card was read as ${asked.join()}`)
+        asked.length = 0
+        const ub = await kit.plugin.auth.usage(async () => b, {})
+        assert.equal(ub.error, undefined, JSON.stringify(ub))
+        assert.equal(ub.windows.find(w => !w.model)?.used, 75)
+        assert.ok(asked.length > 0 && asked.every(e => e === "b@example.com"), `b's card was read as ${asked.join()}`)
+
+        for (const [account, email] of [[a, "a@example.com"], [b, "b@example.com"]]) {
+          const before = kit.acpSpawns.length
+          const loaded = await kit.plugin.auth.loader(async () => account)
+          const served = await loaded.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+          assert.notEqual(served.status, 401, await served.clone().text())
+          await served.text()
+          const ran = kit.acpSpawns.slice(before)
+          assert.ok(ran.length > 0)
+          assert.ok(ran.every(s => s.env.HOME === KEPT(kit.env, email) && s.env.SSH_CONNECTION), `${email}'s request ran outside its kept home`)
+        }
+        // agy's keyring was only read
+        assert.ok(kit.execFiles.every(c => c.file === "powershell.exe"), kit.execFiles.map(c => c.file).join())
+        assert.deepEqual(net.fetched, [], "the plugin asked Google itself")
+        await settle(kit)
+      })
+    } finally {
+      net.restore()
+    }
+  })
+}
+
+// The same keyring, and one account of agy's own was never kept: its
+// usage, requests, models and search are refused with why, never run as
+// the keyring's. One saved without its email is refused too. A lone
+// account of agy's own runs as agy's sign-in, as it always did: it is the
+// only account that sign-in can be.
+test("#1599 agy's sign-in names no account: an account of agy's own with nothing kept is refused beside another", async () => {
+  const asked = []
+  const options = {
+    platform: "darwin", modelsBehavior: DYNAMIC_OK, onSpawn: usageByAccount(asked),
+    storedSignIn: "go-keyring-base64:" + Buffer.from(JSON.stringify(signInOf("banned@example.com", { id_token_email: undefined }))).toString("base64") + "\n",
+  }
+  const net = noFetch()
+  try {
+    await withKit(options, async (kit) => {
+      writeSignIn(KEPT(kit.env, "b@example.com"), signInOf("b@example.com"))
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const unnamed = { type: "oauth", key: "agy" }
+      for (const account of [a, unnamed]) {
+        const who = account.metadata?.email ?? "this account"
+        const u = await kit.plugin.auth.usage(async () => account, {})
+        assert.deepEqual(u.windows, [], JSON.stringify(u))
+        assert.equal(u.signIn, "expired")
+        assert.match(u.error, /doesn't say which Google account it is/)
+        assert.ok(u.error.includes(`Sign ${who} in again with "Add another Google account"`), u.error)
+        const loaded = await kit.plugin.auth.loader(async () => account)
+        const refused = await loaded.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+        assert.equal(refused.status, 401)
+        assert.equal(refused.headers.get("X-Magpie-Sign-In"), "expired")
+        assert.match(await refused.text(), /doesn't say which Google account it is/)
+        const listed = await kit.plugin.provider.models(undefined, { auth: account }).then(() => null, e => e)
+        assert.match(listed?.message ?? "", /doesn't say which Google account it is/)
+        const searched = await kit.plugin.search.agy.execute({ query: "magpie" }, { getAuth: async () => account }).then(() => null, e => e)
+        assert.equal(searched?.statusCode ?? searched?.status, 401, String(searched))
+      }
+      assert.deepEqual(asked, [], "a refused account was read as the keyring's")
+      assert.equal(kit.acpSpawns.length, 0, "a refused account ran agy")
+      assert.equal(kit.modelsSpawns.length, 0, "a refused account listed the keyring's models")
+      // no account named at all (OpenCode's catalog): agy's own list, as before
+      assert.ok(Object.keys(await kit.models()).length > 0)
+      assert.deepEqual(net.fetched, [])
+      await settle(kit)
+    })
+    // a lone account of agy's own: agy's sign-in, as before
+    asked.length = 0
+    await withKit(options, async (kit) => {
+      const a = { type: "oauth", key: "agy", metadata: { email: "a@example.com" } }
+      const u = await kit.plugin.auth.usage(async () => a, {})
+      assert.equal(u.error, undefined, JSON.stringify(u))
+      assert.ok(asked.length > 0 && asked.every(e => e === "banned@example.com"), asked.join())
+      const loaded = await kit.plugin.auth.loader(async () => a)
+      const served = await loaded.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.length > 0 && kit.acpSpawns.every(s => !s.env.SSH_CONNECTION))
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
+// How two accounts came to share agy's keyring: "Sign in with Google" saved
+// whichever account agy held as agy's own, a second time too. Beside
+// another account of agy's own, the account signed in gets a home of its
+// own, with a copy of agy's sign-in, and runs there.
+test("#1599 signed in beside another account of agy's own, an account gets a home of its own", async () => {
+  const held = signInOf("b@example.com")
+  const options = {
+    platform: "darwin", modelsBehavior: DYNAMIC_OK,
+    storedSignIn: "go-keyring-base64:" + Buffer.from(JSON.stringify(held)).toString("base64") + "\n",
+  }
+  const net = noFetch()
+  try {
+    await withKit(options, async (kit) => {
+      // a is an account of agy's own magpie has
+      await kit.plugin.auth.loader(async () => ({ type: "oauth", key: "agy", metadata: { email: "a@example.com" } }))
+      const started = await kit.plugin.auth.methods[0].authorize()
+      assert.equal(started.method, "auto")
+      const done = await started.callback()
+      assert.equal(done.type, "success", JSON.stringify(done))
+      assert.match(done.key, /^agy:[0-9a-f]{16}$/)
+      const id = done.key.slice(4)
+      assert.deepEqual(done.metadata, { email: "b@example.com", agyHome: id })
+      const home = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", id)
+      assert.deepEqual(JSON.parse(fs.readFileSync(tokenFile(home), "utf8")), held)
+      if (process.platform !== "win32") assert.equal(fs.statSync(tokenFile(home)).mode & 0o777, 0o600)
+      // b's requests run there
+      const before = kit.acpSpawns.length
+      const loaded = await kit.plugin.auth.loader(async () => done)
+      const served = await loaded.fetch(MESSAGES_URL, { method: "POST", body: JSON.stringify(baseBody()) })
+      assert.notEqual(served.status, 401, await served.clone().text())
+      await served.text()
+      assert.ok(kit.acpSpawns.slice(before).every(s => s.env.HOME === home && s.env.SSH_CONNECTION))
+      assert.ok(kit.execFiles.every(c => c.file !== "/usr/bin/security" || c.args[0] === "find-generic-password"))
+      await warmed(kit)
+    })
+  } finally {
+    net.restore()
+  }
 })
 
 test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () => {
@@ -487,6 +951,43 @@ test("Orchestrator 不列出，点名它的请求得 400 并指向它实际会�
   })
 })
 
+// plugins#1542: on an account without Claude 5.5, the sonnet family alias
+// served claude-sonnet-5-5 as claude-sonnet-4-6 with a 200, while another
+// signed-in account lists 5.5. That account is asked, not a stand-in.
+test("a family alias doesn't stand in for a model another signed-in account lists", async () => {
+  await withKit({ modelsBehavior: { stdout: modelsOutput(ORCH_ROWS) }, offeredModels: ORCH_ROWS }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    await kit.models()
+    const ask = async (label) => {
+      const response = await kit.request(baseBody({ model: "agy-cli/claude-sonnet-5-5", messages: [{ role: "user", content: label }] }))
+      return { status: response.status, text: await response.text() }
+    }
+    const file = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "models.json")
+    const data = JSON.parse(fs.readFileSync(file, "utf8"))
+    const [own] = Object.keys(data.byAgy)
+    const other = {
+      at: Date.now(),
+      list: [{ id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)", effort: "high" }, { id: "claude-sonnet-5-5-low", name: "Claude Sonnet 5.5 (Low)", effort: "low" }],
+    }
+    // an account removed since: its entry stays, its home is gone
+    data.byAgy[`${own}#abcdef0123456789`] = other
+    fs.writeFileSync(file, JSON.stringify(data))
+    const gone = await ask("removed account")
+    assert.equal(gone.status, 200, gone.text)
+
+    fs.mkdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "abcdef0123456789"), { recursive: true })
+    const spawned = kit.children.size
+    const listed = await ask("another account")
+    assert.equal(listed.status, 400, listed.text)
+    assert.match(JSON.parse(listed.text).error.message, /claude-sonnet-5-5 is unavailable to this agy account; another signed-in agy account lists it/)
+    assert.equal(kit.children.size, spawned, "no agy was started for it")
+
+    const plain = await kit.request(baseBody({ model: "agy-cli/claude-sonnet-4-6", messages: [{ role: "user", content: "own model" }] }))
+    assert.equal(plain.status, 200)
+  })
+})
+
 test("各家族 limit 正确，未知动态型号不猜成 1M", async () => {
   const expected = {
     "gemini-4-argon": { context: 1048576, output: 65536 },
@@ -686,6 +1187,58 @@ test("#3501 请求：会话一个型号都不开放时答 403 和 Google 的原�
     assert.equal(response.status, 400)
     assert.match((await response.json()).error.message, /unavailable to this agy account/)
     await settle(kit)
+  })
+})
+
+// plugins#1602 (cyclonevox: agy 1.5.18, Google AI Pro, region SG):
+// loadCodeAssist names standard-tier current, g1-pro-tier paid, and
+// free-tier ineligible (UNSUPPORTED_LOCATION). `agy models` refuses on
+// that entry while agy acp serves the account and names its tier; magpie
+// said "Google refuses this account" and listed nothing.
+const REFUSED_REGION = { code: 1, stderr: "error: Eligibility check failed: Your current account is not eligible for Gemini Code Assist for individuals because it is not currently available in your location.\n" }
+const PRO_TIER = { name: "Gemini Code Assist in Google One AI Pro", id: "g1-pro-tier", upgradeUri: "" }
+const OFFERED_PRO = [["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"], ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"]]
+
+test("#1602 agy models 在资格检查拒绝、agy acp 却给出档位时，用 agy acp 开放的型号，不说账号被拒", async () => {
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER }, async (kit) => {
+    await kit.models().catch(() => {})
+    await warmed(kit)
+    const listed = await kit.models()
+    assert.ok(listed["gemini-4-argon"], `got ${ids(listed).join(", ")}`)
+    assert.ok(listed["claude-opus-5-5-high"], `got ${ids(listed).join(", ")}`)
+  })
+  // the sign-in check takes the account too
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER }, async (kit) => {
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.equal(started.method, "auto")
+    assert.equal((await started.callback()).type, "success")
+    assert.ok((await kit.models())["gemini-4-argon"])
+    await warmed(kit)
+  })
+  // a turn whose model agy won't set is the model's, not a refusal
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER, setModelError: { code: -32603, message: "Unknown model ID: gemini-4-argon-high" } }, async (kit) => {
+    const response = await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] }))
+    assert.equal(response.status, 400)
+    assert.match((await response.json()).error.message, /unavailable to this agy account/)
+    await settle(kit)
+  })
+})
+
+test("#1602 agy acp 不给档位（真不合格）或一个型号都不开放时，仍说账号被拒", async () => {
+  for (const options of [{ offeredModels: OFFERED_PRO }, { offeredModels: null, sessionTier: PRO_TIER }]) {
+    await withKit({ modelsBehavior: REFUSED_REGION, ...options }, async (kit) => {
+      await kit.models().catch(() => {})
+      await warmed(kit)
+      const error = await kit.models().then(() => null, e => e)
+      assert.ok(error, "真不合格的账号给了一份列表")
+      assert.match(error.message, /Google refuses this account for Antigravity/)
+    })
+  }
+  // the sign-in check doesn't take it for signed in either: authorize goes
+  // on to Google's sign-in
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO }, async (kit) => {
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.notEqual(started.method, "auto")
   })
 })
 
@@ -899,5 +1452,61 @@ test("canlee886 app 的 gateway 关着、读不成 JSON 时各按关、开处理
     assert.equal(kit.module.appGatewayOn(kit.home), true)
     fs.rmSync(path.join(kit.home, ".gemini", "config", "config.json"))
     assert.equal(kit.module.appGatewayOn(kit.home), false)
+  })
+})
+
+// plugins#1591 (I-am-c, Windows, agy 1.5.18): with the app wired to magpie,
+// agy -p /usage on ~/.gemini reads the app's gateway, which asks Google
+// nothing and lists no quota ({"groups": []}), so the card said "agy
+// returned no enabled, measured quota buckets". The read goes to the folder
+// a turn's agy acp gets, which has no gateway.
+test("#1591 app 接到 magpie 时，额度读的是 Google 账号的，不是 gateway 的空列表", async () => {
+  const keyring = "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29.a", refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "a@example.com",
+  })).toString("base64") + "\n"
+  const reads = []
+  const onSpawn = (_file, args) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.18\n" }
+    if (!args.includes("/usage")) return 1
+    reads.push(args)
+    // agy on a gateway answers SUCCESS with no groups (agy 1.5.18)
+    const groups = args.includes("--gemini_dir") ? [{
+      name: "Gemini Models", description: "Models within this group: Gemini 4 Argon",
+      buckets: [{ id: "w", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: 0.75 }],
+    }] : []
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups } } }) }
+  }
+  const net = noFetch()
+  try {
+    await withKit(appGatewayKit({ platform: "darwin", storedSignIn: keyring, onSpawn }), async (kit) => {
+      wireAppGateway(kit.home)
+      const usage = await kit.plugin.auth.usage(async () => ({ type: "oauth", key: "agy", metadata: { email: "a@example.com" } }), {})
+      assert.equal(usage.error, undefined, JSON.stringify(usage))
+      assert.equal(usage.windows.find(w => !w.model)?.used, 25)
+      const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+      assert.deepEqual(reads.at(-1).slice(0, 4), ["--gemini_dir", own, "-p", "/usage"])
+      assert.deepEqual(net.fetched, [], "usage asked Google itself")
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+  }
+})
+
+// The provider is named as the plugin's row is, not by its id (agy-cli), on
+// magpie's Providers row; a name the user gave it stays.
+test("config names the provider, keeping the user's own name", async () => {
+  await withKit({ agyPath: null }, async (kit) => {
+    const cfg = {}
+    await kit.plugin.config(cfg)
+    assert.equal(cfg.provider["agy-cli"].name, "Antigravity (local agy CLI)")
+    const registry = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../../../registry.json"), "utf8"))
+    const row = registry.plugins.find((p) => p.providers?.includes("agy-cli"))
+    assert.equal(cfg.provider["agy-cli"].name, row.name)
+    assert.equal(cfg.provider["agy-cli"].npm, kit.plugin.provider.npm)
+    const own = { provider: { "agy-cli": { name: "My agy", npm: "x", options: { x: 1 } } } }
+    await kit.plugin.config(own)
+    assert.deepEqual(own.provider["agy-cli"], { name: "My agy", npm: "x", options: { x: 1 } })
   })
 })
