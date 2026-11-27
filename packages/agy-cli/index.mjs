@@ -84,6 +84,7 @@ function ideCallDeadline() {
   return positiveTimeout(process.env.AGY_BRIDGE_IDE_CALL_DEADLINE_MS, 150_000)
 }
 const CANCEL_SETTLE_MS = 15_000
+const TOOL_STREAM_RECONNECT_MS = 15_000
 const MAX_MCP_COMMIT_WAIT_MS = 60_000
 function mcpCommitWaitMs() {
   const raw = process.env.AGY_BRIDGE_MCP_COMMIT_WAIT_MS
@@ -2042,6 +2043,7 @@ class Turn {
     this.steering = false
     this.stepSeq = 0
     this.lastToolStep = null
+    this.toolStreamReconnect = null
     this.promptInFlight = false
     this.activeAcpToolCalls = new Set()
     this.acpToolWaiters = []
@@ -2199,6 +2201,11 @@ class Turn {
     const wasAttached = this.attached
     this.attached = false
     if (wasAttached) this.touchClient()
+  }
+
+  clearToolStreamReconnect() {
+    clearTimeout(this.toolStreamReconnect?.timer)
+    this.toolStreamReconnect = null
   }
 
   touchClient() {
@@ -3232,9 +3239,10 @@ class Proc {
       (call.deferred && !call.result && turn.awaitCalls.some((waiter) => waiter.target === call)))
     // ACP toolCallIds come from agy's session/update notifications and are
     // distinct from the bridge's toolu_ IDs, so snapshot all in-flight ACP IDs.
-    const pendingAcpIds = deliveringLiveMcp ? new Set(turn.activeAcpToolCalls) : new Set()
+    const pendingAcpIds = deliveringLiveMcp || turn.toolStreamReconnect ? new Set(turn.activeAcpToolCalls) : new Set()
     turn.steering = true
     turn.lastToolStep = null
+    turn.clearToolStreamReconnect()
     try {
       this.continueWith(results)
     } catch {
@@ -3743,6 +3751,7 @@ class Proc {
   finalizeTurn(turn) {
     if (turn.finalized) return
     turn.finalized = true
+    turn.clearToolStreamReconnect()
     const keepStep = this.keepsParkedStep(turn)
     turn.notifyAcpTools()
     for (const socket of turn.cancelledMcpSockets) {
@@ -3796,6 +3805,7 @@ class Proc {
   #markDead(error) {
     if (this.dead) return
     this.dead = true
+    this.turn?.clearToolStreamReconnect()
     this.deadError = error
     this.conn?.close(error)
     for (const waiter of this.listWaiters.splice(0)) {
@@ -6410,6 +6420,29 @@ function sameCallIds(matches, callIds) {
     matches.every((item, i) => item.block.tool_use_id === callIds[i])
 }
 
+// A reconnect may add user content after the delivered result, including
+// blocks appended to the same message. Require the old request as a prefix.
+function toolStreamFollowup(previous, body) {
+  const { messages: sent, stream: _sentStream, system: _sentSystem, ...sentOptions } = previous
+  const { messages, stream: _stream, system: _system, ...options } = body
+  if (messages.length < sent.length || stableJSON(sentOptions) !== stableJSON(options)) return null
+  const prefix = messages.slice(0, sent.length)
+  const last = prefix.at(-1)
+  const lastSent = sent.at(-1)
+  const tail = messages.slice(sent.length)
+  if (last?.role === "user" && lastSent?.role === "user" &&
+    Array.isArray(last.content) && Array.isArray(lastSent.content) && last.content.length > lastSent.content.length) {
+    prefix[prefix.length - 1] = { ...last, content: last.content.slice(0, lastSent.content.length) }
+    tail.unshift({ role: "user", content: last.content.slice(lastSent.content.length) })
+  }
+  if (sent.some((message, index) => stableJSON(message) !== stableJSON(prefix[index])) ||
+    !tail.every((message) => message.role === "user" && (typeof message.content === "string" ||
+      (Array.isArray(message.content) && message.content.every((block) => block?.type === "text" || block?.type === "image"))))) {
+    return null
+  }
+  return tail
+}
+
 function toolStepRequestDigest({ trailing, matches, results, workDir, instructions, tools, model, wireModel, effort, forwardThinking, outputFormat }) {
   return digest(stableJSON({
     history: historyKey(trailing.history),
@@ -8814,6 +8847,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
   let pingTimer = null
   let finished = false
   let abortHandler = null
+  const readAbort = new AbortController()
   // What this response has produced so far, for sizing a late prompt's input.
   step.contentSnapshot = () => [
     ...responseContent,
@@ -8881,6 +8915,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
       }
       const detach = () => {
         finished = true
+        readAbort.abort()
         turn.detach()
         if (pingTimer) clearInterval(pingTimer)
         pingTimer = null
@@ -8901,14 +8936,27 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         if (open?.type === "text" && open.text) content.push({ type: "text", text: open.text })
         return content.filter((block) => block.type !== "thinking")
       }
-      const abort = () => {
-        if (finished) return
-        detach()
+      const cancelTurn = () => {
         if (!proc.cancelTurn(turn, partial())) {
           dropFromPool(proc)
           proc.abandonTurn(turn)
           proc.stop().catch(() => {})
         }
+      }
+      const abort = () => {
+        if (finished) return
+        const keep = toolResultStep && !open && !responseContent.length &&
+          !proc.dead && !proc.stopping && !proc.retiring && !turn.cancelRequested && !turn.finalized
+        if (keep) {
+          const timer = setTimeout(() => {
+            turn.clearToolStreamReconnect()
+            cancelTurn()
+          }, TOOL_STREAM_RECONNECT_MS)
+          timer.unref?.()
+          turn.toolStreamReconnect = { step, msgId, toolResultStep, timer }
+        }
+        detach()
+        if (!keep) cancelTurn()
         try { controller.error(signal?.reason || new Error("request aborted")) } catch {}
       }
       abortHandler = abort
@@ -8937,8 +8985,11 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         }, PING_INTERVAL_MS)
 
         for (;;) {
-          const event = await turn.next()
-          if (finished) return
+          const event = await turn.next(0, readAbort.signal)
+          if (finished) {
+            if (event && turn.toolStreamReconnect?.step === step) turn.events.unshift(event)
+            return
+          }
           if (event.type === "text") {
             emitDelta("text", event.text)
             continue
@@ -9192,11 +9243,12 @@ const SSE_HEADERS = {
   "Connection": "keep-alive",
 }
 
-function streamResponse(proc, turn, body, signal, toolResultStep = null) {
+function streamResponse(proc, turn, body, signal, toolResultStep = null, reconnect = null) {
   turn.attach()
-  const step = turn.registerResponse(body)
-  const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24)
-  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step, toolResultStep)
+  turn.clearToolStreamReconnect()
+  const step = reconnect?.step ?? turn.registerResponse(body)
+  const msgId = reconnect?.msgId ?? ("msg_" + randomUUID().replace(/-/g, "").slice(0, 24))
+  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step, reconnect?.toolResultStep ?? toolResultStep)
   if (body.stream === false) return jsonResponseFromStream(stream, body.model, msgId)
   return new Response(stream, {
     status: 200,
@@ -9897,7 +9949,16 @@ export const AntigravityBridgePlugin = async () => {
                   // An identical retry passes: its results are the ones already
                   // committed, compared raw (#1475).
                   proc.validateResults(rawResults)
-                  let interrupted = isInterruptedToolTurn(body)
+                  const reconnect = turn.toolStreamReconnect
+                  const followup = reconnect && directIdsMatch && sameCallIds(matches, reconnect.toolResultStep.callIds) &&
+                    proc.convKey === convKey && proc.workDir === workDir && !proc.dead && !proc.stopping && !proc.retiring &&
+                    !prefillAfterResults && sameInstructions(proc.instructions, instructions)
+                    ? toolStreamFollowup(reconnect.step.body, body) : null
+                  if (followup?.length === 0) {
+                    logBridgeEvent(proc, turn, "reattach", "tool_stream_retry", acquireOpts)
+                    return streamResponse(proc, turn, body, init.signal, null, reconnect)
+                  }
+                  let interrupted = !!followup || isInterruptedToolTurn(body)
                   let results = rawResults
                   if (!interrupted && !prefillAfterResults) {
                     try {
@@ -9939,9 +10000,9 @@ export const AntigravityBridgePlugin = async () => {
                       requestDigest = null
                     }
                   }
-                  const historyMatches = directIdsMatch
+                  const historyMatches = !!followup || (directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailing.history)
-                    : proc.matchesHistory(trailing.history)
+                    : proc.matchesHistory(trailing.history))
                   if (!historyMatches && !prefillAfterResults && !interrupted && !imageResult && directIdsMatch) {
                     const replay = proc.canReplayLastToolStep(turn, { sessionScope, matches, requestDigest })
                     if (replay) {
@@ -9969,8 +10030,9 @@ export const AntigravityBridgePlugin = async () => {
                   const grew = proc.toolsGrew(tools)
                   if (!prefillAfterResults && (interrupted || imageResult || grew) && historyMatches && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
-                    await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
+                    await proc.steerInSession(turn, followup ? [] : rawResults, trailing.history)) {
                     keptSession = true
+                    if (followup) logBridgeEvent(proc, turn, "reattach", "tool_stream_steer", acquireOpts)
                     if (grew && !interrupted) grownTools = proc.grownToolNames(tools)
                     answeredIds = new Set(
                       rawResults
