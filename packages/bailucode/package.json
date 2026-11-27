@@ -32,7 +32,7 @@
   },
   "magpie": {
     "name": "BAILU（白鹿）",
-    "icon": "https://bailucode.com/favicon.svg",
+    "icon": "https://raw.githubusercontent.com/123panbingsen/magpie-bailucode/main/icon.png",
     "summary": {
       "zh": "白鹿 Open Platform（bailucode.com/openapi）接入 magpie：可粘贴 API key，也可用浏览器登录自动取回账号里的 key；模型按 key 实时拉取，卡片显示通行证额度（积分 / Token / 定向额度），并接上门户的每日签到。",
       "en": "BAILU Open Platform (bailucode.com/openapi) for magpie: paste an API key, or sign in through the browser and let it fetch the account's key; models from the key, the 白鹿通行证 quota (credits, tokens, per-protocol packs) on the card, and the portal's daily check-in."

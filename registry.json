@@ -332,7 +332,7 @@
     },
     { "package": "@magpie-community/middleware-required-array", "name": "Required Array", "kind": "middleware", "community": true,
       "summary": { "en": "Give every tool parameter schema an explicit required array. Some relays reject a function schema whose object has no required key (Mavis-Api: null is not of type \"array\"), so one zero-parameter tool such as get_goal fails the whole request. Adds \"required\": [] where missing; existing arrays, tools without parameters, built-in tools and Gemini are untouched.", "zh": "为工具参数 schema 补上显式 required 数组。部分中转会拒绝没有 required 键的对象 schema（Mavis-Api 报 null is not of type \"array\"），一个零参数工具（如 get_goal）就会让整个请求失败。只补缺失的 \"required\": []；已有数组、无参数工具、内置工具和 Gemini 不动。" } },
-    { "package": "@magpie-community/opencode-bailucode-auth", "name": "BAILU（白鹿）", "icon": "https://bailucode.com/favicon.svg", "providers": ["bailucode"], "community": true,
+    { "package": "@magpie-community/opencode-bailucode-auth", "name": "BAILU（白鹿）", "icon": "https://raw.githubusercontent.com/123panbingsen/magpie-bailucode/main/icon.png", "providers": ["bailucode"], "community": true,
       "summary": { "en": "BAILU AI (白鹿, bailucode.com) with an API key or a browser sign-in that fetches one: live models on the key, the 白鹿通行证 quota (credits, tokens, per-protocol packs) on the card, and the portal's daily check-in.", "zh": "接入白鹿 Open Platform（bailucode.com）：可粘贴 API key，也可用浏览器登录后自动取回账号里的 key；按 key 拉取实时模型，卡片显示通行证额度（积分、Token、定向额度），并接上门户的每日签到。" } }
   ]
 }
