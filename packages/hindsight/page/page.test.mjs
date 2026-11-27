@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
-import { createService } from "./service.mjs";
+import { createService, createWorkbenchPlugin } from "./service.mjs";
 import { testConnection } from "./probe.mjs";
 
 const load = file => readFile(new URL(file, import.meta.url), "utf8");
@@ -175,25 +175,18 @@ test("loopback bridge denies foreign sites, stale tokens and arbitrary URLs", as
 });
 
 test("service startup binds loopback and can recover from an unavailable port", async t => {
-  const service = (await import("./service.mjs")).default;
   let failure = true;
   let stopCalls = 0;
   t.mock.method(console, "warn", () => {});
-  const prior = globalThis.Bun;
-  globalThis.Bun = { serve(options) {
+  const service = createWorkbenchPlugin(options => {
     assert.equal(options.hostname, "127.0.0.1");
     if (failure) throw new Error("test port busy");
     return { port: options.port, stop: () => stopCalls++ };
-  }};
-  try {
-    assert.deepEqual(await service.server({}, { port: 3482 }), {});
-    failure = false;
-    const run = await service.server({}, { port: 4382 });
-    assert.equal(typeof run.close, "function");
-    run.close();
-    assert.equal(stopCalls, 1);
-  } finally {
-    if (prior === undefined) delete globalThis.Bun;
-    else globalThis.Bun = prior;
-  }
+  });
+  assert.deepEqual(await service.server({}, { port: 3482 }), {});
+  failure = false;
+  const run = await service.server({}, { port: 4382 });
+  assert.equal(typeof run.close, "function");
+  run.close();
+  assert.equal(stopCalls, 1);
 });

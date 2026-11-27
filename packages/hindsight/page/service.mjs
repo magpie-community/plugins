@@ -197,32 +197,36 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
   };
 }
 
-const service = createService();
-let running;
-let timer;
-export default {
-  id: "magpie-hindsight",
-  async server(_input, options) {
-    const port = options?.port ?? DEFAULTS.port;
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) return {};
-    service.options(options);
-    if (running?.port === port) return {};
-    let server;
-    try { server = Bun.serve({ hostname: "127.0.0.1", port, fetch: service.handle }); }
-    catch {
-      console.warn("[magpie-hindsight] Workbench could not listen on its local port.");
-      return {};
-    }
-    running?.stop(true);
-    clearInterval(timer);
-    running = server;
-    timer = setInterval(service.poll, 15000);
-    timer.unref?.();
-    return { close() {
-      if (running !== server) return;
+export function createWorkbenchPlugin(serve = options => Bun.serve(options)) {
+  const service = createService();
+  let running;
+  let timer;
+  return {
+    id: "magpie-hindsight",
+    async server(_input, options) {
+      const port = options?.port ?? DEFAULTS.port;
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) return {};
+      service.options(options);
+      if (running?.port === port) return {};
+      let server;
+      try { server = serve({ hostname: "127.0.0.1", port, fetch: service.handle }); }
+      catch {
+        console.warn("[magpie-hindsight] Workbench could not listen on its local port.");
+        return {};
+      }
+      running?.stop(true);
       clearInterval(timer);
-      server.stop(true);
-      running = undefined;
-    } };
-  }
-};
+      running = server;
+      timer = setInterval(service.poll, 15000);
+      timer.unref?.();
+      return { close() {
+        if (running !== server) return;
+        clearInterval(timer);
+        server.stop(true);
+        running = undefined;
+      } };
+    }
+  };
+}
+
+export default createWorkbenchPlugin();
