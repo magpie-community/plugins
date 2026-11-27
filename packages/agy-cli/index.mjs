@@ -709,6 +709,17 @@ const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
 const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000
 const MODEL_CATALOG_FAST_WAIT_MS = 500
 const MODEL_CATALOG_RETRY_MS = 5_000
+// How long what agy acp offered is believed: Google can swap the offered
+// model ids server-side, and a learned offer then filters the catalog to
+// models ACP no longer offers while hiding the ones it does (2026-11-27:
+// the gateway listed claude-4-6 / gemini-3.1-flash-image and omitted
+// gemini-4-neon/carbon/argon and claude-5-5 for hours). Past this, the
+// offer is stale and asked again. 60 minutes: the offer changes rarely,
+// and a probe is a fresh agy acp spawn per account, so re-probing on the
+// catalog's 5-minute cadence would spawn far more often than the job
+// needs. A re-probe triggered by a request for a model the offer doesn't
+// list is a possible follow-up, not done here.
+const OFFERED_TTL_MS = 60 * 60 * 1000
 
 // What is learnt of the models is each account's own (#1229): accounts on
 // different plans list and are offered different models, so one account's
@@ -746,6 +757,7 @@ function ms() {
       acpOfferedKey: "",
       acpTier: null,
       offeredStale: false,
+      offeredAt: 0,
       offeredProbePromise: null,
       offeredProbeAt: null,
       offeredGen: 0,
@@ -770,6 +782,7 @@ function noteOfferedModels(configOptions, models) {
   const offered = offeredModelsOf(configOptions, models)
   if (!offered.length) return
   ms().offeredStale = false
+  ms().offeredAt = Date.now()
   const names = new Map(offered.map(model => [model.id, typeof model.name === "string" && model.name ? model.name : model.id]))
   const key = [...names.keys()].sort().join("\n")
   if (key === ms().acpOfferedKey) return
@@ -806,6 +819,7 @@ function forgetOffered() {
   ms().acpOfferedKey = ""
   ms().acpTier = null
   ms().offeredStale = false
+  ms().offeredAt = 0
   ms().offeredProbePromise = null
   ms().offeredProbeAt = null
   ms().offeredGen++
@@ -891,6 +905,10 @@ async function probeOfferedModels(agyPath) {
 }
 
 function probeOfferedOnce(agyPath) {
+  // A learned offer is never believed for good: past the TTL it is stale,
+  // so the early return below no longer holds it back and agy acp is
+  // asked again. The 60s retry gate still bounds how often a probe starts.
+  if (ms().acpOfferedModels && ms().offeredAt && Date.now() - ms().offeredAt >= OFFERED_TTL_MS) ms().offeredStale = true
   if ((ms().acpOfferedModels && !ms().offeredStale) || ms().offeredProbePromise) return ms().offeredProbePromise
   const now = Date.now()
   if (ms().offeredProbeAt !== null && now - ms().offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
