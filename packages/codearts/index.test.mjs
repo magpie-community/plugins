@@ -3665,6 +3665,33 @@ test("a refused catalog read never says the sign-in ended", async () => {
   }
 })
 
+test("a sign-in that really ended still answers chat with a 401, which magpie marks", async () => {
+  // The other side of the catalog rule above: the verdict moved to chat, so
+  // a refresh token the vendor spent has to come back from chat as a 401
+  // (magpie marks a plugin's 401 without x-magpie-sign-in: kept).
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0401dead")
+  let chats = 0
+  const { fetcher } = oaFetcher((url) => {
+    if (url.includes("/v2/chat/completions")) {
+      chats++
+      return new Response(JSON.stringify({ error_code: "APIG.1009", error_msg: "AppKey or AppSecret is invalid" }), { status: 401 })
+    }
+    if (url === x.STS_TOKEN_ENDPOINT) {
+      return new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh token expired" }), { status: 400 })
+    }
+    return undefined
+  })
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const loader = await plugin.auth.loader(async () => record)
+  const response = await loader.fetch("https://api.modelarts-maas.com/v2/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "glm-5.3", messages: [] }),
+  })
+  assert.equal(response.status, 401)
+  assert.notEqual(response.headers.get("x-magpie-sign-in"), "kept")
+  assert.equal(chats, 1)
+})
+
 test("before a sign-in the OfficeAce provider still lists its models", async () => {
   const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, {})
   const cfg = { provider: {} }
