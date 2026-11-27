@@ -100,6 +100,8 @@ test("an enterprise custom model goes to its own base_url as Trae's client sends
       expect(body.usage.completion_tokens).toBe(8274)
     }
     expect(traes().length).toBe(0)
+    // the tenant's own endpoint books nothing at Trae: no settlement is read
+    expect(f.seen.filter((r) => r.path === "/api/v1/commercial/get_session_usage").length).toBe(0)
     const [r] = directs()
     expect(directs().length).toBe(1)
     expect(r.headers.get("authorization")).toBe("Bearer " + AK)
