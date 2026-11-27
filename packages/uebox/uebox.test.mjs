@@ -136,7 +136,12 @@ test("the paths are UEBox's and magpie's", () => {
   expect(uebox_dir(env)).toBe(env.UEBOX_USER_DATA)
   // without an override each system's own folder, named unreal-box
   expect(uebox_dir({}).endsWith("unreal-box")).toBe(true)
-  if (process.platform !== "win32") expect(uebox_dir({ XDG_CONFIG_HOME: "/x" }, "linux")).toBe(join("/x", "unreal-box"))
+  // The first assertion names its platform ("linux"), so it holds on every host;
+  // guarding it by host platform made it red on macOS, where uebox_dir resolves
+  // ~/Library/Application Support instead (plugins#1588).
+  expect(uebox_dir({ XDG_CONFIG_HOME: "/x" }, "linux")).toBe(join("/x", "unreal-box"))
+  // link_path takes no platform override and always uses XDG; on Windows join()
+  // yields backslashes, so only compare it where the host paths are POSIX.
   if (process.platform !== "win32") expect(link_path({ XDG_CONFIG_HOME: "/x" })).toBe(join("/x", "magpie", "uebox-link.json"))
 })
 
