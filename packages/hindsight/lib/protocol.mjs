@@ -30,31 +30,41 @@ export function responseTools(reply) {
 }
 
 export function continuesTools(input, tools) {
-  return Array.isArray(input) && input.length > 0 && input.every(item => tools.some(tool => {
+  if (!Array.isArray(input)) return false;
+  const results = input.filter(item => item?.type !== "reasoning");
+  return results.length > 0 && results.every(item => tools.some(tool => {
     const [type, key] = RESPONSE_TOOLS.get(tool.type);
     const id = key === "call_id" ? tool.call_id : tool.id;
     return item?.type === type && typeof id === "string" && id !== "" && item[key] === id;
   }));
 }
 
-export function memoryBlock(memories, maxTokens) {
-  const budget = Math.min(65536, Math.max(2048, maxTokens * 8));
+export function utf8Prefix(text, limit) {
+  const bytes = Buffer.from(text.slice(0, limit + 1));
+  if (bytes.length <= limit) return text;
+  let end = limit;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.toString("utf8", 0, end);
+}
+
+export function memoryBlock(memories, maxTokens, maxBytes = 65536) {
+  const start = OPEN + "\n" + NOTICE + "\n\n";
+  const end = "\n" + CLOSE;
+  let remaining = Math.min(maxBytes, 65536, Math.max(2048, maxTokens * 8)) - Buffer.byteLength(start + end);
   const selected = [];
-  let size = 0;
   for (const memory of memories) {
     const clean = sanitize(memory);
     if (!clean) continue;
-    if (size + clean.length > budget) {
-      const remaining = budget - size;
-      if (remaining >= 256) selected.push(clean.slice(0, remaining));
-      break;
-    }
-    selected.push(clean);
-    size += clean.length;
+    const prefix = (selected.length ? "\n\n" : "") + "[" + (selected.length + 1) + "] ";
+    const size = Buffer.byteLength(prefix);
+    if (remaining <= size) break;
+    const entry = utf8Prefix(clean, remaining - size).trimEnd();
+    if (!entry) break;
+    selected.push(prefix + entry);
+    remaining -= size + Buffer.byteLength(entry);
+    if (entry !== clean) break;
   }
-  if (!selected.length) return "";
-  const facts = selected.map((entry, index) => `[${index + 1}] ${entry}`).join("\n\n");
-  return `${OPEN}\n${NOTICE}\n\n${facts}\n${CLOSE}`;
+  return selected.length ? start + selected.join("") + end : "";
 }
 
 export function finalAnswer(reply, protocol) {

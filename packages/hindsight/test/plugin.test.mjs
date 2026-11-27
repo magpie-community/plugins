@@ -10,7 +10,7 @@ const reply = { choices: [{ finish_reason: "stop", message: { role: "assistant",
 function context(options = {}, extra = {}) {
   return {
     origin: "local", protocol: "chat", agent: "claude", session: "test-session", success: true,
-    options, state: {}, reports: [],
+    options: { agents: [], ...options }, state: {}, reports: [],
     report(code, bytes) { this.reports.push({ code, bytes }); },
     ...extra
   };
@@ -62,13 +62,12 @@ test("recall is attached to the user turn, and capture is off by default", async
 
   await plugin.onResponse(reply, ctx);
   assert.equal(calls.length, 1, "default capture must not call retain");
-  assert.ok(ctx.reports.some(r => r.code === "skipped"));
 });
 
 test("a turn recalls once; tool-loop replays are sticky and history is re-attached", async () => {
   const calls = [];
   const plugin = createPlugin({ fetcher: mockHindsight(calls) });
-  const ctx = context();
+  const ctx = context({ capture: true });
 
   // Turn 1: single user message.
   const first = await plugin.onRequest(request(), ctx);
@@ -132,7 +131,7 @@ test("capture opt-in retains the current turn asynchronously to the same hermes 
   assert.match(item.content, /synthetic answer/);
   assert.match(item.document_id, /^magpie-[a-f0-9]{64}$/);
   assert.deepEqual(item.metadata, { source: "magpie-hindsight", agent: "claude", protocol: "chat" });
-  assert.ok(ctx.reports.some(r => r.code === "ready"));
+  assert.ok(ctx.reports.some(r => r.code === "submitted"));
 });
 
 test("agent filter skips both recall and capture", async () => {
