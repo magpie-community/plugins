@@ -61,10 +61,18 @@ const E4 = ["low", "medium", "high", "xhigh"]
 // account with no special access: Fable 5.2, Kimi K3.1 Pro, Nemotron 3.5
 // Super, MiniMax M3.1 Flash, Inkling, Muse Spark 1.2, Beam 1.0, and GPT-6
 // Sol, GPT-6 Luna, GPT-5.6 Sol and GLM-5.2 Fast (GLM-5.2 Fast at its own
-// limits). Left out: GPT-6.1 Terra and Muse Spark Open (feature flags droid
-// lists them under only once on), GPT-6.1 Sol Ultra Fast (high-cost terms,
-// as Astra's), and Muse Spark 1.3 (Responses on Google, a route the plugin
-// has no wire for).
+// limits). Left out: GPT-6.1 Sol Ultra Fast (high-cost terms, as Astra's)
+// and Muse Spark 1.3 (Responses on Google, a route the plugin has no wire
+// for). droid has no endpoint that lists models: its registry is compiled
+// in, and Factory's feature flags only switch entries of it on, so this
+// list is brought up to each droid release's (testdata/droid-1.21.1-
+// models.txt, whose picker models.test.mjs holds the list to). droid
+// 1.14.0 to 1.21.1 add GPT-6.2 Astra and Sol with their Fast Modes, Gemini
+// 4 Neon, and offer GPT-6.1 Terra and Muse Spark Open, each behind a
+// feature flag of Factory's as Argon, Carbon and Hydrogen are: an account
+// it isn't on for may be refused it (will930128 on X, #1297). Left out:
+// GPT-6.2 Astra Ultra Fast (high-cost terms) and GPT-6.2 Sol Ultra Fast
+// (the ultrafast service tier, which the plugin doesn't send).
 const MODELS = [
   ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
   ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
@@ -123,7 +131,13 @@ const MODELS = [
   ["gemini-4-carbon", "Gemini 4 Carbon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
   // Droid 1.10.0 adds Hydrogen, the head of the Flash line, behind Factory's
   // Gemini4Hydrogen feature flag (#1073).
-  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, E4, true, 0.6],
+  // droid 1.14.0 to 1.21.1's, after the rest for the same reason
+  ["gpt-6.2-astra", "GPT-6.2 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 3.2],
+  ["gpt-6.2-sol", "GPT-6.2 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
+  ["gpt-6.1-terra", "GPT-6.1 Terra", RESPONSES, "openai", 1050000, 128000, E6, true, 0.4],
+  ["gemini-4-neon", "Gemini 4 Neon", GEMINI, "google", 1048576, 65536, E4, true, 1.2],
+  ["muse-spark-open", "Muse Spark Open", CHAT, "baseten", 1040000, 131072, E5, true, 0.5],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -140,6 +154,8 @@ const MODELS = [
   ["gpt-6-luna-fast", "GPT-6 Luna Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
   ["gpt-5.6-sol-fast", "GPT-5.6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 4],
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
+  ["gpt-6.2-astra-fast", "GPT-6.2 Astra Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 6.4],
+  ["gpt-6.2-sol-fast", "GPT-6.2 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 1.6],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 // Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
@@ -769,6 +785,11 @@ const GEMINI_CALL = /\/models\/([^/:]+):(?:stream)?generateContent$/i
 // model's place is the one difference from droid that grows with the body:
 // droid always sends it first (testdata/droid-1.14.0-gemini-body.txt).
 const GEMINI_ORDER = ["model", "contents", "systemInstruction", "tools", "generationConfig"]
+// NO_SAMPLING are the Gemini models droid asks with no sampling parameters
+// (omitSamplingParameters in its apiRequest): it sends every other one
+// temperature 1, topP 0.95 and topK 64, these none
+// (testdata/droid-1.21.1-models.txt). geminiBody leaves a client's out too.
+const NO_SAMPLING = new Set(["gemini-4-neon"])
 function geminiBody(model, body) {
   const text = bodyText(body)
   if (text == null) return body
@@ -781,6 +802,8 @@ function geminiBody(model, body) {
   if (!m || typeof m !== "object" || Array.isArray(m)) return body
   m.model = model
   delete m.stream
+  const gc = m.generationConfig
+  if (NO_SAMPLING.has(model) && gc && typeof gc === "object") for (const k of ["temperature", "topP", "topK", "top_p", "top_k"]) delete gc[k]
   let si = m.systemInstruction
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
@@ -1068,10 +1091,10 @@ async function deviceSignIn() {
 // is a balance in cents.
 
 // CORE are the models Droid Core's windows count: those of a vendor other
-// than Anthropic, OpenAI, xAI and Google, but Muse Spark 1.2, Meta's on
-// Fireworks, which droid keeps out of the core pool (no billingPool "core").
-// Standard's count every other model.
-const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream) && m.id !== "muse-spark-1.2").map((m) => m.id)
+// than Anthropic, OpenAI, xAI and Google, but Meta's Muse Spark models
+// (1.2 on Fireworks, Open on Baseten), which droid keeps out of the core
+// pool (no billingPool "core"). Standard's count every other model.
+const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream) && !m.id.startsWith("muse-")).map((m) => m.id)
 
 // statusLine is a status as Go's HTTP client names it, "403 Forbidden".
 const statusLine = (status) => `${status} ${STATUS_CODES[status] ?? ""}`.trim()
@@ -2629,4 +2652,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { harnessText, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { harnessText, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }

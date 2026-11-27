@@ -74,9 +74,9 @@ Each model is served on the one API droid uses for it:
 | API | Models |
 |---|---|
 | Anthropic Messages (`/api/llm/a`) | Fable 5.2, Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
-| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Beam 1.0 |
-| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
+| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.2 Astra/Sol, GPT-6.1 Sol/Terra, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6.2 Astra/Sol, GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Muse Spark Open, Beam 1.0 |
+| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
 Flash (1017 too), Kimi K3 and GLM-5.2 (GLM-5.2 Fast too) have `none`, droid's
@@ -89,9 +89,22 @@ account with no special access, at its registry's limits, efforts and
 multipliers. Fable 5.2 asks for the same data-retention terms as Fable 5.1
 in droid; it is placed after the other non-Fast models so magpie's first 24
 stay as they were (#119). Muse Spark 1.2 is on Fireworks but in droid's
-standard pool, so Droid Core's windows don't count it. GPT-6.1 Terra and
-Muse Spark Open (feature-flagged), GPT-6.1 Sol Ultra Fast (high-cost terms)
-and Muse Spark 1.3 (Responses on Google, which the plugin doesn't send) are
+standard pool, so Droid Core's windows don't count it. GPT-6.1 Sol Ultra
+Fast (high-cost terms) and Muse Spark 1.3 (Responses on Google, which the
+plugin doesn't send) are not included.
+
+droid has no endpoint that lists models: its model list is compiled into
+each release, and Factory's feature flags only switch entries of it on. So
+the plugin's list follows droid's releases, and its tests hold it to the
+newest picker saved in testdata. Up to droid 1.21.1 that adds GPT-6.2 Astra
+and Sol (each also in Fast Mode), GPT-6.1 Terra, Gemini 4 Neon and Muse
+Spark Open, and xhigh on Gemini 4 Hydrogen. Each is behind a Factory feature
+flag, as Gemini 4 Argon is, so an account it isn't on for may be refused it;
+Factory doesn't serve GPT-6.2 Astra in its EU region or Gemini 4 Neon in its
+US one. Gemini 4 Neon goes without sampling parameters (temperature, topP,
+topK), as droid sends it. Muse Spark Open, like Muse Spark 1.2, is in the
+standard pool. GPT-6.2 Astra Ultra Fast (high-cost terms) and GPT-6.2 Sol
+Ultra Fast (the ultrafast service tier, which the plugin doesn't send) are
 not included.
 
 DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
