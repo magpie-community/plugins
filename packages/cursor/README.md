@@ -95,7 +95,9 @@ plugin's `fetch` answers them on Cursor's agent API:
   an account that can't read its usage events, the step is estimated as
   before.
   Failures keep their statuses: 401 to sign in again, 429 at the
-  usage limit, 400 for a prompt too long, 403 for a region refusal.
+  usage limit, 400 for a prompt too long, 403 for a region refusal. A
+  temporary upstream failure is a 503 so clients retry it; a message
+  that names a real quota or rate limit stays a 429.
   Cursor's explicit "The provider refused to serve this request based on
   the content" is a 400 request refusal even when Cursor labels it
   unauthenticated. Its message is kept without a sign-in hint; the
