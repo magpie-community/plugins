@@ -2672,9 +2672,25 @@ const NAMELESS = "the model's native tool call has no name; it is not sent on as
 // opened is a chat reply's events and the first of them, read before
 // anything is answered: a refusal in the stream (Qoder's queue among them)
 // comes first.
-async function opened(res, tools) {
-  const it = events(res.body, tools)
-  return { it, first: await it.next() }
+async function opened(res, tools, onReader) {
+  const reader = res.body.getReader()
+  onReader?.(reader)
+  const body = async function* () {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        return
+      }
+      yield value
+    }
+  }()
+  const it = events(body, tools)
+  try {
+    const first = await it.next()
+    return { it, first }
+  } finally {
+    onReader?.(undefined)
+  }
 }
 
 async function answer({ it, first }, chat, servedName = chat.model) {
@@ -3972,13 +3988,28 @@ const makePlugin = (site) => async ({ client }) => {
         const callSignal = signal ? AbortSignal.any([signal, call.signal]) : call.signal
         let res, open
         let silent = false
+        let pendingRead
         const hush = setTimeout(() => {
           silent = true
           call.abort()
+          pendingRead?.cancel().catch(() => {})
         }, QUEUE.silent)
         try {
           res = await fetch(CHAT_URL, { method: "POST", headers, body: wire, signal: callSignal })
-          if (res.ok) open = await opened(res, chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : [])
+          if (silent)
+            return errorResponse({
+              status: 504,
+              message: `${siteOf(site, cred).name ?? "Qoder"} sent nothing for ${Math.round(QUEUE.silent / 1000)}s after the request (no first event); the call was dropped`,
+              signIn: "",
+            })
+          if (res.ok)
+            open = await opened(
+              res,
+              chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : [],
+              (reader) => {
+                pendingRead = reader
+              },
+            )
         } catch (e) {
           if (silent) {
             const who = siteOf(site, cred).name ?? "Qoder"
@@ -3987,7 +4018,14 @@ const makePlugin = (site) => async ({ client }) => {
           return errorResponse({ status: 502, message: e.message })
         } finally {
           clearTimeout(hush)
+          pendingRead = undefined
         }
+        if (silent)
+          return errorResponse({
+            status: 504,
+            message: `${siteOf(site, cred).name ?? "Qoder"} sent nothing for ${Math.round(QUEUE.silent / 1000)}s after the request (no first event); the call was dropped`,
+            signIn: "",
+          })
         const f = !res.ok ? failure(res.status, (await res.text()).slice(0, 1 << 20)) : open.first.value?.error
         if (f) call.abort()
         // a refused job token: renewed once (or the one renewed meanwhile)
