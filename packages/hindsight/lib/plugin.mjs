@@ -1,4 +1,4 @@
-import { agentId, agentPolicy, configuration } from "./config.mjs";
+import { agentId, agentPolicy, configuration, gatewayBank } from "./config.mjs";
 import { ApiError, Hindsight } from "./hindsight.mjs";
 import { continuesTools, finalAnswer, memoryBlock, responseTools, utf8Prefix } from "./protocol.mjs";
 import { conversationIdentity, createConversationStore, hash, hasNewUserTurn, injected, replay, turnKeys, turns, userText } from "./turns.mjs";
@@ -28,7 +28,7 @@ function operationId(hash) {
     "a" + hash.slice(17, 20), hash.slice(20, 32)].join("-");
 }
 
-export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), observe = () => {} } = {}) {
+export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), observe = () => {}, checkBank } = {}) {
   const conversation = createConversationStore();
   const health = new Map();
   let pendingRecalls = 0;
@@ -86,13 +86,25 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
       const agent = callerAgent(ctx);
       const identity = agentId(agent);
       const policy = agentPolicy(config, agent, nativePolicy(identity));
+      const revision = hash(config).slice(0, 12);
+      const bank = gatewayBank(config, agent);
+      const override = bank !== config.bank;
+      config = { ...config, bank };
       const shouldRecall = policy.recall.owner === "gateway";
       const shouldCapture = policy.capture.owner === "gateway";
-      record(ctx, config, "request", "seen", { revision: hash(config).slice(0, 12) });
+      record(ctx, config, "request", "seen", { revision });
       if (!shouldRecall) record(ctx, config, "policy", policy.recall.reason);
       if (policy.recall.reason === "native-conflict" || policy.capture.reason === "native-conflict")
         record(ctx, config, "policy", "native-conflict");
       if (!shouldRecall && !shouldCapture) { report(ctx, "skipped"); return undefined; }
+      if (override && checkBank) {
+        const valid = await stopWaiting(checkBank(config), ctx.signal).catch(() => false);
+        if (!valid) {
+          record(ctx, config, "policy", "bank-unverified");
+          report(ctx, "skipped");
+          return undefined;
+        }
+      }
 
       const all = turns(body, ctx.protocol);
       const turn = all.at(-1);
@@ -191,6 +203,7 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
       cache.set(submissionKey, {}, WRITE_WINDOW_MS);
 
       try {
+        if (checkBank && !await stopWaiting(checkBank(config), ctx.signal)) throw new ApiError("bank-unverified");
         const client = new Hindsight(config, fetcher);
         const result = await client.retain({ query: run.query, answer, documentId, operationId: id,
           agent: run.agent, protocol: ctx.protocol }, ctx.signal);

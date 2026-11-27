@@ -30,6 +30,7 @@
     cancelled: "取消", unauthorized: "鉴权失败", invalid: "响应或配置无效", continuation: "工具续接", skipped: "跳过",
     submitted: "已提交", processing: "处理中", completed: "已入库", failed: "入库失败", duplicate: "已去重",
     unconfirmed: "待确认是否提交", unidentified: "缺少稳定轮次身份", pending: "排队中", unknown: "最终状态未知",
+    "bank-unverified": "目标记忆库未验证",
     ...explanations
   };
   const phases = { recall: "召回", capture: "写入", policy: "策略" };
@@ -49,6 +50,7 @@
   let previewSeq = 0;
   let previewTimer;
   let activePanel = "agents";
+  let bankCatalog = [];
 
   function show(id, text, tone = "") {
     const node = $(id);
@@ -156,7 +158,7 @@
 
   function renderMode() {
     const help = {
-      legacy: "沿用已保存的旧选择。旧名单为空时沿用旧版 Hermes / DSH 排除规则。切换到手动或自动后可逐项设置。",
+      legacy: "沿用旧选择。要调整单个 Agent 的召回、写入或记忆库，请切换到手动或自动。旧名单为空时沿用旧版排除规则。",
       auto: "检测到原生启用时交给原生，确认原生关闭时交给网关。证据不足的 Agent 标为待确认，可手动选择。",
       manual: "按下表逐项设置。新发现的 Agent 默认关闭网关处理，也可把单个动作设为自动。"
     };
@@ -220,6 +222,8 @@
     const attempted = sum(rows, "recall", new Set(["hit", "empty", ...failures]));
     show("recall-state", rows.length ? fmt(hits) + " / " + fmt(attempted) : "—");
     show("recall-detail", rows.length ? fmt(sum(rows, "recall", new Set(["reused"]))) + " 次复用 · 不计入查询量" : "等待网关活动");
+    $("hit-meter").hidden = !attempted;
+    $("hit-meter").value = attempted ? hits / attempted : 0;
   }
 
   function policyCell(agent, action) {
@@ -258,39 +262,83 @@
     tbody.append(tr);
   }
 
+  function hasPolicy(agent, key) {
+    return Object.values(agent.policy ?? {}).some(item => key === "conflict" ? item.reason === "native-conflict" : item.owner === key);
+  }
+
+  function bankCell(agent, activeBank) {
+    const bank = node("td");
+    const shared = $("bank").value || saved?.bank || snapshot.defaultBank || defaults.bank;
+    const picked = draftRules[agent.id]?.bank || agent.bankOverride || "";
+    if ($("agent_mode").value !== "legacy" && agent.id !== "unknown" && saved) {
+      const selector = node("select", undefined, "bank-select");
+      selector.dataset.agent = agent.id;
+      selector.dataset.action = "bank";
+      selector.setAttribute("aria-label", agent.name + " 网关记忆库");
+      selector.add(new Option("继承 " + shared, ""));
+      const available = new Set([...bankCatalog.map(bank => bank.id), shared, picked].filter(Boolean));
+      for (const id of available) selector.add(new Option(id, id));
+      selector.value = picked;
+      selector.disabled = busy;
+      selector.addEventListener("change", () => {
+        const fallback = $("agent_mode").value === "auto" ? "auto" : "off";
+        const rule = { recall: fallback, capture: fallback, ...(draftRules[agent.id] ?? {}) };
+        if (selector.value) rule.bank = selector.value;
+        else delete rule.bank;
+        draftRules[agent.id] = rule;
+        changed();
+      });
+      bank.append(selector);
+    } else if (activeBank) {
+      bank.append(node("strong", agent.gatewayBank ?? shared));
+      bank.append(node("small", agent.bankOverride ? "网关 · 单独指定" : "网关 · 继承共享库"));
+    }
+    if (agent.native?.bank) bank.append(node("small", "原生 " + agent.native.bank));
+    else if (hasPolicy(agent, "native") || agent.native?.variableBank)
+      bank.append(node("small", agent.native?.variableBank ? "原生随会话或项目变化" : "原生库待确认"));
+    bank.append(node("small", evidence[agent.native?.evidence] ?? "原生状态未知"));
+    return bank;
+  }
+
   function renderAgents() {
     const agents = currentRows();
     const keyword = $("filter-agent").value.trim().toLowerCase();
     const filter = $("filter-policy").value;
     const tbody = $("agent-rows");
     const focused = document.activeElement?.dataset;
-    const selected = agents.filter(agent => {
-      const policy = Object.values(agent.policy ?? {});
-      return (!keyword || (agent.name + " " + agent.id).toLowerCase().includes(keyword)) &&
-        (filter === "all" || policy.some(item => item.owner === filter || (filter === "conflict" && item.reason === "native-conflict")));
-    });
+    const rank = agent => hasPolicy(agent, "conflict") ? 0 : hasPolicy(agent, "gateway") ? 1 : hasPolicy(agent, "native") ? 2 : agent.connected ? 3 : 4;
+    const selected = agents.filter(agent => (!keyword || (agent.name + " " + agent.id).toLowerCase().includes(keyword)) &&
+      (filter === "all" || hasPolicy(agent, filter))).sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     tbody.replaceChildren();
     show("agent-count", fmt(agents.length));
     const when = snapshot.discoveredAt ? "最近识别 " + time(snapshot.discoveredAt) : "等待识别结果";
     show("discovery", when + " · 来源含本机配置、Magpie 用量与网关实际请求");
+    for (const button of document.querySelectorAll("[data-filter]")) {
+      const key = button.dataset.filter;
+      button.setAttribute("aria-pressed", String(key === filter));
+      show("count-" + key, fmt(agents.filter(agent => hasPolicy(agent, key)).length));
+    }
+    const gateways = agents.filter(agent => hasPolicy(agent, "gateway"));
+    const overrides = gateways.filter(agent => agent.bankOverride).length;
+    show("shared-bank", (dirty ? $("bank").value : saved?.bank ?? snapshot.defaultBank) || defaults.bank);
+    show("bank-coverage", fmt(gateways.length - overrides) + " 个网关 Agent 继承 · " + fmt(overrides) + " 个单独指定");
     if (!selected.length) messageRow(tbody, agents.length ? "没有符合筛选条件的 Agent。" : "暂无识别结果，可重新识别或添加自定义 Agent。", 5);
     const rows = snapshot.activity?.rows ?? [];
     for (const agent of selected) {
       const tr = node("tr");
+      tr.dataset.conflict = String(hasPolicy(agent, "conflict"));
       const identity = node("td");
       identity.append(node("span", agent.name, "agent-name"));
       const agentRows = rows.filter(row => row.agent === agent.id);
       identity.append(node("small", (agent.name === agent.id ? "" : agent.id + " · ") +
         (agentRows.length || agent.fromUsage ? "有网关请求" : agent.connected ? "Magpie 已配置" : agent.installed ? "检测到本机配置" : "等待网关请求")));
-      const bank = node("td");
-      const isGateway = Object.values(agent.policy ?? {}).some(item => item.owner === "gateway");
-      const isNative = Object.values(agent.policy ?? {}).some(item => item.owner === "native");
-      if (isGateway) bank.append(node("small", "网关 " + (dirty ? $("bank").value : saved?.bank ?? defaults.bank)));
-      if (agent.native?.bank) bank.append(node("small", "原生 " + agent.native.bank));
-      else if (isNative || agent.native?.variableBank) bank.append(node("small", agent.native?.variableBank ? "原生随会话或项目变化" : "原生库待确认"));
-      bank.append(node("small", evidence[agent.native?.evidence] ?? "原生状态未知"));
-      const runtime = node("td", agentRows.length ? "命中 " + fmt(sum(agentRows, "recall", new Set(["hit"]))) : "—");
-      if (agentRows.length) runtime.append(node("small", "最近 " + time(Math.max(...agentRows.map(row => row.last || 0)))));
+      const bank = bankCell(agent, hasPolicy(agent, "gateway"));
+      const runtime = node("td", agentRows.length ? "命中 " + fmt(sum(agentRows, "recall", new Set(["hit"]))) : "未观察到");
+      if (agentRows.length) {
+        runtime.append(node("small", "注入 " + fmt(sum(agentRows, "injection", new Set(["applied"]))) + " · " +
+          "已入库 " + fmt(sum(agentRows, "capture", new Set(["completed"])))));
+        runtime.append(node("small", "最近 " + time(Math.max(...agentRows.map(row => row.last || 0)))));
+      }
       tr.append(identity, policyCell(agent, "recall"), policyCell(agent, "capture"), bank, runtime);
       tbody.append(tr);
     }
@@ -307,7 +355,15 @@
 
   function renderActivity() {
     const filter = $("stats-agent").value;
-    const rows = (stats.rows ?? []).filter(row => !filter || row.agent === filter);
+    const bankFilter = $("stats-bank");
+    const selectedBank = bankFilter.value;
+    const known = new Set((stats.rows ?? []).map(row => row.bank).filter(Boolean));
+    for (const id of currentRows().map(agent => agent.gatewayBank).filter(Boolean)) known.add(id);
+    bankFilter.replaceChildren(new Option("全部记忆库", ""));
+    for (const id of known) bankFilter.add(new Option(id, id));
+    bankFilter.value = known.has(selectedBank) ? selectedBank : "";
+    const matches = row => (!filter || row.agent === filter) && (!bankFilter.value || row.bank === bankFilter.value);
+    const rows = (stats.rows ?? []).filter(matches);
     const metricRows = [
       ["召回命中", "recall", ["hit"]], ["召回空结果", "recall", ["empty"]],
       ["召回失败", "recall", [...failures]], ["记忆已注入", "injection", ["applied"]],
@@ -325,7 +381,7 @@
     show("stats-source", stats.source === "local"
       ? "保存在本机的运行计数 · 统计按小时汇总"
       : "当前进程的活动样本 · 重启后重新累计");
-    const entries = (stats.recent ?? []).filter(row => !filter || row.agent === filter);
+    const entries = (stats.recent ?? []).filter(matches);
     const tbody = $("event-rows");
     tbody.replaceChildren();
     if (!entries.length) messageRow(tbody, "该范围暂无事件。", 5);
@@ -337,7 +393,8 @@
     }
     const native = $("native-activity");
     native.replaceChildren();
-    const agents = (snapshot.agents ?? []).filter(agent => agent.activity && (!filter || agent.id === filter));
+    const agents = (snapshot.agents ?? []).filter(agent => agent.activity && (!filter || agent.id === filter) &&
+      (!bankFilter.value || agent.native?.bank === bankFilter.value));
     if (!agents.length) native.append(node("p", "暂无可用的原生活动记录。", "callout"));
     for (const item of agents) {
       const line = node("div", undefined, "native-row");
@@ -388,6 +445,24 @@
     } catch { /* Older hosts can use local inventory and hook activity. */ }
   }
 
+  async function loadBanks(draft = false) {
+    $("read-banks").disabled = true;
+    try {
+      const result = await api("banks", draft && saved ? { options: { ...saved, ...values() } } : {});
+      if (!Array.isArray(result.banks)) throw new Error("bank-directory");
+      bankCatalog = result.banks;
+      $("bank-options").replaceChildren(...bankCatalog.map(bank => {
+        const option = new Option(bank.name || bank.id, bank.id);
+        return option;
+      }));
+      show("bank-catalog-note", "可选择 " + fmt(bankCatalog.length) + " 个可见记忆库" +
+        (result.partial ? " · 也可输入已知的完整 ID" : "") + "。保存会验证新选择。");
+      renderAgents();
+    } catch {
+      show("bank-catalog-note", "读取库目录失败。检查 API 地址与权限后重试。", "warn");
+    } finally { $("read-banks").disabled = false; }
+  }
+
   async function check(draft = false) {
     const button = $(draft ? "check-draft" : "check");
     button.disabled = true;
@@ -425,8 +500,12 @@
     try {
       const edits = values();
       const candidate = { ...saved, ...edits };
-      const result = await api("preview", { options: candidate, hints });
+      const result = await api("preview", { options: candidate, hints, verifyBanks: true });
       if (result.error) {
+        if (result.error === "bank-unverified") {
+          return show("status", "无法在 Hindsight 核实以下记忆库：" + result.missing.join("、") + "。请选择已有库。", "error");
+        }
+        if (result.error === "bank-directory-unavailable") return show("status", "无法读取 Hindsight 库目录，请检查 API 与权限后重试。", "error");
         const field = $(result.field);
         if (field) {
           if (["capture", "agent_mode"].includes(result.field)) panels("agents");
@@ -486,8 +565,17 @@
   });
   $("filter-agent").addEventListener("input", renderAgents);
   $("filter-policy").addEventListener("change", renderAgents);
+  for (const button of document.querySelectorAll("[data-filter]")) {
+    button.addEventListener("click", () => {
+      $("filter-policy").value = $("filter-policy").value === button.dataset.filter ? "all" : button.dataset.filter;
+      renderAgents();
+    });
+  }
   $("period").addEventListener("change", () => void refreshStats());
   $("stats-agent").addEventListener("change", renderActivity);
+  $("stats-bank").addEventListener("change", renderActivity);
+  $("manage-banks").addEventListener("click", () => panels("connection"));
+  $("read-banks").addEventListener("click", () => void loadBanks(true));
   $("refresh-agents").addEventListener("click", async () => {
     $("refresh-agents").disabled = true;
     try { await getUsageHint(); await refresh(true); }
@@ -547,6 +635,7 @@
     const panel = new URLSearchParams(location.search).get("panel");
     if (["activity", "connection"].includes(panel)) panels(panel);
     await refresh();
+    void loadBanks();
     if (!snapshot.connection) void check();
     setInterval(() => { if (visible && !stale) void refresh(); }, 15000);
   })();

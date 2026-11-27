@@ -2,7 +2,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { activity } from "../lib/activity.mjs";
 import { inventory } from "../lib/agents.mjs";
-import { agentId, agentPolicy, configuration, DEFAULTS } from "../lib/config.mjs";
+import { listBanks } from "../lib/banks.mjs";
+import { agentId, agentPolicy, configuration, DEFAULTS, gatewayBank, gatewayBanks } from "../lib/config.mjs";
 import { hash } from "../lib/turns.mjs";
 import { testConnection } from "./probe.mjs";
 
@@ -43,11 +44,12 @@ function configView(options, snapshot, rows, hints) {
     const native = agent.native ?? snapshot.native[agent.id] ?? {};
     return { ...agent, native,
       fromUsage: hints.includes(agent.id),
-      legacySelected: config.agents.includes(agent.id),
+      gatewayBank: gatewayBank(config, agent.id),
+      bankOverride: config.agent_mode === "legacy" ? "" : config.agent_policies[agent.id]?.bank ?? "",
       policy: agentPolicy(config, agent.id === "unknown" ? "" : agent.id, native)
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
-  return { agents: data, mode: config.agent_mode, revision: hash(config).slice(0, 12) };
+  return { agents: data, defaultBank: config.bank, mode: config.agent_mode, revision: hash(config).slice(0, 12) };
 }
 
 export function createService({ fetcher = fetch, readInventory = inventory, stats = activity } = {}) {
@@ -58,6 +60,33 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
   let checked;
   let probe;
   let lastProbeAt = 0;
+  let polling;
+
+  async function validateBanks(candidate) {
+    let baseline;
+    try { baseline = configuration(options); } catch { /* Recovering from invalid settings. */ }
+    const known = baseline?.hindsight_api === candidate.hindsight_api ? gatewayBanks(baseline) : [];
+    const targets = gatewayBanks(candidate).filter(bank => !known.includes(bank));
+    if (!targets.length) return [];
+    const listing = await listBanks(candidate, { fetcher });
+    const listed = new Set(listing.banks.map(bank => bank.id));
+    const missing = targets.filter(bank => !listed.has(bank));
+    if (!listing.partial || !missing.length) return missing;
+    const unverified = [];
+    for (const bank of missing) {
+      const result = await listBanks(candidate, { query: bank, fetcher, maxPages: 1 });
+      if (!result.banks.some(entry => entry.id === bank)) unverified.push(bank);
+    }
+    return unverified;
+  }
+
+  function pollBanks(config) {
+    if (polling) return polling;
+    polling = (async () => {
+      for (const bank of gatewayBanks(config)) await stats.poll({ ...config, bank });
+    })().finally(() => { polling = undefined; });
+    return polling;
+  }
 
   async function page(port) {
     templates ??= Promise.all(UI.map(name => readFile(new URL(name, import.meta.url), "utf8")));
@@ -79,7 +108,7 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     if (!hosts.includes(headerHost)) return new Response("Forbidden", { status: 403 });
     const path = new URL(req.url).pathname;
     if (req.method === "GET" && ["/", "/workbench", "/test"].includes(path)) return page(server.port);
-    if (!["/api/status", "/api/preview", "/api/check", "/test"].includes(path)) return new Response("Not found", { status: 404 });
+    if (!["/api/status", "/api/preview", "/api/check", "/api/banks", "/test"].includes(path)) return new Response("Not found", { status: 404 });
     const origin = req.headers.get("origin");
     if (origin !== null && origin !== "null" && !hosts.some(host => origin === "http://" + host))
       return new Response("Forbidden", { status: 403 });
@@ -99,6 +128,9 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     }
     const reply = data => Response.json(data, { headers });
     try {
+      if (path === "/api/banks") {
+        return reply(await listBanks(configuration(input.options ?? options), { fetcher }));
+      }
       if (path === "/api/check" || path === "/test") {
         const candidate = input.options ?? options;
         if (probe || Date.now() - lastProbeAt < 1000) return reply({ error: "check-busy" });
@@ -114,10 +146,19 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
       const hours = PERIODS.has(input.hours) ? input.hours : 24;
       const hints = Array.isArray(input.hints) ? input.hints.slice(0, 40).map(agentId).filter(Boolean) : [];
       const [native, events] = await Promise.all([readInventory(input.refresh === true), stats.summary(hours)]);
-      if (path === "/api/preview") return reply(configView(input.options, native, events.rows, hints));
+      if (path === "/api/preview") {
+        const config = configuration(input.options);
+        if (input.verifyBanks === true) {
+          try {
+            const missing = await validateBanks(config);
+            if (missing.length) return reply({ error: "bank-unverified", missing });
+          } catch { return reply({ error: "bank-directory-unavailable" }); }
+        }
+        return reply(configView(input.options, native, events.rows, hints));
+      }
       let config;
       try { config = configuration(options); } catch { /* The settings page can recover invalid saved options. */ }
-      if (config) void stats.poll(config).catch(() => {});
+      if (config) void pollBanks(config).catch(() => {});
       return reply({
         ...(config ? configView(options, native, events.rows, hints) : { agents: native.agents, invalid: true }),
         activity: events,
@@ -140,7 +181,7 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     poll() {
       let config;
       try { config = configuration(options); } catch { return; }
-      void stats.poll(config).catch(() => {});
+      void pollBanks(config).catch(() => {});
     }
   };
 }

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createPlugin } from "../lib/plugin.mjs";
 import { agentPolicy, configuration } from "../lib/config.mjs";
+import { bankVerifier } from "../lib/banks.mjs";
 import { OPEN } from "../lib/protocol.mjs";
 
 const request = text => ({ messages: [{ role: "user", content: text }] });
@@ -149,4 +150,35 @@ test("the hook injects and captures a synthetic final answer in all four wire fo
     assert.match(calls[1].items[0].content, /Final answer/);
     assert.equal(calls[1].items[0].metadata.protocol, protocol);
   }
+});
+
+test("agents can inherit or explicitly select an existing bank for both recall and capture", async () => {
+  const calls = [];
+  const catalog = [];
+  const plugin = createPlugin({
+    checkBank: bankVerifier({ fetcher: async url => {
+      const id = new URL(url).searchParams.get("q");
+      catalog.push(id);
+      return Response.json({ banks: ["hermes", "fixture-bank"].includes(id) ? [{ bank_id: id }] : [] });
+    } }),
+    fetcher: async (url, init) => {
+      calls.push(url);
+      return url.endsWith("/recall") ? Response.json({ results: [{ text: "fixture context" }] })
+        : Response.json({ success: true, operation_id: JSON.parse(init.body).operation_id });
+    }
+  });
+  const options = { agent_mode: "manual", capture: true, agent_policies: {
+    claude: { recall: "gateway", capture: "gateway", bank: "fixture-bank" },
+    codex: { recall: "gateway", capture: "gateway" },
+    dsh: { recall: "gateway", capture: "gateway", bank: "missing-bank" }
+  } };
+  for (const agent of ["claude", "codex", "dsh"]) {
+    const run = context({ agent, options });
+    await plugin.onRequest(request("question"), run);
+    await plugin.onResponse(answer, run);
+  }
+  assert.deepEqual(catalog, ["fixture-bank", "hermes", "missing-bank"]);
+  assert.deepEqual(calls.map(url => url.split("/banks/")[1]), [
+    "fixture-bank/memories/recall", "fixture-bank/memories", "hermes/memories/recall", "hermes/memories"
+  ]);
 });

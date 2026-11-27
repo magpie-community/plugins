@@ -32,6 +32,7 @@ function backend(url) {
   if (url.endsWith("/health")) return Response.json({ status: "healthy", database: "connected" });
   if (url.includes("/banks?q=")) return Response.json({ banks: [{ bank_id: "hermes" }], total: 1 });
   if (url.endsWith("/banks/hermes/stats")) return Response.json({ bank_id: "hermes", total_documents: 4, total_nodes: 5, content: "private" });
+  if (url.includes("/banks?limit=")) return Response.json({ banks: [{ bank_id: "hermes" }, { bank_id: "fixture-existing" }], total: 2 });
   return new Response("no", { status: 404 });
 }
 
@@ -115,6 +116,24 @@ test("status and preview share effective policy, while draft checks do not repla
   assert.equal((await post("/api/check", { options: { bank: "other" } })).bankStatus, "not-listed");
   assert.equal((await post("/api/status")).connection, null);
   assert.equal(used.filter(call => call.url.endsWith("/health")).length, 1);
+});
+
+test("the bank selector lists existing IDs and rejects a nonexistent bank on save validation", async () => {
+  const { options, handle } = server();
+  options({ bank: "hermes", agents: ["claude"] });
+  const token = await tokenFor(handle);
+  const post = (path, input = {}) => handle(path, {
+    method: "POST", headers: { "x-hindsight-token": token }, body: JSON.stringify(input)
+  }).then(response => response.json());
+  const policy = bank => ({ agent_mode: "manual", agent_policies: { dsh: { recall: "gateway", bank } } });
+  const listing = await post("/api/banks");
+  assert.deepEqual(listing.banks.map(bank => bank.id), ["hermes", "fixture-existing"]);
+  const valid = await post("/api/preview", { options: policy("fixture-existing"), verifyBanks: true });
+  assert.equal(valid.defaultBank, "hermes");
+  assert.equal(valid.agents.find(agent => agent.id === "dsh").gatewayBank, "fixture-existing");
+  const invalid = await post("/api/preview", { options: policy("absent-bank"), verifyBanks: true });
+  assert.equal(invalid.error, "bank-unverified");
+  assert.deepEqual(invalid.missing, ["absent-bank"]);
 });
 
 test("loopback bridge denies foreign sites, stale tokens and arbitrary URLs", async () => {

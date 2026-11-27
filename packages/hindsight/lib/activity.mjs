@@ -24,7 +24,7 @@ export function createActivity({ dir = process.env.MAGPIE_HINDSIGHT_STATE_DIR ||
   let timer;
   let flushing;
   let lastCleanup = 0;
-  let polling;
+  const polling = new Map();
   let runtime;
   const pollPlans = new Map();
   let fallback = [];
@@ -140,16 +140,17 @@ export function createActivity({ dir = process.env.MAGPIE_HINDSIGHT_STATE_DIR ||
   }
 
   async function poll(config) {
-    if (!config || polling) return;
+    if (!config) return;
+    const key = connection(config);
+    if (polling.has(key)) return polling.get(key);
     await flush();
     const db = await database;
-    if (!db || polling) return;
+    if (!db || polling.has(key)) return polling.get(key);
     const now = clock();
-    const key = connection(config);
     const pending = db.query("SELECT * FROM operations WHERE connection=? AND due<=? LIMIT 8").all(key, now);
     if (!pending.length) return;
     const client = new Hindsight(config, fetcher);
-    polling = Promise.allSettled(pending.map(async operation => {
+    const running = Promise.allSettled(pending.map(async operation => {
       let status;
       try {
         const result = await client.operation(operation.id);
@@ -163,8 +164,9 @@ export function createActivity({ dir = process.env.MAGPIE_HINDSIGHT_STATE_DIR ||
       if (saved.changes && status && status !== operation.status && (complete || status === "processing")) {
         observe({ agent: operation.agent, bank: operation.bank, action: "capture", code: status });
       }
-    })).finally(() => { polling = undefined; });
-    return polling;
+    })).finally(() => { polling.delete(key); });
+    polling.set(key, running);
+    return running;
   }
 
   async function summary(hours = 24) {

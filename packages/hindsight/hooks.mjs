@@ -1,8 +1,9 @@
 import { activity } from "./lib/activity.mjs";
 import { nativePolicy } from "./lib/agents.mjs";
+import { bankVerifier } from "./lib/banks.mjs";
 import { createPlugin } from "./lib/plugin.mjs";
 
-const plugin = createPlugin({ nativePolicy, observe: activity.observe });
+const plugin = createPlugin({ nativePolicy, observe: activity.observe, checkBank: bankVerifier() });
 
 function internal(ctx, phase) {
   console.error("[magpie-hindsight] unexpected " + phase + " hook error");

@@ -36,6 +36,12 @@ function integer(value, min, max, field) {
   return value;
 }
 
+function bankId(value, field) {
+  if (typeof value !== "string" || !value || value !== value.trim() || value.length > 128 ||
+    value === "." || value === ".." || /[/?#\x00-\x1f\x7f]/.test(value)) invalid(field);
+  return value;
+}
+
 export function configuration(options = {}) {
   options ??= {};
   if (typeof options !== "object" || Array.isArray(options)) invalid("options");
@@ -53,9 +59,7 @@ export function configuration(options = {}) {
   if (!loopback && !allowRemote) invalid("allowRemote");
   if (!loopback && url.protocol === "http:" && !allowInsecureHttp) invalid("allowInsecureHttp");
 
-  const bank = options.bank ?? DEFAULTS.bank;
-  if (typeof bank !== "string" || !bank || bank !== bank.trim() || bank.length > 128 ||
-    bank === "." || bank === ".." || /[/?#\x00-\x1f\x7f]/.test(bank)) invalid("bank");
+  const bank = bankId(options.bank ?? DEFAULTS.bank, "bank");
 
   const capture = options.capture ?? DEFAULTS.capture;
   if (typeof capture !== "boolean") invalid("capture");
@@ -72,9 +76,9 @@ export function configuration(options = {}) {
   for (const [name, policy] of Object.entries(rules)) {
     const id = agentId(name);
     if (!id || !policy || typeof policy !== "object" || Array.isArray(policy)) invalid("agent_policies");
-    const { recall = "auto", capture = "auto" } = policy;
+    const { recall = "auto", capture = "auto", bank } = policy;
     if (!owners.has(recall) || !owners.has(capture)) invalid("agent_policies");
-    agent_policies[id] = { recall, capture };
+    agent_policies[id] = { recall, capture, ...(bank != null && bank !== "" ? { bank: bankId(bank, "agent_policies") } : {}) };
   }
   const recall_tags = options.recall_tags ?? [];
   if (!Array.isArray(recall_tags) || recall_tags.length > 16 ||
@@ -96,6 +100,15 @@ export function configuration(options = {}) {
     allowRemote,
     allowInsecureHttp
   };
+}
+
+export function gatewayBank(config, agent) {
+  return (config.agent_mode !== "legacy" && config.agent_policies[agentId(agent)]?.bank) || config.bank;
+}
+
+export function gatewayBanks(config) {
+  const overrides = config.agent_mode === "legacy" ? [] : Object.values(config.agent_policies).map(rule => rule.bank).filter(Boolean);
+  return [...new Set([config.bank, ...overrides])];
 }
 
 export function agentAllowed(config, agent) {

@@ -19,9 +19,9 @@
 
     <section class="health-grid" aria-label="连接与运行状态">
       <article><h2>Hindsight API</h2><p id="api-state">等待检查</p><small id="api-detail">—</small></article>
-      <article><h2>记忆库</h2><p id="bank-state">等待检查</p><small id="bank-detail">—</small></article>
+      <article><h2>默认共享库</h2><p id="bank-state">等待检查</p><small id="bank-detail">—</small></article>
       <article><h2>网关配置</h2><p id="hook-state">正在读取</p><small id="hook-detail">—</small></article>
-      <article><h2>最近 24 小时召回</h2><p id="recall-state">—</p><small id="recall-detail">网关命中 / 实际查询</small></article>
+      <article><h2>最近 24 小时召回</h2><p id="recall-state">—</p><meter id="hit-meter" min="0" max="1" value="0" aria-label="网关召回命中率" hidden></meter><small id="recall-detail">网关命中 / 实际查询</small></article>
     </section>
 
     <nav class="tabs" aria-label="工作台页面">
@@ -35,6 +35,12 @@
         <div><h2>Agent 记忆策略</h2><p id="discovery">正在识别本机 Agent…</p></div>
         <button id="refresh-agents" type="button" class="secondary">重新识别</button>
       </div>
+      <div class="summary-strip" aria-label="按 Agent 策略快速筛选">
+        <button type="button" class="secondary" data-filter="gateway" aria-pressed="false"><strong id="count-gateway">—</strong><span>网关负责</span></button>
+        <button type="button" class="secondary" data-filter="native" aria-pressed="false"><strong id="count-native">—</strong><span>原生负责</span></button>
+        <button type="button" class="secondary" data-filter="pending" aria-pressed="false"><strong id="count-pending">—</strong><span>待确认</span></button>
+        <button type="button" class="secondary" data-filter="conflict" aria-pressed="false"><strong id="count-conflict">—</strong><span>可能重复</span></button>
+      </div>
       <div class="controls">
         <label class="inline-label">策略模式
           <select id="agent_mode"><option value="auto">自动识别</option><option value="manual">手动选择</option><option value="legacy">兼容旧名单</option></select>
@@ -42,6 +48,10 @@
         <label class="toggle"><input id="capture" type="checkbox"> 允许网关写入记忆</label>
       </div>
       <p id="mode-help" class="callout">正在读取策略…</p>
+      <div class="bank-banner">
+        <div><span>默认共享库</span> <strong id="shared-bank">hermes</strong><small id="bank-coverage">按需为 Agent 选择已有记忆库</small></div>
+        <button id="manage-banks" type="button" class="secondary">管理记忆库</button>
+      </div>
       <div class="controls filters">
         <input id="filter-agent" type="search" placeholder="搜索 Agent" aria-label="搜索 Agent">
         <select id="filter-policy" aria-label="筛选 Agent 状态">
@@ -52,7 +62,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th scope="col">Agent</th><th scope="col">召回</th><th scope="col">写入</th><th scope="col">记忆库与来源</th><th scope="col">网关活动 · 24h</th></tr></thead>
+          <thead><tr><th scope="col">Agent</th><th scope="col">召回</th><th scope="col">写入</th><th scope="col">记忆库</th><th scope="col">网关活动 · 24h</th></tr></thead>
           <tbody id="agent-rows"></tbody>
         </table>
       </div>
@@ -64,6 +74,7 @@
         <div class="controls">
           <select id="period" aria-label="统计时间"><option value="24">24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select>
           <select id="stats-agent" aria-label="统计 Agent"><option value="">全部 Agent</option></select>
+          <select id="stats-bank" aria-label="统计 Bank"><option value="">全部记忆库</option></select>
         </div>
       </div>
       <div id="activity-totals" class="metric-grid"></div>
@@ -89,11 +100,14 @@
           <input id="hindsight_api" type="url" spellcheck="false" placeholder="http://127.0.0.1:8888">
           <small>填写服务根地址，例如 http://127.0.0.1:8888。使用远端服务时建议选 HTTPS。</small>
         </label>
-        <label class="field wide">网关使用的记忆库 ID
-          <input id="bank" type="text" maxlength="128" spellcheck="false" placeholder="hermes">
-          <small>召回和写入共用此记忆库。测试只读健康状态、记忆库目录和统计。</small>
+        <label class="field wide">默认共享记忆库
+          <input id="bank" type="text" maxlength="128" spellcheck="false" placeholder="hermes" list="bank-options">
+          <datalist id="bank-options"></datalist>
+          <small id="bank-catalog-note">正在读取已有记忆库…</small>
+          <small>Agent 默认继承这里。单独选库后，该 Agent 的网关召回和写入会一起使用指定库。原生接入照自己的配置运行。</small>
         </label>
       </div>
+      <button id="read-banks" type="button" class="secondary">刷新已有库列表</button>
       <div id="draft-result" class="callout" role="status" hidden></div>
       <h3>性能与传输</h3>
       <div class="form-grid">

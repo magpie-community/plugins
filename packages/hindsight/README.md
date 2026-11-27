@@ -26,6 +26,8 @@ Use an existing Hindsight bank. The default is `hermes` on `http://127.0.0.1:888
 
 The four per-action choices are automatic, gateway, native, and gateway off. Explicit gateway selection displays a conflict when an active native integration is detected. The global gateway capture switch must also be enabled for a gateway write. Switching from a legacy list to manual mode preselects the currently discovered legacy choices for review before saving.
 
+Gateway agents inherit the default shared bank unless you select an existing bank for a specific agent. Both gateway actions then use that override. Native integrations keep their own bank settings. The workbench verifies new selections and never creates a bank. Activity can be filtered by agent and bank.
+
 The workbench combines Magpie usage and the local applied-agent list, known local configuration directories, agents observed by the hook, saved choices, and manually added IDs. Native detection reads supported integration wiring for Hermes, DSH, Claude Code, Codex, OpenCode and Pi. Per-project, per-profile, custom, or unrecognized installations can remain unverified. Native tool and retrieval counts are bounded samples of locally available Hindsight Coding Agents logs. Gateway counts come from the hook. Bank totals are shared-bank totals.
 
 Example explicit policy:
@@ -49,6 +51,7 @@ Example explicit policy:
 | --- | --- | --- |
 | `hindsight_api` | `http://127.0.0.1:8888` | Service root URL. The plugin appends API paths. |
 | `bank` | `hermes` | Existing bank ID used for gateway recall and capture. |
+| `agent_policies.<id>.bank` | Inherit | Optional existing bank for an individual agent in automatic or manual mode. |
 | `recall_max_tokens` | `1024` | Per-query Hindsight budget. Range 1–16384. |
 | `injection_max_bytes` | `16384` | Total UTF-8 bytes newly appended by the hook per request, including history replay. Range 1024–131072. |
 | `gatewayTimeoutMs` | `5000` | Host hook limit. Recall keeps a 200 ms margin and is capped at 8000 ms. At or below 200 ms it is skipped. |
@@ -86,6 +89,8 @@ Hindsight Memory 是 Magpie 的异步网关插件。它在模型回答前从 Hin
 | 兼容旧名单 | 已保存的 `agents` 名单按原规则生效。显式空名单沿用旧版 Hermes / DSH 排除规则，直到保存新模式。 |
 
 每项可选「自动」「网关处理」「交给原生」「关闭网关」。手动选网关时，如果检测到原生动作已经启用，界面会标出冲突。网关写入还需要打开总开关。将旧名单转为手动时，工作台会预选已识别的旧策略供核对，再由用户保存。
+
+默认所有网关 Agent 继承共享库 `hermes`。自动或手动模式下，可以在 Agent 行选择已有的独立库，网关召回与写入一起使用它。已有库由 Hindsight 提供，保存前验证新选择。原生集成保留自己的库配置。活动页支持按 Agent 和记忆库筛选。
 
 Agent 列表来自 Magpie 用量、已应用的本机配置、已知配置目录、实际网关请求、已有策略和手动补录。原生检测覆盖可识别的 Hermes、DSH、Claude Code、Codex、OpenCode 和 Pi 接入。个别 profile、项目级覆盖和自定义接入可能显示待确认。原生日志样本、网关活动和共享库总量各自有独立的统计口径。
 

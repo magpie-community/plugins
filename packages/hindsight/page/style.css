@@ -53,6 +53,18 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .health-grid article, .metric-grid article { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .health-grid h2, .metric-grid h3 { font-size: 12px; font-weight: 570; color: var(--muted); }
 .health-grid p { margin: 5px 0 1px; font-size: 17px; font-weight: 660; overflow-wrap: anywhere; }
+meter { width: 100%; height: 6px; margin: 2px 0 5px; accent-color: var(--accent); display: block; }
+.summary-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-bottom: 13px; }
+.summary-strip button { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; text-align: left; }
+.summary-strip strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.summary-strip span { color: var(--muted); font-size: 12px; }
+.summary-strip button[aria-pressed="true"] { border-color: var(--accent); }
+.summary-strip button[data-filter="conflict"] strong { color: var(--warn); }
+.bank-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); }
+.bank-banner span { font-size: 12px; color: var(--muted); }
+.bank-banner strong { color: var(--accent); margin-left: 3px; }
+.bank-banner small { margin-top: 3px; }
+.bank-select { max-width: 170px; }
 [data-tone="good"] { color: var(--accent); }
 [data-tone="warn"] { color: var(--warn); }
 [data-tone="error"] { color: var(--error); }
@@ -77,6 +89,7 @@ td small { margin-top: 3px; overflow-wrap: anywhere; }
 td select { padding: 3px 5px; min-height: 29px; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: var(--surface); }
+tbody tr[data-conflict="true"] td:first-child { box-shadow: inset 2px 0 var(--warn); }
 td:last-child { white-space: nowrap; }
 td[colspan] { padding: 22px 12px; color: var(--muted); }
 .agent-name { display: block; font-weight: 680; overflow-wrap: anywhere; }
@@ -115,6 +128,7 @@ dialog::backdrop { background: #0009; }
   .masthead, .section-head { align-items: flex-start; flex-wrap: wrap; }
   .form-grid { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .save-bar { align-items: flex-end; }
   .save-bar div { gap: 4px; }
   .save-bar button { padding: 6px 8px; }
