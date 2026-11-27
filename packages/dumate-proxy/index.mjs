@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
-import { buildCookieHeader, extractCsrfToken, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
+import { buildCookieHeader, decryptDesktopAuth, extractCsrfToken, parseCookieKey, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
 import { normalizeReasoningBody } from "./src/gateway.mjs"
 import { generateImage, KNOWN_IMAGE_MODELS, selectStrongestImageModel } from "./src/media.mjs"
 import {
@@ -137,10 +137,14 @@ async function gatewayToken(cookieStr, fetchImpl) {
   return next.token
 }
 
+function isSignInResponse(response) {
+  return (response.status >= 300 && response.status < 400) || response.status === 401
+}
+
 async function gatewayFetch(body, cookies, fetchImpl, signal) {
   const header = cookieHeaderOf(cookies)
-  const token = await gatewayToken(header, fetchImpl)
-  const response = await fetchImpl(`${GATEWAY_BASE}/chat/completions`, {
+  let token = await gatewayToken(header, fetchImpl)
+  const send = () => fetchImpl(`${GATEWAY_BASE}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -152,7 +156,15 @@ async function gatewayFetch(body, cookies, fetchImpl, signal) {
     redirect: "manual",
     signal: signal ?? AbortSignal.timeout(180_000),
   })
-  if ((response.status >= 300 && response.status < 400) || response.status === 401) {
+  let response = await send()
+  if (isSignInResponse(response)) {
+    // A cached gateway token can be revoked before its local TTL. Clear it and
+    // retry once with a fresh token before treating the whole account as signed out.
+    tokenCache.delete(header)
+    token = await gatewayToken(header, fetchImpl)
+    response = await send()
+  }
+  if (isSignInResponse(response)) {
     tokenCache.delete(header)
     throw signInError()
   }
@@ -308,9 +320,24 @@ export const DuMateProxyPlugin = async (input = {}) => {
       single: false,
       icon: ICON,
       async refresh(auth) {
-        if (auth?.source !== "desktop") return undefined
         const current = readDesktopLogin({ userDataDir: config.userDataDir })
         if (!current) return undefined
+
+        if (auth?.source === "desktop") {
+          if (cookieHeaderOf(current.cookies) === cookieHeaderOf(auth.cookies)) return undefined
+          return seat(current.cookies, "desktop", current)
+        }
+
+        // Browser/manual seats have no OAuth refresh token. If the desktop
+        // app is logged into the same account, adopt its current cookie set
+        // instead of forcing the user to paste cookies again.
+        const currentUid = String(current.uid || current.accountId || "")
+        const authUid = String(auth?.uid || "")
+        const sameAccount = currentUid && authUid
+          ? currentUid === authUid
+          : [current.accountId, current.name].filter(Boolean).some((name) =>
+              [auth?.accountId, auth?.name].filter(Boolean).includes(name))
+        if (!sameAccount) return undefined
         if (cookieHeaderOf(current.cookies) === cookieHeaderOf(auth.cookies)) return undefined
         return seat(current.cookies, "desktop", current)
       },
@@ -425,6 +452,45 @@ export const DuMateProxyPlugin = async (input = {}) => {
         },
         {
           type: "oauth",
+          label: "粘贴 DuMate auth.json 登录态（服务器可用）",
+          prompts: [
+            {
+              type: "text",
+              key: "authJson",
+              message: "auth.json 完整内容（从百度搭子用户目录复制）",
+              placeholder: '{"cookies":"...","accountProfiles":[...]}',
+              validate: (value) => {
+                try {
+                  const auth = JSON.parse(String(value ?? ""))
+                  if (typeof auth?.cookies !== "string" || !auth.cookies) return "auth.json 缺少 cookies 字段"
+                  return undefined
+                } catch {
+                  return "auth.json 不是合法 JSON"
+                }
+              },
+            },
+            {
+              type: "text",
+              key: "cookieKey",
+              message: ".cookie-key 内容（Base64；也支持 64 位十六进制）",
+              placeholder: "certutil -encode .cookie-key key.b64 后复制 key.b64 内容",
+              validate: (value) => parseCookieKey(value) ? undefined : ".cookie-key 必须是 32 字节，请粘贴 Base64 或 64 位十六进制文本",
+            },
+          ],
+          authorize: async (inputs) => {
+            const login = decryptDesktopAuth(inputs?.authJson ?? inputs?.auth, inputs?.cookieKey ?? inputs?.key, "pasted-auth")
+            if (!login) return { type: "failed", error: "auth.json 与 .cookie-key 内容不匹配，或登录态已失效" }
+            let info
+            try {
+              info = await consoleGet("/api/dumate/user/info", cookieHeaderOf(login.cookies), fetchImpl)
+            } catch (error) {
+              return { type: "failed", error: `登录态验证失败：${error?.message ?? error}` }
+            }
+            return seat(login.cookies, "pasted-auth", { ...login, ...info })
+          },
+        },
+        {
+          type: "oauth",
           label: "百度账号浏览器登录（无需安装百度搭子）",
           authorize: async () => ({
             url: LOGIN_URL,
@@ -482,7 +548,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
       }
       const cookies = auth.cookies
       const consoleHostname = new URL(CONSOLE_BASE).hostname
-      const json = (status, value) => jsonResponse(status, value)
+      const json = (status, value, extraHeaders) => jsonResponse(status, value, extraHeaders)
 
       return {
         baseURL: GATEWAY_BASE,

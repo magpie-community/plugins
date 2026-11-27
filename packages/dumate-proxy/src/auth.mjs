@@ -45,17 +45,41 @@ export function extractCsrfToken(cookies, hostname) {
   return hit ? String(hit.value ?? "").replace(/^["']+|["']+$/g, "") : ""
 }
 
-export function readDesktopLogin({ userDataDir = desktopUserDataDir() } = {}) {
+export function parseCookieKey(raw) {
+  if (Buffer.isBuffer(raw)) return raw.length === 32 ? raw : undefined
+  if (raw instanceof Uint8Array) return raw.length === 32 ? Buffer.from(raw) : undefined
+
+  let text = String(raw ?? "").trim()
+  if (!text) return undefined
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed) && parsed.length === 32 && parsed.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) {
+        return Buffer.from(parsed)
+      }
+      const nested = parsed?.cookieKey ?? parsed?.key ?? parsed?.cookie_key
+      if (nested != null) return parseCookieKey(nested)
+    } catch {
+      return undefined
+    }
+  }
+
+  const clean = text.replace(/-----(BEGIN|END)[^-]*-----/g, "").replace(/\s+/g, "")
+  if (/^[0-9a-fA-F]{64}$/.test(clean)) return Buffer.from(clean, "hex")
+  if (/^[A-Za-z0-9+/=]+$/.test(clean)) {
+    const decoded = Buffer.from(clean, "base64")
+    if (decoded.length === 32) return decoded
+  }
+  return undefined
+}
+
+export function decryptDesktopAuth(authInput, keyInput, source = "desktop") {
   try {
-    const authPath = join(userDataDir, "auth.json")
-    const keyPath = join(userDataDir, ".cookie-key")
-    const stat = statSync(authPath)
-    if (!stat.isFile() || stat.size <= 0 || stat.size > 1024 * 1024) return undefined
-    const auth = JSON.parse(readFileSync(authPath, "utf8"))
+    const auth = typeof authInput === "string" ? JSON.parse(authInput) : authInput
     const encrypted = auth?.cookies
     if (typeof encrypted !== "string" || !encrypted) return undefined
-    const key = readFileSync(keyPath)
-    if (key.length !== 32) return undefined
+    const key = parseCookieKey(keyInput)
+    if (!key) return undefined
 
     const envelope = Buffer.from(encrypted, "base64")
     const decipher = createDecipheriv("aes-256-gcm", key, envelope.subarray(0, 12))
@@ -68,10 +92,24 @@ export function readDesktopLogin({ userDataDir = desktopUserDataDir() } = {}) {
       : undefined
     return {
       cookies,
-      source: "desktop",
+      source,
       accountId: String(profile?.bceAccountId ?? auth.accountProfiles?.[0]?.bceAccountId ?? ""),
       name: String(profile?.displayName ?? auth.accountProfiles?.[0]?.displayName ?? ""),
     }
+  } catch {
+    return undefined
+  }
+}
+
+export function readDesktopLogin({ userDataDir = desktopUserDataDir() } = {}) {
+  try {
+    const authPath = join(userDataDir, "auth.json")
+    const keyPath = join(userDataDir, ".cookie-key")
+    const stat = statSync(authPath)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 1024 * 1024) return undefined
+    const auth = JSON.parse(readFileSync(authPath, "utf8"))
+    const key = readFileSync(keyPath)
+    return decryptDesktopAuth(auth, key, "desktop")
   } catch {
     return undefined
   }

@@ -6,7 +6,7 @@ The plugin connects directly to the official DuMate gateway. No local reverse pr
 
 ## Features
 
-- Three sign-in methods: read-only desktop login, browser Cookie paste, and manual Cookie paste.
+- Four sign-in methods: read-only desktop login, pasted DuMate auth.json login state (server-friendly), browser Cookie paste, and manual Cookie paste.
 - Multiple independent accounts with display-name identity and upstream `uid`.
 - Enumerates all available chat models and one unified image model (`dumate-image2.2`).
 - Exposes one image model only; the backend always uses the strongest available `dumate-image*` model. Current strongest: `dumate-image2.2`.
