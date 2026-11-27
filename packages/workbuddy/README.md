@@ -457,6 +457,32 @@ path or a file name anywhere. Tools' results, commands and names such as
 `DSH_HOME` or `~/.dsh` go as they were.
 Whether this keeps an account from being banned is not known.
 
+### Speech and transcription
+
+Since 0.2.43 each site also lists two models that don't chat (#1617):
+
+| Model | Route | WorkBuddy's API |
+|---|---|---|
+| `workbuddy-tts` | `/v1/audio/speech` | `POST /agenttool/v1/tts`, `{"text"}`, answered as SSE `audio` events of base64 16 kHz mono PCM16 |
+| `workbuddy-transcribe` | `/v1/audio/transcriptions` | `POST /agenttool/v1/asr`, multipart `audio`, answered `{code, msg, text}` |
+
+Both are the APIs WorkBuddy's own app calls for read-aloud and voice
+input (`workbuddy-server`'s tts and asr services), with the same headers,
+on the account's endpoint. WorkBuddy takes no voice, model or speed: one
+voice is all there is, and `voice` and `speed` are ignored.
+
+- Speech: text is sent in pieces of at most 1000 bytes, cut at the end of a
+  sentence, as the app does (WorkBuddy refuses more than 1800). The answer
+  is `wav` (16 kHz) for every format but `pcm`, which is raw 24 kHz PCM16 as
+  OpenAI's. Asking for `mp3`, `opus`, `aac` or `flac` gets WAV too, with
+  its own Content-Type.
+- Transcription: the file goes as sent; the app sends 16 kHz mono WAV.
+  `response_format` is `json` or `text`; `verbose_json`, `srt` and `vtt`
+  are refused, since WorkBuddy gives no timings. `/v1/audio/translations`
+  is refused.
+- With "Free models only" on, neither is listed and their requests are
+  refused before they're sent: WorkBuddy names no price for them.
+
 ## Credits in magpie
 
 magpie's usage card shows the account's credits from the resource summary.

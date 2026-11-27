@@ -240,6 +240,9 @@ test("each model's rate is its credits", async () => {
       hy3: [0, false],
       odd: [0, false],
       inf: [0, false],
+      // the speech models (#1617), which WorkBuddy names no price for
+      "workbuddy-tts": [0, false],
+      "workbuddy-transcribe": [0, false],
     })
   }
   const { creditsOf } = _internal
@@ -269,12 +272,12 @@ test("WorkBuddy AI's GLM models are text-only, its others and China's GLM keep i
   expect(await images(WorkBuddyAIAuthPlugin)).toEqual({
     "glm-5.3-flash": [false, false], "glm-5.3": [false, false], "glm-5.2": [false, false], "glm-6": [false, false],
     "deepseek-v4.1-flash": [true, true], "kimi-k3": [true, true], "gemini-3.5-flash": [true, true], "gpt-5.5": [true, true],
-    hy3: [false, false], "said-nothing": [false, false],
+    hy3: [false, false], "said-nothing": [false, false], "workbuddy-tts": [false, false], "workbuddy-transcribe": [false, false],
   })
   expect(await images(WorkBuddyAuthPlugin)).toEqual({
     "glm-5.3-flash": [true, true], "glm-5.3": [true, true], "glm-5.2": [true, true], "glm-6": [true, true],
     "deepseek-v4.1-flash": [true, true], "kimi-k3": [true, true], "gemini-3.5-flash": [true, true], "gpt-5.5": [true, true],
-    hy3: [false, false], "said-nothing": [false, false],
+    hy3: [false, false], "said-nothing": [false, false], "workbuddy-tts": [false, false], "workbuddy-transcribe": [false, false],
   })
   const { textOnly, SITES } = _internal
   // the family, by its id's start: not a model whose id only has glm in it
