@@ -116,6 +116,11 @@ itself.
     powered by DeepSeek Harness.`, goes with a comma before `powered by`
     (since 0.2.73, #1517): Qoder CN puts a request whose system prompt
     holds that line, as written, in a queue that never moves.
+  - Kimi Code's identity line, `You are Kimi Code, an interactive general AI
+    agent running on a user's computer.`, goes as `You are a coding agent, ...`
+    (since 0.2.78): Qoder CN puts a request whose system prompt opens with
+    that line in the same 10605 / p2 / `RESOURCE_LIMIT` queue. The rest of the
+    prompt and your messages go as written.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.

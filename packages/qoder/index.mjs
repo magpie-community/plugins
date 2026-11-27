@@ -113,6 +113,18 @@ const asAgentSDK = (text) => text.replace(CLAUDE_CODE_LINE, AGENT_SDK_LINE)
 const HARNESS_OPENER = /(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b/gi
 const harnessComma = (text) => text.replace(HARNESS_OPENER, "$1, $2")
 
+// Qoder CN queues a request whose system prompt opens with Kimi Code's
+// identity, "You are Kimi Code, an interactive general AI agent running on a
+// user's computer.", in the same 10605 / p2 / RESOURCE_LIMIT hold as the
+// DeepSeek Harness opener above: queueCount 0, serviceAvailable false, and
+// the queue never moves. Kimi Code Desktop sends exactly that line (its
+// profile.bind systemPrompt), so a Kimi K3.1 Pro call through Qoder CN never
+// starts; the same request with a neutral opening answers at once. The match
+// is the identity at the start of a line only, so later mentions of Kimi Code
+// stay, and the user's own messages go as written.
+const KIMI_CODE_OPENER = /(^|\n)([ \t]*)You\s+are\s+Kimi(?:\s+Code)?\b/gi
+const neutralKimi = (text) => text.replace(KIMI_CODE_OPENER, "$1$2You are a coding agent")
+
 const hexID = () => randomUUID().replaceAll("-", "")
 
 // ---- the COSY envelope --------------------------------------------------------
@@ -1585,7 +1597,7 @@ const APP_CHAT = { stream: true, chat_task: "FREE_INPUT", is_reply: true, is_ret
 // passes itself last.
 function qoderBody(chat, m, named = "", task, site) {
   const given = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
-  const system = harnessComma(asAgentSDK(given))
+  const system = harnessComma(asAgentSDK(neutralKimi(given)))
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
   const baseSystem = site?.systemPrompt ?? QODER_SYS
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
@@ -4568,4 +4580,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, orgOf, teamOf, cardNameOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, orgOf, teamOf, cardNameOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, neutralKimi, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
