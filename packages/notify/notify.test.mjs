@@ -972,6 +972,11 @@ test("each channel posts where and what its service documents", async () => {
   await send({ type: "telegram", token: "123:abc", chatId: 42 }, m)
   expect(calls.at(-1).url).toBe("https://api.telegram.org/bot123:abc/sendMessage")
   expect(JSON.parse(calls.at(-1).body)).toMatchObject({ chat_id: 42, text: "T\nB" })
+  expect(JSON.parse(calls.at(-1).body)).not.toHaveProperty("message_thread_id")
+  await send({ type: "telegram", token: "123:abc", chatId: -1001, threadId: 6835 }, m)
+  expect(JSON.parse(calls.at(-1).body)).toMatchObject({ chat_id: -1001, message_thread_id: 6835 })
+  await send({ type: "telegram", token: "123:abc", chatId: -1001, threadId: "77" }, m)
+  expect(JSON.parse(calls.at(-1).body)).toMatchObject({ message_thread_id: 77 })
 
   await send({ type: "webhook", url: "https://hooks.example.com/x", headers: { "x-k": "v" } }, m)
   expect(calls.at(-1).init.headers["x-k"]).toBe("v")

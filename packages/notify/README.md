@@ -64,7 +64,7 @@ The plugin has a page in magpie's sidebar (Plugins group): add, edit and pause c
     { "type": "feishu", "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/…", "secret": "…" },
     { "type": "dingtalk", "webhook": "https://oapi.dingtalk.com/robot/send?access_token=…", "secret": "SEC…" },
     { "type": "wecom", "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" },
-    { "type": "telegram", "token": "123:abc", "chatId": 42 },
+    { "type": "telegram", "token": "123:abc", "chatId": 42, "threadId": 6835 },
     { "type": "webhook", "url": "https://…", "headers": { "authorization": "…" } }
   ],
   "minMinutes": 3,                 // shorter turns send nothing; 0 sends every one
@@ -81,7 +81,7 @@ The plugin has a page in magpie's sidebar (Plugins group): add, edit and pause c
 }
 ```
 
-Optional fields are shown with their defaults where they have one. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. Gotify's `priority` falls back to the application's default when omitted; its `extras` accepts an object of `namespace::action` keys (e.g. `{"client::display": {"contentType": "text/markdown"}}`). `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`, or for an account `{kind: "signed-out" | "ending", provider, account, endsAt}`.
+Optional fields are shown with their defaults where they have one. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. Telegram's `threadId` is a topic's id in a forum group (the number after the group in a `t.me/c/<group>/<topic>` link); without it the message goes to the group's General topic. Gotify's `priority` falls back to the application's default when omitted; its `extras` accepts an object of `namespace::action` keys (e.g. `{"client::display": {"contentType": "text/markdown"}}`). `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`, or for an account `{kind: "signed-out" | "ending", provider, account, endsAt}`.
 
 ## Privacy
 
