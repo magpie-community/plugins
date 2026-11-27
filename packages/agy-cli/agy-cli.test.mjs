@@ -52,6 +52,7 @@ for (const [name, mocks] of [
   ["prompt-suggestion.mjs", false],
   ["seed-replay.mjs", false],
   ["session-continuity.mjs", false],
+  ["park-reread.mjs", false],
   ["same-opening.mjs", false],
   ["claude-code-sessions.mjs", false],
 ]) {
