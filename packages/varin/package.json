@@ -1,0 +1,25 @@
+{
+  "name": "@magpie-community/agent-varin",
+  "version": "0.1.0",
+  "description": "Varin as a magpie agent: pick one of magpie's models for its conversations on the Agents page, and let the Library give it instructions, MCP servers and skills",
+  "type": "module",
+  "files": [
+    "varin.agent.js",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "varin",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/varin"
+  },
+  "magpie": {
+    "agent": "./varin.agent.js"
+  }
+}
