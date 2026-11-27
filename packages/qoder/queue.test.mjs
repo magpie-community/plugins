@@ -38,6 +38,7 @@ beforeEach(() => {
   pauses = []
   timers = []
   QUEUE.now = () => clock
+  QUEUE.log = () => {}
   QUEUE.pause = async (ms, signal) => {
     if (signal?.aborted) throw signal.reason
     pauses.push(ms)
@@ -259,6 +260,66 @@ test("the queue is waited out 10 times for one request at most", async () => {
   const res = await fetch(API_CHAT, ask())
   expect(res.status).toBe(503)
   expect(sent.chats.length).toBe(11)
+})
+
+// plugins#1560 (Rhymeyoung): ZCode's request to Qoder CN's fast ended after
+// 5m26s with "Qoder queued the request for fast (this plan's queue: p2);
+// try again in 30s", which read as a wait that ran out. It was the queue
+// saying "through" ten times, 30s after each, and each resend queued
+// again; nothing anywhere said so, or what the queue had said.
+const P2 = { isQueued: true, modelKey: "fast", queueCount: 0, queueType: "p2", retryAfterSeconds: 30, serviceAvailable: true, waitTime: 0 }
+const THROUGH = { isQueued: false, modelKey: "fast", queueCount: 0, queueType: "p2", retryAfterSeconds: 30, serviceAvailable: true, waitTime: 0 }
+
+test("#1560 a request queued again after every wait the queue said was over says so, with the queue's last status", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(P2), statuses: () => status(THROUGH) })
+  const res = await fetch(API_CHAT, streamed())
+  const { lines } = await read(res)
+  const err = JSON.parse(lines.find((l) => l.line.startsWith("data:")).line.slice(5)).error
+  expect(err).toEqual({
+    message:
+      "Qoder queued the request for fast (this plan's queue: p2); try again in 30s (Qoder's queue let it through 10 times and queued each resend again; its last status: isQueued false, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast)",
+    code: 503,
+  })
+  expect(sent.chats.length).toBe(11)
+  // ten 30s pauses, as long as the reporter's 5m26s less the calls
+  expect(pauses).toEqual(Array(10).fill(30_000))
+})
+
+test("#1560 each step of a queued request's wait goes to magpie's log with what the queue said", async () => {
+  const logged = []
+  QUEUE.log = (l) => logged.push(l)
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused(P2) : answered()),
+    statuses: (n) => status(n === 1 ? { ...P2, queueCount: 2, waitTime: 40, subCode: "RESOURCE_LIMIT" } : THROUGH),
+  })
+  expect((await fetch(API_CHAT, ask())).status).toBe(200)
+  const set = sent.chats[0].request_set_id.slice(0, 8)
+  expect(logged).toEqual([
+    `qoder: dfmodel in request set ${set}: queued (10605) on send 1: isQueued true, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast`,
+    `qoder: dfmodel in request set ${set}: queue status: isQueued true, serviceAvailable true, queueType p2, queueCount 2, retryAfterSeconds 30, waitTime 40, subCode RESOURCE_LIMIT, modelKey fast`,
+    `qoder: dfmodel in request set ${set}: queue status: isQueued false, serviceAvailable true, queueType p2, queueCount 0, retryAfterSeconds 30, waitTime 0, modelKey fast; through, sending it again`,
+  ])
+})
+
+test("#1560 a wait that ends says why in magpie's log", async () => {
+  const logged = []
+  QUEUE.log = (l) => logged.push(l)
+  let r = await loader({ chats: () => refused(), statuses: () => new Response("not found", { status: 404 }) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": the wait ends: Qoder has no queue status here")
+
+  r = await loader({ chats: () => refused(), statuses: () => new Response("boom", { status: 500 }) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": the wait ends: 3 status asks failed in a row")
+  expect(logged.at(-2)).toEndWith(": queue status ask failed: queue status: HTTP 500")
+
+  r = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  expect((await r.fetch(API_CHAT, ask())).status).toBe(503)
+  expect(logged.at(-1)).toMatch(/: the wait ran out after 240s$/)
+
+  r = await loader({ chats: () => refused(), statuses: () => status(QUEUED) })
+  expect((await r.fetch(API_CHAT, { ...ask(), headers: { "x-magpie-fallback": "1" } })).status).toBe(503)
+  expect(logged.at(-1)).toEndWith(": not waited: another candidate follows")
 })
 
 test("a cancelled request stops waiting: no status asked and no request sent after", async () => {

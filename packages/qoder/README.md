@@ -162,7 +162,8 @@ itself.
   - an MD5 signature;
   - the machine id and the client's headers.
   - `Cosy-Version`: the worker runtime version that Qoder's desktop app
-    ships (1.1.69 in app 0.4.8, since 0.2.23, #281), because
+    ships (1.1.96-hotfix.8 in app 0.5.20, since 0.2.75, #1560; before
+    that 1.1.69 in app 0.4.8, from 0.2.23, #281), because
     `Cosy-ClientType` says the desktop app.
 
 **Reading the reply**
