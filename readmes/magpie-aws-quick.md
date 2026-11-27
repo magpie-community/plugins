@@ -221,6 +221,12 @@ A few plugin options tune request handling (`magpie plugin options aws-quick '{�
 - `stableDeviceId` (default `true`): direct sessions send a stable
   per-account device id as `outpostId` (see Device ids above); `false` sends
   an empty value.
+- `toolSpecReanchorTurns` (default `6`): on a reused thread only a short
+  tool reminder rides each turn, and smaller models gradually drift into
+  answering in plain text — the agent-visible "no tools" failure. Every
+  this-many reminder turns the full tool spec is sent again to re-anchor
+  the convention; a plain-text answer to tool results forces one early.
+  `0` disables the periodic re-anchor.
 
 ## FAQ
 
@@ -251,7 +257,11 @@ browser or in a private/incognito window, without signing out of the others.
   `[tool_result …]` continuing the same thread. The full tool spec is sent
   once per thread; later turns on a reused thread carry only a short
   reminder, because everything in the message stays in Quick's thread
-  history and counts toward the context. Reliability depends on the
+  history and counts toward the context, with the full spec re-sent every
+  few turns (`toolSpecReanchorTurns`) so the convention doesn't fade.
+  Parsed calls are validated against the declared schema, and violations
+  ride the next turn as corrections so the model can fix its arguments
+  instead of repeating them. Reliability still depends on the
   model honoring the convention — verified stable under
   `tool_choice:'required'` for smart/advanced; occasionally the model answers
   directly with its own tools (e.g. web search) instead, which shows up as a

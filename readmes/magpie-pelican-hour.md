@@ -36,6 +36,10 @@ Calendars are available offline. Mainland China uses the published holiday and m
 
 ## Checks, previews and storage
 
+Select an account and choose **Run one check** for a single request, even while its schedule is paused. It uses the account’s quota, respects quiet hours and concurrency limits, and keeps its scheduled appointments. Repeated requests merge while a manual check is pending. Expired appointments are skipped after restart or sleep.
+
+History has 12 entries per page for the selected account and filter. Open a run for its original prompt. Model request success and artwork save rates count known outcomes at each stage. Interrupted runs and unknown historical outcomes are excluded from the respective denominators. Intentional interruptions count checks stopped by quiet hours or an explicit plugin stop. The dashboard lists damaged records by relative path and preserves their files for recovery.
+
 Magpie’s local gateway sends the fixed task in the check’s language to `gpt-6.2-astra` with `xhigh` reasoning. Up to three accounts can run at once. Open a run to see the original reply, HTML, extracted SVG and preview. **Back to run details** returns from the raw response. The extractor also handles a complete HTML document inside a JSON string.
 
 Thumbnails play when visible. When a recording is unavailable, the gallery plays the saved HTML preview in a sandbox, including for older artwork. If the plugin finds Chrome or Chromium and FFmpeg, it records silent 60 fps previews for scripted artwork and saves 30 fps animated PNGs for browsers that restrict autoplay. Set `CHROME_PATH` and `FFMPEG_PATH` to the executables for custom installations.

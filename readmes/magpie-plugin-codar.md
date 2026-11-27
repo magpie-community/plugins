@@ -55,7 +55,31 @@ The token carries the account name and an expiry (7 days after the app's last lo
 
 ### Where the password goes
 
-The account's name and password are sent in one request, `POST /v1/login {username, password}` on `api.kuaipaper.com` — the same endpoint the vendor's own client signs in through — and nowhere else. The password is not written to disk, to magpie's saved account, to the plugin's memory after that call, or to a log line: what comes back from it is the token, and the token is what is kept. If the vendor stops that sign-in with its IP check (`code 201`), the plugin keeps the temp token the refusal carried for at most ten minutes so the SMS method can finish the check without asking for the password again; that temp token, like the account's own, is held in memory only. A message about a failed sign-in is scrubbed of both the account and the password before it is shown.
+The account's name and password are sent in one request, `POST /v1/login {username, password}` on `api.kuaipaper.com` — the same endpoint the vendor's own client signs in through — and nowhere else. The password is not written to disk, to magpie's saved account, or to a log line: what comes back from it is the token, and the token is what is kept. It is held in memory only while a request is in flight and for as long as it takes to redact it from that request's own error message (a bounded scrub cache, not a stored credential): the vendor never sees it again, and nothing serialises it. If the vendor stops that sign-in with its IP check (`code 201`), the plugin keeps the temp token the refusal carried for at most ten minutes so the SMS method can finish the check without asking for the password again; that temp token, like the account's own, is held in memory only. A message about a failed sign-in is scrubbed of both the account and the password before it is shown.
+
+### Where the sign-in page's link and the vendor's script go
+
+A sign-in page lives at a loopback URL carrying a 128-bit path token
+(`http://127.0.0.1:<port>/s/<token>`). Treat that link as a password: whoever
+holds it can drive the page's endpoints — request an SMS, submit the five
+codes its budget allows, poll the QR status — until the page closes, and the
+host puts the link on a command line when it opens a browser (so `ps` on the
+same machine can see it). The page itself never holds the account's token; it
+calls the plugin, and the plugin calls the vendor.
+
+The SMS tab runs the vendor's own captcha (`https://codar-web.speedai.com/ct4.js`),
+and that script does execute inside the page: what it can see is the path
+token above and the phone number typed into the form — not the account's
+token, which never enters the page. The script is loaded without an integrity
+hash on purpose (its content changes with every vendor deploy, and a pinned
+hash turns that into a silent sign-in outage). The page does send the four
+directives that depend on nothing the widget loads — `frame-ancestors 'none'`,
+`base-uri 'none'`, `form-action 'none'`, `object-src 'none'` — plus
+`Referrer-Policy: no-referrer`, so the page cannot be framed, re-based, or leak
+its path token in a Referer. `script-src`/`connect-src` are deliberately absent:
+the captcha widget loads its own resources from hosts this plugin does not
+control, and those two directives are the right next step once they can be
+checked against a live widget.
 
 ## Notes
 
@@ -96,7 +120,11 @@ The proxy needs a Go toolchain to build (`scripts/build-native.mjs` fetches the 
 Two environment variables exist for troubleshooting the native transport:
 `CODAR_PLUGIN_DISABLE_NATIVE=1` turns the proxy off (every request takes the
 plain fetch, and the tests that need a proxy skip), and `CODAR_PROXY_RETRY_MS`
-sets the pause before a failed proxy start is tried again (default 30 000).
+sets the pause before a failed proxy start is tried again (default 20 000).
+`CODAR_NATIVE_OUT` is a build-time hook: it moves where `native:all` writes and
+where the release scripts check and stage, but the plugin itself still looks in
+`native/bin` (and in the platform package). A build made elsewhere is named to
+it with `CODAR_PROXY_BIN`.
 `CODAR_PROXY_BIN` names a different executable — the tests use it for their
 scripted stand-in.
 
@@ -120,7 +148,16 @@ all five in `optionalDependencies`:
 | `magpie-plugin-codar-win32-x64` | `win32` | `x64` |
 
 The proxy lives in a private (0700) directory under the temp root, made for it
-by the plugin and holding its socket and ready file. The plugin removes that
+by the plugin and holding its socket and ready file. On Windows those modes
+are the read-only bit and nothing more: the ready file's access token is
+protected by a per-user directory rather than by an ACL. The runtime's `%TEMP%`
+is already per user in the ordinary case; when it is not — a service whose
+`TEMP` is unset falls back to the shared `%windir%\temp` — the plugin makes
+its directory under `%LOCALAPPDATA%\codar-plugin` instead, which is per user by
+construction. Should `%LOCALAPPDATA%` be missing too, it falls back to the
+shared temp and the token there is a stale value rather than a live key: it is
+swapped for a new one on every start and stops matching anything the moment its
+proxy is gone. The plugin removes that
 directory when the proxy exits, and so does the proxy itself on its way out —
 so a plugin process killed outright, whose own cleanup never runs, still
 leaves nothing behind once the proxy it started sees its stdin close. When
@@ -157,7 +194,7 @@ Where the builds come from:
 - **The binaries in the published platform packages are not byte-reproducible from the tag.** `native/bin` is not committed, so a fresh checkout of `vX.Y.Z` has no binaries, and a rebuild from the same tag gives a different file and checksum than the one that shipped. What a tag *does* fix is the source and the inputs: `native/go.mod`, `native/cmd/codar-proxy/`, and the toolchain, `GOOS`/`GOARCH`, `GOEXPERIMENT` and flags in `scripts/build-native.mjs`. The binaries that ship are the ones built from that source on the releasing machine. Since 0.2.4 each one carries no VCS stamp (`-buildvcs=false`) and no build path (`-trimpath`), so `go version -m` reports the module as `(devel)` rather than naming a commit — a stamp read from the checkout the build ran in named the wrong commit on the 0.2.0–0.2.3 builds.
 - **What can be checked, and what CI checks.** Anyone can rebuild with `go run`/`npm run native:all` and run `go vet ./... && go test ./...` in `native/`, where the proxy's tests pin what it sends and how it decides (the forwarded hosts and headers, the proxy decision, the last-address dialer). Every release also ships the source in the package, so the code the binary was built from is readable side by side. CI's `native` job builds all five targets from the same source with the same toolchains and refuses a binary whose `DefaultGODEBUG` differs from its platform sidecar's; it uploads the result only for the `tarball` job to test — the binaries in CI are not the ones published, and the publish gate checks names and shapes, not bytes. The gate also installs the packed main package into a scratch project through a registry served from a local directory, and requires that install to land exactly this machine's platform package and that the plugin starts it: a bare unpack cannot show that, and the release that shipped five builds in one package shipped for two minor versions because nothing checked the install path.
 
-What the proxy does, briefly: it listens on a private socket in the temp directory (loopback TCP on Windows) and forwards only the four vendor hosts the desktop's cloud-network controller accepts, with only the headers the plugin lists. It holds no credential of its own — the token is passed in per request — and it writes one file, the ready file in its own temp directory that tells the plugin where it is listening, its own pid (so a later start can tell a dead shell from a wedged live one), on Linux its PID namespace (so a sweep running in another namespace cannot read its live proxy as gone), and on Windows the per-run header token that proves a request came from the plugin (mode 0600); it writes nothing else.
+What the proxy does, briefly: it listens on a private socket in the temp directory (loopback TCP on Windows) and forwards only the four vendor hosts the desktop's cloud-network controller accepts, with only the headers the plugin lists. It holds no credential of its own — the token is passed in per request — and it writes one file, the ready file in its own temp directory that tells the plugin where it is listening, its own pid (so a later start can tell a dead shell from a wedged live one), on Linux its PID namespace (so a sweep running in another namespace cannot read its live proxy as gone), and on Windows the per-run header token that proves a request came from the plugin (written with mode 0600, which on Windows is the read-only bit; see the note above). It writes nothing else.
 
 Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html); [CHANGELOG.md](CHANGELOG.md) records every release, and the release process is described in `CONTRIBUTING.md`.
 

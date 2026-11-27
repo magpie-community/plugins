@@ -9,9 +9,9 @@
 复用你在 Magpie 中**已登录**的个人账号，一站式完成成长任务、微信小程序链式任务、运营活动、猫猫旅行、夜猫子、Buddy 盲盒与连登管家，并提供本地可视化看板、北京时间小时排程与 8 个 MCP 智能体工具。
 
 [![GitHub Stars](https://img.shields.io/github/stars/jichie/magpie-workbuddy-tasks?style=flat-square&logo=github&color=f59e0b)](https://github.com/jichie/magpie-workbuddy-tasks/stargazers)
-[![Version](https://img.shields.io/badge/version-0.4.0-10b981?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.2-10b981?style=flat-square)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-682%20passing-success?style=flat-square)](#目录与测试)
+[![Tests](https://img.shields.io/badge/tests-694%20passing-success?style=flat-square)](#目录与测试)
 [![Magpie Plugin](https://img.shields.io/badge/magpie-plugin-6366f1?style=flat-square)](https://usemagpie.ai/docs/zh/plugins)
 
 ```bash
@@ -131,7 +131,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 | **任务级精准勾选** | 看板任务明细 / `codes` 参数 | 全局并集生效，按 `成长 / 小程序 / 活动` 命名空间隔离分发（活动任务格式 `<活动code>:<任务code>`），互不串味 |
 | **桌面任务链** | 成长腿自动处理 | `RichMeow_Chat`（6 条桌面会话事件）、`Buddy_App`（5 条 `buddyapp_*` 事件 + 指纹）、`Library_read`（Web 点击）均已自动化 |
 | **微信小程序链式任务** | 任务腿 `mp`（可单独排程） | 专属小程序埋点与指纹，覆盖 `Sequential_Tasks_1–6`、`school_season` 等；自动识别上游 `locked` / `unlock_at` 次日解锁状态，不强行接取（`Sequential_Tasks_7` 走 Web Playbook 双事件链） |
-| **运营活动任务** | 任务腿 `campaign` / `POST /api/campaign/run` | 走独立 `/portal/activity/*` 契约（如星巴克协作、记者节福利），经 `viewed` → 上报 → `claim` 并回读 `claimed_at` 校验；手机 App 专属任务只提示不伪造 |
+| **运营活动任务** | 任务腿 `campaign` / `POST /api/campaign/run` | 走独立 `/portal/activity/*` 契约（如星巴克协作、记者节福利），经 `viewed` → 上报 → `claim` 并回读 `claimed_at` 校验；命中 `HTTP 410 / code 12331`（活动未开始或已结束）时立即跳过该活动并在看板标注「已结束」，手机 App 专属任务只提示不伪造 |
 | **夜猫子任务** | 任务腿 `night` | `black_cat` 仅在 **北京时间 23:00–08:00** 上报（每天 1 次、累计 3 天）；01:00 暂缺时自动重试约 50s，白天诚实跳过 |
 
 ### 2. 连登、签到与伙伴养成
@@ -165,7 +165,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 
 - **今日概览（Bento KPI）**：直观展示今日积分收益、今日能量、运行轮次。
 - **账号与任务工作台**：账号状态、凭据剩余天数、连登条（天数 / 补签卡 / 抽奖 / 档位奖励 / 28 天日历）、积分余额与「明细」弹窗、冻结红标与一键恢复。
-- **三组分类任务明细**：按 `成长任务 → 小程序任务 → 活动任务` 分组展示，**未完成置顶、已完成折叠沉底**，支持全选/半选与锁定任务提示。
+- **三组分类任务明细**：按 `成长任务 → 小程序任务 → 活动任务` 分组展示，**未完成置顶、已完成折叠沉底**，支持全选/半选、锁定任务提示及已结束活动标注（自动禁用勾选）。
 - **悬浮批量操作坞 & 控制台日志**：集中管理任务腿、自动领奖开关与快捷操作，实时滚动日志与全量尝试「历史记录」（区分 `手动` / `排程` 触发）。
 
 ### 边界清单：本插件刻意不做什么
@@ -304,13 +304,15 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 </details>
 
 <details>
-<summary>🛠️ 常见问题与故障排查（14 项）</summary>
+<summary>🛠️ 常见问题与故障排查（16 项）</summary>
 
 | 常见现象 | 原因与解决办法 |
 | --- | --- |
 | **没有可参与任务的账号** | 仅识别国内版 `workbuddy` OAuth 个人账号（非企业版/国际版/API Key），且需开启「参与任务」。Docker 自定义路径可设环境变量 `MAGPIE_CONFIG_DIR=/config/magpie` 后重启并点击「重新扫描」 |
 | **「任务引擎不可用」/ 503** | `engine/*.mjs` 文件缺失或加载失败；补齐后在插件管理中关开一次 |
 | **触发风控限制（403 / 11140）** | 引擎已立即冻结该账号防连坐；确认网络/账号环境无异常后，在看板点击 **「恢复」** 或调 `POST /api/account/unfreeze` |
+| **活动任务报 `410 / 12331`** | 活动未开始或已结束：`0.4.2+` 会立即中止该活动并跳过后续上报与轮询，同时在看板标注「已结束」，其余未结束活动照常执行 |
+| **列表里的任务提示「不在任务表中，本轮跳过」** | 本地 `snapshots.json` 缓存仍保留旧任务而上游已下线（或另一账号勾选并集带入）；在对应账号行右侧点击 **「刷新快照」** 即可同步最新列表 |
 | **签到显示「处理中，可重试」** | 上游返回 `code=0` 但提示「请勿重复操作 / 系统繁忙」，插件不计为成功，可稍后再试 |
 | **任务显示「次日可接取」** | 小程序或 Web 任务（如 `Sequential_Tasks_7`）携带上游 `locked:true` 与 `unlock_at`，到解锁日再跑即可 |
 | **桌面端任务未完成** | 目前仅 `Buddy_App_QQ` 需真实桌面点击（看板提供深链）；`Buddy_App`、`RichMeow_Chat`、`Library_read` 均可自动完成 |
@@ -344,7 +346,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 └── tests-e2e/         # 全链路集成测试（假上游 + 可注入时钟）
 ```
 
-运行完整测试套件（零真实网络请求，全量 **682** 个用例）：
+运行完整测试套件（零真实网络请求，全量 **694** 个用例）：
 
 ```bash
 npm test
@@ -359,6 +361,8 @@ npm test
 
 完整更新日志见 **[CHANGELOG.md](./CHANGELOG.md)**：
 
+- **0.4.2**（2026-11-27）：修复活动已结束/未开始返回 `HTTP 410 / code 12331` 时未提前中止仍继续上报与长时间轮询的问题（#8），看板同步标注「已结束」并禁用勾选；优化陈旧快照跳过提示文案并放宽 `finalizeJob` 收尾刷新预算与账号上限。
+- **0.4.1**（2026-11-23）：签到收益归位至「今日积分」（并读 `plugin-checkin.json` 与手签历史按账号取较大值去重，#7）、`checkin` 腿名展示、README 补充自动签到开关说明及账本读盘签名缓存。
 - **0.4.0**（2026-11-17）：**界面优化版** — 看板升级为 Bento 今日概览卡片、悬浮毛玻璃批量操作坞与控制台风格日志壳，统一入口卡排版与交互反馈，并修复用量明细切窗口竞态；纯 UI 升级，引擎与接口与 0.3.9 完全一致。
 - **0.3.9**（2026-11-16）：对齐真机口径修复（兑换奖励 `*_granted` 字段、按月最近断点补签、连登日历脏数据防线、良性 403 不误冻结、开盲盒不覆盖在途旅行），新增按北京日/模型聚合的用量明细（`/api/usage`）与签到双拼法/双域兜底。
 - **0.3.8**（2026-11-15）：修复守护进程端口不再从残留 `daemon.json` 继承的问题（#5），新增插件选项 `port`。

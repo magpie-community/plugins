@@ -2,32 +2,35 @@
 
 [English](README.en.md)
 
-在 Trae CN 的模型菜单中使用 Magpie 配置的模型和路由组。自动同步的条目带有“· Magpie”后缀。本文适用于插件 0.4.0。
+在 Trae CN 的模型菜单中使用 Magpie 配置的模型和路由组。自动同步的条目带有“· Magpie”后缀。本文适用于插件 0.4.1。
 
 ## 兼容性
 
-自动同步仅适用于下表中已核验的 Trae CN 构建和标准安装位置。移动过的应用或自定义位置安装的应用请手动接入。同步器在写入模型前会校验客户端文件的哈希。同一版本号下未通过校验的构建也请手动接入。
+自动同步适用于下表中已核验的 Trae CN 构建。同步器在写入模型前会校验两个原生库的 SHA-256。未通过校验的构建请手动接入。
 
 | 平台与 Trae CN 版本 | 接入方式 | 验证范围 |
 | --- | --- | --- |
-| Windows 3.4.18 | 标准安装支持自动同步 | 0.3.x 已验证目录同步和 DeepSeek 对话。 |
-| Windows 3.4.20 | 标准安装支持自动同步 | 0.3.x 已验证模型新增、修改、删除和回读。 |
-| Windows 3.4.24 | 标准安装支持自动同步 | 0.4.0 已验证凭据和登录会话。验证时用实际账户新增、查询和删除临时模型，测试条目已清理。 |
+| Windows 3.4.18 | 已核验安装支持自动同步 | 0.3.x 已验证目录同步和 DeepSeek 对话。 |
+| Windows 3.4.20 | 已核验安装支持自动同步 | 0.3.x 已验证模型新增、修改、删除和回读。 |
+| Windows 3.4.24 | 已核验安装支持自动同步 | 0.4.0 已验证凭据和登录会话。验证时用实际账户新增、查询和删除临时模型，测试条目已清理。 |
+| Windows 3.4.25（构建 2.3.108162） | 已核验安装支持自动同步 | 已验证 4 个现有模型的后台同步和 Trae 账户目录回读。 |
 | macOS 3.4.20 | 标准安装支持自动同步 | 审阅者验证了模型新增和移除，确认客户端文件未改动，应用代码签名仍有效。 |
-| macOS 3.4.24 及其他未列出的版本或构建 | 手动接入 | 自动同步未经验证。 |
+| 其他版本或构建（包括 macOS 3.4.24 和 3.4.25） | 手动接入 | 自动同步未经验证。 |
 | Linux | 桌面端适配未经验证 | CI 运行可移植代码的单元测试。 |
 
-Windows 标准安装位于 `%LOCALAPPDATA%\Programs\Trae CN`。macOS 标准安装为 `/Applications/Trae CN.app` 或 `~/Applications/Trae CN.app`。可以将 `TRAE_APP` 设为包含 `product.json` 的应用资源目录，供插件发现客户端。自定义路径仍使用手动模式。感谢 CN-P5 分享 Windows 多盘安装的发现方法。[Magpie Trae Evergreen](https://github.com/CN-P5/magpie-trae-evergreen)
+Windows 标准安装位于 `%LOCALAPPDATA%\Programs\Trae CN`。插件也能从注册表发现安装到其他目录的 Trae CN。对于移动过的安装，可以用 `TRAE_APP` 指向包含 `product.json` 的应用资源目录。感谢 CN-P5 分享 Windows 多盘安装的发现方法。[Magpie Trae Evergreen](https://github.com/CN-P5/magpie-trae-evergreen)
+
+macOS 标准安装为 `/Applications/Trae CN.app` 或 `~/Applications/Trae CN.app`。其他位置的 macOS 安装请手动接入。
 
 ## 安装
 
 先安装并登录 Trae CN，再在 Magpie 配置可用的模型。然后运行以下命令安装插件。
 
 ```sh
-magpie plugin add "github:lmy414/magpie-agent-trae#v0.4.0"
+magpie plugin add "github:lmy414/magpie-agent-trae#v0.4.1"
 ```
 
-也可以下载发布版源码，在解压后的目录运行 `magpie plugin add .`。[Release](https://github.com/lmy414/magpie-agent-trae/releases)
+也可以下载发布页面的 `magpie-agent-trae-0.4.1.tgz`，校验 SHA-256 后解压，在 `package` 目录运行 `magpie plugin add .`。[发布页](https://github.com/lmy414/magpie-agent-trae/releases)
 
 在 Magpie 的 Agent 页面打开 Trae 接入开关。如果列表中看不到 Trae，展开底部的“显示其余”。插件在 Windows 和 macOS 上都使用 `dir: '~/.trae-cn'` 发现 Trae。`~/.trae-cn` 是 Trae 的跨平台产品数据目录。
 
@@ -66,7 +69,7 @@ macOS 上的 `$APPDATA` 为空。`$APPDATA/Trae CN/User/mcp.json` 因此展开�
 
 ## 工作原理
 
-下图展示 0.4.0 的聊天请求、模型目录同步和凭据用途。Trae 在重新打开模型菜单、切换项目或重启时读取同步后的目录。
+下图展示插件的聊天请求、模型目录同步和凭据用途。Trae 在重新打开模型菜单、切换项目或重启时读取同步后的目录。
 
 ![Magpie 与 Trae 的聊天请求、模型目录同步和凭据用途](assets/architecture.zh-CN.svg)
 
@@ -101,7 +104,7 @@ TraeWork 仍由 Trae 云端编排会话。模型请求通过 Trae 原生反向�
 
 ### 旧版客户端清理
 
-0.4.0 运行时不修改 Trae 客户端文件。插件唯一的客户端文件操作是按需执行的 0.3.x 遗留清理。
+插件仅在执行 0.3.x 遗留清理命令时修改 Trae 客户端文件。
 
 旧版 Windows 安装可能在 `out/main.js` 末尾留下加载语句。对于 Windows 标准安装，在源码目录运行 `node cli.mjs restore-client`。命令只移除与旧版完全匹配的加载语句，并删除 `out/magpie-model-refresh.cjs`。在 macOS 上，该命令返回 `not_needed`。
 
@@ -127,11 +130,11 @@ Magpie 将桥接请求记到 `trae-local`。桥接将有效的会话 ID 写入 `
 
 ## 开发与验证
 
-0.4.0 在 Node.js 下通过了 64 项单元测试。运行测试需要 Node.js 20 或更高版本，无需安装 npm 依赖。用 `npm test` 运行测试，用 `npm pack` 检查安装包。
+0.4.1 在 Windows 上通过了 66 项单元测试。运行测试需要 Node.js 20 或更高版本，无需安装 npm 依赖。用 `npm test` 运行测试，用 `npm pack` 检查安装包。
 
 `npm run acceptance` 需要本机的 Magpie 与其 Bun 宿主。脚本使用临时用户目录和本地测试服务，检查 Agent 注册、目录变化、转发和资源库恢复。测试不调用真实模型账户。
 
-0.4.0 尚未解决长会话的 `3003 / SSE finish` 错误。排查中观察到提交工具结果后续接失败，以及 Trae 云端返回 HTTP 500。根因仍未确认。
+长会话的 `3003 / SSE finish` 错误仍在排查。排查中观察到提交工具结果后续接失败，以及 Trae 云端返回 HTTP 500。根因仍未确认。
 
 ## 许可与来源
 

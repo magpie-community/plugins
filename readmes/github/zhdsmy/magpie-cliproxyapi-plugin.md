@@ -75,7 +75,7 @@ CPA 只把其看到的 `127.0.0.1` / `::1` 视为本机。通常需要 Magpie �
 
 多凭据窗口名为 `<窗口名> (<Claude|Codex> <标签>)`，按 provider、标签排序。标签优先使用 `label`；为空、含 `@` 或控制字符时，使用不透明 `auth_index` 的前 8 位。不使用 `name`，因为它常含邮箱。显式选择也使用同一标签规则。
 
-同一管理入口与 key 的凭据读取并发最多 2，共用一次调用的 15 秒预算。单个凭据失败时显示带标签的纯文本 `aside` 行，其他凭据继续展示；全部失败才整体报错。管理 401/403 始终整体停止；已发出的并行请求可以完成，不启动排队请求。同时读取多个凭据时不显示或合并重置卡；只读取一个凭据时（含池内显式选择），照常返回 `resets` 和 `plan`，与 `aside` 无关。
+同一管理入口与 key 的凭据读取并发最多 2，共用一次调用的 15 秒预算。单个凭据失败时显示带标签的纯文本 `aside` 行，其他凭据继续展示；全部失败才整体报错。管理 401/403 始终整体停止；已发出的并行请求可以完成，不启动排队请求。同时读取多个凭据时不显示或合并重置卡；`plan` 合并显示：池内全部凭据同运营商且同套餐时为 `<套餐> x N`（如 `Max x 3`，Codex 写作 `ChatGPT Plus x 2` 避免与 Claude 的 Pro 混淆）；套餐或运营商不同，或仅部分凭据已知套餐时为 `Mixed (N)`（`N` 为池内参与展示的凭据数）；全部无法识别时不返回。只读取一个凭据时（含池内显式选择），照常返回 `resets`、`plan` 和 `until`，与 `aside` 无关。
 
 可用 `magpie quota --json` 查看读数。宿主报告 JSON 不输出 `aside` 字段，这不表示多凭据窗口参与路由。
 
@@ -93,18 +93,27 @@ CPA 只把其看到的 `127.0.0.1` / `::1` 视为本机。通常需要 Magpie �
 
 额度请求为 `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1`，经 CPA 管理 `api-call` 发送。同一个响应同时带有窗口和 `cedar_ember` 重置卡清单，不增加请求次数。结果按 Magpie 原生的 `resets` 字段返回，账号卡片直接显示“↺ N 次重置”，悬停可看到最早到期时间和每张卡的到期时间，无需额外配置。
 
-- 插件**只读**：不调用 `POST /api/organizations/{org}/reset_rate_limits` 或 `/api/oauth/profile`，也不调用 CPA 的冷却重置接口，不会消耗重置卡。Magpie 只为内置 Codex 账号提供“使用重置”按钮，插件账号的重置卡仅展示；需要使用时，请在 CPA 管理面板的 Claude 额度卡片上操作。
+- 插件**只读**：不调用 `POST /api/organizations/{org}/reset_rate_limits`，也不调用 CPA 的冷却重置接口，不会消耗重置卡。Magpie 只为内置 Codex 账号提供“使用重置”按钮，插件账号的重置卡仅展示；需要使用时，请在 CPA 管理面板的 Claude 额度卡片上操作。
 - 张数为各 grant 的 `resets_left` 之和，跳过已到期的 grant；`type` 为 `session` / `weekly` 时分别标为五小时 / 周重置。不可用（`eligible: false`、暂停、需先触顶）的 grant 仍计入持有数，是否能用以 CPA 管理面板为准。
 - 与 CPA 管理面板一致，任一 grant 格式异常就整块不显示，避免把不完整清单当作完整数量；窗口不受影响。卡片 ID 和标签不会返回给宿主。
 - 上游对带查询的请求返回 400/403 时，改用不带查询的请求重读一次，只显示窗口。该凭据此后 24 小时直接发不带查询的请求，不再每次多发一次。其他状态不重试。
 - 资格由 Anthropic 服务端决定，可能与请求 UA（固定 `claude-cli/2.1.280`）有关；Anthropic 调整后可能需要更新插件。
+
+### Claude 套餐与按模型窗口
+
+- **套餐**：每个凭据每天经 `api-call` 读一次 `GET https://api.anthropic.com/api/oauth/profile`（单次最多 3 秒，与整次读取共用 15 秒预算），只取 `organization_type` 与 `rate_limit_tier`，放入 usage 的 `plan`：`claude_pro` 为 `Pro`；`claude_max` 的 tier 含 `20x` 为 `Ultra`，其他为 `Max`（即原 Max 5x / 20x 的现名）；`claude_team` / `claude_enterprise` 为 `Team` / `Enterprise`；其他值不返回，原始字符串不外传。profile 中的姓名、邮箱、ID 不保存、不返回。profile 返回 401/403/404 时保留此前已缓存的套餐，24 小时内不再读；其他失败同样保留上次套餐，30 分钟后（带更长 `Retry-After` 时按其等待，最长 24 小时）在下次主动读数时重试，仅被动信号且无额外窗口时不会仅为重试失败的 profile 提前发起主动读数；读取失败不影响当前凭据的额度窗口。`claude_code_trial_ends_at` 为将来时间时作为 `until` 返回。
+- **按模型的周窗口**：usage 的 `limits` 中 `weekly_scoped` 项按 Magpie 内置 Claude 的写法输出，如 `7 days · Fable`，`model: "fable"`（`Fable 5.1` 为 `fable-5-1`）。Magpie 只把 ID 含该词的模型计入此窗口，用完后只停这些模型。
+- **无 Fable 权限的 Pro 账号尽量不尝试 Fable**：Fable 按账号授予（Max 有，Pro 偶尔有），有权限的账号会在 `limits` 中带 Fable 周窗口。仅当 profile 确认为 `Pro`、usage `limits` 含 `session` 或 `weekly_all` 项、且原始 `limits` 没有任何 `weekly_scoped` 条目提及 Fable 时，插件补一个已用 100%、显示“Not in plan”的 `7 days · Fable` 窗口：只要有其他可用账号，Magpie 会优先避开该账号；仅当所有其他账号都不可用或满额时，Magpie 仍会按兜底策略尝试（如需彻底禁止，可在 Magpie 中设置单账号模型列表或用量上限）。开启额度告警时，这类无 Fable 的 Pro 账号会触发一次 `7 days · Fable` 100% 告警。该账号获得 Fable 后，下一次主动读数即恢复。非 Pro 账号、profile 未读出或没有 `limits` 时不做推断。多凭据同时展示时这类窗口默认只作展示（`aside`）；若开启“按模型参与路由”，则仅计入该凭据独占的匹配模型。
+- **额外用量**：`extra_usage.is_enabled` 为 true 时，加一个 `Usage credits` 窗口，只作展示，不影响路由。
+- CPA 被动信号只含 5 小时与 7 天窗口；使用被动信号时，上述其他窗口沿用上次主动读数（已过重置时间的窗口会被丢弃），每 30 分钟仍会主动刷新一次（即使 `cedar_ember` 被拒），最多滞后 30 分钟。
+- profile 读取、Pro 与 Max 的映射已在真实 CPA 上只读核对；Ultra 的 tier 值、“Pro 有 Fable 时 `limits` 带 Fable 周窗口”尚未实测，其余均只经 mock 测试。
 
 ### 减少对 Anthropic 的请求
 
 Anthropic 对 `oauth/usage` 限流很严。插件按以下方式减少请求：
 
 - **按上游凭据缓存与合并。** 读数按 CPA 凭据（`auth_index`）缓存 300 秒。留空、填名称、填 `auth_index` 而选中同一凭据的多个 Magpie 账号，共用一份读数、同一个进行中的请求和同一个退避。同一 CPA 下同时刷新的账号在 15 秒内共用一次 `/credentials` 列表。
-- **优先用 CPA 已有的数据。** CPA 把每次真实推理响应的 `anthropic-ratelimit-unified-*` 头记在该凭据的 `quota.signals` 中，插件本来就读取的 `/credentials` 会返回它。若记录不超过 5 分钟，且 `5h` 和 `7d` 的用量与重置时间齐全、未过期，插件直接用它显示窗口，不请求 Anthropic。此时重置卡清单每 30 分钟才重读一次，期间已到期的卡在显示时剔除；在 CPA 管理面板使用重置卡后，张数最多滞后 30 分钟。CPA 版本不返回该字段，或凭据近期没有推理时，按原方式读取。此路径按 CPA 源码实现，目前只经过 mock 测试。
+- **优先用 CPA 已有的数据。** CPA 把每次真实推理响应的 `anthropic-ratelimit-unified-*` 头记在该凭据的 `quota.signals` 中，插件本来就读取的 `/credentials` 会返回它。若记录不超过 5 分钟，且 `5h` 和 `7d` 的用量与重置时间齐全、未过期，插件直接用它显示窗口，不请求 Anthropic。此时重置卡清单每 30 分钟才重读一次，期间已到期的卡在显示时剔除；在 CPA 管理面板使用重置卡后，张数最多滞后 30 分钟。即便没有重置卡或额外窗口，每天套餐到期时仍会触发一次主动读取。CPA 版本不返回该字段，或凭据近期没有推理时，按原方式读取。此路径按 CPA 源码实现，目前只经过 mock 测试。
 - **遵守上游限流。** 内层 429 带 `Retry-After` 时按其等待；连续失败的退避从 300 秒起翻倍，最长 1 小时。退避期间不请求 Anthropic；有近期 CPA 记录时仍用它显示窗口。
 
 ## 鉴权失败与恢复
@@ -122,7 +131,7 @@ CPA 对同一来源 IP 的管理鉴权失败累计 5 次会封禁 30 分钟，�
 - 管理 api-call 内的 Claude OAuth usage 请求使用固定 UA `claude-cli/2.1.280 (external, cli)` 及 beta 头；Anthropic 调整要求时可能需要更新插件。
 - Magpie 额度卡片有约一分钟缓存；即时重复读取可能不调用插件，GUI 卡片的刷新按钮可强制重新读取。
 - Magpie 会把良好额度落盘，在某些临时错误时继续回显并标记 `asOf`，重启后也可能保留。**插件的 900 秒上限不约束宿主这层旧值保留**，请留意读数时间。
-- 额度适配器支持 Claude 和 Codex；不输出 Opus/Sonnet 等模型专属窗口，也不把单凭据额度当作整个池的额度。
+- 额度适配器支持 Claude 和 Codex；Claude 支持 `limits` 中的 `weekly_scoped` 按模型周窗口（不解析旧版 `seven_day_opus`/`seven_day_sonnet` 字段），且默认不把单凭据额度当作整个池的额度。
 - 非 Claude 模型的工具、思考、prompt 缓存和计数等能力取决于 CPA 转换与实际后端，需自行验证；模型发现成功不等于这些能力已验收。
 - 不提供 OAuth 登录、Token 刷新、模型改写或自定义故障切换。count_tokens 的同模型故障切换与恢复仍取决于宿主，尚未验收。
 
@@ -156,7 +165,7 @@ PR 请遵守以下约定：
 
 1. 在 `index.mjs` 的 `usageAdapters` 新增一项，键与 CPA `/credentials` 返回的 `files[].provider` 完全一致。
 2. 实现 `read(apiCall, credential, { now, memo })`。`memo` 是按凭据保留的对象，可记住上游的长期状态。每次 `apiCall({ method, url, header })` 经 CPA 管理 api-call 发送一个内层请求；上游凭据用 `$TOKEN$` 占位，由 CPA 替换。公共流程添加 `auth_index`，内层状态非 200 时抛错。
-3. 按 Magpie usage 格式返回 `{ windows, resets?, plan? }`，例如 `{ name: "5 hours", used: 25, span: 18000, resetsAt: "2026-11-04T00:00:00.000Z" }`；`used` 是已用百分比，`span` 单位为秒。没有有效读数时抛错。可选实现 `passive(credential, now)`：从 CPA 已返回的凭据数据得出 `{ windows, observedAt }`，不发上游请求；无可靠数据时返回 `undefined`；不需要重置卡清单的适配器可返回 `inventory: false`，让完整被动信号跳过主动读取。
+3. 按 Magpie usage 格式返回 `{ windows, resets?, plan?, until? }`，例如 `{ name: "5 hours", used: 25, span: 18000, resetsAt: "2026-11-04T00:00:00.000Z" }`；`used` 是已用百分比，`span` 单位为秒。没有有效读数时抛错。可选实现 `passive(credential, now)`：从 CPA 已返回的凭据数据得出 `{ windows, observedAt }`，不发上游请求；无可靠数据时返回 `undefined`；不需要重置卡清单的适配器可返回 `inventory: false`，让完整被动信号跳过主动读取。
 4. 管理鉴权、15 秒预算、响应大小限制、封禁停试、按凭据共享的缓存、单飞、退避和多凭据 `aside` 标签由公共流程自动处理。
 
 注意：未指定凭据时会读取全部启用且受支持的凭据。新增适配器会增加混合池展示的窗口。按模型路由关闭时，只有唯一启用凭据的窗口参与路由；开启后的规则见上文。
