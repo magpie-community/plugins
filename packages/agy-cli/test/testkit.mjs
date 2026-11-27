@@ -57,7 +57,8 @@ const RUNTIME_NAMES = ["Date", "setTimeout", "clearTimeout", "setInterval", "cle
 const RUNTIME_PRELUDE = `import { ${RUNTIME_NAMES.join(", ")} } from ${JSON.stringify(RUNTIME_SPECIFIER)};\n`
 const TEST_EXPORTS = "\nexport { Turn as __agyTestTurn, allProcs as __agyTestAllProcs, pool as __agyTestPool, " +
   "execOnce as __agyTestExecOnce, findAgy as __agyTestFindAgy, canonicalBody as __agyTestCanonicalBody, " +
-  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, renderInitialPrompt as __agyTestRenderInitialPrompt, reapOnExit as __agyTestReapOnExit };\n"
+  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, renderInitialPrompt as __agyTestRenderInitialPrompt, reapOnExit as __agyTestReapOnExit, " +
+  "buildModelCatalog as __agyTestBuildModelCatalog };\n"
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
 if (typeof vm.SourceTextModule !== "function" || typeof vm.SyntheticModule !== "function") {

@@ -654,6 +654,23 @@ test("会话后来开放的型号变了，目录随之更新", async () => {
   })
 })
 
+test("图片模型不进聊天目录：buildModelCatalog 排除 gemini-3.1-flash-image", async () => {
+  await withKit({}, async (kit) => {
+    const build = kit.module.__agyTestBuildModelCatalog
+    const catalog = build([
+      { id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image" },
+      { id: "gemini-3.1-flash-image-high", name: "Gemini 3.1 Flash Image (High)", effort: "high" },
+      { id: "gemini-3.1-flash-image-low", name: "Gemini 3.1 Flash Image (Low)", effort: "low" },
+      { id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", effort: "high" },
+      { id: "gemini-4-argon-low", name: "Gemini 4 Argon (Low)", effort: "low" },
+    ])
+    assert.equal(catalog.models.find(model => model.id === "gemini-3.1-flash-image"), undefined, "图片模型进了聊天目录")
+    assert.equal(catalog.rawIds.has("gemini-3.1-flash-image"), false, "图片模型进了路由目录")
+    assert.equal(catalog.routes.has("gemini-3.1-flash-image"), false, "图片模型进了路由")
+    assert.ok(catalog.models.find(model => model.id === "gemini-4-argon"), "正常型号被误删")
+  })
+})
+
 // #1064（hiee3）：真实登录的 agy 上 `agy models` 约 4.4s、agy acp 开会话约 3s，都远过 500ms 的快速等待。
 // 这里各模拟 1.5s：第一次 models() 只能给静态目录，但列表一到就该起探测，
 // 后台跑完后的第一次 models() 就要有 Claude 和 GPT-OSS，不该要第三次。

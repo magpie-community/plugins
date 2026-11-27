@@ -1179,7 +1179,10 @@ function orchestratorRefusal(id) {
 }
 
 function buildModelCatalog(list) {
-  list = list.filter(model => !isOrchestrator(model))
+  // gemini-3.1-flash-image is image-only (README, image.mjs): it is
+  // exposed separately for the image path (models() adds imageModelEntry),
+  // so a stale listing or offer must not put it in the chat catalog.
+  list = list.filter(model => !isOrchestrator(model) && model.id !== IMAGE_MODEL_ID && modelFamilyId(model) !== IMAGE_MODEL_ID)
   const rawIds = new Set(list.map(model => model.id))
   const families = new Map()
   for (const model of list) {
