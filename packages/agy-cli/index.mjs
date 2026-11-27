@@ -4958,10 +4958,79 @@ function unwrapCallMcpArguments(args) {
   return args
 }
 
+const parsedImages = new WeakMap()
+const imageHistoryDigests = new WeakMap()
+
+function historyImageDigest(block, data) {
+  let entry = imageHistoryDigests.get(block)
+  if (!entry || entry.data !== data) {
+    entry = { data, sum: digest(data) }
+    imageHistoryDigests.set(block, entry)
+  }
+  return entry
+}
+
+function* historyImageBlocks(messages) {
+  for (const message of messages ?? []) {
+    if (message?.role !== "user" || !Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (block?.type === "image" && block.source?.type === "base64") yield block
+      if (block?.type === "tool_result" && Array.isArray(block.content)) {
+        for (const part of block.content) {
+          if (part?.type === "image" && part.source?.type === "base64") yield part
+        }
+      }
+    }
+  }
+}
+
+// A reference can borrow only the exact bytes already owned by the same
+// account, caller and live ACP session. Resolve every reference before
+// validating or delivering any tool result.
+function restoreTransferredHistory(body, sessionScope, [lease, key, count]) {
+  if (!sessionScope || !/^[a-f0-9]{32}$/.test(key)) return false
+  const owner = [...allProcs].find(proc => !proc.dead && sameSessionScope(proc, sessionScope) &&
+    proc.imageHistory?.lease === lease && proc.imageHistory.session === proc.sessionId)
+  if (!owner) return false
+  const head = Buffer.from(key + ":").toString("base64")
+  const refs = []
+  for (const block of historyImageBlocks(body.messages)) {
+    const data = block.source.data
+    if (typeof data !== "string" || data.length !== 132 || !data.startsWith(head)) continue
+    const sum = Buffer.from(data, "base64").toString().slice(33)
+    if (!/^[a-f0-9]{64}$/.test(sum)) return false
+    refs.push({ block, sum })
+  }
+  if (!refs.length || refs.length !== Number(count)) return false
+  const sources = new Map()
+  for (const block of historyImageBlocks(owner.expectedMessages)) {
+    const { data, media_type } = block.source
+    if (typeof data !== "string") continue
+    const entry = historyImageDigest(block, data)
+    sources.set(media_type + ":" + entry.sum, { entry, parsed: parsedImages.get(block) })
+  }
+  for (const { block, sum } of refs) {
+    const found = sources.get(block.source.media_type + ":" + sum)
+    if (!found) return false
+    const { entry, parsed } = found
+    block.source.data = entry.data
+    imageHistoryDigests.set(block, entry)
+    if (parsed) parsedImages.set(block, parsed)
+  }
+  return true
+}
+
 function parseUserImage(block) {
   if (block?.type !== "image") return null
+  const previous = parsedImages.get(block)
   const mediaType = String(block.source?.media_type || "").toLowerCase()
-  return imageContent({ ...block, source: { ...block.source, media_type: mediaType === "image/jpg" ? "image/jpeg" : mediaType } })
+  const data = block.source?.data
+  if (previous && previous.data === data && previous.mediaType === mediaType && block.source?.type === "base64") {
+    return previous.image
+  }
+  const image = imageContent({ source: { ...block.source, media_type: mediaType === "image/jpg" ? "image/jpeg" : mediaType } })
+  parsedImages.set(block, { data, mediaType, image })
+  return image
 }
 
 function parseUserDocumentText(block, inToolResult = false) {
@@ -6066,7 +6135,7 @@ function historyBlock(block, ids) {
     value = { type: "text", text: parseSearchResultText(block) }
   } else if (block.type === "image") {
     const image = parseUserImage(block)
-    value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
+    value = { type: "image", mimeType: image.mimeType, sha256: historyImageDigest(block, image.data).sum }
   } else if (block.type === "tool_use") {
     const ordinal = ids.size + 1
     ids.set(block.id, ordinal)
@@ -9053,6 +9122,13 @@ const SSE_HEADERS = {
   "Connection": "keep-alive",
 }
 
+function historyHeaders(proc) {
+  if (!proc.imageHistory || proc.imageHistory.session !== proc.sessionId) {
+    proc.imageHistory = { lease: randomUUID(), session: proc.sessionId }
+  }
+  return { ...SSE_HEADERS, "X-Magpie-Agy-History-Lease": proc.imageHistory.lease }
+}
+
 function streamResponse(proc, turn, body, signal, toolResultStep = null) {
   turn.attach()
   const step = turn.registerResponse(body)
@@ -9061,11 +9137,11 @@ function streamResponse(proc, turn, body, signal, toolResultStep = null) {
   if (body.stream === false) return jsonResponseFromStream(stream, body.model, msgId)
   return new Response(stream, {
     status: 200,
-    headers: SSE_HEADERS,
+    headers: historyHeaders(proc),
   })
 }
 
-function bufferedAnthropicResponse(body, { msgId, model, content, stopReason }) {
+function bufferedAnthropicResponse(body, { msgId, model, content, stopReason }, proc) {
   const encoder = new TextEncoder()
   const stream = new ReadableStream({
     start(controller) {
@@ -9147,7 +9223,7 @@ function bufferedAnthropicResponse(body, { msgId, model, content, stopReason }) 
     },
   })
   if (body.stream === false) return jsonResponseFromStream(stream, model, msgId)
-  return new Response(stream, { status: 200, headers: SSE_HEADERS })
+  return new Response(stream, { status: 200, headers: proc ? historyHeaders(proc) : SSE_HEADERS })
 }
 
 // Tool results a kept session already holds (answered to its live MCP calls
@@ -9565,6 +9641,7 @@ export const AntigravityBridgePlugin = async () => {
         return {
           baseURL: "agy://local",
           apiKey: "agy",
+          magpieAgyImageHistory: true,
           // an account of agy's own runs in its kept home while agy holds
           // another, or can't say whose its sign-in is (ownChoice), from the
           // last keyring read (none yet after a start: it is waited for, so
@@ -9643,6 +9720,14 @@ export const AntigravityBridgePlugin = async () => {
                 ? (typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body))
                 : (typeof fetchInput?.text === "function" ? await fetchInput.text() : "")
               body = JSON.parse(raw)
+              const retained = init[Symbol.for("magpie.agy.imageHistory")]
+              if (retained) {
+                const scope = requestSessionScope(fetchInput, init) +
+                  (requestHeader(fetchInput, init, "x-magpie-subagent") && agentSummaryAsk(body) ? AGENT_SUMMARY_SCOPE : "")
+                if (!restoreTransferredHistory(body, scope, retained)) {
+                  return new Response(null, { status: 409, headers: { "X-Magpie-Agy-History-Missing": "1" } })
+                }
+              }
               validateBody(body)
             } catch (error) {
               return jsonError(error.statusCode ?? 400, error.message)
@@ -9802,7 +9887,7 @@ export const AntigravityBridgePlugin = async () => {
                       logBridgeEvent(proc, turn, "replay_tool_step", "idempotent_retry", acquireOpts, { calls: replay.emittedCalls.length })
                       return bufferedAnthropicResponse(body, {
                         msgId: replay.msgId, model: replay.wireModel, content: replay.content, stopReason: "tool_use",
-                      })
+                      }, proc)
                     }
                   }
                   // A steer keeps the live session, so agy's prompt cache holds: the

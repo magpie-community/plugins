@@ -5,7 +5,8 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { baseBody, continueWithToolResults, createBridgeKit, readSse } from "./testkit.mjs"
+import { createHash } from "node:crypto"
+import { MESSAGES_URL, baseBody, continueWithToolResults, createBridgeKit, readSse } from "./testkit.mjs"
 
 const b64 = (hex, tail = "") => Buffer.concat([Buffer.from(hex, "hex"), Buffer.from(tail)]).toString("base64")
 const JPEG = b64("ffd8ffe000104a4649460001", "jpeg body")
@@ -24,6 +25,57 @@ async function withKit(fn) {
 
 const promptImages = (kit) => (kit.acpLog.filter((entry) => entry.method === "session/prompt").at(-1)?.params?.prompt || [])
   .filter((part) => part.type === "image")
+
+test("retained image references need the exact live account and session before a tool can be answered", async () => {
+  await withKit(async (kit) => {
+    const header = { "x-magpie-session": "history-owner" }
+    const body = baseBody({ messages: [{ role: "user", content: [image(PNG), { type: "text", text: "read the file" }] }] })
+    let delivered = 0
+    kit.defaultPrompt = async (agent) => {
+      await agent.tool("Read", { path: "/repo/file" })
+      delivered++
+      await agent.text("continued the pending call")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(body, { headers: header })
+    const lease = response.headers.get("x-magpie-agy-history-lease")
+    assert.ok(lease)
+    const first = await readSse(response)
+    assert.equal(first.stopReason, "tool_use")
+    assert.deepEqual(promptImages(kit).map(part => part.data), [PNG])
+    const full = continueWithToolResults(body, first, () => "result")
+    const key = "0123456789abcdef0123456789abcdef"
+    const ref = Symbol.for("magpie.agy.imageHistory")
+    const sum = createHash("sha256").update(PNG).digest("hex")
+    const sparse = structuredClone(full)
+    const src = sparse.messages[0].content[0].source
+    src.data = Buffer.from(key + ":" + sum).toString("base64")
+    for (const [session, token, count] of [
+      ["someone-else", lease, "1"],
+      ["history-owner", "expired-lease", "1"],
+      ["history-owner", lease, "2"],
+    ]) {
+      const failed = await kit.request(sparse, { headers: { "x-magpie-session": session }, [ref]: [token, key, count] })
+      assert.equal(failed.status, 409)
+      assert.equal(failed.headers.get("x-magpie-agy-history-missing"), "1")
+    }
+    const other = await kit.plugin.auth.loader(async () => ({ type: "oauth", metadata: { agyHome: "accountb1" } }))
+    const crossAccount = await other.fetch(MESSAGES_URL, {
+      method: "POST", headers: header, body: JSON.stringify(sparse), [ref]: [lease, key, "1"],
+    })
+    assert.equal(crossAccount.status, 409)
+    assert.equal(crossAccount.headers.get("x-magpie-agy-history-missing"), "1")
+    const corrupt = structuredClone(sparse)
+    corrupt.messages[0].content[0].source.data = Buffer.from(key + ":" + "f".repeat(64)).toString("base64")
+    assert.equal((await kit.request(corrupt, { headers: header, [ref]: [lease, key, "1"] })).status, 409)
+    assert.equal(delivered, 0)
+    const continued = await readSse(await kit.request(sparse, { headers: header, [ref]: [lease, key, "1"] }))
+    assert.equal(continued.stopReason, "end_turn")
+    assert.match(JSON.stringify(continued.content), /continued the pending call/)
+    assert.equal(delivered, 1)
+    assert.equal(kit.acpLog.filter(entry => entry.method === "session/prompt").length, 1)
+  })
+})
 
 test("a user's JPEG labelled image/png goes as image/jpeg", async () => {
   await withKit(async (kit) => {
