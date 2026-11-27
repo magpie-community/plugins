@@ -1042,6 +1042,62 @@ function googleSchema(schema) {
   return walk(schema, [], 0)
 }
 
+// noSurrogatePatterns is a tool's parameters with each pattern that names
+// a UTF-16 surrogate left out. Command Code turns the whole request away
+// for one: 400 "Invalid schema for function "mcp__rea__close_binary": a
+// surrogate-range regex is not a valid regex" (Roing, #1604), REA's
+// path guard ^[^\uD800-\uDFFF]*$, which WorkBuddy AI's DeepSeek refuses
+// too (#1080). A regex that matches code points has no surrogates to name,
+// so there is nothing to spell it as instead; the guard only narrows what
+// a call may hold, and the tool's server still checks it. Only a pattern
+// where a schema has one is looked at (a property named pattern, Grep's,
+// is a property), every other keyword and pattern goes as it came, and
+// the schema is copied where it changes, so the caller's is untouched.
+const SURROGATE = /\\\\|\\u(?:[dD][89a-fA-F][0-9a-fA-F]{2}|\{0*[dD][89a-fA-F][0-9a-fA-F]{2}\})|\\x\{0*[dD][89a-fA-F][0-9a-fA-F]{2}\}|[\uD800-\uDFFF]/gu
+const MAYBE_SURROGATE = /\\[ux]|[\uD800-\uDFFF]/u
+const namesSurrogate = (p) => MAYBE_SURROGATE.test(p) && [...p.matchAll(SURROGATE)].some((m) => m[0] !== "\\\\")
+
+const SCHEMA_KIND = new Map([...SCHEMA_MAPS.map((k) => [k, "map"]), ...SCHEMA_ONE.map((k) => [k, "one"]), ...SCHEMA_LISTS.map((k) => [k, "list"])])
+
+function noSurrogatePatterns(schema) {
+  const each = (s) => {
+    let out = s
+    for (let i = 0; i < s.length; i++) {
+      const v = walk(s[i])
+      if (v !== s[i]) (out === s ? (out = [...s]) : out)[i] = v
+    }
+    return out
+  }
+  const walk = (s) => {
+    if (s === null || typeof s !== "object") return s
+    if (Array.isArray(s)) return each(s)
+    let out = s
+    for (const k in s) {
+      const v = s[k]
+      if (k === "pattern") {
+        if (typeof v === "string" && namesSurrogate(v)) {
+          if (out === s) out = { ...s }
+          delete out.pattern
+        }
+        continue
+      }
+      const kind = SCHEMA_KIND.get(k)
+      if (!kind || v === null || typeof v !== "object") continue
+      let next = v
+      if (kind === "list") next = Array.isArray(v) ? each(v) : v
+      else if (kind === "one") next = walk(v)
+      else if (!Array.isArray(v))
+        for (const n in v) {
+          const w = walk(v[n])
+          if (w !== v[n]) (next === v ? (next = { ...v }) : next)[n] = w
+        }
+      if (next !== v) (out === s ? (out = { ...s }) : out)[k] = next
+    }
+    return out
+  }
+  return walk(schema)
+}
+
 // generateBody is a chat completion request as the CLI asks
 // /alpha/generate, with no structure, branch or status behind it. The
 // working directory and whether it is a git repository are the agent's as
@@ -1105,7 +1161,7 @@ function generateBody(chat, place = {}) {
     .map((t) => ({
       name: t.function.name,
       description: t.function.description ?? "",
-      input_schema: google ? googleSchema(t.function.parameters ?? { type: "object", properties: {} }) : t.function.parameters ?? { type: "object", properties: {} },
+      input_schema: noSurrogatePatterns(google ? googleSchema(t.function.parameters ?? { type: "object", properties: {} }) : t.function.parameters ?? { type: "object", properties: {} }),
     }))
   const params = {
     model: chat.model,
@@ -1445,8 +1501,9 @@ async function generate(key, chat, signal, place, zdr = false) {
 // "off", is "off" for a model that turns thinking off (THINK_OFF), and
 // left out for any other, which refuses both "none" and "off" (#334). A
 // Google model's tools have the $refs Google can't take written out
-// (googleSchema). A model that wants its reasoning back (wantsReasoning)
-// has it on each assistant message (withReasoningBack).
+// (googleSchema), and every model's a pattern naming a surrogate left out
+// (noSurrogatePatterns). A model that wants its reasoning back
+// (wantsReasoning) has it on each assistant message (withReasoningBack).
 function providerBody(chat) {
   let out = chat
   if (wantsReasoning(chat?.model)) {
@@ -1459,11 +1516,12 @@ function providerBody(chat) {
     if (THINK_OFF.has(chat.model)) out.reasoning_effort = "off"
     else delete out.reasoning_effort
   }
-  if (isGoogle(chat?.model) && Array.isArray(chat.tools)) {
+  if (Array.isArray(chat?.tools)) {
+    const google = isGoogle(chat.model)
     let changed = false
     const tools = chat.tools.map((t) => {
       const p = t?.function?.parameters
-      const g = googleSchema(p)
+      const g = noSurrogatePatterns(google ? googleSchema(p) : p)
       if (g === p) return t
       changed = true
       return { ...t, function: { ...t.function, parameters: g } }
@@ -1500,7 +1558,7 @@ async function systemOne(key, init, input, place, zdr) {
 
 // ---- the plugin ---------------------------------------------------------------
 
-export const _internal = { googleSchema, isGoogle, JEV, reasoningAsked, NO_THOUGHT, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
+export const _internal = { googleSchema, noSurrogatePatterns, isGoogle, JEV, reasoningAsked, NO_THOUGHT, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
 
 export async function CommandCodePlugin({ client, magpie } = {}) {
   // isGo keeps a key as Go's, for its models and endpoint: in the
