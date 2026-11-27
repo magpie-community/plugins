@@ -3,6 +3,7 @@ import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 import { buildCookieHeader, decryptDesktopAuth, extractCsrfToken, parseCookieKey, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
 import { normalizeReasoningBody } from "./src/gateway.mjs"
+import { startImportUploadServer } from "./src/import-server.mjs"
 import { generateImage, KNOWN_IMAGE_MODELS, selectStrongestImageModel } from "./src/media.mjs"
 import {
   buildImageUpstreamBody,
@@ -280,6 +281,23 @@ export const DuMateProxyPlugin = async (input = {}) => {
     }
   }
 
+  const env = input.env ?? process.env
+  const importBind = String(config.importBind ?? env.DUMATE_IMPORT_BIND ?? "127.0.0.1")
+  const importPort = Number.isSafeInteger(Number(config.importPort ?? env.DUMATE_IMPORT_PORT)) ? Number(config.importPort ?? env.DUMATE_IMPORT_PORT) : 8788
+  const importPublicUrl = String(config.importPublicUrl ?? env.DUMATE_IMPORT_PUBLIC_URL ?? "").replace(/\/+$/, "")
+  let importUploader
+
+  const ensureImportUploadServer = async () => {
+    if (!importUploader) {
+      importUploader = await startImportUploadServer({
+        config: { bind: importBind, port: importPort, publicUrl: importPublicUrl },
+        fetchImpl,
+        deps: { decryptDesktopAuth, consoleGet, cookieHeaderOf, seat },
+      })
+    }
+    return importUploader
+  }
+
   const validateCookie = async (raw, source) => {
     let cookies
     try {
@@ -359,6 +377,12 @@ export const DuMateProxyPlugin = async (input = {}) => {
           return { type: "failed", error: `登录态验证失败：${error?.message ?? error}` }
         }
         return seat(login.cookies, "imported-auth", { ...login, ...info })
+      },
+      async closeImportServer() {
+        if (!importUploader) return
+        const uploader = importUploader
+        importUploader = undefined
+        await uploader.close()
       },
       async refresh(auth) {
         const current = readDesktopLogin({ userDataDir: config.userDataDir })
@@ -477,6 +501,23 @@ export const DuMateProxyPlugin = async (input = {}) => {
         }
       },
       methods: [
+        {
+          type: "oauth",
+          label: "上传两个文件导入账号（auth.json + .cookie-key，服务器可用）",
+          authorize: async () => {
+            const uploader = await ensureImportUploadServer()
+            const token = uploader.createSession()
+            return {
+              url: `${uploader.base}/dumate-import?token=${encodeURIComponent(token)}`,
+              instructions: "在打开的页面选择本机的 auth.json 与 .cookie-key；上传后 Magpie 会自动完成登录。",
+              method: "auto",
+              opened: false,
+              async callback(_input, { signal } = {}) {
+                return uploader.wait(token, 10 * 60 * 1000, signal)
+              },
+            }
+          },
+        },
         {
           type: "oauth",
           label: "百度搭子桌面端登录态（本机 auth.json，只读复用）",

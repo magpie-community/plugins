@@ -6,7 +6,7 @@ The plugin connects directly to the official DuMate gateway. No local reverse pr
 
 ## Features
 
-- Three sign-in methods: read-only desktop login, browser Cookie paste, and manual Cookie paste. On a server, use Magpie's **Import accounts from a file…** row with two text files: `auth.json` and `.cookie-key` Base64 saved as `.txt`.
+- Four sign-in methods, with **upload two files** first: `auth.json` and `.cookie-key` from the local computer. The plugin opens a token-protected upload page; set `DUMATE_IMPORT_BIND=0.0.0.0` and `DUMATE_IMPORT_PUBLIC_URL` when Magpie runs on a server.
 - Multiple independent accounts with display-name identity and upstream `uid`.
 - Enumerates all available chat models and one unified image model (`dumate-image2.2`).
 - Exposes one image model only; the backend always uses the strongest available `dumate-image*` model. Current strongest: `dumate-image2.2`.
