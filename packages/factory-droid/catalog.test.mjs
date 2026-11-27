@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import plugin from "./opencode.mjs"
 
-const variables = ["XDG_CACHE_HOME", "FACTORY_DROID_BIN", "FACTORY_HOME_OVERRIDE", "FACTORY_API_KEY", "FAKE_DROID_CATALOG"]
+const variables = ["XDG_CACHE_HOME", "FACTORY_DROID_BIN", "FACTORY_HOME_OVERRIDE", "FACTORY_API_KEY",
+  "FAKE_DROID_CATALOG", "FAKE_DROID_IMAGE", "FAKE_DROID_LIST_TOOLS_DELAY", "FAKE_DROID_LIST_TOOLS_FAIL", "FAKE_DROID_PROBE_GATE"]
+const hosts = new Set()
 let saved, root, fixture, cache
 beforeEach(() => {
   saved = Object.fromEntries(variables.map(k => [k, process.env[k]]))
@@ -16,10 +18,13 @@ beforeEach(() => {
   process.env.FACTORY_HOME_OVERRIDE = root
   process.env.FACTORY_DROID_BIN = fileURLToPath(new URL("./test/fake-droid.mjs", import.meta.url))
   process.env.FAKE_DROID_CATALOG = fixture
-  delete process.env.FACTORY_API_KEY
+  for (const key of ["FACTORY_API_KEY", "FAKE_DROID_IMAGE", "FAKE_DROID_LIST_TOOLS_DELAY", "FAKE_DROID_LIST_TOOLS_FAIL", "FAKE_DROID_PROBE_GATE"]) delete process.env[key]
   configure({})
 })
-afterEach(() => {
+afterEach(async () => {
+  if (process.env.FAKE_DROID_PROBE_GATE) writeFileSync(process.env.FAKE_DROID_PROBE_GATE, "")
+  await Promise.all([...hosts].map(p => p.warming()))
+  hosts.clear()
   for (const k of variables) {
     if (saved[k] === undefined) delete process.env[k]
     else process.env[k] = saved[k]
@@ -28,7 +33,11 @@ afterEach(() => {
 })
 
 const configure = data => writeFileSync(fixture, JSON.stringify(data))
-const host = async () => (await plugin.server()).provider
+async function host() {
+  const { provider } = await plugin.server()
+  hosts.add(provider)
+  return provider
+}
 const list = (p, key = "primary-secret", signal) => p.models({}, { auth: { type: "api", key }, signal })
 const calls = () => readFileSync(fixture + ".calls", "utf8").trim().split("\n").length
 const only = id => ({ models: [{ id, displayName: id, supportedReasoningEfforts: ["low"] }] })
@@ -40,6 +49,27 @@ function ageSnapshot(ms) {
   writeFileSync(file, JSON.stringify({ ...data, at: Date.now() - ms }))
 }
 
+async function primeCache() {
+  const p = await host()
+  await list(p)
+  await p.warming()
+}
+
+function holdImageProbe() {
+  process.env.FAKE_DROID_IMAGE = "1"
+  const gate = join(root, "release-probe")
+  process.env.FAKE_DROID_PROBE_GATE = gate
+  return gate
+}
+
+async function waitForFile(file) {
+  const deadline = Date.now() + 4_000
+  while (!existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for " + file)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
 test("cold callers share discovery and independent hosts reuse only their account's models", async () => {
   configure({ "primary-secret": { ...only("model-a"), delay: 1000 }, "other-secret": only("model-b") })
   const p = await host()
@@ -47,11 +77,13 @@ test("cold callers share discovery and independent hosts reuse only their accoun
   expect(Object.keys(a)).toEqual(["default", "model-a"])
   expect(same["model-a"].variants).toEqual({ low: { effort: "low" } })
   expect(calls()).toBe(1)
+  await p.warming()
   const second = await host()
   expect(Object.keys(await list(second))).toEqual(Object.keys(a))
   expect(calls()).toBe(1)
   expect(Object.keys(await list(second, "other-secret"))).toEqual(["default", "model-b"])
   expect(calls()).toBe(2)
+  await second.warming()
   expect(readdirSync(cache)).toHaveLength(2)
   for (const name of readdirSync(cache)) {
     expect(name).toMatch(/^[0-9a-f]{64}\.json$/)
@@ -63,7 +95,7 @@ test("cold callers share discovery and independent hosts reuse only their accoun
 
 test("stale results survive a temporary failure, and a successful empty catalog removes old models", async () => {
   configure({ "primary-secret": only("formerly-enabled") })
-  await list(await host())
+  await primeCache()
   ageSnapshot(65_000)
   configure({ "primary-secret": unavailable })
   const offline = await host()
@@ -83,7 +115,7 @@ test("stale results survive a temporary failure, and a successful empty catalog 
 
 test("revoked credentials clear stale snapshots, while expired or corrupt snapshots cannot supply a list", async () => {
   configure({ "primary-secret": only("private-model") })
-  await list(await host())
+  await primeCache()
   ageSnapshot(70_000)
   configure({ "primary-secret": refused })
   const revoked = await host()
@@ -92,7 +124,7 @@ test("revoked credentials clear stale snapshots, while expired or corrupt snapsh
   await expect(list(revoked)).rejects.toMatchObject({ status: 401 })
   expect(readdirSync(cache)).toEqual([])
   configure({ "primary-secret": only("replacement") })
-  await list(await host())
+  await primeCache()
   ageSnapshot(25 * 3600_000)
   configure({ "primary-secret": unavailable })
   await expect(list(await host())).rejects.toThrow("Temporary catalog failure")
@@ -200,15 +232,137 @@ test("config-only models can be listed, selected, and assigned their own reasoni
 })
 
 test("an installed GenerateImage tool adds an image-only Magpie model after account discovery", async () => {
-  const prior = process.env.FAKE_DROID_IMAGE
-  try {
-    process.env.FAKE_DROID_IMAGE = "1"
-    configure({ local: only("chat") })
-    const rows = await (await host()).models()
-    expect(rows["droid-image"].capabilities.output).toEqual({ text: false, image: true })
-    expect(rows["droid-image"].api.npm).toBe("@ai-sdk/openai-compatible")
-  } finally {
-    if (prior === undefined) delete process.env.FAKE_DROID_IMAGE
-    else process.env.FAKE_DROID_IMAGE = prior
-  }
+  process.env.FAKE_DROID_IMAGE = "1"
+  configure({ "primary-secret": only("chat") })
+  const p = await host()
+  await list(p)
+  await p.warming()
+  const image = (await list(p))["droid-image"]
+  expect(image.capabilities.output).toEqual({ text: false, image: true })
+  expect(image.api.npm).toBe("@ai-sdk/openai-compatible")
 })
+
+test("the image probe can take longer than three seconds without delaying the chat list", async () => {
+  process.env.FAKE_DROID_IMAGE = "1"
+  process.env.FAKE_DROID_LIST_TOOLS_DELAY = "3500"
+  configure({ "primary-secret": only("chat") })
+  const p = await host()
+  expect(Object.keys(await list(p))).toEqual(["default", "chat"])
+  await p.warming()
+  expect(Object.keys(await list(p))).toEqual(["default", "chat", "droid-image"])
+}, 15_000)
+
+test("the first chat list preserves Magpie's previous image pick until discovery finishes", async () => {
+  const gate = holdImageProbe()
+  configure({ "primary-secret": only("chat") })
+  const p = await host()
+  const previous = { models: { "droid-image": { id: "droid-image" } } }
+  const ctx = { auth: { type: "api", key: "primary-secret" } }
+  // Magpie keeps its last complete list when the hook returns magpie.fellBack.
+  // An unreleased probe must not make either cold caller wait for the six-second deadline.
+  const callers = [p.models(previous, ctx), p.models(previous, ctx)]
+  const [first, second] = await Promise.all(callers)
+  expect(Object.keys(first)).toEqual(["default", "chat"])
+  expect(second).toBe(first)
+  expect(first[Symbol.for("magpie.fellBack")]).toBe(true)
+  const displayed = first[Symbol.for("magpie.fellBack")] ? previous.models : first
+  expect(displayed["droid-image"]).toBe(previous.models["droid-image"])
+  expect(existsSync(cache)).toBe(false)
+  const warming = p.warming()
+  expect(warming).toBeInstanceOf(Promise)
+  writeFileSync(gate, "")
+  await warming
+  const complete = await p.models(previous, ctx)
+  expect(complete[Symbol.for("magpie.fellBack")]).toBeUndefined()
+  expect(complete["droid-image"].capabilities.output.image).toBe(true)
+}, 5_000)
+
+test("local lookups without a credential marker read their own chat and image capabilities", async () => {
+  const gate = holdImageProbe(), p = await host()
+  configure({ local: only("first-login") })
+  const early = await p.models()
+  expect(Object.keys(early)).toEqual(["default", "first-login"])
+  expect(early[Symbol.for("magpie.fellBack")]).toBe(true)
+  const warming = p.warming()
+  expect(warming).toBeInstanceOf(Promise)
+  writeFileSync(gate, "")
+  await warming
+
+  configure({ local: only("next-login") })
+  delete process.env.FAKE_DROID_IMAGE
+  const next = await p.models()
+  expect(Object.keys(next)).toEqual(["default", "next-login"])
+  expect(next[Symbol.for("magpie.fellBack")]).toBeUndefined()
+  expect(calls()).toBe(2)
+  expect(existsSync(cache)).toBe(false)
+}, 5_000)
+
+test("a host that checks warming after the probe finishes still reloads the list", async () => {
+  const gate = holdImageProbe(), p = await host()
+  configure({ "primary-secret": only("chat") })
+  expect((await list(p))[Symbol.for("magpie.fellBack")]).toBe(true)
+  writeFileSync(gate, "")
+  // Saving the complete catalog happens before the host consults warming().
+  await waitForFile(cache)
+  expect(p.warming()).toBeInstanceOf(Promise)
+  expect((await list(p))["droid-image"].capabilities.output.image).toBe(true)
+  expect(p.warming()).toBeUndefined()
+})
+
+test("a refresh keeps the complete catalog while the image probe is waiting", async () => {
+  process.env.FAKE_DROID_IMAGE = "1"
+  configure({ "primary-secret": only("old-chat") })
+  await primeCache()
+  ageSnapshot(65_000)
+  const file = join(cache, readdirSync(cache)[0])
+  const onDisk = readFileSync(file, "utf8")
+  const gate = holdImageProbe()
+  configure({ "primary-secret": { ...only("new-chat"), observeClose: true } })
+  const p = await host()
+  const previous = await list(p)
+  expect(Object.keys(previous)).toEqual(["default", "old-chat", "droid-image"])
+  // The ACP process exits after the catalog request. The image process still needs our release.
+  await waitForFile(gate + ".catalog-closed")
+  expect(await list(p)).toBe(previous)
+  expect(readFileSync(file, "utf8")).toBe(onDisk)
+  writeFileSync(gate, "")
+  await p.warming()
+  expect(Object.keys(await list(p))).toEqual(["default", "new-chat", "droid-image"])
+})
+
+test("an inconclusive image probe preserves the previous complete catalog", async () => {
+  process.env.FAKE_DROID_IMAGE = "1"
+  configure({ "primary-secret": only("chat") })
+  await primeCache()
+  ageSnapshot(65_000)
+  const file = join(cache, readdirSync(cache)[0])
+  const onDisk = readFileSync(file, "utf8")
+  process.env.FAKE_DROID_LIST_TOOLS_FAIL = "1"
+  const p = await host()
+  await list(p)
+  await p.warming()
+  expect((await list(p))["droid-image"]).toBeDefined()
+  expect(readFileSync(file, "utf8")).toBe(onDisk)
+  const cold = await host()
+  await list(cold, "uncached")
+  await cold.warming()
+  expect((await list(cold, "uncached"))[Symbol.for("magpie.fellBack")]).toBe(true)
+  expect(readdirSync(cache)).toHaveLength(1)
+})
+
+for (const outcome of ["refused", "empty", "legacy"]) {
+  test(`the image probe exits when the model list is ${outcome}`, async () => {
+    const gate = holdImageProbe(), p = await host()
+    const legacy = { error: { code: -32601, message: "Unknown method" }, availableModels: [{ modelId: "legacy" }] }
+    configure({ "primary-secret": { refused, empty: { models: [] }, legacy }[outcome] })
+    if (outcome === "refused") await expect(list(p)).rejects.toMatchObject({ status: 401 })
+    else {
+      const models = await list(p)
+      expect(Object.keys(models)).toEqual(outcome === "empty" ? ["default"] : ["default", "legacy"])
+      expect(models[Symbol.for("magpie.fellBack")]).toBeUndefined()
+    }
+    await p.warming()
+    const pid = Number(readFileSync(gate + ".pid", "utf8"))
+    expect(() => process.kill(pid, 0)).toThrow()
+  })
+}

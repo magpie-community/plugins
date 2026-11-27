@@ -37,25 +37,45 @@ function normalize(models, image) {
   })
 }
 
-async function discover(key, signal) {
+// Whether the installed Droid offers GenerateImage. A second Droid process answers.
+async function hasImageTool(key, signal) {
+  const probe = runCLI(process.env.FACTORY_DROID_BIN || "droid", ["exec", "--list-tools"], {
+    env: key ? { ...process.env, FACTORY_API_KEY: key } : process.env, signal, timeout: 15_000, killSignal: "SIGKILL", windowsHide: true,
+  })
+  const closed = new Promise(resolve => probe.child.once("close", resolve))
+  try {
+    const { stdout } = await probe
+    return /^\s*(?:[•*-]\s*)?GenerateImage\b/m.test(stdout)
+  } catch { return undefined } finally { await closed }
+}
+
+async function discover(key, signal, publishChat) {
   const rpc = connect({ key, signal })
+  const stop = new AbortController()
+  let probe, imageAvailable
   try {
     const caps = await rpc.initialize()
-    if (caps._meta?.factory?.modelsList) {
+    const listed = caps._meta?.factory?.modelsList
+    if (listed) {
       try {
+        if (caps.promptCapabilities?.image) {
+          const probeSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal
+          probe = hasImageTool(key, probeSignal).then(found => { imageAvailable = found })
+        }
         const { models } = await rpc.request("_factory/models/list", {})
         const rows = normalize(models, !!caps.promptCapabilities?.image)
-        if (rows.length && caps.promptCapabilities?.image) {
-          try {
-            const { stdout } = await runCLI(process.env.FACTORY_DROID_BIN || "droid", ["exec", "--list-tools"], {
-              env: key ? { ...process.env, FACTORY_API_KEY: key } : process.env, signal, timeout: 3_000, windowsHide: true,
-            })
-            if (/^\s*(?:[•*-]\s*)?GenerateImage\b/m.test(stdout)) rows.push(["droid-image", "Factory Droid Image", true, []])
-          } catch { signal?.throwIfAborted() }
+        rpc.close()
+        if (rows.length && probe) {
+          if (imageAvailable === undefined) publishChat(rows)
+          await probe
+          signal?.throwIfAborted()
+          if (imageAvailable === undefined) throw failure(503, "Droid could not list its installed tools.")
+          if (imageAvailable) rows.push(["droid-image", "Factory Droid Image", true, []])
         }
         return rows
       } catch (error) {
         if (error.rpcCode !== -32601) throw error
+        stop.abort()
       }
     }
     const { models, configOptions } = await rpc.newSession()
@@ -69,7 +89,11 @@ async function discover(key, signal) {
     }
     if (Array.isArray(legacy)) return []
     throw failure(502, "Droid did not provide session models.")
-  } finally { rpc.close() }
+  } finally {
+    stop.abort()
+    rpc.close()
+    await probe
+  }
 }
 
 // Identify the executable actually found on PATH. GUI and terminal PATHs can
@@ -146,6 +170,13 @@ async function waitForFirstList(pending, signal) {
 
 export function createCatalog() {
   const entries = new Map()
+  // OpenCode may ask for warming() after reloading its UI, by which time the
+  // complete list can already be ready. It still needs one more read.
+  let refreshOwed = false
+  // Without a credential marker every lookup has to verify its own account.
+  // After a provisional reply, let one new lookup finish both checks. Only
+  // this scheduling flag survives the original lookup, never its catalog.
+  let finishNextLocalList = false
   function trimEntries() {
     for (const [id, entry] of entries) {
       if (entries.size <= maximumEntries) break
@@ -157,8 +188,9 @@ export function createCatalog() {
       signal?.throwIfAborted()
       const key = savedKey || process.env.FACTORY_API_KEY
       const owner = accountScope(key)
-      if (!owner) return asModels(await discover(key, signal))
-      const id = createHash("sha256").update(JSON.stringify([owner, executable()])).digest("hex")
+      const id = owner ? createHash("sha256").update(JSON.stringify([owner, executable()])).digest("hex") : Symbol()
+      const finishLocalList = !owner && finishNextLocalList
+      if (!owner) finishNextLocalList = false
       const cacheHome = process.env.XDG_CACHE_HOME || join(homedir(), ".cache")
       const file = key ? join(cacheHome, "magpie", "factory-droid", "models", id + ".json") : undefined
       let entry = entries.get(id)
@@ -168,12 +200,17 @@ export function createCatalog() {
       }
       const now = Date.now()
       if (entry.snapshot && now - entry.snapshot.at >= keepFor) entry.snapshot = undefined
-      if (entry.snapshot && now - entry.snapshot.at < freshFor) {
+      if (entry.snapshot && !entry.snapshot.models[fallback] && now - entry.snapshot.at < freshFor) {
         trimEntries()
         return entry.snapshot.models
       }
       if (!entry.pending && now >= entry.nextAttempt) {
-        entry.pending = discover(key).then(rows => {
+        let ready
+        entry.firstList = new Promise(resolve => { ready = resolve })
+        entry.pending = discover(key, owner ? undefined : signal, rows => {
+          if (!entry.snapshot || entry.snapshot.models[fallback]) entry.snapshot = { at: Date.now(), models: asModels(rows, true) }
+          ready()
+        }).then(rows => {
           const at = Date.now()
           entry.snapshot = { at, models: asModels(rows) }
           entry.error = undefined
@@ -185,16 +222,34 @@ export function createCatalog() {
             entry.snapshot = undefined
             try { if (file) rmSync(file, { force: true }) } catch {}
           }
-        }).finally(() => { entry.pending = undefined; trimEntries() })
+        }).finally(() => {
+          if (!owner) {
+            entries.delete(id)
+            if (entry.returnedPartial && !entry.error) finishNextLocalList = true
+          }
+          entry.pending = undefined
+          ready()
+          trimEntries()
+        })
       }
-      if (!entry.snapshot && entry.pending) await waitForFirstList(entry.pending, signal)
+      if (finishLocalList) await entry.pending
+      else if (!entry.snapshot && entry.pending) await waitForFirstList(entry.firstList, signal)
+      signal?.throwIfAborted()
+      if (entry.pending) {
+        refreshOwed = true
+        if (!owner) entry.returnedPartial = true
+      }
       if (entry.snapshot) return entry.snapshot.models
       if (entry.error) throw entry.error
       return asModels([], true)
     },
     warming() {
       const pending = [...entries.values()].map(e => e.pending).filter(Boolean)
-      if (pending.length) return Promise.all(pending)
+      // OpenCode can finish reloading the provisional list after the probe exits.
+      if (pending.length || refreshOwed) {
+        refreshOwed = false
+        return Promise.all(pending)
+      }
     },
   }
 }

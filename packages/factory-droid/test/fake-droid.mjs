@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict"
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { spawn } from "node:child_process"
 import { join } from "node:path"
@@ -12,7 +12,19 @@ function writeUsage(inputTokens, outputTokens, cacheReadTokens) {
 }
 
 
+const probeGate = process.env.FAKE_DROID_PROBE_GATE
+async function waitForFile(file) {
+  while (!existsSync(file)) await new Promise(resolve => setTimeout(resolve, 10))
+}
 if (process.argv.includes("--list-tools")) {
+  if (probeGate) {
+    writeFileSync(probeGate + ".pid", String(process.pid))
+    await waitForFile(probeGate)
+  }
+  // The real CLI needs about 3 seconds to start.
+  const delay = Number(process.env.FAKE_DROID_LIST_TOOLS_DELAY)
+  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+  if (process.env.FAKE_DROID_LIST_TOOLS_FAIL) process.exit(1)
   if (process.env.FAKE_DROID_IMAGE) console.log("  • GenerateImage (Generate Image) - status: blocked")
   process.exit(0)
 }
@@ -62,6 +74,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       reply({ id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: process.env.FAKE_DROID_RESUME ? { resume: {} } : {}, _meta: { factory: { modelsList: !listing.legacy, promptWhileRunning: !process.env.FAKE_DROID_NO_STEER } }, promptCapabilities: { image: true } } } })
       break
     case "_factory/models/list":
+      if (probeGate) {
+        await waitForFile(probeGate + ".pid")
+        if (listing.observeClose) process.once("exit", () => writeFileSync(probeGate + ".catalog-closed", ""))
+      }
       if (listing.delay) await new Promise(resolve => setTimeout(resolve, listing.delay))
       if (listing.error) { reply({ id, error: listing.error }); break }
       if ("models" in listing) { reply({ id, result: { models: listing.models } }); break }
