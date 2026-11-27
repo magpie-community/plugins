@@ -17760,9 +17760,55 @@
               }
             }
           }
+        },
+        "0.5.1": {
+          "file": "tgz/magpie-community-opencode-bailucode-auth-0.5.1.tgz",
+          "integrity": "sha512-1P+2ZS1sXcDYSR37oTyzA4pMZY1Uad6YnzzyCzNcmbarIA/YSnf7OMwzRnr0znP0mUH1nG80cAdXCVGxXKPv8w==",
+          "time": "2026-11-27T01:40:58.462Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-bailucode-auth",
+            "version": "0.5.1",
+            "description": "BAILU AI (白鹿, bailucode.com) for OpenCode and magpie: an API key or a browser sign-in that fetches one, live models, the 白鹿通行证 quota (credits, tokens, per-protocol packs) and the portal's daily check-in",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "bailucode",
+              "bailu"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/magpie-community/plugins",
+              "directory": "packages/bailucode"
+            },
+            "scripts": {
+              "test": "bun test"
+            },
+            "magpie": {
+              "name": "BAILU（白鹿）",
+              "icon": "https://bailucode.com/assets/svg/bailu-logo.svg",
+              "summary": {
+                "zh": "白鹿 Open Platform（bailucode.com/openapi）接入 magpie：可粘贴 API key，也可用浏览器登录自动取回账号里的 key；模型按 key 实时拉取，卡片显示通行证额度（积分 / Token / 定向额度），并接上门户的每日签到。",
+                "en": "BAILU Open Platform (bailucode.com/openapi) for magpie: paste an API key, or sign in through the browser and let it fetch the account's key; models from the key, the 白鹿通行证 quota (credits, tokens, per-protocol packs) on the card, and the portal's daily check-in."
+              }
+            }
+          }
         }
       },
-      "latest": "0.5.0",
+      "latest": "0.5.1",
       "readme": "# bailucode\n\n[BAILU AI](https://bailucode.com) (白鹿) for magpie and OpenCode: the Open\nPlatform's models, its API key or a browser sign-in that fetches yours, the\naccount's quota on the provider card, and the portal's daily check-in.\n\n- API keys: <https://bailucode.com/api_platform/#api-keys>\n- Gateway: `https://bailucode.com/openapi/v1` — one Bearer key, three faces\n  (OpenAI Chat Completions, Anthropic Messages, OpenAI Responses), plus\n  embeddings, all verified against the live gateway.\n\n## Signing in\n\nTwo ways, both from the provider's own sign-in:\n\n- **API key** — paste `sk-…`. Nothing else is asked: the gateway address is\n  fixed, and a different one comes from the plugin's options\n  (`{\"baseURL\":\"https://your-mirror/openapi/v1\"}`).\n- **Browser sign-in** — the plugin opens Chrome against a throwaway profile\n  (created per sign-in, removed afterwards) on the portal's login page; you\n  finish the email sign-in there, and it reads the cookies over CDP (httpOnly\n  included), trades them for the key your account already holds\n  (`POST /api/api_keys {\"action\":\"get_keys\"}`), and keeps that session **on the\n  account itself** (its `metadata`), never in a file another account would read.\n  With a working session on that account it skips the browser entirely. Only an\n  account with no *active* key gets one created (`create_key`, name `magpie`;\n  a disabled key counts as none).\n\n## What the card shows\n\n`GET /openapi/v1/models` gives the key's own model list (9 ids at the time of writing, all `bailu-*` / `yuyu-*`; the gateway's count is its own, and it served 27 earlier that day). The quota is\naccount-scoped, so it comes from the signed-in dashboard\n(`https://bailucode.com/auth/`), whose wallet the page carries as\n`var S = {...}`:\n\n| Line | From | Example |\n| --- | --- | --- |\n| 白鹿编码 | `code.planRemain` + `code.addonTokens / 1000` | `21,500 Credits` |\n| API 平台 | `api.usedEff` / `api.quotaEff`, reset day from the page | `657 / 3.18 亿 Tokens` |\n| 定向额度 | `packs[]` (Anthropic and friends) | `剩 500 万 / 共 500 万 Tokens` |\n\nThe browser sign-in stores the session on the account. To point an account at a\nsession by hand, name it: the `session` option or `BAILUCODE_SESSION`; a file is\nread only when `sessionFile` names it (and written 0600 in a 0700 directory).\nNo default path is read on its own — that is what made two accounts share one\nwallet.\n\n## What writes\n\nOnly two, both the portal's own endpoints: `create_key` when the account holds\nno active key, and `claim_*` when you press check-in. The logout route is never\ncalled.\n\n## Check-in\n\n`magpie accounts checkin` (or the card's check-in entry) takes the portal's\nthree daily items when it can, and says what happened when it can't:\n\n- `done` — all three already taken today (nothing is sent)\n- `captcha` — a claim needs Cap human verification, which this plugin never\n  solves: open <https://bailucode.com/auth/> and tap the claim, or hand it a\n  ticket (`{\"captchaTicket\":\"…\"}`, `BAILUCODE_CAPTCHA`)\n- `claimed` — with a ticket it posts `claim_daily_checkin` /\n  `claim_anthropic_promo` / `claim_openclaw_promo`, and reports the credit\n\n`until` is the portal's next midnight (Asia/Shanghai), which is when the three\nopen again.\n\n## Notes\n\n- Cloudflare answers a browser-shaped user agent sent over a non-browser TLS\n  stack with a challenge; this plugin keeps an honest client user agent on every\n  request, which the gateway accepts.\n- The gateway has no per-key quota route (probed over a hundred paths), so\n  without a portal session the card shows only whether the key is accepted.\n\n## Test\n\n```sh\nbun test\n```"
     },
     "@magpie-community/opencode-catpaw-auth": {
