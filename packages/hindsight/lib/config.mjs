@@ -116,15 +116,19 @@ export function agentAllowed(config, agent) {
   return !legacyNativeAgents.has(String(agent ?? "").trim().toLowerCase());
 }
 
-function decision(config, source, action, native) {
+function decision(config, source, action, native, evidence) {
   if (source === "native") return { owner: "native", reason: native === "active" ? "native-active" : "manual-native" };
   if (source === "off") return { owner: "off", reason: "policy-off" };
   if (source === "auto" && native === "active") return { owner: "native", reason: "native-active" };
   if (action === "capture" && !config.capture) return { owner: "off", reason: "capture-off" };
   if (source === "gateway" || native === "inactive") {
-    return { owner: "gateway", reason: native === "active" ? "native-conflict" : "gateway-enabled" };
+    return { owner: "gateway", reason: native === "active" ? "native-conflict"
+      : source === "auto" && evidence === "no-supported-integration" ? "gateway-fallback" : "gateway-enabled" };
   }
-  return { owner: "pending", reason: "native-unknown" };
+  return { owner: "pending", reason: evidence === "unsupported" ? "native-unsupported"
+    : evidence === "observed" ? "native-history-only"
+    : evidence === "installed-profile" ? "native-installed-unverified"
+    : evidence === "separate-profile" || evidence === "multiple-profiles" ? "native-profile-unknown" : "native-unknown" };
 }
 
 export function agentPolicy(config, agent, native = {}) {
@@ -140,7 +144,7 @@ export function agentPolicy(config, agent, native = {}) {
   const setting = id ? config.agent_policies[id] : undefined;
   const fallback = config.agent_mode === "auto" ? "auto" : "off";
   return {
-    recall: decision(config, setting?.recall ?? fallback, "recall", native.recall),
-    capture: decision(config, setting?.capture ?? fallback, "capture", native.capture)
+    recall: decision(config, setting?.recall ?? fallback, "recall", native.recall, native.evidence),
+    capture: decision(config, setting?.capture ?? fallback, "capture", native.capture, native.evidence)
   };
 }

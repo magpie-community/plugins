@@ -136,6 +136,29 @@ test("the bank selector lists existing IDs and rejects a nonexistent bank on sav
   assert.deepEqual(invalid.missing, ["absent-bank"]);
 });
 
+test("sandboxed pages can wait for the saved revision without reusing a service token", async () => {
+  const initial = server();
+  initial.options({ bank: "hermes", agents: ["claude"] });
+  const token = await tokenFor(initial.handle);
+  const next = { bank: "hermes", agents: ["claude"], agent_mode: "auto" };
+  const preview = await initial.handle("/api/preview", {
+    method: "POST", headers: { "x-hindsight-token": token, origin: "null" },
+    body: JSON.stringify({ options: next })
+  }).then(response => response.json());
+  const path = "/ready?revision=" + preview.revision;
+  const sandbox = { headers: { origin: "null" } };
+  assert.equal((await initial.handle(path, sandbox)).status, 425);
+  const replacement = server();
+  replacement.options(next);
+  const ready = await replacement.handle(path, sandbox);
+  assert.equal(ready.status, 204);
+  assert.equal(ready.headers.get("access-control-allow-origin"), "null");
+  assert.equal(await ready.text(), "");
+  assert.equal((await replacement.handle(path, { headers: { origin: "https://foreign.example" } })).status, 403);
+  const stale = await replacement.handle("/api/status", { method: "POST", headers: { "x-hindsight-token": token } });
+  assert.equal(stale.status, 403);
+});
+
 test("loopback bridge denies foreign sites, stale tokens and arbitrary URLs", async () => {
   const { handle, used } = server();
   const token = await tokenFor(handle);

@@ -30,6 +30,8 @@ Gateway agents inherit the default shared bank unless you select an existing ban
 
 The workbench combines Magpie usage and the local applied-agent list, known local configuration directories, agents observed by the hook, saved choices, and manually added IDs. Native detection reads supported integration wiring for Hermes, DSH, Claude Code, Codex, OpenCode and Pi. Per-project, per-profile, custom, or unrecognized installations can remain unverified. Native tool and retrieval counts are bounded samples of locally available Hindsight Coding Agents logs. Gateway counts come from the hook. Bank totals are shared-bank totals.
 
+On Windows, detection also checks Hermes Desktop's data directory and recognizes custom Hindsight prompt hooks registered by Codex. A DSH dependency by itself is shown as installed with activation unverified. The workbench keeps the current page open during service restarts after saving. Activity distinguishes gateway requests with no recall attempt from completed recalls that returned no results.
+
 Example explicit policy:
 
 ```json

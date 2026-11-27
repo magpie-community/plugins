@@ -39,6 +39,7 @@
         <button type="button" class="secondary" data-filter="gateway" aria-pressed="false"><strong id="count-gateway">—</strong><span>网关负责</span></button>
         <button type="button" class="secondary" data-filter="native" aria-pressed="false"><strong id="count-native">—</strong><span>原生负责</span></button>
         <button type="button" class="secondary" data-filter="pending" aria-pressed="false"><strong id="count-pending">—</strong><span>待确认</span></button>
+        <button type="button" class="secondary" data-filter="unsupported" aria-pressed="false"><strong id="count-unsupported">—</strong><span>检测未覆盖</span></button>
         <button type="button" class="secondary" data-filter="conflict" aria-pressed="false"><strong id="count-conflict">—</strong><span>可能重复</span></button>
       </div>
       <div class="controls">
@@ -56,7 +57,7 @@
         <input id="filter-agent" type="search" placeholder="搜索 Agent" aria-label="搜索 Agent">
         <select id="filter-policy" aria-label="筛选 Agent 状态">
           <option value="all">全部状态</option><option value="gateway">网关负责</option><option value="native">原生负责</option>
-          <option value="pending">待确认</option><option value="conflict">有冲突</option>
+          <option value="pending">待确认</option><option value="unsupported">检测未覆盖</option><option value="conflict">有冲突</option>
         </select>
         <button id="add-agent" type="button" class="secondary">添加 Agent</button>
       </div>
@@ -145,7 +146,7 @@
 
     <footer class="save-bar">
       <p id="status" role="status" aria-live="polite">正在连接 Magpie…</p>
-      <div><button id="discard" type="button" class="secondary" disabled>放弃更改</button><button id="save" type="button" disabled>保存配置</button></div>
+      <div><button id="reconnect" type="button" class="secondary" hidden>重试连接</button><button id="discard" type="button" class="secondary" disabled>放弃更改</button><button id="save" type="button" disabled>保存配置</button></div>
     </footer>
   </main>
 

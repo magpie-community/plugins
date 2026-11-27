@@ -17,12 +17,22 @@
   const explanations = {
     "native-active": "检测到原生启用", "manual-native": "已手动交给原生", "policy-off": "策略已关闭",
     "capture-off": "网关写入总开关关闭", "legacy-selected": "旧配置已选中", "legacy-excluded": "旧策略未选中",
-    "native-unknown": "原生状态待确认", "gateway-enabled": "由网关处理", "native-conflict": "原生与网关均启用"
+    "native-unknown": "原生状态待确认", "native-unsupported": "暂无原生检测适配",
+    "native-history-only": "有历史活动，当前接线待确认",
+    "native-installed-unverified": "已安装，启用待确认",
+    "native-profile-unknown": "当前配置档案待确认",
+    "gateway-enabled": "由网关处理", "gateway-fallback": "已检查原生配置，由网关处理", "native-conflict": "原生与网关均启用"
   };
   const evidence = {
     disabled: "原生集成已关闭", wired: "检测到原生接入", scoped: "检测到原生接入，随项目变化",
     "other-provider": "Hermes 使用其他记忆提供方", "hermes-provider": "Hermes Hindsight 提供方",
-    "no-supported-integration": "已检查 DSH 插件注册", observed: "有原生活动记录", unknown: "原生状态未知"
+    "no-supported-integration": "检查了已支持的配置位置",
+    "custom-hook": "检测到自定义召回 Hook",
+    "installed-profile": "配置档案内有 Hindsight 插件",
+    "multiple-profiles": "有多套原生配置",
+    "separate-profile": "有独立配置档案",
+    unsupported: "可手动设置召回来源",
+    observed: "仅有原生活动记录", unknown: "未核实当前接线"
   };
   const codes = {
     hit: "命中", empty: "空结果", reused: "复用本轮结果", timeout: "超时", unavailable: "服务不可用",
@@ -35,6 +45,7 @@
   };
   const phases = { recall: "召回", capture: "写入", policy: "策略" };
   const failures = new Set(["timeout", "unavailable", "rate-limited", "unauthorized", "not-found", "invalid", "budget"]);
+  const queryOutcomes = new Set(["hit", "empty", ...failures].filter(code => code !== "budget"));
   const date = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   const number = new Intl.NumberFormat("zh-CN");
   const fmt = n => Number.isFinite(n) ? number.format(n) : "—";
@@ -51,6 +62,7 @@
   let previewTimer;
   let activePanel = "agents";
   let bankCatalog = [];
+  let pendingReconnect;
 
   function show(id, text, tone = "") {
     const node = $(id);
@@ -219,9 +231,10 @@
     }
     const rows = snapshot.activity?.rows ?? [];
     const hits = sum(rows, "recall", new Set(["hit"]));
-    const attempted = sum(rows, "recall", new Set(["hit", "empty", ...failures]));
-    show("recall-state", rows.length ? fmt(hits) + " / " + fmt(attempted) : "—");
-    show("recall-detail", rows.length ? fmt(sum(rows, "recall", new Set(["reused"]))) + " 次复用 · 不计入查询量" : "等待网关活动");
+    const attempted = sum(rows, "recall", queryOutcomes);
+    show("recall-state", attempted ? fmt(hits) + " / " + fmt(attempted) : rows.length ? "未发起召回" : "—");
+    show("recall-detail", attempted ? fmt(sum(rows, "recall", new Set(["reused"]))) + " 次复用 · 不计入查询量"
+      : rows.length ? fmt(sum(rows, "request", new Set(["seen"]))) + " 个网关请求" : "等待网关活动");
     $("hit-meter").hidden = !attempted;
     $("hit-meter").value = attempted ? hits / attempted : 0;
   }
@@ -263,6 +276,8 @@
   }
 
   function hasPolicy(agent, key) {
+    if (key === "unsupported") return agent.policy?.recall.reason === "native-unsupported";
+    if (key === "pending" && agent.policy?.recall.reason === "native-unsupported") return false;
     return Object.values(agent.policy ?? {}).some(item => key === "conflict" ? item.reason === "native-conflict" : item.owner === key);
   }
 
@@ -293,10 +308,12 @@
       bank.append(node("strong", agent.gatewayBank ?? shared));
       bank.append(node("small", agent.bankOverride ? "网关 · 单独指定" : "网关 · 继承共享库"));
     }
-    if (agent.native?.bank) bank.append(node("small", "原生 " + agent.native.bank));
+    if (agent.native?.bank) bank.append(node("small",
+      (agent.native.evidence === "installed-profile" ? "原生设定 " : "原生 ") + agent.native.bank));
     else if (hasPolicy(agent, "native") || agent.native?.variableBank)
       bank.append(node("small", agent.native?.variableBank ? "原生随会话或项目变化" : "原生库待确认"));
-    bank.append(node("small", evidence[agent.native?.evidence] ?? "原生状态未知"));
+    const proof = evidence[agent.native?.evidence] ?? "未核实当前接线";
+    bank.append(node("small", agent.native?.evidence === "observed" && agent.activity?.last ? proof + " · " + time(agent.activity.last) : proof));
     return bank;
   }
 
@@ -333,10 +350,17 @@
       identity.append(node("small", (agent.name === agent.id ? "" : agent.id + " · ") +
         (agentRows.length || agent.fromUsage ? "有网关请求" : agent.connected ? "Magpie 已配置" : agent.installed ? "检测到本机配置" : "等待网关请求")));
       const bank = bankCell(agent, hasPolicy(agent, "gateway"));
-      const runtime = node("td", agentRows.length ? "命中 " + fmt(sum(agentRows, "recall", new Set(["hit"]))) : "未观察到");
+      const queries = sum(agentRows, "recall", queryOutcomes);
+      const requests = sum(agentRows, "request", new Set(["seen"]));
+      const hits = sum(agentRows, "recall", new Set(["hit"]));
+      const runtime = node("td", queries ? fmt(hits) + " 命中 / " + fmt(queries) + " 次召回"
+        : requests ? "未发起网关召回" : "未观察到");
       if (agentRows.length) {
-        runtime.append(node("small", "注入 " + fmt(sum(agentRows, "injection", new Set(["applied"]))) + " · " +
-          "已入库 " + fmt(sum(agentRows, "capture", new Set(["completed"])))));
+        const injected = sum(agentRows, "injection", new Set(["applied"]));
+        const retained = sum(agentRows, "capture", new Set(["completed"]));
+        if (queries || injected || retained) runtime.append(node("small", "注入 " + fmt(injected) + " · 已入库 " + fmt(retained)));
+        else if (agent.policy?.recall.owner === "native") runtime.append(node("small", "当前交给原生召回"));
+        else if (requests) runtime.append(node("small", fmt(requests) + " 个网关请求"));
         runtime.append(node("small", "最近 " + time(Math.max(...agentRows.map(row => row.last || 0)))));
       }
       tr.append(identity, policyCell(agent, "recall"), policyCell(agent, "capture"), bank, runtime);
@@ -418,6 +442,7 @@
 
   let refreshing;
   async function refresh(force = false) {
+    if (pendingReconnect) return;
     if (refreshing) return refreshing;
     refreshing = (async () => {
       try {
@@ -528,13 +553,39 @@
       if (!(host.service) && edits.port !== oldPort) url.port = edits.port;
       url.searchParams.set("saved", "1");
       url.searchParams.set("panel", activePanel);
-      location.replace(url.href);
+      pendingReconnect = { url, revision: result.revision };
+      await reconnect();
     } catch {
       show("status", stale ? "本地服务已重新加载，请重新打开页面。" : "保存失败，草稿仍在本页。", "error");
     } finally {
       busy = false;
       buttons();
     }
+  }
+
+  async function reconnect() {
+    if (!pendingReconnect) return;
+    const { url, revision } = pendingReconnect;
+    const ready = new URL("./ready", url);
+    ready.searchParams.set("revision", revision);
+    $("reconnect").hidden = true;
+    show("status", "配置已保存，正在等待工作台服务恢复…");
+    const deadline = Date.now() + 16000;
+    while (Date.now() < deadline) {
+      let online = false;
+      try {
+        const response = await fetch(ready, { credentials: "omit", cache: "no-store",
+          redirect: "error", signal: AbortSignal.timeout(1000) });
+        online = response.status === 204;
+      } catch { /* The service listener may temporarily disappear during save. */ }
+      if (online) {
+        location.replace(url.href);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+    $("reconnect").hidden = false;
+    show("status", "配置已保存，工作台服务尚未恢复。可重试连接，或切到其他页面后重新打开。", "warn");
   }
 
   for (const button of document.querySelectorAll("[data-panel]")) {
@@ -584,6 +635,7 @@
   $("check").addEventListener("click", () => void check());
   $("check-draft").addEventListener("click", () => void check(true));
   $("save").addEventListener("click", () => void save());
+  $("reconnect").addEventListener("click", () => void reconnect());
   $("discard").addEventListener("click", async () => {
     try {
       const response = await call("options.get");

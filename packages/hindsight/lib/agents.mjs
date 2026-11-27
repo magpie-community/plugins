@@ -1,4 +1,4 @@
-import { access, open } from "node:fs/promises";
+import { access, open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { agentId } from "./config.mjs";
@@ -14,6 +14,7 @@ const KNOWN = {
 };
 const empty = Object.freeze({ agents: [], native: {} });
 const unknown = { recall: "unknown", capture: "unknown", evidence: "unknown" };
+const unsupported = { ...unknown, evidence: "unsupported" };
 
 async function file(path, max = 512 * 1024, tail = false) {
   let handle;
@@ -35,18 +36,24 @@ function json(text) {
   catch { return {}; }
 }
 
+function jsonConfig(text) {
+  if (!text) return null;
+  // Preserve quoted URLs and strings while removing JSONC comments.
+  const plain = text.replace(/"(?:\\.|[^"\\])*"|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, token => token[0] === '"' ? token : "");
+  try { return JSON.parse(plain.replace(/"(?:\\.|[^"\\])*"|,\s*(?=[}\]])/g, token => token[0] === '"' ? token : "")); }
+  catch { return null; }
+}
+
 function safeBank(value) {
   return typeof value === "string" && /^[\p{L}\p{N}_.:@-]{1,128}$/u.test(value) ? value : "";
 }
 
-function commands(groups, filename) {
-  return Array.isArray(groups) && groups.some(group => Array.isArray(group?.hooks) &&
-    group.hooks.some(hook => typeof hook?.command === "string" &&
-      /hindsight/i.test(hook.command) && hook.command.includes(filename)));
-}
-
-function hasEntry(text, filename) {
-  return typeof text === "string" && /hindsight/i.test(text) && text.includes(filename);
+function commands(groups, action) {
+  return Array.isArray(groups) && groups.some(group => {
+    const hooks = Array.isArray(group?.hooks) ? group.hooks : [group];
+    return hooks.some(hook => typeof hook?.command === "string" && /hindsight/i.test(hook.command) &&
+      (action === "recall" ? !/(?:retain|stop-hook)/i.test(hook.command) : /retain|stop-hook|after[-_]agent/i.test(hook.command)));
+  });
 }
 
 function codingBank(config) {
@@ -61,13 +68,37 @@ function codingPolicy(harness, seen, registered, config, allowInactive) {
   const absent = allowInactive && !hasEvidence && !seen;
   if (settings.disabled === true && hasEvidence && !scoped)
     return { recall: "inactive", capture: "inactive", evidence: "disabled" };
-  const state = (wired, off) => wired ? (off ? (scoped ? "unknown" : "inactive") : "active") : (absent ? "inactive" : "unknown");
+  const state = (wired, off, assumeAbsent) => wired
+    ? (off ? (scoped ? "unknown" : "inactive") : "active")
+    : (assumeAbsent ? "inactive" : "unknown");
   return {
-    recall: state(registered.recall, settings.autoInject === "none" || (settings.autoInject === undefined && settings.autoReflect === false)),
-    capture: state(registered.capture, settings.retainSessions === false),
+    recall: state(registered.recall, settings.autoInject === "none" || (settings.autoInject === undefined && settings.autoReflect === false), allowInactive && !seen),
+    capture: state(registered.capture, settings.retainSessions === false, false),
     bank: hasEvidence ? codingBank(settings) : "",
     variableBank: hasEvidence && !codingBank(settings),
     evidence: hasEvidence ? (scoped ? "scoped" : "wired") : absent ? "no-supported-integration" : seen ? "observed" : "unknown"
+  };
+}
+
+function hermesProvider(text) {
+  const section = /^memory:\s*(?:#[^\r\n]*)?\r?\n((?:[ \t][^\r\n]*(?:\r?\n|$))*)/m.exec(text)?.[1] || "";
+  return /^\s+provider:\s*["']?([a-z0-9_-]+)/im.exec(section)?.[1]?.toLowerCase();
+}
+
+function dshPlugin(text) {
+  return /(?:^\s*-\s*id:\s*["']?hindsight\b|^\s*# HINDSIGHT_CODING_AGENTS_DSH_START\s*$|^\s*(?:name|plugin):[^\r\n]*hindsight-coding-agents)/im.test(text);
+}
+
+function opencodePlugin(config) {
+  return Array.isArray(config?.plugin) && config.plugin.some(value =>
+    typeof value === "string" && /(?:@vectorize-io[\\/]|[\\/]\.?hindsight[\\/]).*coding-agents|hindsight.*opencode\.js/i.test(value));
+}
+
+function hooked(config, { recall, capture }) {
+  const hooks = config?.hooks ?? {};
+  return {
+    recall: recall.some(event => commands(hooks[event], "recall")),
+    capture: capture.some(event => commands(hooks[event], "capture"))
   };
 }
 
@@ -108,20 +139,39 @@ export async function discoverAgents({ home = homedir(), env = process.env, conf
   configDir ??= env.MAGPIE_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(home, ".config"), "magpie");
   const configRoot = env.XDG_CONFIG_HOME || join(home, ".config");
   const hermes = env.HERMES_HOME || join(home, ".hermes");
+  const desktopHermes = env.HERMES_HOME || join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "hermes");
   const dsh = env.DSH_HOME || join(home, ".dsh");
   const codex = env.CODEX_HOME || join(home, ".codex");
   const nativeLogDir = join(home, ".hindsight", "coding-agents-logs");
   const read = path => file(path);
-  const [applied, hermesYaml, hermesConfig, dshPatch, coding, claude, codexHooks, oc, occ, pi, usage, diag, ...local] = await Promise.all([
+  const dshProfiles = await readdir(join(dsh, "profiles"), { withFileTypes: true }).catch(() => []);
+  const dshPaths = dshProfiles.filter(entry => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules")
+    .slice(0, 32).map(entry => join(dsh, "profiles", entry.name));
+  const ocRoot = env.OPENCODE_CONFIG_DIR || join(configRoot, "opencode");
+  const knownHooks = {
+    agy: [".gemini/antigravity-cli/settings.json", ".antigravity/settings.json"],
+    codebuddy: [".codebuddy/settings.json"],
+    gemini: [".gemini/config/hooks.json", ".gemini/settings.json"],
+    cursor: [".cursor/hooks.json"],
+    copilot: [".copilot/hooks/hindsight-coding-agents.json"]
+  };
+  const [applied, hermesYaml, hermesConfig, desktopYaml, desktopConfig, dshRoot, dshSettings, profiles, dshPackages, coding, claude,
+    codexHooks, codexSettings, oc, occ, pi, hookConfigs, usage, diag, ...local] = await Promise.all([
     read(join(configDir, "applied.json")), read(join(hermes, "config.yaml")), read(join(hermes, "hindsight", "config.json")),
-    read(join(dsh, "cordis.patch.yml")), read(env.HINDSIGHT_CONFIG || join(home, ".hindsight", "coding-agent.json")),
+    read(join(desktopHermes, "config.yaml")), read(join(desktopHermes, "hindsight", "config.json")),
+    read(join(dsh, "cordis.patch.yml")), read(join(dsh, "settings.yaml")),
+    Promise.all(dshPaths.map(path => read(join(path, "cordis.patch.yml")))),
+    Promise.all(dshPaths.map(path => read(join(path, "package.json")))),
+    read(env.HINDSIGHT_CONFIG || join(home, ".hindsight", "coding-agent.json")),
     read(join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "settings.json")), read(join(codex, "hooks.json")),
-    read(join(configRoot, "opencode", "opencode.json")), read(join(configRoot, "opencode", "opencode.jsonc")),
+    read(join(codex, "config.toml")),
+    read(env.OPENCODE_CONFIG || join(ocRoot, "opencode.json")), read(join(ocRoot, "opencode.jsonc")),
     read(join(home, ".pi", "agent", "settings.json")),
+    Promise.all(Object.values(knownHooks).map(paths => Promise.all(paths.map(path => read(join(home, path)))))),
     nativeLogs ? file(env.HINDSIGHT_USAGE_FILE || join(nativeLogDir, "usage.jsonl"), 256 * 1024, true) : "",
     nativeLogs ? file(env.HINDSIGHT_DIAG_FILE || join(nativeLogDir, "diag.jsonl"), 256 * 1024, true) : "",
     ...Object.entries(KNOWN).map(async ([id, [, dir]]) => {
-      const path = { hermes, dsh, codex, opencode: join(configRoot, "opencode") }[id] || join(home, dir);
+      const path = { hermes, dsh, codex, opencode: ocRoot }[id] || join(home, dir);
       try { await access(path); return id; } catch { return ""; }
     })
   ]);
@@ -130,29 +180,55 @@ export async function discoverAgents({ home = homedir(), env = process.env, conf
   const nativeStats = counts({ usage, diag });
   const cfg = json(coding);
   // Only static booleans and wiring are returned. Per-project overrides remain visible as scoped.
-  const claudeData = json(claude);
-  const claudeHooks = claudeData.hooks ?? {};
-  const codexData = json(codexHooks).hooks ?? {};
-  const hermesSection = /^memory:[^\S\r\n]*\r?\n((?:[ \t][^\r\n]*(?:\r?\n|$))*)/m.exec(hermesYaml)?.[1] || "";
-  const provider = /^\s+provider:\s*["']?([a-z0-9_-]+)/im.exec(hermesSection)?.[1];
-  const dshWired = /(?:^\s*-\s+id:\s*["']?hindsight["']?\s*$|^\s*# HINDSIGHT_CODING_AGENTS_DSH_START\s*$)/m.test(dshPatch);
-  const ocWired = hasEntry(oc + "\n" + occ, "opencode.js");
-  const piWired = Array.isArray(json(pi).extensions) && json(pi).extensions.some(entry => hasEntry(entry, "pi.js"));
+  const standard = { recall: ["UserPromptSubmit", "userPromptSubmitted", "BeforeAgent"], capture: ["Stop", "sessionEnd", "AfterAgent"] };
+  const claudeData = jsonConfig(claude);
+  const codexData = jsonConfig(codexHooks);
+  const codexDisabled = /^\s*(?:codex_hooks|hooks)\s*=\s*false\s*(?:#.*)?$/m.test(codexSettings);
+  const codexWiring = hooked(codexData, standard);
+  const codexCustom = codexWiring.recall && !/codex-hook\.js/i.test(codexHooks);
+  const primaryProvider = hermesProvider(hermesYaml);
+  const desktopProvider = hermesProvider(desktopYaml);
+  const desktop = !primaryProvider && Boolean(desktopProvider);
+  const provider = primaryProvider || desktopProvider;
+  const dshWired = [dshRoot, dshSettings, ...profiles].some(dshPlugin);
+  const dshInstalled = dshPackages.some(text =>
+    Object.hasOwn(json(text).dependencies ?? {}, "@vectorize-io/hindsight-coding-agents"));
+  const ocSettings = [jsonConfig(oc), jsonConfig(occ)];
+  const ocWired = ocSettings.some(opencodePlugin);
+  const piSettings = jsonConfig(pi);
+  const piWired = Array.isArray(piSettings?.extensions) &&
+    piSettings.extensions.some(entry => typeof entry === "string" && /hindsight.*[\\/]pi\.js/i.test(entry));
   const native = {
-    hermes: hermesPolicy(json(hermesConfig), provider, env),
-    dsh: codingPolicy("dsh", nativeStats.dsh, { recall: dshWired, capture: dshWired }, cfg, Boolean(dshPatch)),
-    claude: codingPolicy("claude-code", nativeStats.claude, {
-      recall: !claudeData.disableAllHooks && commands(claudeHooks.UserPromptSubmit, "claude-hook.js"),
-      capture: !claudeData.disableAllHooks && commands(claudeHooks.Stop, "claude-stop-hook.js")
-    }, cfg, false),
-    codex: codingPolicy("codex", nativeStats.codex, {
-      recall: commands(codexData.UserPromptSubmit, "codex-hook.js"),
-      capture: commands(codexData.Stop, "codex-stop-hook.js")
-    }, cfg, false),
-    opencode: codingPolicy("opencode", nativeStats.opencode, { recall: ocWired, capture: ocWired }, cfg, false),
-    pi: codingPolicy("pi", nativeStats.pi, { recall: piWired, capture: piWired }, cfg, false)
+    hermes: primaryProvider && desktopProvider && primaryProvider !== desktopProvider
+      ? { ...unknown, evidence: "multiple-profiles" }
+      : hermesPolicy(json(desktop ? desktopConfig : hermesConfig), provider, env),
+    dsh: !dshWired && dshInstalled
+      ? { ...unknown, bank: codingBank({ ...cfg, ...cfg.harnesses?.dsh }), evidence: "installed-profile" }
+      : codingPolicy("dsh", nativeStats.dsh, { recall: dshWired, capture: dshWired }, cfg, profiles.some(Boolean) || Boolean(dshRoot)),
+    claude: claudeData?.disableAllHooks ? { recall: "inactive", capture: "inactive", evidence: "disabled" }
+      : codingPolicy("claude-code", nativeStats.claude, hooked(claudeData, standard), cfg, Boolean(claudeData)),
+    codex: codexDisabled ? { recall: "inactive", capture: "inactive", evidence: "disabled" }
+      : codexCustom ? { recall: "active", capture: codexWiring.capture ? "active" : "unknown", evidence: "custom-hook" }
+      : codingPolicy("codex", nativeStats.codex, codexWiring, cfg, Boolean(codexData)),
+    opencode: codingPolicy("opencode", nativeStats.opencode, { recall: ocWired, capture: ocWired }, cfg, ocSettings.some(Boolean)),
+    pi: codingPolicy("pi", nativeStats.pi, { recall: piWired, capture: piWired }, cfg, Boolean(piSettings))
   };
+  Object.keys(knownHooks).forEach((id, index) => {
+    const configs = hookConfigs[index].map(jsonConfig).filter(Boolean);
+    const registered = configs.map(config => hooked(config, standard));
+    const wiring = { recall: registered.some(item => item.recall), capture: registered.some(item => item.capture) };
+    const harness = id === "agy" ? "antigravity" : id;
+    native[id] = configs.length
+      ? codingPolicy(harness, nativeStats[id], wiring, cfg, true)
+      : nativeStats[id] ? { ...unknown, evidence: "observed" } : unsupported;
+  });
   const ids = new Set([...connected, ...discovered, ...Object.keys(nativeStats)]);
+  if (provider) ids.add("hermes");
+  for (const id of ids) {
+    const base = native[id.split("#")[0]];
+    native[id] ??= nativeStats[id] ? { ...unknown, evidence: "observed" }
+      : base?.recall === "active" ? { ...unknown, evidence: "separate-profile" } : unsupported;
+  }
   return {
     agents: [...ids].slice(0, 128).map(id => {
       const item = native[id] ?? unknown;
@@ -182,5 +258,5 @@ export function inventory(refresh = false) {
 export function nativePolicy(id) {
   // File discovery never delays a model request.
   void inventory();
-  return snapshot.native[id];
+  return Object.hasOwn(snapshot.native, id) ? snapshot.native[id] : (id ? unsupported : unknown);
 }

@@ -88,7 +88,7 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     return polling;
   }
 
-  async function page(port) {
+  async function page() {
     templates ??= Promise.all(UI.map(name => readFile(new URL(name, import.meta.url), "utf8")));
     const [html, css, script] = await templates;
     const body = html.replaceAll("%%NONCE%%", nonce).replace("%%TOKEN%%", token)
@@ -98,7 +98,7 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
       "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; " +
-        "script-src 'nonce-" + nonce + "'; style-src 'nonce-" + nonce + "'; connect-src 'self' http://127.0.0.1:" + port + " http://localhost:" + port
+        "script-src 'nonce-" + nonce + "'; style-src 'nonce-" + nonce + "'; connect-src 'self' http://127.0.0.1:* http://localhost:*"
     } });
   }
 
@@ -106,9 +106,10 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     const hosts = ["127.0.0.1:" + server.port, "localhost:" + server.port];
     const headerHost = req.headers.get("host")?.toLowerCase();
     if (!hosts.includes(headerHost)) return new Response("Forbidden", { status: 403 });
-    const path = new URL(req.url).pathname;
-    if (req.method === "GET" && ["/", "/workbench", "/test"].includes(path)) return page(server.port);
-    if (!["/api/status", "/api/preview", "/api/check", "/api/banks", "/test"].includes(path)) return new Response("Not found", { status: 404 });
+    const url = new URL(req.url);
+    const path = url.pathname;
+    if (req.method === "GET" && ["/", "/workbench", "/test"].includes(path)) return page();
+    if (!["/ready", "/api/status", "/api/preview", "/api/check", "/api/banks", "/test"].includes(path)) return new Response("Not found", { status: 404 });
     const origin = req.headers.get("origin");
     if (origin !== null && origin !== "null" && !hosts.some(host => origin === "http://" + host))
       return new Response("Forbidden", { status: 403 });
@@ -116,10 +117,20 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     if (origin === "null") {
       headers["Access-Control-Allow-Origin"] = "null";
       headers["Access-Control-Allow-Headers"] = TOKEN_HEADER + ", content-type";
-      headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+      headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
       headers.Vary = "Origin";
     }
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+    if (path === "/ready" && req.method === "GET") {
+      // A sandboxed page can wait for the replacement service without using
+      // its expired token. The probe discloses no configuration or stats.
+      let ready = false;
+      const revision = url.searchParams.get("revision");
+      if (/^[a-f0-9]{12}$/.test(revision ?? "")) {
+        try { ready = hash(configuration(options)).slice(0, 12) === revision; } catch { /* Wait for valid options. */ }
+      }
+      return new Response(null, { status: ready ? 204 : 425, headers });
+    }
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers });
     if (!authorized(req, token)) return Response.json({ error: "forbidden" }, { status: 403, headers });
     const input = await readBody(req);

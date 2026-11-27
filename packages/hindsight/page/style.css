@@ -54,7 +54,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .health-grid h2, .metric-grid h3 { font-size: 12px; font-weight: 570; color: var(--muted); }
 .health-grid p { margin: 5px 0 1px; font-size: 17px; font-weight: 660; overflow-wrap: anywhere; }
 meter { width: 100%; height: 6px; margin: 2px 0 5px; accent-color: var(--accent); display: block; }
-.summary-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-bottom: 13px; }
+.summary-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 13px; }
 .summary-strip button { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; text-align: left; }
 .summary-strip strong { font-size: 18px; font-variant-numeric: tabular-nums; }
 .summary-strip span { color: var(--muted); font-size: 12px; }

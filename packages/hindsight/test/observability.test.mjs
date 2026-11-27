@@ -47,6 +47,44 @@ test("gateway activity reports counts and config revision without submitting con
   assert.equal(data.rows.find(row => row.code === "hit").bytes, 300);
 });
 
+test("inventory distinguishes Windows Hermes, custom Codex hooks, OpenCode JSONC and DSH profiles", async () => {
+  const home = await mkdtemp(join(tmpdir(), "magpie-hindsight-profile-detection-"));
+  const configDir = join(home, ".config", "magpie");
+  const fixture = {
+    ".config/magpie/applied.json": { hermes: {}, dsh: {}, codex: {}, opencode: {}, mimocode: {}, codebuddy: {} },
+    ".hermes/config.yaml": "model: default\n",
+    "AppData/Local/hermes/config.yaml": "memory:\n  provider: hindsight\n",
+    "AppData/Local/hermes/hindsight/config.json": JSON.stringify({ bank_id: "hermes", auto_recall: true, auto_retain: false }),
+    ".dsh/profiles/desktop/cordis.patch.yml": "- insert:\n    - id: hindsight\n      name: fixture\n",
+    ".codex/hooks.json": JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ command: "python hooks/hindsight_recall.py" }] }] } }),
+    ".config/opencode/opencode.jsonc": '{ /* plugin */ "plugin": ["file:///C:/fixture/.hindsight/coding-agents/index.js",], }',
+    ".codebuddy/settings.json": "{}"
+  };
+  for (const [name, content] of Object.entries(fixture)) {
+    const path = join(home, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, typeof content === "string" ? content : JSON.stringify(content));
+  }
+  const data = await discoverAgents({ home, configDir, env: {} });
+  assert.deepEqual(data.native.hermes, { recall: "active", capture: "inactive", bank: "hermes", variableBank: false, evidence: "hermes-provider" });
+  assert.equal(data.native.dsh.recall, "active");
+  assert.equal(data.native.codex.evidence, "custom-hook");
+  assert.equal(data.native.codex.recall, "active");
+  assert.equal(data.native.codex.capture, "unknown");
+  assert.equal(data.native.opencode.recall, "active");
+  assert.equal(data.native.mimocode.evidence, "unsupported");
+  assert.equal(data.native.codebuddy.recall, "inactive");
+  assert.equal(data.native.codebuddy.capture, "unknown");
+  await writeFile(join(home, ".codex/config.toml"), "[features]\ncodex_hooks = false\n");
+  assert.equal((await discoverAgents({ home, configDir, env: {} })).native.codex.recall, "inactive");
+  const dsh = join(home, ".dsh/profiles/desktop");
+  await writeFile(join(dsh, "cordis.patch.yml"), "- insert:\n    - id: another-plugin\n");
+  await writeFile(join(dsh, "package.json"), JSON.stringify({ dependencies: { "@vectorize-io/hindsight-coding-agents": "*" } }));
+  const installed = (await discoverAgents({ home, configDir, env: {} })).native.dsh;
+  assert.equal(installed.evidence, "installed-profile");
+  assert.equal(installed.recall, "unknown");
+});
+
 test("pending retain is marked completed only after polling the operation", { skip: !globalThis.Bun }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "magpie-hindsight-operations-"));
   let time = Date.now();
