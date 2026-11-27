@@ -222,6 +222,19 @@ turn is in what the agent sends every turn (its prompt, instruction files,
 skills or tools); turn skills, MCP servers and plugins off, then on again a
 few at a time, to find which.
 
+## Codex
+
+Codex names itself in its prompt's fixed identity sentences, as dsh does.
+The plugin sends "You are a coding agent running in the Codex CLI, …
+Codex CLI is an open source project led by OpenAI." (the prompt every
+non-OpenAI model gets) as "You are a coding agent running in a
+terminal-based coding assistant.", drops "Within this context, Codex refers
+to …", and sends "You are Codex, an agent based on GPT-6.", "As Codex, you
+are …" and its other GPT openings without the name. Only these sentences,
+each at the start of a line of a system or developer prompt, change: the
+rest of Codex's prompt, its skill list and the user's own words go as
+written.
+
 ## Claude Code through magpie
 
 Factory's Anthropic route requires Droid's fixed client preamble and

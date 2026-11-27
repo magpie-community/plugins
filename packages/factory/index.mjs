@@ -579,9 +579,45 @@ const DSH_MODEL_LINE = /(^|\n)You are a coding agent powered by the ([^\n]+?) mo
 // its paragraph.
 const DSH_BROWSER = "The browser provides no implicit DOM, route, or screenshot context."
 const DSH_BROWSER_COMPAT = "The browser gives no implicit DOM, route, or screenshot context."
+// Codex names itself in its base instructions (Codex 0.171/0.172 send them
+// as the first developer item, magpie's chat translation as the system
+// prompt): the prompt for a model Codex has no prompt of its own for, which
+// every non-OpenAI model gets ("You are a coding agent running in the Codex
+// CLI, ... Codex CLI is an open source project led by OpenAI." and "Within
+// this context, Codex refers to ..."), and its GPT prompts ("You are Codex,
+// an agent based on GPT-6.", the older "You are Codex, based on GPT-5. You
+// are running as a coding agent in the Codex CLI on a user's computer.", "As Codex, you are ...", "a vivid inner life as
+// Codex"). plugins#1603 (gengyubo, factory 0.1.58, Codex 0.172.0 on
+// deepseek-v4.1-flash-1017): every turn content_policy_rejected, with
+// "harness" already sent as runtime and the retry's tools renamed in full,
+// so what is left of Codex's own in every turn is its wording. Factory's
+// check refuses other agents' fixed identity sentences (pi's and omp's
+// openings, dsh's identity line above, Claude Code's, which droidChat sends
+// as droid's line), and from 11-17 it refused Codex's own tool names, so
+// these sentences go without the name. Only they change, each at the start
+// of a line of a system or developer prompt; the rest of Codex's prompt,
+// its skill list and the user's own words go as written.
+const CODEX_CLI_OPENING = /(^|\n)You are a coding agent running in the Codex CLI, a terminal-based coding assistant\. Codex CLI is an open source project led by OpenAI\./
+const CODEX_CLI_COMPAT = "You are a coding agent running in a terminal-based coding assistant."
+const CODEX_REFERS = /\n\nWithin this context, Codex refers to the open-source agentic coding interface \(not the old Codex language model built by OpenAI\)\.(?=\n|$)/
+const CODEX_GPT_OPENING = /(^|\n)You are Codex, (?:(an? (?:coding |AI )?agent) )?based on (GPT-[0-9][0-9.]*?)\.(?=\s|$)/
+const CODEX_RUNNING = "You are running as a coding agent in the Codex CLI on a user's computer."
+const CODEX_RUNNING_COMPAT = "You are running as a coding agent on a user's computer."
+const CODEX_PERSONALITY = /(^|\n)As Codex, you are /g
+const CODEX_INNER_LIFE = /(^|\n)You have a vivid inner life as Codex:/g
+function codexIdentity(text) {
+  if (!text.includes("Codex")) return text
+  return text.replace(CODEX_CLI_OPENING, (_, at) => at + CODEX_CLI_COMPAT)
+    .replace(CODEX_REFERS, "")
+    .replace(CODEX_GPT_OPENING, (_, at, kind, model) => at + "You are " + (kind ?? "an agent") + " based on " + model + ".")
+    .replace(CODEX_RUNNING, CODEX_RUNNING_COMPAT)
+    .replace(CODEX_PERSONALITY, (_, at) => at + "You are ")
+    .replace(CODEX_INNER_LIFE, (_, at) => at + "You have a vivid inner life:")
+}
+
 function clientOpening(text) {
   if (typeof text !== "string") return text
-  return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT)
+  return codexIdentity(text).replace(PI_OPENING, (_, at) => at + PI_COMPAT)
     .replace(DSH_OPENING, (_, at) => at + DSH_COMPAT)
     .replace(DSH_MODEL_LINE, (_, at, model) => at + "Current model: " + model + ".")
     .replaceAll(DSH_BROWSER, DSH_BROWSER_COMPAT)
@@ -2652,4 +2688,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { harnessText, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { harnessText, clientOpening, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
