@@ -55,7 +55,7 @@ describe("autoApproveOption", () => {
     }
   });
   it("fires for every Agent that lets the daemon answer", () => {
-    for (const p of ["claude", "codex", "cursor", "copilot", "opencode", "devin", "dsh", "mock"]) {
+    for (const p of ["claude", "codex", "cursor", "copilot", "opencode", "devin", "dsh", "trae", "mock"]) {
       expect(autoApproveOption("bypassPermissions", p, req)?.id).toBe("allow-once");
     }
   });
@@ -73,7 +73,7 @@ describe("mode mapping per Agent", () => {
     return createAcpProvider(acpConfigForEntry(entry!, "0.0.0")!);
   };
   it("every Agent that has a full-auto choice offers 全部自动同意 (bypassPermissions)", () => {
-    for (const id of ["cursor", "devin", "opencode", "copilot", "dsh"]) {
+    for (const id of ["cursor", "devin", "opencode", "copilot", "dsh", "trae"]) {
       expect(acp(id).capabilities.modes, id).toContain("bypassPermissions");
     }
   });
@@ -85,6 +85,7 @@ describe("mode mapping per Agent", () => {
     expect(oc.modeMap?.bypassPermissions).toBe("build");
     expect(acpConfigForEntry(catalogById("copilot")!, "0")!.modeMap?.bypassPermissions).toBe("allow-all");
     expect(acpConfigForEntry(catalogById("devin")!, "0")!.modeMap?.bypassPermissions).toBe("bypass");
+    expect(acpConfigForEntry(catalogById("trae")!, "0")!.modeMap?.bypassPermissions).toBe("bypass_permissions");
   });
   it("Pi persists its single mode as default and sends no ACP mode override", () => {
     const pi = acp("pi");
@@ -109,7 +110,7 @@ describe("mode mapping per Agent", () => {
 
 // ---- the daemon path, with the mock Agent (/perm asks once for "npm test") ----
 const cfg: Config = { port: 0, dataDir: "", token: "t", version: "0.0.0", idleExitMinutes: 60, buildStamp: "0" };
-let dir: string, threads: ThreadsStore, manager: AgentManager, threadId: string, projectId: string;
+let dir: string, threads: ThreadsStore, manager: AgentManager, settings: SettingsStore, threadId: string, projectId: string;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (fn: () => boolean | Promise<boolean>, ms = 10000) => {
   const t0 = Date.now();
@@ -124,7 +125,8 @@ describe("AgentManager provider switching", () => {
     dir = mkdtempSync(join(tmpdir(), "ac-auto-switch-"));
     threads = new ThreadsStore(dir);
     const projects = new ProjectsStore(dir);
-    manager = new AgentManager(new Gateway(cfg), threads, projects, new SettingsStore(dir), new AttachmentStore(join(dir, "att")));
+    settings = new SettingsStore(dir);
+    manager = new AgentManager(new Gateway(cfg), threads, projects, settings, new AttachmentStore(join(dir, "att")));
     projectId = (await projects.create(dir)).id;
   });
   afterEach(async () => {
@@ -134,7 +136,9 @@ describe("AgentManager provider switching", () => {
 
   it("Pi's default id does not arm another Agent, including on a round trip", async () => {
     initProviders();
-    const agents = ["pi", "codex", "claude", "cursor", "opencode", "dsh", "copilot", "devin"];
+    // trae is experimental and off by default; this test only checks the mode round trip, so enable it explicitly
+    await settings.set({ providerEnabled: { trae: true } });
+    const agents = ["pi", "codex", "claude", "cursor", "opencode", "dsh", "copilot", "devin", "trae"];
     for (const id of agents) {
       getProvider(id)!.detect = async () => ({ available: true, bin: "test-double" });
       clearProviderCache(id);

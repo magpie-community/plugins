@@ -4544,7 +4544,9 @@ var init_catalog = __esm({
       { id: "opencode", name: "OpenCode", bins: ["opencode"], installHint: "npm i -g opencode-ai", status: "verified" },
       { id: "pi", name: "Pi", bins: ["pi-acp", "pi", "pi-coding-agent"], installHint: "npm i -g pi-acp", status: "verified" },
       { id: "devin", name: "Devin CLI", bins: ["devin"], installHint: "https://docs.devin.ai/cli", status: "verified" },
-      { id: "dsh", name: "dsh", bins: ["dsh"], installHint: "npm i -g @deepseek-ai/dsh", status: "verified" }
+      { id: "dsh", name: "dsh", bins: ["dsh"], installHint: "npm i -g @deepseek-ai/dsh", status: "verified" },
+      // Trae CLI: ACP over `traecli acp serve`; experimental until a signed-in run is confirmed on a real machine
+      { id: "trae", name: "Trae CLI", bins: ["traecli", "trae-cli", "trae-agent"], installHint: "https://docs.trae.ai/ide/cli", status: "experimental" }
     ];
   }
 });
@@ -5440,7 +5442,7 @@ function createAcpProvider(cfg2) {
         return { available: false, reason: r.reason, installHint: cfg2.installHint };
       }
       let version;
-      const versionArgs = cfg2.id === "devin" ? ["version"] : ["cursor", "opencode"].includes(cfg2.id) ? ["--version"] : null;
+      const versionArgs = cfg2.id === "devin" ? ["version"] : ["cursor", "opencode", "trae"].includes(cfg2.id) ? ["--version"] : null;
       try {
         if (versionArgs) {
           version = (await runVersion3(r, [...launch?.prefixArgs ?? [], ...versionArgs])).split(/\r?\n/)[0]?.trim();
@@ -5797,6 +5799,14 @@ function acpConfigForEntry(entry, appVersion) {
         imagesFollowStartModel: true,
         fetchModels: dshProbeModels(entry.id)
       };
+    case "trae":
+      return {
+        ...base,
+        acpArgs: ["acp", "serve"],
+        fetchModels: acpProbeModels(["acp", "serve"], entry.id),
+        modeMap: { plan: "plan", default: "default", bypassPermissions: "bypass_permissions" },
+        modeLabels: { plan: "Plan", default: "Default", bypassPermissions: "Accept All Tools" }
+      };
     default:
       return null;
   }
@@ -5807,7 +5817,7 @@ var init_specs = __esm({
     init_provider3();
     init_probe();
     init_dsh();
-    ACP_IDS = /* @__PURE__ */ new Set(["cursor", "devin", "opencode", "dsh", "pi", "copilot"]);
+    ACP_IDS = /* @__PURE__ */ new Set(["cursor", "devin", "opencode", "dsh", "pi", "copilot", "trae"]);
   }
 });
 
@@ -6265,6 +6275,7 @@ var init_autoApprove = __esm({
       opencode: { native: "none over ACP (OPENCODE_PERMISSION is spawn-only); ACP mode build", live: "live", daemonAnswers: true },
       devin: { native: "ACP mode bypass", live: "live", daemonAnswers: true },
       dsh: { native: "none known; ACP default mode", live: "live", daemonAnswers: true },
+      trae: { native: "ACP mode bypass_permissions", live: "live", daemonAnswers: true },
       // pi never asks before its own tools; requestPermission only carries Pi extensions' own dialogs, which stay with the user
       pi: { native: "always (Pi has no tool approvals)", live: "live", daemonAnswers: false },
       mock: { native: "mock", live: "live", daemonAnswers: true }

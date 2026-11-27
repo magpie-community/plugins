@@ -14,7 +14,7 @@ Works with Claude Code, Codex, Cursor and more, using the CLIs you already have.
 
 ---
 
-A Magpie page plugin that drives real local Agent CLIs (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh). Each conversation is a **persistent Agent session** on a standalone Node daemon. Close or refresh the page — the Agent keeps running while Magpie is open. Reopen the page and you pick up where you left off. When Magpie quits, the daemon and its Agents stop; threads are persisted and can be resumed next time.
+A Magpie page plugin that drives real local Agent CLIs (Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh, Trae CLI). Each conversation is a **persistent Agent session** on a standalone Node daemon. Close or refresh the page — the Agent keeps running while Magpie is open. Reopen the page and you pick up where you left off. When Magpie quits, the daemon and its Agents stop; threads are persisted and can be resumed next time.
 
 ## Install
 
@@ -39,7 +39,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
 ## Features
 
 - **Persistent sessions**: each thread binds to a long-lived Agent process; after a daemon restart, running threads are marked closed and can be resumed (`--resume` / `thread/resume`)
-- **Multiple Agents**: Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh; missing CLIs show an install hint
+- **Multiple Agents**: Claude Code, Codex, Cursor, Copilot, OpenCode, Pi, Devin, dsh, Trae CLI (experimental: off by default, turn it on in Settings; the ACP handshake is verified, a full model run needs a signed-in `traecli`); missing CLIs show an install hint
 - **Model / permission / thinking**: per-thread; four permission modes and five thinking levels (what each Agent actually supports)
 - **全部自动同意 / Auto-approve all (1.3)**: a permission mode for every Agent; the default stays 每次询问 / Always Ask. While a conversation is in it, a one-line strip above the composer (全部自动同意已开启 on the left, whose tooltip says what it does for this Agent, and a 改回每次询问 link on the right) and a warning-coloured mode chip stay on screen, at any width and in light and dark. What it does per Agent, as the menu hint says:
 
@@ -50,6 +50,7 @@ UI principle: **obvious at a glance, nothing extra**. Three columns — sidebar 
   | Copilot | its Allow All (`allow_all` on, agent mode) |
   | Devin CLI | its Bypass Permissions mode |
   | Cursor, OpenCode, dsh | no switch over ACP: Agent / Build mode, and the daemon answers each approval request with its **allow once** option |
+  | Trae CLI | ACP `bypass_permissions` mode (Accept All Tools); the daemon also answers each approval request with **allow once** |
   | Pi | Pi never asks before its tools anyway (its extensions' own dialogs still ask you) |
 
   The daemon only ever answers with the option for that one request (allow once / accept), never allow-always, so no lasting rule is written into the Agent's own config; when a request offers nothing narrower, the card stays for you. Plan approvals and questions are never answered for you. Every approval it gives is saved in the conversation (`permission_request` + `permission_resolved`, both `auto: true`) and shown as a quiet row after its tool calls, 已自动同意 3 项 · npm test · git status, that opens to each request's title, command or file and the answer. Turning the mode on also approves a card that is already waiting. Only the page (with its token) can switch it on.

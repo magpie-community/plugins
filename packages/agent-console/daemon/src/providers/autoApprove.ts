@@ -23,6 +23,7 @@ export const FULL_AUTO_NATIVE: Record<string, { native: string; live: "live" | "
   opencode: { native: "none over ACP (OPENCODE_PERMISSION is spawn-only); ACP mode build", live: "live", daemonAnswers: true },
   devin: { native: "ACP mode bypass", live: "live", daemonAnswers: true },
   dsh: { native: "none known; ACP default mode", live: "live", daemonAnswers: true },
+  trae: { native: "ACP mode bypass_permissions", live: "live", daemonAnswers: true },
   // pi never asks before its own tools; requestPermission only carries Pi extensions' own dialogs, which stay with the user
   pi: { native: "always (Pi has no tool approvals)", live: "live", daemonAnswers: false },
   mock: { native: "mock", live: "live", daemonAnswers: true },

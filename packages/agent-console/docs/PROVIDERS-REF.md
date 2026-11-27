@@ -1,4 +1,4 @@
-# Provider Integration Reference (Paseo / T3 Code) and How the 8 Agents Are Wired
+# Provider Integration Reference (Paseo / T3 Code) and How the 9 Agents Are Wired
 
 > Based on the Paseo and T3 Code source code plus local `devin --help` and `opencode --help` (2026-10-30). Only the ideas were referenced; no code was copied.
 
@@ -27,7 +27,7 @@ Both use the same structure: **one "driver" per Agent**. The driver starts the C
 
 T3 Code works the same way: each model has a set of option descriptors (e.g. a `reasoningEffort` dropdown); the UI can show them as text or as "signal bars", with shortcuts to step up/down.
 
-## 3. How this plugin wires the 8 Agents
+## 3. How this plugin wires the 9 Agents
 
 | Agent | Transport | Launch command |
 |---|---|---|
@@ -39,6 +39,7 @@ T3 Code works the same way: each model has a set of option descriptors (e.g. a `
 | Copilot | ACP | `copilot --acp` |
 | Pi | ACP (via the `pi-acp` adapter) | `pi-acp` |
 | dsh | ACP | `dsh --profile acp` |
+| Trae CLI (experimental) | ACP | `traecli acp serve` |
 
 One generic ACP driver covers most Agents; vendor-specific behavior (Cursor's model list and effort option, Copilot's modes) lives in thin per-provider adapters.
 
