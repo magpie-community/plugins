@@ -194,7 +194,11 @@ compacts at the advertised window, such as Claude Code.
 
 magpie's card shows the credits of the current period
 (`/v1/billing?format=credits`): weekly for SuperGrok, with on-demand
-spending beside it when it has a cap.
+spending beside it when it has a cap. The plan beside the account is the
+tier Grok Build's own subscription check reads
+(`/v1/user?include=subscription`): X Basic, X Premium, X Premium+, or
+SuperGrok Lite, SuperGrok, SuperGrok Plus and SuperGrok Heavy. A read
+that fails leaves the plan as it was.
 
 Grok's billing says nothing of a plan's rate limit, so a free account can
 read 0% used while its requests come back 429. After a 429 the card shows

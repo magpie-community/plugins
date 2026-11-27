@@ -862,6 +862,39 @@ function jsonError(text) {
   return c === undefined ? "unexpected end of JSON input" : `invalid character '${c}' looking for beginning of value`
 }
 
+// The billing reply names no plan; Grok Build's own subscription check
+// (/user?include=subscription) does, as a tier: "XPremiumPlus" on the wire,
+// x_premium_plus in the CLI. Named here as Grok sells it; one with no name
+// here is shown as Grok says it.
+const TIERS = {
+  xbasic: "X Basic",
+  xpremium: "X Premium",
+  xpremiumplus: "X Premium+",
+  supergroklite: "SuperGrok Lite",
+  supergrok: "SuperGrok",
+  supergrokplus: "SuperGrok Plus",
+  supergrokheavy: "SuperGrok Heavy",
+}
+
+// planOf is the account's plan, or "" when Grok doesn't tell. It is asked
+// once the allowance has been read, so never with a token Grok has just
+// turned away, and never fails the card. Its wait is short: magpie gives
+// the whole read 20 seconds.
+async function planOf(key) {
+  try {
+    const res = await fetch(`${BASE}/user?include=subscription`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!res.ok) return ""
+    const tier = (await res.json())?.subscriptionTier
+    if (typeof tier !== "string") return ""
+    return TIERS[tier.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? tier.trim()
+  } catch {
+    return ""
+  }
+}
+
 async function usage(key) {
   const url = `${BASE}/billing?format=credits`
   let res, text
@@ -893,7 +926,8 @@ async function usage(key) {
   const out = [{ name, used: num(cfg.creditUsagePercent), ...(span ? { span } : {}), ...at }]
   const cap = num(cfg.onDemandCap?.val)
   if (cap > 0) out.push({ name: "On-demand", used: (100 * num(cfg.onDemandUsed?.val)) / cap, ...at, aside: true })
-  return { windows: out }
+  const plan = await planOf(key)
+  return { ...(plan ? { plan } : {}), windows: out }
 }
 
 // ---- rate limit -------------------------------------------------------------------
