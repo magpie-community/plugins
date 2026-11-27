@@ -6,7 +6,7 @@
 
 模型实验室把鹈鹕 HTML 动画、模型指纹、原糖果推理题和定时自动测试放在同一个页面。直接使用 Magpie 已配置的供应商和模型，可比较回答、查看思考与输出用量、回放动画、追踪每日表现。
 
-**1.0.8** · MIT · Magpie 0.1.2905+ · [GitHub Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8)
+**1.0.9** · MIT · Magpie 0.1.2905+ · [GitHub Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.9)
 
 Model Lab evaluates and compares AI models in Magpie through HTML animations, model fingerprints and the original candy reasoning puzzle, with per-model scheduled tests. It uses your existing providers and keeps results locally.
 
@@ -14,7 +14,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 
 | 页面 | 功能 |
 | --- | --- |
-| **鹈鹕动画** | 同一提示词生成“鹈鹕骑自行车”HTML 动画，多模型并排预览；支持重播、浏览器打开和查看源码。 |
+| **鹈鹕动画** | 同一提示词生成“鹈鹕骑自行车”HTML 动画，多模型并排预览；支持重播、浏览器打开、查看源码，以及在 Windows Edge 中导出 GIF。 |
 | **模型指纹** | 每个模型进行 3 次数字采样，与参考库匹配；显示采样进度、候选模型和详细证据。 |
 | **糖果测试** | 只保留原糖果题，答案为 **21**；高级设置可重复测试，不设固定轮数上限；各模型／账号的轮次相邻排列，详情显示判分与重复统计。 |
 | **自动测试** | 每个模型／账号目标分别设置糖果、动画计划；糖果用成功率与时间格展示，动画按目标排列为横向长廊。 |
@@ -45,7 +45,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 
 ### 本地安装包
 
-从 [1.0.8 Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.8) 下载 `magpie-pelican-bench-1.0.8.zip` 并核对同页 SHA-256 校验文件。将 ZIP 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
+从 [1.0.9 Release](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.9) 下载 `magpie-pelican-bench-1.0.9.zip` 并核对同页 SHA-256 校验文件。将 ZIP 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
 
 也可以在解压目录运行：
 
@@ -63,7 +63,7 @@ Windows 可使用 `tools/install.ps1`；Magpie 不在 PATH 中时，传入 `-Mag
 magpie plugin add github:xiaopeng66/magpie-model-lab
 ```
 
-可在仓库地址后加 `#v1.0.8` 固定安装本次正式版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
+可在仓库地址后加 `#v1.0.9` 固定安装本次正式版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
 
 公开版通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
 

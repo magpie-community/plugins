@@ -3,7 +3,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-zrtzrt%2Fmagpie--context-blue?logo=github)](https://github.com/zrtzrt/magpie-context)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-专为 [Magpie](https://github.com/yetone/magpie) 设计的**跨 Agent 会话内容透视与上下文演进监控页面插件**（对标并超越 `dsh-context`）。纯页面插件，不含网关中间件，也不申请供应商列表权限。
+专为 [Magpie](https://github.com/yetone/magpie) 设计的**跨 Agent 会话内容透视与上下文演进监控页面插件**（对标并超越 `dsh-context`）。页面插件，不含网关中间件，也不申请供应商列表权限；`page.service` 只用于后台增量刷新，不接入任何供应商。
 
 实时监控各 AI 客户端在交互过程中的上下文增长轨迹、Token 构成（System / Tools / Messages / Tool Outputs）、历史压缩事件（Compaction `✂`）与单轮完整内容透视。
 
@@ -67,23 +67,37 @@ magpie plugin add /path/to/magpie-context
 magpie plugin add github:zrtzrt/magpie-context
 ```
 
-安装后页面里会显示「还没有本地数据」的引导，跑一次同步命令即可：
+安装后 Magpie 会加载插件内置的 `page.service`，后台首次生成索引（首次全量通常约 1 分钟，后续增量通常 1–3 秒）。页面会先显示「还没有本地数据」的引导；服务完成后重开页面即可。
+
+也可以手动触发或诊断：
 
 ```bash
-npx magpie-context sync     # 生成索引，重开页面就能看到数据
-npx magpie-context watch    # 可选：每 5 秒增量同步，保持实时
-npx magpie-context doctor   # 可选：检查数据源与输出是否就绪
+npx magpie-context sync     # 立即生成/刷新索引（升级后或服务未启动时有用）
+npx magpie-context watch    # 前台常驻：轮询变化，安静后自动刷新
+npx magpie-context doctor   # 检查数据源与输出是否就绪
 ```
 
 > `npx` 会在临时目录里执行命令，而 Magpie 加载的是 `~/.config/magpie/plugins` 里那份。
 > CLI 会自动把数据写进 **Magpie 实际加载的那份插件目录**（`magpie-context doctor` 会打印它选了哪个、为什么），
 > 所以不会出现「跑了命令但页面还是空的」。要指定别处就设 `MAGPIE_CONTEXT_PAGE_DIR`。
 
-> **为什么安装后还要跑一条命令？**
+> **数据是怎么生成的？**
 > Magpie 的页面插件跑在 `sandbox="allow-scripts"` 的沙盒里，CSP 是 `connect-src 'none'`：
-> 页面既读不了磁盘，也发不出任何请求（连同源 `fetch` 都被拦），而**只有页面的插件不会启动插件宿主**，
-> 所以没有后台进程能替它生成数据。数据只能由你在本机跑命令写入插件目录，页面再用自己的 `<script src>` 加载。
-> 这与 `magpie-models-price` 等页面插件是同一套做法。
+> 页面既读不了磁盘，也发不出任何请求（连同源 `fetch` 都被拦）。因此数据由插件自带的本地 service
+> 在后台调用 CLI 生成到 `page/`，页面再用自己的 `<script src>` 加载。service 不接收任何供应商权限，
+> 页面本身仍然零网络请求；手动 `npx magpie-context sync` 只在需要立即刷新或排查时使用。
+
+> **service 的生命周期**（出问题时先看这里）
+> - 后台同步进程是 **detached** 的，故意比插件宿主活得久：一次全量同步要 11–46 秒，而 Magpie
+>   宿主会因其他插件报错反复重启，跟着宿主一起死就永远同步不完（表现为「服务健康但数据一直是旧的」）。
+> - 全局唯一由 `page/data/.watch.lock` 保证，不靠父进程收尾；宿主重启时不会再起一个注定退出的副本。
+> - 同一进程内重复加载插件不会重复监听端口：状态挂在 `globalThis` 上；端口被外部程序占用时自动顺延，
+>   被自己的旧实例占用时直接复用。
+> - 健康检查：`curl 127.0.0.1:3457/health` 返回 `watcher`/`watcherPid`，按锁文件里的真实进程判断。
+> - 诊断日志：`page/data/.service.log`（超过 512 KB 自动清空）。
+> - 刷新时机：数据源安静 30 秒后同步；如果会话一直在写入（正在用 agent），最多 5 分钟
+>   也会强制同步一次（`--max-stale`，单位毫秒）。阈值没有更短，是因为本机一次增量同步
+>   实测 67–182 秒，定得太小会让同步连成一片白占一个核；一旦你停手，30 秒那条路径会立刻刷新。
 
 ---
 
@@ -106,6 +120,7 @@ node bin/magpie-context.mjs watch   # 等价于 npm run watch
 | --- | --- | --- |
 | `page/context-data.js` | 轻量索引：`CONTEXT_SUMMARY` + `CONTEXT_SESSIONS`(白名单字段) + `CONTEXT_DETAIL_FILES` 映射 | **42 KB**（旧版全量内联单文件 122 MB） |
 | `page/data/<safe>.js` | 每会话完整详情（`window.CONTEXT_SESSION_DETAIL[id]`），点击会话时才注入 | 生成物，已 gitignore |
+| `page/data/.parse-cache.json` | 增量解析缓存：按会话源文件 mtime+size、meta、usage 指纹复用详情；未变化会话不再重新解析 | 生成物，已 gitignore |
 
 * **首屏骨架屏**：`index.html` 内静态骨架先绘制，索引到达后真实内容原地出现，骨架作为覆盖层 180ms 淡出（Magpie 会话大厅风格虹彩 shimmer，尊重 `prefers-reduced-motion`）。
 * **弹窗骨架屏**：点击会话立即打开弹窗并展示四块占位（统计 / 双环图 / 趋势 / 浏览器），详情到达后渲染。
@@ -127,7 +142,7 @@ DSH 会话直接折叠 `~/.dsh/sessions/**/session.v4.jsonl.zstd` 事件流（`t
 
 ```bash
 npm run sync   # 单次生成 page/context-data.js 与 page/data/*
-npm run watch  # 每 5s 增量同步（内容未变的会话不会重写）
+npm run watch  # 轮询数据源，安静后自动增量同步（内容未变的会话不会重写）
 npm test       # 含真实会话数据真值对照 + 插件规范一致性检查
 ```
 
@@ -146,7 +161,7 @@ npm test       # 含真实会话数据真值对照 + 插件规范一致性检查
 | `connect-src 'none'`：禁 fetch / WebSocket / beacon | 页面**零网络调用**，数据全部走 `<script src>` |
 | 脚本必须是文件，不能内联 | `index.html` 只有 `<script src>`，无内联脚本、无内联事件处理器 |
 | `permissions` 只声明真正用到的读取 | **不声明任何权限** —— 本插件不读用量/供应商，只读本地生成的索引文件 |
-| 页面拿不到磁盘，数据需预先产出 | `npx magpie-context sync` 生成索引；无数据时显示明确引导，而非「加载失败」 |
+| 页面拿不到磁盘，数据需预先产出 | 插件内置 `page.service` 后台增量生成索引；也可手动 `npx magpie-context sync`；无数据时显示明确引导，而非「加载失败」 |
 | 不把机密数据发给页面 | 打包时用占位索引替换真实数据，`page/data/` 永不出包（见下） |
 
 ### 私有数据保护

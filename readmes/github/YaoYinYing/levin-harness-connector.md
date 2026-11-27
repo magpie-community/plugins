@@ -1,5 +1,7 @@
 # levin-harness-connector
 
+English | [简体中文](README.zh-CN.md)
+
 A [magpie](https://usemagpie.ai) **agent plugin**: Levin Harness becomes its own row on
 magpie's **Agents** page, with Levin Harness's name, Levin Harness's icon, and its
 usage counted under its own name.
@@ -22,12 +24,18 @@ have a row, a name and an icon for it.
 
 ## Install
 
-Lévin Harness ships for macOS and Windows; the installer adds the plugin to
-magpie, finds the copy magpie installed, pins which of Lévin's model entries
-magpie may write, and reloads the plugin. Running it again only re-pins.
+**Do not install this plugin from magpie's own plugin browser.** magpie's
+*Plugins -> add plugin* installs the package and stops there: the agent module
+refuses to load until `slot.js` has been pinned, and magpie has no way to run
+the pin. The result is a plugin listed as installed, an error in
+`magpie plugin` ("didn't load: not pinned yet") and no Levin row on the Agents
+page. The installers below do the missing step. There is one script per
+platform, because that step needs a filesystem and magpie's plugin runtime does
+not have one.
 
-Linux has no Lévin build in the releases checked on 2026-11-12, so that section
-is preparation only.
+Levin Harness ships for macOS, Windows and Linux. Each installer adds the plugin
+to magpie, finds the copy magpie installed, pins which of Levin Harness's model
+entries magpie may write, and reloads the plugin. Running it again only re-pins.
 
 ### macOS
 
@@ -87,15 +95,28 @@ machine to magpie.
 `-Link` writes `%LOCALAPPDATA%\Microsoft\WindowsApps\magpie.cmd`, which is already on
 PATH: no new folder to add, and it survives moving `magpie.exe`.
 
-### Linux (and WSL)
+### Linux
 
-No Lévin Harness build for Linux appears in the releases checked on 2026-11-12,
-so there is nothing to point at yet. `install.sh` already looks in
-`$XDG_CONFIG_HOME/levin-harness/config.json` and `~/.config/levin-harness/`,
-which is preparation, not support.
+Levin Harness publishes Linux packages: `Levin-Harness-<version>-amd64.deb`,
+`.rpm` and an AppImage (plus arm64 builds) on its GitHub releases. Install one,
+run it once so it writes `~/.config/levin-harness/config.json`, then:
 
-WSL is a separate machine to magpie: a Lévin inside WSL is not the install
-magpie sees on Windows.
+```sh
+curl -fsSL https://raw.githubusercontent.com/YaoYinYing/levin-harness-connector/main/install.sh | sh
+```
+
+Magpie's command line on Linux is the `magpie-cli-linux-amd64` release asset;
+either put it on PATH as `magpie`/`magpie-cli`, drop it in `~/.local/bin`, or pass
+`MAGPIE=/path/to/magpie-cli`.
+
+This path is tested end to end on a real Debian 13 x86_64 machine (see
+[Verified](#verified)): a headless Levin Harness was started under `xvfb-run`, its
+config was created, the installer added the plugin and pinned the entry, and
+connect / switch-model / disconnect round-tripped with the config restored byte
+for byte.
+
+WSL counts as Linux here. If magpie runs on Windows, a Levin inside WSL is a
+different install from the one magpie sees, so keep both on the same side.
 
 ### What the installers pass on
 
@@ -116,8 +137,8 @@ With `curl … | sh` a flag goes to the script like this:
 | | Lévin build | Lévin's `config.json` | magpie's plugins |
 | --- | --- | --- | --- |
 | macOS | arm64 `.dmg` | `~/Library/Application Support/Levin/config.json` | `~/.config/magpie/plugins/node_modules/` |
-| Windows | `x64.exe` | `%APPDATA%\levin-harness\config.json` (by Lévin's own code, unverified on Windows) | `%USERPROFILE%\.config\magpie\plugins\node_modules\` |
-| Linux | none in the releases checked | `$XDG_CONFIG_HOME/levin-harness/config.json`, else `~/.config/levin-harness/` (preparation) | `~/.config/magpie/plugins/node_modules/` |
+| Windows | `x64.exe` | `%APPDATA%\levin-harness\config.json` (unverified on Windows) | `%USERPROFILE%\.config\magpie\plugins\node_modules\` |
+| Linux | `amd64.deb`, `.rpm`, AppImage | `~/.config/levin-harness/config.json` (**verified**, Debian 13) | `~/.config/magpie/plugins/node_modules/` |
 
 On every platform `$LEVIN_HARNESS_CONFIG_DIR/config.json` wins if it is set (Levin Harness
 honours it too), and `pin-slot.mjs --config <path>` overrides everything. When it
@@ -131,29 +152,39 @@ model when a session starts, so send the next message or open a new chat.
 Undo: pick Levin Harness's previous model in that row, or
 
 ```sh
-magpie levin-harness-connector default
+magpie levin-harness default
 ```
 
 Levin Harness's `config.json` comes back byte for byte (magpie stashes each key it
 wrote; verified in a sandbox). On Windows use the full
 `"$env:LOCALAPPDATA\Programs\magpie\magpie.exe" levin-harness-connector default`,
-or the `-Link` shim `magpie levin-harness-connector default`.
+or the `-Link` shim `magpie levin-harness default`.
 
-### Without an installer
+### If you must do it by hand
 
-The app can add the plugin by itself: **Plugins → add plugin** and paste
+Only for debugging an install. Adding the plugin in magpie's UI is not enough
+(see above), so the steps are exactly what the installer runs:
 
+```sh
+magpie plugin add github:YaoYinYing/levin-harness-connector
+node ~/.config/magpie/plugins/node_modules/levin-harness-connector/tools/pin-slot.mjs
+magpie plugin off levin-harness-connector
+magpie plugin on  levin-harness-connector
 ```
-https://github.com/YaoYinYing/levin-harness-connector
+
+On Windows the plugin folder is
+`%USERPROFILE%\.config\magpie\plugins\node_modules\levin-harness-connector` and
+`magpie` is `magpie.exe`.
+
+Mind the two names magpie uses. The **package** name, `levin-harness-connector`,
+is what `plugin add/off/on/list` take. The **agent** id, `levin-harness`, is what
+model selection takes:
+
+```sh
+magpie levin-harness group/superman     # pick a model for this agent
+magpie levin-harness                    # show it
+magpie levin-harness default            # disconnect, restore Levin Harness's config
 ```
-
-The pin still needs Node once, because only Node can read Levin Harness's `config.json`:
-
-| platform | the pin, then reload |
-| --- | --- |
-| macOS | `node ~/.config/magpie/plugins/node_modules/levin-harness-connector/tools/pin-slot.mjs` then `magpie plugin off levin-harness-connector` and `magpie plugin on levin-harness-connector` |
-| Windows | the same `node` command (PowerShell), then the same two `plugin off`/`on` with `magpie.exe` |
-| Linux | the same `node` command, then the same two `plugin off`/`on` |
 
 ## Why `pin-slot` exists
 
@@ -245,6 +276,25 @@ your own picture if you publish a fork.
   model it began with.
 
 ## Verified
+
+Real Linux machine, not emulation: Debian 13 (trixie) x86_64, Levin 2.1123.1
+(`amd64.deb`, unpacked with `dpkg-deb -x`, started under `xvfb-run`), magpie
+0.1.3830 (`magpie-cli-linux-amd64`):
+
+- Levin created `~/.config/levin-harness/config.json` holding `llmConfigs: []`,
+  i.e. the fresh-install case the installer has to handle.
+- `sh install.sh --create` appended one entry at `llmConfigs[0]`, kept the array a
+  JSON array, wrote a `.bak-<timestamp>`, pinned
+  `CONFIG = ~/.config/levin-harness/config.json` plus the entry id into `slot.js`,
+  and reloaded the plugin. `magpie ls` then listed the agent row.
+- `magpie levin-harness magpie/lab/mm1` wrote `api`/`baseUrl`/`apiKey`/`model`
+  into that entry with the array intact; `... mm2` changed only the model;
+  `magpie levin-harness default` left the file identical to a copy taken before
+  connecting (`diff` empty).
+- The CLI takes the agent id, `levin-harness`, for model commands, and the package
+  name, `levin-harness-connector`, for `plugin` commands; the wrong one just
+  prints the list of known agent ids.
+
 
 Sandboxed magpie 0.1.3686 against a copy of a real config (array of model
 entries, another provider, `mcpServers`), from this repository's own files:

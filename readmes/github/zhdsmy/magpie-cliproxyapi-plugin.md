@@ -40,7 +40,7 @@ Magpie 服务运行中执行登录后，请运行 `magpie plugin on <安装时�
 
 插件返回的 metadata 不含业务 key。旧版宿主会把登录回答额外复制到同一文件的 `metadata.businessKey`；新版宿主不复制 password 回答。
 
-模型名称为 `cpa/<CPA 模型 ID>`，例如 `cpa/claude-sonnet-4-6`。发给 CPA 的模型 ID 保持原样。插件通过 CPA 的 Anthropic 兼容接口转发 Messages、SSE、工具往返和 count_tokens。发现并行读取 OpenAI 格式列表的真实 ID 和 Anthropic 格式列表的名称，不随凭据组合切换策略。名称列表遇到非 401/403 错误时，使用 ID 作为名称；OpenAI 列表失败仍整体失败，任一列表 401/403 都标记登录过期。仅排除 `claude-fable-5-dd-` 开头的 cloaking 编码 ID；实际暴露范围由 Magpie 的模型选择与白名单控制。OpenAI 格式列表中 `owned_by === "openai"` 且 ID 不以 `claude-` 开头的模型使用 CPA `/v1/responses`，Bearer 为业务 key；CPA 会强制 `store:false`，Magpie 每次发送完整对话。其余模型保持默认 Anthropic 协议。边界：多个 provider 注册同一 ID 时，CPA 的 `owned_by` 来自最后一次注册，因此不能据此识别该 ID 的全部后端；由用户确认池配置。
+模型名称为 `cpa/<CPA 模型 ID>`，例如 `cpa/claude-sonnet-4-6`。发给 CPA 的模型 ID 保持原样。插件通过 CPA 的 Anthropic 兼容接口转发 Messages、SSE、工具往返和 count_tokens。发现并行读取 OpenAI 格式列表的真实 ID 和 Anthropic 格式列表的名称，不随凭据组合切换策略。名称列表遇到非 401/403 错误时，使用 ID 作为名称；OpenAI 列表失败仍整体失败，任一列表 401/403 都标记登录过期。仅默认排除 `claude-fable-5-dd-` 开头的 cloaking 编码 ID（填写管理 key 且确认为无 Fable 权限的 Claude Pro 账号时，还会按账号排除 Fable 模型，见[Claude 套餐与按模型窗口](#claude-套餐与按模型窗口)）；实际暴露范围由 Magpie 的模型选择与白名单控制。OpenAI 格式列表中 `owned_by === "openai"` 且 ID 不以 `claude-` 开头的模型使用 CPA `/v1/responses`，Bearer 为业务 key；CPA 会强制 `store:false`，Magpie 每次发送完整对话。其余模型保持默认 Anthropic 协议。边界：多个 provider 注册同一 ID 时，CPA 的 `owned_by` 来自最后一次注册，因此不能据此识别该 ID 的全部后端；由用户确认池配置。
 
 已有名为 `cpa` 的自定义 provider 时，Magpie 会把插件的**生效 ID** 改为 `cpa-plugin`，模型变为 `cpa-plugin/<ID>`。用 `magpie providers`、`magpie models` 或网关模型目录确认；`magpie plugin --json` 仍可能只显示插件自报的 `cpa`。
 
@@ -103,10 +103,12 @@ CPA 只把其看到的 `127.0.0.1` / `::1` 视为本机。通常需要 Magpie �
 
 - **套餐**：每个凭据每天经 `api-call` 读一次 `GET https://api.anthropic.com/api/oauth/profile`（单次最多 3 秒，与整次读取共用 15 秒预算），只取 `organization_type` 与 `rate_limit_tier`，放入 usage 的 `plan`：`claude_pro` 为 `Pro`；`claude_max` 的 tier 含 `20x` 为 `Ultra`，其他为 `Max`（即原 Max 5x / 20x 的现名）；`claude_team` / `claude_enterprise` 为 `Team` / `Enterprise`；其他值不返回，原始字符串不外传。profile 中的姓名、邮箱、ID 不保存、不返回。profile 返回 401/403/404 时保留此前已缓存的套餐，24 小时内不再读；其他失败同样保留上次套餐，30 分钟后（带更长 `Retry-After` 时按其等待，最长 24 小时）在下次主动读数时重试，仅被动信号且无额外窗口时不会仅为重试失败的 profile 提前发起主动读数；读取失败不影响当前凭据的额度窗口。`claude_code_trial_ends_at` 为将来时间时作为 `until` 返回。
 - **按模型的周窗口**：usage 的 `limits` 中 `weekly_scoped` 项按 Magpie 内置 Claude 的写法输出，如 `7 days · Fable`，`model: "fable"`（`Fable 5.1` 为 `fable-5-1`）。Magpie 只把 ID 含该词的模型计入此窗口，用完后只停这些模型。
-- **无 Fable 权限的 Pro 账号尽量不尝试 Fable**：Fable 按账号授予（Max 有，Pro 偶尔有），有权限的账号会在 `limits` 中带 Fable 周窗口。仅当 profile 确认为 `Pro`、usage `limits` 含 `session` 或 `weekly_all` 项、且原始 `limits` 没有任何 `weekly_scoped` 条目提及 Fable 时，插件补一个已用 100%、显示“Not in plan”的 `7 days · Fable` 窗口：只要有其他可用账号，Magpie 会优先避开该账号；仅当所有其他账号都不可用或满额时，Magpie 仍会按兜底策略尝试（如需彻底禁止，可在 Magpie 中设置单账号模型列表或用量上限）。开启额度告警时，这类无 Fable 的 Pro 账号会触发一次 `7 days · Fable` 100% 告警。该账号获得 Fable 后，下一次主动读数即恢复。非 Pro 账号、profile 未读出或没有 `limits` 时不做推断。多凭据同时展示时这类窗口默认只作展示（`aside`）；若开启“按模型参与路由”，则仅计入该凭据独占的匹配模型。
+- **无 Fable 权限的 Pro 账号（纯文本展示 + 按账号模型列表过滤）**：Fable 按账号授予（Max 有，Pro 偶尔有），有权限的账号会在 `limits` 中带 Fable 周窗口。仅当 profile 确认为 `Pro`、usage `limits` 含 `session` 或 `weekly_all` 项、且原始 `limits` 没有任何 `weekly_scoped` 条目提及 Fable 时，插件在额度卡片上输出纯文本 `aside` 窗口 `{ name: "7 days · Fable", display: "Not in plan", aside: true }`（不带 `used`、`span` 或 `model`；多凭据池即使开启“按模型参与路由”也不会为其附加 `models`）。该窗口只作单账号展示，不参与路由，也不进入 Magpie 的汇总行。
+- **按账号过滤 Fable 路由**：在模型发现（`provider.models`）返回含 `fable` 的模型 ID 且配置了管理 key 时，插件复用同一套按凭据共享、单飞、带缓存与退避的额度/profile 读取（等待上限 5 秒，超时或出错均 fail-open，不会拖垮或阻断模型发现）。只有当该 CPA 上全部启用凭据均被当前账号覆盖，且每一个都已确认为无 Fable 的 Claude `Pro` 时，才从该账号的模型列表中去掉含 `fable` 的模型；任何读取失败、超时、未知套餐、缺少 `limits`、混合凭据（如 Pro + Max、Pro + Codex、含未支持凭据，或多凭据 CPA 中仅显式选中单个凭据）或未配管理 key 时都保留。Magpie 据每账号返回的模型列表生成账号可见清单并在路由选号时过滤，只要存在其他支持 Fable 的账号就会避开无 Fable 的 Pro 账号。按 Magpie 0.1.4924 代码核对，模型列表在网关启动约 60 秒后首次后台刷新，之后每 1 小时定时刷新（失败 5 分钟重试），另外在启用/重载插件、账号变更、手动刷新模型列表或宿主首次读额度/推理的冷缓存时也会触发；该账号后续获得 Fable 权限后，需待下次主动读数与模型列表刷新后恢复。
+- **汇总行与单账号套餐**：按 Magpie 0.1.4924 代码核对，汇总行对纯百分比窗口按**同一套餐且至少 2 个账号**取平均，并跳过纯文本窗口。因此当某套餐只有 1 个账号（例如 1 个 Max 与 2 个 Pro 并存）时，汇总行只显示两个 Pro 的 `5 hours` / `7 days`（不再把 Pro 的 `Not in plan` 汇总成 0%），单个 Max 账号按 Magpie 原生设计不进汇总行，在下方单账号卡片展示。
 - **额外用量**：`extra_usage.is_enabled` 为 true 时，加一个 `Usage credits` 窗口，只作展示，不影响路由。
-- CPA 被动信号只含 5 小时与 7 天窗口；使用被动信号时，上述其他窗口沿用上次主动读数（已过重置时间的窗口会被丢弃），每 30 分钟仍会主动刷新一次（即使 `cedar_ember` 被拒），最多滞后 30 分钟。
-- profile 读取、Pro 与 Max 的映射已在真实 CPA 上只读核对；Ultra 的 tier 值、“Pro 有 Fable 时 `limits` 带 Fable 周窗口”尚未实测，其余均只经 mock 测试。
+- CPA 被动信号只含 5 小时与 7 天窗口；使用被动信号时，上述其他窗口（包括纯文本的 `Not in plan`）沿用上次主动读数（已过重置时间的窗口会被丢弃），每 30 分钟仍会主动刷新一次（即使 `cedar_ember` 被拒），最多滞后 30 分钟。
+- **验证边界**：profile 读取、Pro 与 Max 的映射已在真实 CPA 上只读核对；Magpie 汇总行聚合规则、纯文本窗口跳过、每账号模型列表路由过滤及刷新时机均按 Magpie 0.1.4924 代码推断，尚未将本次改动部署到真实 Magpie GUI / 真实 CPA 端到端实测；Ultra 的 tier 值、“Pro 有 Fable 时 `limits` 带 Fable 周窗口”尚未实测；其余行为均经 mock 测试验证。
 
 ### 减少对 Anthropic 的请求
 

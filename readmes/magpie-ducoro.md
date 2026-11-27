@@ -1,5 +1,5 @@
 <p align="center">
-<a href="https://opc.fish" title="OPC.FISH Project."><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature-web-dark.svg"><img src="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature.svg" alt="OPC.FISH Project" width="720"></picture></a>
+<a href="https://opc.fish" title="OPC.FISH Project."><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature-dark.svg"><img src="https://raw.githubusercontent.com/YE4IM/readme/main/project/assets/opc-fish-project-signature.svg" alt="OPC.FISH Project" width="720"></picture></a>
 </p>
 
 # magpie-ducoro
@@ -8,7 +8,7 @@
 
 A Magpie plugin for setting up Ducoro Bots with models, connectors, skills, and instructions from Magpie.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-2359D1?style=flat&labelColor=382A26)](./LICENSE) [![Version: 0.4.11](https://img.shields.io/badge/Version-0.4.11-A34422?style=flat&labelColor=382A26)](./package.json) [![Language: JavaScript](https://img.shields.io/badge/Language-JavaScript-993D58?style=flat&labelColor=382A26)](./lib/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2563EB?style=flat&labelColor=1F2A37)](./LICENSE) [![Version: 0.4.11](https://img.shields.io/badge/Version-0.4.11-D9381E?style=flat&labelColor=1F2A37)](./package.json) [![Language: JavaScript](https://img.shields.io/badge/Language-JavaScript-0E8274?style=flat&labelColor=1F2A37)](./lib/)
 
 [Go to Quick Start](#quick-start)
 

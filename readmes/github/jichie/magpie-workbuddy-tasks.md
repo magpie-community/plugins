@@ -9,9 +9,9 @@
 复用你在 Magpie 中**已登录**的个人账号，一站式完成成长任务、微信小程序链式任务、运营活动、猫猫旅行、夜猫子、Buddy 盲盒与连登管家，并提供本地可视化看板、北京时间小时排程与 8 个 MCP 智能体工具。
 
 [![GitHub Stars](https://img.shields.io/github/stars/jichie/magpie-workbuddy-tasks?style=flat-square&logo=github&color=f59e0b)](https://github.com/jichie/magpie-workbuddy-tasks/stargazers)
-[![Version](https://img.shields.io/badge/version-0.4.2-10b981?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.3-10b981?style=flat-square)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-694%20passing-success?style=flat-square)](#目录与测试)
+[![Tests](https://img.shields.io/badge/tests-697%20passing-success?style=flat-square)](#目录与测试)
 [![Magpie Plugin](https://img.shields.io/badge/magpie-plugin-6366f1?style=flat-square)](https://usemagpie.ai/docs/zh/plugins)
 
 ```bash
@@ -321,7 +321,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 | **历史「触发」列显示手动** | 旧版历史记录不回溯；新版排程触发的新记录均正确显示「排程」 |
 | **积分显示「未查询」或刷新 409** | 批量 Job 运行期间会拒绝刷积分请求（`409`），等 Job 结束再刷新；若返回 `needRelogin:true` 请在 Magpie 重新扫码登录 |
 | **「供应商」里仍看到旧的未登录卡片** | 从极早期版本升级残留的宿主缓存；重启 Magpie 或备份后删除 `plugin-providers.json` / `providers-state.json` 中的 `workbuddy-tasks` 条目 |
-| **看板连不上 / 端口漂移** | 确认宿主已懒加载插件，或通过面板提示命令手动启动；实际端口以 `state/daemon.json` 为准，可在插件选项固定 `port` |
+| **看板连不上 / 端口漂移** | 确认宿主已懒加载插件，或通过面板提示命令手动启动；实际端口以 `state/daemon.json` 为准，可在插件选项固定 `port`；`0.4.3+` 已修复宿主重启/其它插件更新误关守护进程问题（#9）并支持 30 秒自动自愈 |
 | **彻底停止 / 重启插件** | 在 Magpie「插件管理」中停用本插件，守护进程会在 10 秒内自动退出 |
 | **Docker / Windows 配置目录** | Docker 默认 `/config/magpie`；Windows 默认 `%USERPROFILE%\.config\magpie`（非 AppData），含空格路径注意加引号 |
 
@@ -346,7 +346,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 └── tests-e2e/         # 全链路集成测试（假上游 + 可注入时钟）
 ```
 
-运行完整测试套件（零真实网络请求，全量 **694** 个用例）：
+运行完整测试套件（零真实网络请求，全量 **697** 个用例）：
 
 ```bash
 npm test
@@ -361,6 +361,7 @@ npm test
 
 完整更新日志见 **[CHANGELOG.md](./CHANGELOG.md)**：
 
+- **0.4.3**（2026-11-27）：修复 Magpie 宿主重启或其它插件自动更新时旧宿主退出误关共享守护进程导致看板长时间不可用的问题（#9）；新增 `/api/shutdown?pid=` 校验、启动 PID 对齐、跨版本平滑替换与宿主 30 秒看门狗自愈。
 - **0.4.2**（2026-11-27）：修复活动已结束/未开始返回 `HTTP 410 / code 12331` 时未提前中止仍继续上报与长时间轮询的问题（#8），看板同步标注「已结束」并禁用勾选；优化陈旧快照跳过提示文案并放宽 `finalizeJob` 收尾刷新预算与账号上限。
 - **0.4.1**（2026-11-23）：签到收益归位至「今日积分」（并读 `plugin-checkin.json` 与手签历史按账号取较大值去重，#7）、`checkin` 腿名展示、README 补充自动签到开关说明及账本读盘签名缓存。
 - **0.4.0**（2026-11-17）：**界面优化版** — 看板升级为 Bento 今日概览卡片、悬浮毛玻璃批量操作坞与控制台风格日志壳，统一入口卡排版与交互反馈，并修复用量明细切窗口竞态；纯 UI 升级，引擎与接口与 0.3.9 完全一致。
