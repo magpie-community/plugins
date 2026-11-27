@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="page-token" content="__PAGE_TOKEN__" />
+    <title>Magpie GitHub Stats</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <div class="workspace">
+        <section class="preview-panel">
+          <div class="panel-heading">
+            <h2>卡片预览</h2>
+            <span id="preview-label">读取本机用量</span>
+          </div>
+          <div class="preview-stage">
+            <div class="preview-tabs" role="group" aria-label="预览配色">
+              <button id="dark-mode" class="selected" type="button">深色</button
+              ><button id="light-mode" type="button">浅色</button>
+            </div>
+            <div class="card-wrap">
+              <img id="preview" alt="Magpie 统计卡片预览" hidden />
+              <div id="placeholder">正在读取 Magpie 用量…</div>
+            </div>
+            <div class="preview-caption">
+              <span class="dot"></span
+              ><span id="summary">你的统计仅在本机生成</span>
+            </div>
+          </div>
+          <details class="embed">
+            <summary>嵌入 GitHub README</summary>
+            <button id="copy" type="button">复制 HTML</button>
+            <textarea
+              id="readme"
+              readonly
+              aria-label="README HTML"
+              spellcheck="false"
+              placeholder="保存仓库设置后，点击复制 HTML。"
+            ></textarea>
+            <p>
+              将代码粘贴到 GitHub Profile
+              README。目标仓库需公开，访客才能看到图片。
+            </p>
+          </details>
+        </section>
+        <section class="settings-panel">
+          <div class="panel-heading">
+            <h2>卡片布局</h2>
+            <span class="quiet">拖动排序，勾选显示</span>
+          </div>
+          <form id="settings">
+            <div id="blocks"></div>
+            <label class="inline"
+              ><input
+                type="checkbox"
+                name="pairBlocks"
+              />前两个可见区块并排（宽度 ≥ 520 px）</label
+            >
+            <details id="connection">
+              <summary>仓库与授权</summary>
+              <div class="form-grid">
+                <label class="wide"
+                  >GitHub 仓库<input
+                    name="repository"
+                    placeholder="owner/repo"
+                    autocomplete="off"
+                    maxlength="140" /></label
+                ><label
+                  >分支<input
+                    name="branch"
+                    placeholder="仓库默认分支"
+                    autocomplete="off" /></label
+                ><label
+                  >输出文件夹<input
+                    name="folder"
+                    value="assets"
+                    autocomplete="off"
+                /></label>
+              </div>
+              <label
+                >GitHub 授权<select name="credentialSource">
+                  <option value="keychain">
+                    Fine-grained PAT · 系统凭据库
+                  </option>
+                  <option value="github-cli">使用本机 GitHub CLI 登录</option>
+                </select></label
+              ><label id="token-row"
+                >GitHub Token<input
+                  name="token"
+                  type="password"
+                  placeholder="留空保留已保存的 Token"
+                  autocomplete="new-password"
+                /><small
+                  >仅需目标仓库 Contents 读写权限；Token 存入系统凭据库。</small
+                ></label
+              >
+              <p id="cli-note" hidden class="hint">
+                使用 gh auth login 已保存的登录身份。权限范围由该登录决定。
+              </p>
+            </details>
+            <details>
+              <summary>样式与统计</summary>
+              <div class="form-grid">
+                <label
+                  >统计周期<select name="period">
+                    <option value="7d">最近 7 天</option>
+                    <option value="30d" selected>最近 30 天</option>
+                    <option value="all">All Time</option>
+                  </select></label
+                ><label
+                  >视觉主题<select name="theme">
+                    <option value="aurora">Neon Aurora</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="cyberpunk">Cyberpunk</option>
+                  </select></label
+                ><label
+                  >卡片宽度<select name="width">
+                    <option value="520">520 px · Standard</option>
+                    <option value="320">320 px · Compact</option>
+                    <option value="640">640 px · Wide</option>
+                  </select></label
+                ><label
+                  >模型数量<select name="topModels">
+                    <option value="3">Top 3</option>
+                    <option value="4">Top 4</option>
+                    <option value="5">Top 5</option>
+                  </select></label
+                >
+              </div>
+              <label
+                >热力图范围<select name="heatmapView">
+                  <option value="year">全年视图 · 最近 53 周</option>
+                  <option value="month">月视图 · 本月</option>
+                  <option value="week">周视图 · 本周一至周日</option></select
+                ><small
+                  >按本地日期展示，独立于上方统计周期；保存后同步到
+                  GitHub。</small
+                ></label
+              >
+              <label
+                >热力图指标<select name="heatmapMetric">
+                  <option value="requests">请求</option>
+                  <option value="tokens">Token</option>
+                  <option value="cost">费用 · USD 估算</option></select
+                ><small
+                  >选择费用将公开每日估算费用；Token 不包含缓存流量。</small
+                ></label
+              >
+              <label
+                ><input type="checkbox" name="showCost" />显示估算总费用</label
+              >
+            </details>
+            <details>
+              <summary>数据来源</summary>
+              <label
+                >本机 Magpie 端口<input
+                  type="number"
+                  name="magpiePort"
+                  value="3425"
+                  min="1"
+                  max="65535"
+              /></label>
+              <p class="hint">
+                Tokens = input + output，不包含缓存流量。Active Days
+                为 Magpie 全部保留记录中有请求的本地日期数，每天只计一次。费用为 Magpie 估算，不代表账单。
+              </p>
+            </details>
+            <div class="schedule">
+              <div>
+                <b>每日自动同步</b>
+                <p>每天 02:00 · 本地时区 · 离线后补同步</p>
+              </div>
+              <label class="switch"
+                ><input
+                  type="checkbox"
+                  name="daily"
+                  aria-label="每日自动同步" /><span></span
+              ></label>
+            </div>
+            <div class="actions">
+              <button class="primary" type="submit">保存配置</button
+              ><button id="sync" type="button">立即同步 ↗</button>
+            </div>
+            <p class="hint">
+              立即同步将发布已保存配置的汇总统计。自动任务要求电脑和 Magpie
+              可用。
+            </p>
+          </form>
+          <div class="status-box">
+            <span class="dot" id="status-dot"></span>
+            <div>
+              <b id="status-title">尚未同步</b>
+              <p id="status-detail">保存仓库与授权后即可开始。</p>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div id="notice" role="status" aria-live="polite" hidden></div>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

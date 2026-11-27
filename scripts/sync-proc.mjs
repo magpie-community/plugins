@@ -13,6 +13,7 @@ export const procTargets = [
   "packages/deepzora/proc.mjs",
   "packages/gcp-ai/lib/proc.mjs",
   "packages/gumloop/proc.mjs",
+  "packages/github-stats/src/proc.mjs",
   "packages/goanyapi/src/proc.mjs",
   "packages/kimi-desktop/proc.mjs",
   "packages/mclaw/proc.mjs",

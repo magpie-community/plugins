@@ -1,0 +1,426 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="428" viewBox="0 0 520 428" role="img" aria-labelledby="title desc">
+<title id="title">Magpie AI Usage Statistics</title><desc id="desc">LAST 30 DAYS: 6252477 tokens, 5605 requests, 122 lifetime active days. Tokens equal input plus output.</desc>
+<defs><linearGradient id="accent"><stop stop-color="#A855F7"/><stop offset=".55" stop-color="#6388EE"/><stop offset="1" stop-color="#22D3EE"/></linearGradient><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#A855F7" stop-opacity=".25"/><stop offset="1" stop-color="#22D3EE" stop-opacity=".015"/></linearGradient><radialGradient id="glow"><stop stop-color="#A855F7" stop-opacity=".15"/><stop offset="1" stop-color="#0D1117" stop-opacity="0"/></radialGradient><clipPath id="card"><rect x=".5" y=".5" width="519" height="427" rx="16"/></clipPath></defs>
+<g clip-path="url(#card)"><rect width="520" height="428" fill="#0D1117"/><ellipse cx="416" cy="0" rx="338" ry="342.40000000000003" fill="url(#glow)"/><g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"><path d="M26 29l7-9 7 9-7 9z" fill="url(#accent)"/>
+<text x="49" y="33" font-size="14" fill="#F1F5F9" font-weight="750" letter-spacing="2">MAGPIE</text>
+<text x="494" y="32" font-size="9" fill="#9AAAC1" text-anchor="end" letter-spacing="1">LAST 30 DAYS</text>
+<path d="M26 46H494" stroke="#283347"/>
+<text x="26" y="79" font-size="30" fill="url(#accent)" font-weight="700" letter-spacing="-1">6.3M</text>
+<text x="26" y="96" font-size="9" fill="#9AAAC1" letter-spacing="1">TOKENS</text>
+<text x="182" y="79" font-size="30" fill="#F1F5F9" font-weight="700" letter-spacing="-1">5.6K</text>
+<text x="182" y="96" font-size="9" fill="#9AAAC1" letter-spacing="1">REQUESTS</text>
+<text x="338" y="79" font-size="30" fill="#F1F5F9" font-weight="700" letter-spacing="-1">122</text>
+<text x="338" y="96" font-size="9" fill="#9AAAC1" letter-spacing="1">ACTIVE DAYS · ALL TIME</text>
+<text x="26" y="119" font-size="9" fill="#9AAAC1" letter-spacing="1.5">TOKEN ACTIVITY</text>
+<path d="M26 148H494" stroke="#283347" stroke-dasharray="2 5"/>
+<path d="M26 165H494" stroke="#283347" stroke-dasharray="2 5"/>
+<path d="M26,165 L26.00,141.15 L42.14,131.00 L58.28,154.49 L74.41,163.27 L90.55,139.27 L106.69,131.89 L122.83,156.33 L138.97,162.28 L155.10,137.49 L171.24,132.99 L187.38,158.04 L203.52,161.08 L219.66,135.85 L235.79,134.28 L251.93,159.60 L268.07,159.69 L284.21,134.37 L300.34,135.76 L316.48,161.00 L332.62,158.13 L348.76,133.06 L364.90,137.39 L381.03,162.21 L397.17,156.43 L413.31,131.95 L429.45,139.16 L445.59,163.22 L461.72,154.61 L477.86,131.05 L494.00,141.04 L494,165Z" fill="url(#area)"/>
+<polyline points="26.00,141.15 42.14,131.00 58.28,154.49 74.41,163.27 90.55,139.27 106.69,131.89 122.83,156.33 138.97,162.28 155.10,137.49 171.24,132.99 187.38,158.04 203.52,161.08 219.66,135.85 235.79,134.28 251.93,159.60 268.07,159.69 284.21,134.37 300.34,135.76 316.48,161.00 332.62,158.13 348.76,133.06 364.90,137.39 381.03,162.21 397.17,156.43 413.31,131.95 429.45,139.16 445.59,163.22 461.72,154.61 477.86,131.05 494.00,141.04" fill="none" stroke="url(#accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="26" y="183" font-size="9" fill="#9AAAC1" letter-spacing="1.5">TOP MODELS</text>
+<text x="494" y="183" font-size="8" fill="#9AAAC1" text-anchor="end" letter-spacing="1">% OF TOKENS</text>
+<text x="26" y="203" font-size="10" fill="#F1F5F9" >Claude Sonnet</text>
+<rect x="227" y="196" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="196" width="108.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="203" font-size="10" fill="#9AAAC1" text-anchor="end">48%</text>
+<text x="26" y="225" font-size="10" fill="#F1F5F9" >GPT</text>
+<rect x="227" y="218" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="218" width="72.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="225" font-size="10" fill="#9AAAC1" text-anchor="end">32%</text>
+<text x="26" y="247" font-size="10" fill="#F1F5F9" >Gemini</text>
+<rect x="227" y="240" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="240" width="45.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="247" font-size="10" fill="#9AAAC1" text-anchor="end">20%</text>
+<text x="26" y="272" font-size="8" fill="#9AAAC1" letter-spacing="1">DAILY CALLS</text>
+<text x="494" y="272" font-size="8" fill="#9AAAC1" text-anchor="end">LAST 53 WEEKS</text>
+<text x="68.67924528301887" y="291" font-size="8" fill="#9AAAC1" >Dec</text>
+<text x="102.0377358490566" y="291" font-size="8" fill="#9AAAC1" >Jan</text>
+<text x="135.39622641509436" y="291" font-size="8" fill="#9AAAC1" >Feb</text>
+<text x="168.75471698113208" y="291" font-size="8" fill="#9AAAC1" >Mar</text>
+<text x="210.45283018867926" y="291" font-size="8" fill="#9AAAC1" >Apr</text>
+<text x="243.811320754717" y="291" font-size="8" fill="#9AAAC1" >May</text>
+<text x="285.50943396226415" y="291" font-size="8" fill="#9AAAC1" >Jun</text>
+<text x="318.8679245283019" y="291" font-size="8" fill="#9AAAC1" >Jul</text>
+<text x="352.22641509433964" y="291" font-size="8" fill="#9AAAC1" >Aug</text>
+<text x="393.9245283018868" y="291" font-size="8" fill="#9AAAC1" >Sep</text>
+<text x="427.28301886792457" y="291" font-size="8" fill="#9AAAC1" >Oct</text>
+<text x="460.64150943396226" y="291" font-size="8" fill="#9AAAC1" >Nov</text>
+<text x="26" y="305.83584905660376" font-size="8" fill="#9AAAC1" >Mon</text>
+<text x="26" y="322.51509433962264" font-size="8" fill="#9AAAC1" >Wed</text>
+<text x="26" y="339.1943396226415" font-size="8" fill="#9AAAC1" >Fri</text>
+<text x="26" y="355.8735849056604" font-size="8" fill="#9AAAC1" >Sun</text>
+<rect data-date="2025-11-17" data-col="0" data-row="0" data-level="0" x="52.00" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-17: 0 requests</title></rect>
+<rect data-date="2025-11-18" data-col="0" data-row="1" data-level="0" x="52.00" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-18: 0 requests</title></rect>
+<rect data-date="2025-11-19" data-col="0" data-row="2" data-level="0" x="52.00" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-19: 0 requests</title></rect>
+<rect data-date="2025-11-20" data-col="0" data-row="3" data-level="0" x="52.00" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-20: 0 requests</title></rect>
+<rect data-date="2025-11-21" data-col="0" data-row="4" data-level="0" x="52.00" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-21: 0 requests</title></rect>
+<rect data-date="2025-11-22" data-col="0" data-row="5" data-level="0" x="52.00" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-22: 0 requests</title></rect>
+<rect data-date="2025-11-23" data-col="0" data-row="6" data-level="0" x="52.00" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-23: 0 requests</title></rect>
+<rect data-date="2025-11-24" data-col="1" data-row="0" data-level="0" x="60.34" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-24: 0 requests</title></rect>
+<rect data-date="2025-11-25" data-col="1" data-row="1" data-level="0" x="60.34" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-25: 0 requests</title></rect>
+<rect data-date="2025-11-26" data-col="1" data-row="2" data-level="0" x="60.34" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-26: 0 requests</title></rect>
+<rect data-date="2025-11-27" data-col="1" data-row="3" data-level="0" x="60.34" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-27: 0 requests</title></rect>
+<rect data-date="2025-11-28" data-col="1" data-row="4" data-level="0" x="60.34" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-28: 0 requests</title></rect>
+<rect data-date="2025-11-29" data-col="1" data-row="5" data-level="0" x="60.34" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-29: 0 requests</title></rect>
+<rect data-date="2025-11-30" data-col="1" data-row="6" data-level="0" x="60.34" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-11-30: 0 requests</title></rect>
+<rect data-date="2025-12-01" data-col="2" data-row="0" data-level="0" x="68.68" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-01: 0 requests</title></rect>
+<rect data-date="2025-12-02" data-col="2" data-row="1" data-level="0" x="68.68" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-02: 0 requests</title></rect>
+<rect data-date="2025-12-03" data-col="2" data-row="2" data-level="0" x="68.68" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-03: 0 requests</title></rect>
+<rect data-date="2025-12-04" data-col="2" data-row="3" data-level="0" x="68.68" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-04: 0 requests</title></rect>
+<rect data-date="2025-12-05" data-col="2" data-row="4" data-level="0" x="68.68" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-05: 0 requests</title></rect>
+<rect data-date="2025-12-06" data-col="2" data-row="5" data-level="0" x="68.68" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-06: 0 requests</title></rect>
+<rect data-date="2025-12-07" data-col="2" data-row="6" data-level="0" x="68.68" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-07: 0 requests</title></rect>
+<rect data-date="2025-12-08" data-col="3" data-row="0" data-level="0" x="77.02" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-08: 0 requests</title></rect>
+<rect data-date="2025-12-09" data-col="3" data-row="1" data-level="0" x="77.02" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-09: 0 requests</title></rect>
+<rect data-date="2025-12-10" data-col="3" data-row="2" data-level="0" x="77.02" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-10: 0 requests</title></rect>
+<rect data-date="2025-12-11" data-col="3" data-row="3" data-level="0" x="77.02" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-11: 0 requests</title></rect>
+<rect data-date="2025-12-12" data-col="3" data-row="4" data-level="0" x="77.02" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-12: 0 requests</title></rect>
+<rect data-date="2025-12-13" data-col="3" data-row="5" data-level="0" x="77.02" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-13: 0 requests</title></rect>
+<rect data-date="2025-12-14" data-col="3" data-row="6" data-level="0" x="77.02" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-14: 0 requests</title></rect>
+<rect data-date="2025-12-15" data-col="4" data-row="0" data-level="0" x="85.36" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-15: 0 requests</title></rect>
+<rect data-date="2025-12-16" data-col="4" data-row="1" data-level="0" x="85.36" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-16: 0 requests</title></rect>
+<rect data-date="2025-12-17" data-col="4" data-row="2" data-level="0" x="85.36" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-17: 0 requests</title></rect>
+<rect data-date="2025-12-18" data-col="4" data-row="3" data-level="0" x="85.36" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-18: 0 requests</title></rect>
+<rect data-date="2025-12-19" data-col="4" data-row="4" data-level="0" x="85.36" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-19: 0 requests</title></rect>
+<rect data-date="2025-12-20" data-col="4" data-row="5" data-level="0" x="85.36" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-20: 0 requests</title></rect>
+<rect data-date="2025-12-21" data-col="4" data-row="6" data-level="0" x="85.36" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-21: 0 requests</title></rect>
+<rect data-date="2025-12-22" data-col="5" data-row="0" data-level="0" x="93.70" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-22: 0 requests</title></rect>
+<rect data-date="2025-12-23" data-col="5" data-row="1" data-level="0" x="93.70" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-23: 0 requests</title></rect>
+<rect data-date="2025-12-24" data-col="5" data-row="2" data-level="0" x="93.70" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-24: 0 requests</title></rect>
+<rect data-date="2025-12-25" data-col="5" data-row="3" data-level="0" x="93.70" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-25: 0 requests</title></rect>
+<rect data-date="2025-12-26" data-col="5" data-row="4" data-level="0" x="93.70" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-26: 0 requests</title></rect>
+<rect data-date="2025-12-27" data-col="5" data-row="5" data-level="0" x="93.70" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-27: 0 requests</title></rect>
+<rect data-date="2025-12-28" data-col="5" data-row="6" data-level="0" x="93.70" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-28: 0 requests</title></rect>
+<rect data-date="2025-12-29" data-col="6" data-row="0" data-level="0" x="102.04" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-29: 0 requests</title></rect>
+<rect data-date="2025-12-30" data-col="6" data-row="1" data-level="0" x="102.04" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-30: 0 requests</title></rect>
+<rect data-date="2025-12-31" data-col="6" data-row="2" data-level="0" x="102.04" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2025-12-31: 0 requests</title></rect>
+<rect data-date="2026-01-01" data-col="6" data-row="3" data-level="0" x="102.04" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-01: 0 requests</title></rect>
+<rect data-date="2026-01-02" data-col="6" data-row="4" data-level="0" x="102.04" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-02: 0 requests</title></rect>
+<rect data-date="2026-01-03" data-col="6" data-row="5" data-level="0" x="102.04" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-03: 0 requests</title></rect>
+<rect data-date="2026-01-04" data-col="6" data-row="6" data-level="0" x="102.04" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-04: 0 requests</title></rect>
+<rect data-date="2026-01-05" data-col="7" data-row="0" data-level="0" x="110.38" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-05: 0 requests</title></rect>
+<rect data-date="2026-01-06" data-col="7" data-row="1" data-level="0" x="110.38" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-06: 0 requests</title></rect>
+<rect data-date="2026-01-07" data-col="7" data-row="2" data-level="0" x="110.38" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-07: 0 requests</title></rect>
+<rect data-date="2026-01-08" data-col="7" data-row="3" data-level="0" x="110.38" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-08: 0 requests</title></rect>
+<rect data-date="2026-01-09" data-col="7" data-row="4" data-level="0" x="110.38" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-09: 0 requests</title></rect>
+<rect data-date="2026-01-10" data-col="7" data-row="5" data-level="0" x="110.38" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-10: 0 requests</title></rect>
+<rect data-date="2026-01-11" data-col="7" data-row="6" data-level="0" x="110.38" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-11: 0 requests</title></rect>
+<rect data-date="2026-01-12" data-col="8" data-row="0" data-level="0" x="118.72" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-12: 0 requests</title></rect>
+<rect data-date="2026-01-13" data-col="8" data-row="1" data-level="0" x="118.72" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-13: 0 requests</title></rect>
+<rect data-date="2026-01-14" data-col="8" data-row="2" data-level="0" x="118.72" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-14: 0 requests</title></rect>
+<rect data-date="2026-01-15" data-col="8" data-row="3" data-level="0" x="118.72" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-15: 0 requests</title></rect>
+<rect data-date="2026-01-16" data-col="8" data-row="4" data-level="0" x="118.72" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-16: 0 requests</title></rect>
+<rect data-date="2026-01-17" data-col="8" data-row="5" data-level="0" x="118.72" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-17: 0 requests</title></rect>
+<rect data-date="2026-01-18" data-col="8" data-row="6" data-level="0" x="118.72" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-18: 0 requests</title></rect>
+<rect data-date="2026-01-19" data-col="9" data-row="0" data-level="0" x="127.06" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-19: 0 requests</title></rect>
+<rect data-date="2026-01-20" data-col="9" data-row="1" data-level="0" x="127.06" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-20: 0 requests</title></rect>
+<rect data-date="2026-01-21" data-col="9" data-row="2" data-level="0" x="127.06" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-21: 0 requests</title></rect>
+<rect data-date="2026-01-22" data-col="9" data-row="3" data-level="0" x="127.06" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-22: 0 requests</title></rect>
+<rect data-date="2026-01-23" data-col="9" data-row="4" data-level="0" x="127.06" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-23: 0 requests</title></rect>
+<rect data-date="2026-01-24" data-col="9" data-row="5" data-level="0" x="127.06" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-24: 0 requests</title></rect>
+<rect data-date="2026-01-25" data-col="9" data-row="6" data-level="0" x="127.06" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-25: 0 requests</title></rect>
+<rect data-date="2026-01-26" data-col="10" data-row="0" data-level="0" x="135.40" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-26: 0 requests</title></rect>
+<rect data-date="2026-01-27" data-col="10" data-row="1" data-level="0" x="135.40" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-27: 0 requests</title></rect>
+<rect data-date="2026-01-28" data-col="10" data-row="2" data-level="0" x="135.40" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-28: 0 requests</title></rect>
+<rect data-date="2026-01-29" data-col="10" data-row="3" data-level="0" x="135.40" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-29: 0 requests</title></rect>
+<rect data-date="2026-01-30" data-col="10" data-row="4" data-level="0" x="135.40" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-30: 0 requests</title></rect>
+<rect data-date="2026-01-31" data-col="10" data-row="5" data-level="0" x="135.40" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-01-31: 0 requests</title></rect>
+<rect data-date="2026-02-01" data-col="10" data-row="6" data-level="0" x="135.40" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-01: 0 requests</title></rect>
+<rect data-date="2026-02-02" data-col="11" data-row="0" data-level="0" x="143.74" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-02: 0 requests</title></rect>
+<rect data-date="2026-02-03" data-col="11" data-row="1" data-level="0" x="143.74" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-03: 0 requests</title></rect>
+<rect data-date="2026-02-04" data-col="11" data-row="2" data-level="0" x="143.74" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-04: 0 requests</title></rect>
+<rect data-date="2026-02-05" data-col="11" data-row="3" data-level="0" x="143.74" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-05: 0 requests</title></rect>
+<rect data-date="2026-02-06" data-col="11" data-row="4" data-level="0" x="143.74" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-06: 0 requests</title></rect>
+<rect data-date="2026-02-07" data-col="11" data-row="5" data-level="0" x="143.74" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-07: 0 requests</title></rect>
+<rect data-date="2026-02-08" data-col="11" data-row="6" data-level="0" x="143.74" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-08: 0 requests</title></rect>
+<rect data-date="2026-02-09" data-col="12" data-row="0" data-level="0" x="152.08" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-09: 0 requests</title></rect>
+<rect data-date="2026-02-10" data-col="12" data-row="1" data-level="0" x="152.08" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-10: 0 requests</title></rect>
+<rect data-date="2026-02-11" data-col="12" data-row="2" data-level="0" x="152.08" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-11: 0 requests</title></rect>
+<rect data-date="2026-02-12" data-col="12" data-row="3" data-level="0" x="152.08" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-12: 0 requests</title></rect>
+<rect data-date="2026-02-13" data-col="12" data-row="4" data-level="0" x="152.08" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-13: 0 requests</title></rect>
+<rect data-date="2026-02-14" data-col="12" data-row="5" data-level="0" x="152.08" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-14: 0 requests</title></rect>
+<rect data-date="2026-02-15" data-col="12" data-row="6" data-level="0" x="152.08" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-15: 0 requests</title></rect>
+<rect data-date="2026-02-16" data-col="13" data-row="0" data-level="0" x="160.42" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-16: 0 requests</title></rect>
+<rect data-date="2026-02-17" data-col="13" data-row="1" data-level="0" x="160.42" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-17: 0 requests</title></rect>
+<rect data-date="2026-02-18" data-col="13" data-row="2" data-level="0" x="160.42" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-18: 0 requests</title></rect>
+<rect data-date="2026-02-19" data-col="13" data-row="3" data-level="0" x="160.42" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-19: 0 requests</title></rect>
+<rect data-date="2026-02-20" data-col="13" data-row="4" data-level="0" x="160.42" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-20: 0 requests</title></rect>
+<rect data-date="2026-02-21" data-col="13" data-row="5" data-level="0" x="160.42" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-21: 0 requests</title></rect>
+<rect data-date="2026-02-22" data-col="13" data-row="6" data-level="0" x="160.42" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-22: 0 requests</title></rect>
+<rect data-date="2026-02-23" data-col="14" data-row="0" data-level="0" x="168.75" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-23: 0 requests</title></rect>
+<rect data-date="2026-02-24" data-col="14" data-row="1" data-level="0" x="168.75" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-24: 0 requests</title></rect>
+<rect data-date="2026-02-25" data-col="14" data-row="2" data-level="0" x="168.75" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-25: 0 requests</title></rect>
+<rect data-date="2026-02-26" data-col="14" data-row="3" data-level="0" x="168.75" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-26: 0 requests</title></rect>
+<rect data-date="2026-02-27" data-col="14" data-row="4" data-level="0" x="168.75" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-27: 0 requests</title></rect>
+<rect data-date="2026-02-28" data-col="14" data-row="5" data-level="0" x="168.75" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-02-28: 0 requests</title></rect>
+<rect data-date="2026-03-01" data-col="14" data-row="6" data-level="0" x="168.75" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-01: 0 requests</title></rect>
+<rect data-date="2026-03-02" data-col="15" data-row="0" data-level="0" x="177.09" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-02: 0 requests</title></rect>
+<rect data-date="2026-03-03" data-col="15" data-row="1" data-level="0" x="177.09" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-03: 0 requests</title></rect>
+<rect data-date="2026-03-04" data-col="15" data-row="2" data-level="0" x="177.09" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-04: 0 requests</title></rect>
+<rect data-date="2026-03-05" data-col="15" data-row="3" data-level="0" x="177.09" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-05: 0 requests</title></rect>
+<rect data-date="2026-03-06" data-col="15" data-row="4" data-level="0" x="177.09" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-06: 0 requests</title></rect>
+<rect data-date="2026-03-07" data-col="15" data-row="5" data-level="0" x="177.09" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-07: 0 requests</title></rect>
+<rect data-date="2026-03-08" data-col="15" data-row="6" data-level="0" x="177.09" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-08: 0 requests</title></rect>
+<rect data-date="2026-03-09" data-col="16" data-row="0" data-level="0" x="185.43" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-09: 0 requests</title></rect>
+<rect data-date="2026-03-10" data-col="16" data-row="1" data-level="0" x="185.43" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-10: 0 requests</title></rect>
+<rect data-date="2026-03-11" data-col="16" data-row="2" data-level="0" x="185.43" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-11: 0 requests</title></rect>
+<rect data-date="2026-03-12" data-col="16" data-row="3" data-level="0" x="185.43" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-12: 0 requests</title></rect>
+<rect data-date="2026-03-13" data-col="16" data-row="4" data-level="0" x="185.43" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-13: 0 requests</title></rect>
+<rect data-date="2026-03-14" data-col="16" data-row="5" data-level="0" x="185.43" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-14: 0 requests</title></rect>
+<rect data-date="2026-03-15" data-col="16" data-row="6" data-level="0" x="185.43" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-15: 0 requests</title></rect>
+<rect data-date="2026-03-16" data-col="17" data-row="0" data-level="0" x="193.77" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-16: 0 requests</title></rect>
+<rect data-date="2026-03-17" data-col="17" data-row="1" data-level="0" x="193.77" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-17: 0 requests</title></rect>
+<rect data-date="2026-03-18" data-col="17" data-row="2" data-level="0" x="193.77" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-18: 0 requests</title></rect>
+<rect data-date="2026-03-19" data-col="17" data-row="3" data-level="0" x="193.77" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-19: 0 requests</title></rect>
+<rect data-date="2026-03-20" data-col="17" data-row="4" data-level="0" x="193.77" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-20: 0 requests</title></rect>
+<rect data-date="2026-03-21" data-col="17" data-row="5" data-level="0" x="193.77" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-21: 0 requests</title></rect>
+<rect data-date="2026-03-22" data-col="17" data-row="6" data-level="0" x="193.77" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-22: 0 requests</title></rect>
+<rect data-date="2026-03-23" data-col="18" data-row="0" data-level="0" x="202.11" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-23: 0 requests</title></rect>
+<rect data-date="2026-03-24" data-col="18" data-row="1" data-level="0" x="202.11" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-24: 0 requests</title></rect>
+<rect data-date="2026-03-25" data-col="18" data-row="2" data-level="0" x="202.11" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-25: 0 requests</title></rect>
+<rect data-date="2026-03-26" data-col="18" data-row="3" data-level="0" x="202.11" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-26: 0 requests</title></rect>
+<rect data-date="2026-03-27" data-col="18" data-row="4" data-level="0" x="202.11" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-27: 0 requests</title></rect>
+<rect data-date="2026-03-28" data-col="18" data-row="5" data-level="0" x="202.11" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-28: 0 requests</title></rect>
+<rect data-date="2026-03-29" data-col="18" data-row="6" data-level="0" x="202.11" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-29: 0 requests</title></rect>
+<rect data-date="2026-03-30" data-col="19" data-row="0" data-level="0" x="210.45" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-30: 0 requests</title></rect>
+<rect data-date="2026-03-31" data-col="19" data-row="1" data-level="0" x="210.45" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-03-31: 0 requests</title></rect>
+<rect data-date="2026-04-01" data-col="19" data-row="2" data-level="0" x="210.45" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-01: 0 requests</title></rect>
+<rect data-date="2026-04-02" data-col="19" data-row="3" data-level="0" x="210.45" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-02: 0 requests</title></rect>
+<rect data-date="2026-04-03" data-col="19" data-row="4" data-level="0" x="210.45" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-03: 0 requests</title></rect>
+<rect data-date="2026-04-04" data-col="19" data-row="5" data-level="0" x="210.45" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-04: 0 requests</title></rect>
+<rect data-date="2026-04-05" data-col="19" data-row="6" data-level="0" x="210.45" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-05: 0 requests</title></rect>
+<rect data-date="2026-04-06" data-col="20" data-row="0" data-level="0" x="218.79" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-06: 0 requests</title></rect>
+<rect data-date="2026-04-07" data-col="20" data-row="1" data-level="0" x="218.79" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-07: 0 requests</title></rect>
+<rect data-date="2026-04-08" data-col="20" data-row="2" data-level="0" x="218.79" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-08: 0 requests</title></rect>
+<rect data-date="2026-04-09" data-col="20" data-row="3" data-level="0" x="218.79" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-09: 0 requests</title></rect>
+<rect data-date="2026-04-10" data-col="20" data-row="4" data-level="0" x="218.79" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-10: 0 requests</title></rect>
+<rect data-date="2026-04-11" data-col="20" data-row="5" data-level="0" x="218.79" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-11: 0 requests</title></rect>
+<rect data-date="2026-04-12" data-col="20" data-row="6" data-level="0" x="218.79" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-12: 0 requests</title></rect>
+<rect data-date="2026-04-13" data-col="21" data-row="0" data-level="0" x="227.13" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-13: 0 requests</title></rect>
+<rect data-date="2026-04-14" data-col="21" data-row="1" data-level="0" x="227.13" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-14: 0 requests</title></rect>
+<rect data-date="2026-04-15" data-col="21" data-row="2" data-level="0" x="227.13" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-15: 0 requests</title></rect>
+<rect data-date="2026-04-16" data-col="21" data-row="3" data-level="0" x="227.13" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-16: 0 requests</title></rect>
+<rect data-date="2026-04-17" data-col="21" data-row="4" data-level="0" x="227.13" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-17: 0 requests</title></rect>
+<rect data-date="2026-04-18" data-col="21" data-row="5" data-level="0" x="227.13" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-18: 0 requests</title></rect>
+<rect data-date="2026-04-19" data-col="21" data-row="6" data-level="0" x="227.13" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-19: 0 requests</title></rect>
+<rect data-date="2026-04-20" data-col="22" data-row="0" data-level="0" x="235.47" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-20: 0 requests</title></rect>
+<rect data-date="2026-04-21" data-col="22" data-row="1" data-level="0" x="235.47" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-21: 0 requests</title></rect>
+<rect data-date="2026-04-22" data-col="22" data-row="2" data-level="0" x="235.47" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-22: 0 requests</title></rect>
+<rect data-date="2026-04-23" data-col="22" data-row="3" data-level="0" x="235.47" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-23: 0 requests</title></rect>
+<rect data-date="2026-04-24" data-col="22" data-row="4" data-level="0" x="235.47" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-24: 0 requests</title></rect>
+<rect data-date="2026-04-25" data-col="22" data-row="5" data-level="0" x="235.47" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-25: 0 requests</title></rect>
+<rect data-date="2026-04-26" data-col="22" data-row="6" data-level="0" x="235.47" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-26: 0 requests</title></rect>
+<rect data-date="2026-04-27" data-col="23" data-row="0" data-level="0" x="243.81" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-27: 0 requests</title></rect>
+<rect data-date="2026-04-28" data-col="23" data-row="1" data-level="0" x="243.81" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-28: 0 requests</title></rect>
+<rect data-date="2026-04-29" data-col="23" data-row="2" data-level="0" x="243.81" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-29: 0 requests</title></rect>
+<rect data-date="2026-04-30" data-col="23" data-row="3" data-level="0" x="243.81" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-04-30: 0 requests</title></rect>
+<rect data-date="2026-05-01" data-col="23" data-row="4" data-level="0" x="243.81" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-01: 0 requests</title></rect>
+<rect data-date="2026-05-02" data-col="23" data-row="5" data-level="0" x="243.81" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-02: 0 requests</title></rect>
+<rect data-date="2026-05-03" data-col="23" data-row="6" data-level="0" x="243.81" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-03: 0 requests</title></rect>
+<rect data-date="2026-05-04" data-col="24" data-row="0" data-level="0" x="252.15" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-04: 0 requests</title></rect>
+<rect data-date="2026-05-05" data-col="24" data-row="1" data-level="0" x="252.15" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-05: 0 requests</title></rect>
+<rect data-date="2026-05-06" data-col="24" data-row="2" data-level="0" x="252.15" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-06: 0 requests</title></rect>
+<rect data-date="2026-05-07" data-col="24" data-row="3" data-level="0" x="252.15" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-07: 0 requests</title></rect>
+<rect data-date="2026-05-08" data-col="24" data-row="4" data-level="0" x="252.15" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-08: 0 requests</title></rect>
+<rect data-date="2026-05-09" data-col="24" data-row="5" data-level="0" x="252.15" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-09: 0 requests</title></rect>
+<rect data-date="2026-05-10" data-col="24" data-row="6" data-level="0" x="252.15" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-10: 0 requests</title></rect>
+<rect data-date="2026-05-11" data-col="25" data-row="0" data-level="0" x="260.49" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-11: 0 requests</title></rect>
+<rect data-date="2026-05-12" data-col="25" data-row="1" data-level="0" x="260.49" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-12: 0 requests</title></rect>
+<rect data-date="2026-05-13" data-col="25" data-row="2" data-level="0" x="260.49" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-13: 0 requests</title></rect>
+<rect data-date="2026-05-14" data-col="25" data-row="3" data-level="0" x="260.49" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-14: 0 requests</title></rect>
+<rect data-date="2026-05-15" data-col="25" data-row="4" data-level="0" x="260.49" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-15: 0 requests</title></rect>
+<rect data-date="2026-05-16" data-col="25" data-row="5" data-level="0" x="260.49" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-16: 0 requests</title></rect>
+<rect data-date="2026-05-17" data-col="25" data-row="6" data-level="0" x="260.49" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-17: 0 requests</title></rect>
+<rect data-date="2026-05-18" data-col="26" data-row="0" data-level="0" x="268.83" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-18: 0 requests</title></rect>
+<rect data-date="2026-05-19" data-col="26" data-row="1" data-level="0" x="268.83" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-19: 0 requests</title></rect>
+<rect data-date="2026-05-20" data-col="26" data-row="2" data-level="0" x="268.83" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-20: 0 requests</title></rect>
+<rect data-date="2026-05-21" data-col="26" data-row="3" data-level="0" x="268.83" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-21: 0 requests</title></rect>
+<rect data-date="2026-05-22" data-col="26" data-row="4" data-level="0" x="268.83" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-22: 0 requests</title></rect>
+<rect data-date="2026-05-23" data-col="26" data-row="5" data-level="0" x="268.83" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-23: 0 requests</title></rect>
+<rect data-date="2026-05-24" data-col="26" data-row="6" data-level="0" x="268.83" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-24: 0 requests</title></rect>
+<rect data-date="2026-05-25" data-col="27" data-row="0" data-level="0" x="277.17" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-25: 0 requests</title></rect>
+<rect data-date="2026-05-26" data-col="27" data-row="1" data-level="0" x="277.17" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-26: 0 requests</title></rect>
+<rect data-date="2026-05-27" data-col="27" data-row="2" data-level="0" x="277.17" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-27: 0 requests</title></rect>
+<rect data-date="2026-05-28" data-col="27" data-row="3" data-level="0" x="277.17" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-28: 0 requests</title></rect>
+<rect data-date="2026-05-29" data-col="27" data-row="4" data-level="0" x="277.17" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-29: 0 requests</title></rect>
+<rect data-date="2026-05-30" data-col="27" data-row="5" data-level="0" x="277.17" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-30: 0 requests</title></rect>
+<rect data-date="2026-05-31" data-col="27" data-row="6" data-level="0" x="277.17" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-05-31: 0 requests</title></rect>
+<rect data-date="2026-06-01" data-col="28" data-row="0" data-level="0" x="285.51" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-01: 0 requests</title></rect>
+<rect data-date="2026-06-02" data-col="28" data-row="1" data-level="0" x="285.51" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-02: 0 requests</title></rect>
+<rect data-date="2026-06-03" data-col="28" data-row="2" data-level="0" x="285.51" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-03: 0 requests</title></rect>
+<rect data-date="2026-06-04" data-col="28" data-row="3" data-level="0" x="285.51" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-04: 0 requests</title></rect>
+<rect data-date="2026-06-05" data-col="28" data-row="4" data-level="0" x="285.51" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-05: 0 requests</title></rect>
+<rect data-date="2026-06-06" data-col="28" data-row="5" data-level="0" x="285.51" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-06: 0 requests</title></rect>
+<rect data-date="2026-06-07" data-col="28" data-row="6" data-level="0" x="285.51" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-07: 0 requests</title></rect>
+<rect data-date="2026-06-08" data-col="29" data-row="0" data-level="0" x="293.85" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-08: 0 requests</title></rect>
+<rect data-date="2026-06-09" data-col="29" data-row="1" data-level="0" x="293.85" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-09: 0 requests</title></rect>
+<rect data-date="2026-06-10" data-col="29" data-row="2" data-level="0" x="293.85" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-10: 0 requests</title></rect>
+<rect data-date="2026-06-11" data-col="29" data-row="3" data-level="0" x="293.85" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-11: 0 requests</title></rect>
+<rect data-date="2026-06-12" data-col="29" data-row="4" data-level="0" x="293.85" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-12: 0 requests</title></rect>
+<rect data-date="2026-06-13" data-col="29" data-row="5" data-level="0" x="293.85" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-13: 0 requests</title></rect>
+<rect data-date="2026-06-14" data-col="29" data-row="6" data-level="0" x="293.85" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-14: 0 requests</title></rect>
+<rect data-date="2026-06-15" data-col="30" data-row="0" data-level="0" x="302.19" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-15: 0 requests</title></rect>
+<rect data-date="2026-06-16" data-col="30" data-row="1" data-level="0" x="302.19" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-16: 0 requests</title></rect>
+<rect data-date="2026-06-17" data-col="30" data-row="2" data-level="0" x="302.19" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-17: 0 requests</title></rect>
+<rect data-date="2026-06-18" data-col="30" data-row="3" data-level="0" x="302.19" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-18: 0 requests</title></rect>
+<rect data-date="2026-06-19" data-col="30" data-row="4" data-level="0" x="302.19" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-19: 0 requests</title></rect>
+<rect data-date="2026-06-20" data-col="30" data-row="5" data-level="0" x="302.19" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-20: 0 requests</title></rect>
+<rect data-date="2026-06-21" data-col="30" data-row="6" data-level="0" x="302.19" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-21: 0 requests</title></rect>
+<rect data-date="2026-06-22" data-col="31" data-row="0" data-level="0" x="310.53" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-22: 0 requests</title></rect>
+<rect data-date="2026-06-23" data-col="31" data-row="1" data-level="0" x="310.53" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-23: 0 requests</title></rect>
+<rect data-date="2026-06-24" data-col="31" data-row="2" data-level="0" x="310.53" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-24: 0 requests</title></rect>
+<rect data-date="2026-06-25" data-col="31" data-row="3" data-level="0" x="310.53" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-25: 0 requests</title></rect>
+<rect data-date="2026-06-26" data-col="31" data-row="4" data-level="0" x="310.53" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-26: 0 requests</title></rect>
+<rect data-date="2026-06-27" data-col="31" data-row="5" data-level="0" x="310.53" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-27: 0 requests</title></rect>
+<rect data-date="2026-06-28" data-col="31" data-row="6" data-level="0" x="310.53" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-28: 0 requests</title></rect>
+<rect data-date="2026-06-29" data-col="32" data-row="0" data-level="0" x="318.87" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-29: 0 requests</title></rect>
+<rect data-date="2026-06-30" data-col="32" data-row="1" data-level="0" x="318.87" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-06-30: 0 requests</title></rect>
+<rect data-date="2026-07-01" data-col="32" data-row="2" data-level="0" x="318.87" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-01: 0 requests</title></rect>
+<rect data-date="2026-07-02" data-col="32" data-row="3" data-level="0" x="318.87" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-02: 0 requests</title></rect>
+<rect data-date="2026-07-03" data-col="32" data-row="4" data-level="0" x="318.87" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-03: 0 requests</title></rect>
+<rect data-date="2026-07-04" data-col="32" data-row="5" data-level="0" x="318.87" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-04: 0 requests</title></rect>
+<rect data-date="2026-07-05" data-col="32" data-row="6" data-level="0" x="318.87" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-05: 0 requests</title></rect>
+<rect data-date="2026-07-06" data-col="33" data-row="0" data-level="0" x="327.21" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-06: 0 requests</title></rect>
+<rect data-date="2026-07-07" data-col="33" data-row="1" data-level="0" x="327.21" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-07: 0 requests</title></rect>
+<rect data-date="2026-07-08" data-col="33" data-row="2" data-level="0" x="327.21" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-08: 0 requests</title></rect>
+<rect data-date="2026-07-09" data-col="33" data-row="3" data-level="0" x="327.21" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-09: 0 requests</title></rect>
+<rect data-date="2026-07-10" data-col="33" data-row="4" data-level="0" x="327.21" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-10: 0 requests</title></rect>
+<rect data-date="2026-07-11" data-col="33" data-row="5" data-level="0" x="327.21" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-11: 0 requests</title></rect>
+<rect data-date="2026-07-12" data-col="33" data-row="6" data-level="0" x="327.21" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-12: 0 requests</title></rect>
+<rect data-date="2026-07-13" data-col="34" data-row="0" data-level="0" x="335.55" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-13: 0 requests</title></rect>
+<rect data-date="2026-07-14" data-col="34" data-row="1" data-level="0" x="335.55" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-14: 0 requests</title></rect>
+<rect data-date="2026-07-15" data-col="34" data-row="2" data-level="0" x="335.55" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-15: 0 requests</title></rect>
+<rect data-date="2026-07-16" data-col="34" data-row="3" data-level="0" x="335.55" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-07-16: 0 requests</title></rect>
+<rect data-date="2026-07-17" data-col="34" data-row="4" data-level="1" x="335.55" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-17: 4 requests</title></rect>
+<rect data-date="2026-07-18" data-col="34" data-row="5" data-level="1" x="335.55" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-18: 28 requests</title></rect>
+<rect data-date="2026-07-19" data-col="34" data-row="6" data-level="1" x="335.55" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-19: 31 requests</title></rect>
+<rect data-date="2026-07-20" data-col="35" data-row="0" data-level="1" x="343.89" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-20: 5 requests</title></rect>
+<rect data-date="2026-07-21" data-col="35" data-row="1" data-level="1" x="343.89" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-21: 7 requests</title></rect>
+<rect data-date="2026-07-22" data-col="35" data-row="2" data-level="1" x="343.89" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-22: 40 requests</title></rect>
+<rect data-date="2026-07-23" data-col="35" data-row="3" data-level="1" x="343.89" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-23: 39 requests</title></rect>
+<rect data-date="2026-07-24" data-col="35" data-row="4" data-level="1" x="343.89" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-24: 5 requests</title></rect>
+<rect data-date="2026-07-25" data-col="35" data-row="5" data-level="1" x="343.89" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-25: 12 requests</title></rect>
+<rect data-date="2026-07-26" data-col="35" data-row="6" data-level="1" x="343.89" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-26: 52 requests</title></rect>
+<rect data-date="2026-07-27" data-col="36" data-row="0" data-level="1" x="352.23" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-27: 46 requests</title></rect>
+<rect data-date="2026-07-28" data-col="36" data-row="1" data-level="1" x="352.23" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-28: 4 requests</title></rect>
+<rect data-date="2026-07-29" data-col="36" data-row="2" data-level="1" x="352.23" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-29: 17 requests</title></rect>
+<rect data-date="2026-07-30" data-col="36" data-row="3" data-level="1" x="352.23" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-30: 65 requests</title></rect>
+<rect data-date="2026-07-31" data-col="36" data-row="4" data-level="1" x="352.23" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-07-31: 51 requests</title></rect>
+<rect data-date="2026-08-01" data-col="36" data-row="5" data-level="1" x="352.23" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-01: 3 requests</title></rect>
+<rect data-date="2026-08-02" data-col="36" data-row="6" data-level="1" x="352.23" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-02: 25 requests</title></rect>
+<rect data-date="2026-08-03" data-col="37" data-row="0" data-level="1" x="360.57" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-03: 79 requests</title></rect>
+<rect data-date="2026-08-04" data-col="37" data-row="1" data-level="1" x="360.57" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-04: 55 requests</title></rect>
+<rect data-date="2026-08-05" data-col="37" data-row="2" data-level="1" x="360.57" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-05: 2 requests</title></rect>
+<rect data-date="2026-08-06" data-col="37" data-row="3" data-level="1" x="360.57" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-06: 33 requests</title></rect>
+<rect data-date="2026-08-07" data-col="37" data-row="4" data-level="1" x="360.57" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-07: 92 requests</title></rect>
+<rect data-date="2026-08-08" data-col="37" data-row="5" data-level="1" x="360.57" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-08: 58 requests</title></rect>
+<rect data-date="2026-08-09" data-col="37" data-row="6" data-level="1" x="360.57" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-09: 1 requests</title></rect>
+<rect data-date="2026-08-10" data-col="38" data-row="0" data-level="1" x="368.91" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-10: 44 requests</title></rect>
+<rect data-date="2026-08-11" data-col="38" data-row="1" data-level="2" x="368.91" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-11: 105 requests</title></rect>
+<rect data-date="2026-08-12" data-col="38" data-row="2" data-level="1" x="368.91" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-12: 59 requests</title></rect>
+<rect data-date="2026-08-13" data-col="38" data-row="3" data-level="0" x="368.91" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-08-13: 0 requests</title></rect>
+<rect data-date="2026-08-14" data-col="38" data-row="4" data-level="1" x="368.91" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-14: 55 requests</title></rect>
+<rect data-date="2026-08-15" data-col="38" data-row="5" data-level="2" x="368.91" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-15: 117 requests</title></rect>
+<rect data-date="2026-08-16" data-col="38" data-row="6" data-level="1" x="368.91" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-16: 58 requests</title></rect>
+<rect data-date="2026-08-17" data-col="39" data-row="0" data-level="0" x="377.25" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-08-17: 0 requests</title></rect>
+<rect data-date="2026-08-18" data-col="39" data-row="1" data-level="1" x="377.25" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-18: 69 requests</title></rect>
+<rect data-date="2026-08-19" data-col="39" data-row="2" data-level="2" x="377.25" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-19: 129 requests</title></rect>
+<rect data-date="2026-08-20" data-col="39" data-row="3" data-level="1" x="377.25" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-20: 56 requests</title></rect>
+<rect data-date="2026-08-21" data-col="39" data-row="4" data-level="1" x="377.25" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-21: 1 requests</title></rect>
+<rect data-date="2026-08-22" data-col="39" data-row="5" data-level="1" x="377.25" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-22: 83 requests</title></rect>
+<rect data-date="2026-08-23" data-col="39" data-row="6" data-level="2" x="377.25" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-23: 139 requests</title></rect>
+<rect data-date="2026-08-24" data-col="40" data-row="0" data-level="1" x="385.58" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-24: 53 requests</title></rect>
+<rect data-date="2026-08-25" data-col="40" data-row="1" data-level="1" x="385.58" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-25: 3 requests</title></rect>
+<rect data-date="2026-08-26" data-col="40" data-row="2" data-level="2" x="385.58" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-26: 99 requests</title></rect>
+<rect data-date="2026-08-27" data-col="40" data-row="3" data-level="2" x="385.58" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-27: 148 requests</title></rect>
+<rect data-date="2026-08-28" data-col="40" data-row="4" data-level="1" x="385.58" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-28: 49 requests</title></rect>
+<rect data-date="2026-08-29" data-col="40" data-row="5" data-level="1" x="385.58" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-08-29: 7 requests</title></rect>
+<rect data-date="2026-08-30" data-col="40" data-row="6" data-level="2" x="385.58" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-30: 115 requests</title></rect>
+<rect data-date="2026-08-31" data-col="41" data-row="0" data-level="2" x="393.92" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-08-31: 156 requests</title></rect>
+<rect data-date="2026-09-01" data-col="41" data-row="1" data-level="1" x="393.92" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-01: 44 requests</title></rect>
+<rect data-date="2026-09-02" data-col="41" data-row="2" data-level="1" x="393.92" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-02: 12 requests</title></rect>
+<rect data-date="2026-09-03" data-col="41" data-row="3" data-level="2" x="393.92" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-03: 133 requests</title></rect>
+<rect data-date="2026-09-04" data-col="41" data-row="4" data-level="2" x="393.92" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-04: 162 requests</title></rect>
+<rect data-date="2026-09-05" data-col="41" data-row="5" data-level="1" x="393.92" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-05: 38 requests</title></rect>
+<rect data-date="2026-09-06" data-col="41" data-row="6" data-level="1" x="393.92" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-06: 18 requests</title></rect>
+<rect data-date="2026-09-07" data-col="42" data-row="0" data-level="2" x="402.26" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-07: 151 requests</title></rect>
+<rect data-date="2026-09-08" data-col="42" data-row="1" data-level="2" x="402.26" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-08: 167 requests</title></rect>
+<rect data-date="2026-09-09" data-col="42" data-row="2" data-level="1" x="402.26" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-09: 32 requests</title></rect>
+<rect data-date="2026-09-10" data-col="42" data-row="3" data-level="1" x="402.26" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-10: 27 requests</title></rect>
+<rect data-date="2026-09-11" data-col="42" data-row="4" data-level="2" x="402.26" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-11: 169 requests</title></rect>
+<rect data-date="2026-09-12" data-col="42" data-row="5" data-level="2" x="402.26" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-12: 169 requests</title></rect>
+<rect data-date="2026-09-13" data-col="42" data-row="6" data-level="1" x="402.26" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-13: 25 requests</title></rect>
+<rect data-date="2026-09-14" data-col="43" data-row="0" data-level="1" x="410.60" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-14: 37 requests</title></rect>
+<rect data-date="2026-09-15" data-col="43" data-row="1" data-level="2" x="410.60" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-15: 188 requests</title></rect>
+<rect data-date="2026-09-16" data-col="43" data-row="2" data-level="2" x="410.60" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-16: 170 requests</title></rect>
+<rect data-date="2026-09-17" data-col="43" data-row="3" data-level="1" x="410.60" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-17: 19 requests</title></rect>
+<rect data-date="2026-09-18" data-col="43" data-row="4" data-level="1" x="410.60" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-18: 50 requests</title></rect>
+<rect data-date="2026-09-19" data-col="43" data-row="5" data-level="3" x="410.60" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-09-19: 206 requests</title></rect>
+<rect data-date="2026-09-20" data-col="43" data-row="6" data-level="2" x="410.60" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-20: 168 requests</title></rect>
+<rect data-date="2026-09-21" data-col="44" data-row="0" data-level="1" x="418.94" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-21: 13 requests</title></rect>
+<rect data-date="2026-09-22" data-col="44" data-row="1" data-level="1" x="418.94" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-22: 64 requests</title></rect>
+<rect data-date="2026-09-23" data-col="44" data-row="2" data-level="3" x="418.94" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-09-23: 223 requests</title></rect>
+<rect data-date="2026-09-24" data-col="44" data-row="3" data-level="2" x="418.94" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-24: 165 requests</title></rect>
+<rect data-date="2026-09-25" data-col="44" data-row="4" data-level="1" x="418.94" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-25: 8 requests</title></rect>
+<rect data-date="2026-09-26" data-col="44" data-row="5" data-level="1" x="418.94" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-26: 81 requests</title></rect>
+<rect data-date="2026-09-27" data-col="44" data-row="6" data-level="3" x="418.94" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-09-27: 240 requests</title></rect>
+<rect data-date="2026-09-28" data-col="45" data-row="0" data-level="2" x="427.28" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-28: 159 requests</title></rect>
+<rect data-date="2026-09-29" data-col="45" data-row="1" data-level="1" x="427.28" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-09-29: 4 requests</title></rect>
+<rect data-date="2026-09-30" data-col="45" data-row="2" data-level="2" x="427.28" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-09-30: 99 requests</title></rect>
+<rect data-date="2026-10-01" data-col="45" data-row="3" data-level="3" x="427.28" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-01: 256 requests</title></rect>
+<rect data-date="2026-10-02" data-col="45" data-row="4" data-level="2" x="427.28" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-02: 152 requests</title></rect>
+<rect data-date="2026-10-03" data-col="45" data-row="5" data-level="1" x="427.28" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-03: 1 requests</title></rect>
+<rect data-date="2026-10-04" data-col="45" data-row="6" data-level="2" x="427.28" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-04: 119 requests</title></rect>
+<rect data-date="2026-10-05" data-col="46" data-row="0" data-level="3" x="435.62" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-05: 270 requests</title></rect>
+<rect data-date="2026-10-06" data-col="46" data-row="1" data-level="2" x="435.62" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-06: 143 requests</title></rect>
+<rect data-date="2026-10-07" data-col="46" data-row="2" data-level="0" x="435.62" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#202734"><title>2026-10-07: 0 requests</title></rect>
+<rect data-date="2026-10-08" data-col="46" data-row="3" data-level="2" x="435.62" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-08: 141 requests</title></rect>
+<rect data-date="2026-10-09" data-col="46" data-row="4" data-level="3" x="435.62" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-09: 282 requests</title></rect>
+<rect data-date="2026-10-10" data-col="46" data-row="5" data-level="2" x="435.62" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-10: 133 requests</title></rect>
+<rect data-date="2026-10-11" data-col="46" data-row="6" data-level="1" x="435.62" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-11: 1 requests</title></rect>
+<rect data-date="2026-10-12" data-col="47" data-row="0" data-level="2" x="443.96" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-12: 164 requests</title></rect>
+<rect data-date="2026-10-13" data-col="47" data-row="1" data-level="4" x="443.96" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-10-13: 292 requests</title></rect>
+<rect data-date="2026-10-14" data-col="47" data-row="2" data-level="2" x="443.96" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-14: 121 requests</title></rect>
+<rect data-date="2026-10-15" data-col="47" data-row="3" data-level="1" x="443.96" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-15: 3 requests</title></rect>
+<rect data-date="2026-10-16" data-col="47" data-row="4" data-level="2" x="443.96" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-16: 188 requests</title></rect>
+<rect data-date="2026-10-17" data-col="47" data-row="5" data-level="4" x="443.96" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-10-17: 300 requests</title></rect>
+<rect data-date="2026-10-18" data-col="47" data-row="6" data-level="2" x="443.96" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-10-18: 109 requests</title></rect>
+<rect data-date="2026-10-19" data-col="48" data-row="0" data-level="1" x="452.30" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-19: 8 requests</title></rect>
+<rect data-date="2026-10-20" data-col="48" data-row="1" data-level="3" x="452.30" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-20: 213 requests</title></rect>
+<rect data-date="2026-10-21" data-col="48" data-row="2" data-level="4" x="452.30" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-10-21: 306 requests</title></rect>
+<rect data-date="2026-10-22" data-col="48" data-row="3" data-level="1" x="452.30" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-22: 96 requests</title></rect>
+<rect data-date="2026-10-23" data-col="48" data-row="4" data-level="1" x="452.30" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-23: 16 requests</title></rect>
+<rect data-date="2026-10-24" data-col="48" data-row="5" data-level="3" x="452.30" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-24: 238 requests</title></rect>
+<rect data-date="2026-10-25" data-col="48" data-row="6" data-level="4" x="452.30" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-10-25: 309 requests</title></rect>
+<rect data-date="2026-10-26" data-col="49" data-row="0" data-level="1" x="460.64" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-26: 82 requests</title></rect>
+<rect data-date="2026-10-27" data-col="49" data-row="1" data-level="1" x="460.64" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-27: 26 requests</title></rect>
+<rect data-date="2026-10-28" data-col="49" data-row="2" data-level="3" x="460.64" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-10-28: 264 requests</title></rect>
+<rect data-date="2026-10-29" data-col="49" data-row="3" data-level="4" x="460.64" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-10-29: 310 requests</title></rect>
+<rect data-date="2026-10-30" data-col="49" data-row="4" data-level="1" x="460.64" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-30: 68 requests</title></rect>
+<rect data-date="2026-10-31" data-col="49" data-row="5" data-level="1" x="460.64" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-10-31: 39 requests</title></rect>
+<rect data-date="2026-11-01" data-col="49" data-row="6" data-level="4" x="460.64" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-01: 290 requests</title></rect>
+<rect data-date="2026-11-02" data-col="50" data-row="0" data-level="4" x="468.98" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-02: 308 requests</title></rect>
+<rect data-date="2026-11-03" data-col="50" data-row="1" data-level="1" x="468.98" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-03: 55 requests</title></rect>
+<rect data-date="2026-11-04" data-col="50" data-row="2" data-level="1" x="468.98" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-04: 54 requests</title></rect>
+<rect data-date="2026-11-05" data-col="50" data-row="3" data-level="4" x="468.98" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-05: 315 requests</title></rect>
+<rect data-date="2026-11-06" data-col="50" data-row="4" data-level="4" x="468.98" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-06: 303 requests</title></rect>
+<rect data-date="2026-11-07" data-col="50" data-row="5" data-level="1" x="468.98" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-07: 42 requests</title></rect>
+<rect data-date="2026-11-08" data-col="50" data-row="6" data-level="1" x="468.98" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-08: 72 requests</title></rect>
+<rect data-date="2026-11-09" data-col="51" data-row="0" data-level="4" x="477.32" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-09: 339 requests</title></rect>
+<rect data-date="2026-11-10" data-col="51" data-row="1" data-level="4" x="477.32" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-10: 296 requests</title></rect>
+<rect data-date="2026-11-11" data-col="51" data-row="2" data-level="1" x="477.32" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-11: 30 requests</title></rect>
+<rect data-date="2026-11-12" data-col="51" data-row="3" data-level="1" x="477.32" y="325.02" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-12: 93 requests</title></rect>
+<rect data-date="2026-11-13" data-col="51" data-row="4" data-level="4" x="477.32" y="333.36" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-13: 362 requests</title></rect>
+<rect data-date="2026-11-14" data-col="51" data-row="5" data-level="3" x="477.32" y="341.70" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-11-14: 285 requests</title></rect>
+<rect data-date="2026-11-15" data-col="51" data-row="6" data-level="1" x="477.32" y="350.04" width="6.67" height="6.67" rx="1.87" fill="#423365"><title>2026-11-15: 20 requests</title></rect>
+<rect data-date="2026-11-16" data-col="52" data-row="0" data-level="2" x="485.66" y="300.00" width="6.67" height="6.67" rx="1.87" fill="#643e96"><title>2026-11-16: 117 requests</title></rect>
+<rect data-date="2026-11-17" data-col="52" data-row="1" data-level="4" x="485.66" y="308.34" width="6.67" height="6.67" rx="1.87" fill="#a855f7"><title>2026-11-17: 384 requests</title></rect>
+<rect data-date="2026-11-18" data-col="52" data-row="2" data-level="3" x="485.66" y="316.68" width="6.67" height="6.67" rx="1.87" fill="#864ac6"><title>2026-11-18: 273 requests</title></rect>
+<text x="26" y="374.37735849056605" font-size="8" fill="#9AAAC1" >2025-11-17 → 2026-11-18</text>
+<text x="410" y="374.37735849056605" font-size="8" fill="#9AAAC1" text-anchor="end">Less</text>
+<rect x="417" y="367.37735849056605" width="8" height="8" rx="2" fill="#202734"/>
+<rect x="428" y="367.37735849056605" width="8" height="8" rx="2" fill="#423365"/>
+<rect x="439" y="367.37735849056605" width="8" height="8" rx="2" fill="#643e96"/>
+<rect x="450" y="367.37735849056605" width="8" height="8" rx="2" fill="#864ac6"/>
+<rect x="461" y="367.37735849056605" width="8" height="8" rx="2" fill="#a855f7"/>
+<text x="494" y="374.37735849056605" font-size="8" fill="#9AAAC1" text-anchor="end">More</text>
+<path d="M26 391.37735849056605H494" stroke="#283347"/>
+<text x="26" y="410.37735849056605" font-size="8" fill="#9AAAC1" letter-spacing="1">UPDATED DEMO DATA</text>
+<text x="494" y="410.37735849056605" font-size="8" fill="#9AAAC1" text-anchor="end" letter-spacing="1">LOCAL → GITHUB</text></g></g><rect x=".5" y=".5" width="519" height="427" rx="16" fill="none" stroke="#283347"/>
+</svg>
