@@ -205,10 +205,11 @@ process (`TaskCreate_3f9a`). It renames the tool's earlier calls and
 streamed or not. The lists are in `tool-names.mjs`.
 
 Factory adds names without notice. A request refused while it declares tools
-goes once more with every tool renamed the same way (droid's own names and
-`mcp__` tools kept). If that is taken, the same tool set goes renamed in full
-for the rest of the process; if it is refused again, the refusal is about
-what the request says, and that is the answer.
+goes once more with every tool renamed the same way (droid's own names kept).
+That includes MCP tools, because Factory can start refusing one of their
+exact names too. If that is taken, the same tool set goes renamed in full for
+the rest of the process; if it is refused again, the refusal is about what the
+request says, and that is the answer.
 
 ## DeepSeek Harness (dsh)
 
