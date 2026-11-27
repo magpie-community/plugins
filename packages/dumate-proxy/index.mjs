@@ -3,7 +3,7 @@ import { loadConfig as defaultLoadConfig } from "./src/config.mjs"
 import { loadCatalog as defaultLoadCatalog } from "./src/catalog.mjs"
 import { buildCookieHeader, extractCsrfToken, parseCookieString, readDesktopLogin } from "./src/auth.mjs"
 import { normalizeReasoningBody } from "./src/gateway.mjs"
-import { generateImage, KNOWN_IMAGE_MODELS } from "./src/media.mjs"
+import { generateImage, KNOWN_IMAGE_MODELS, selectStrongestImageModel } from "./src/media.mjs"
 import {
   buildImageUpstreamBody,
   chatMessagesToPrompt,
@@ -193,10 +193,14 @@ async function gatewayJson(body, cookies, fetchImpl, signal) {
 function toMagpieModels(catalog) {
   const models = Object.create(null)
   const source = { ...(catalog?.models ?? {}) }
-  for (const id of KNOWN_IMAGE_MODELS) {
-    source[id] ??= {
-      id,
-      name: `DuMate Image ${id.replace(/^dumate-image/, "")}`,
+  const imageIds = Object.entries(source)
+    .filter(([key, model]) => model?.kind === "image" || /^dumate-image/i.test(key))
+    .map(([key]) => key)
+  const strongest = selectStrongestImageModel(imageIds)
+  if (!source[strongest]) {
+    source[strongest] = {
+      id: strongest,
+      name: "DuMate Image",
       kind: "image",
       context: 200000,
       maxOutput: 32000,
@@ -207,9 +211,10 @@ function toMagpieModels(catalog) {
     }
   }
   for (const [key, model] of Object.entries(source)) {
-    const image = model.kind === "image"
+    const image = model.kind === "image" || /^dumate-image/i.test(key)
+    if (image && key !== strongest) continue
     models[key] = {
-      name: model.name,
+      name: image ? "DuMate Image" : model.name,
       limit: { context: model.context, output: model.maxOutput },
       tool_call: image ? false : model.tool_call,
       reasoning: image ? false : model.reasoning,
@@ -218,11 +223,8 @@ function toMagpieModels(catalog) {
       ...(key === "deepseek-v41-flash" && !image ? { variants: { none: {}, low: {}, high: {}, max: {} } } : {}),
     }
   }
-  const firstImage = Object.values(models).find((model) => model.modalities?.output?.includes("image"))
-  if (firstImage && !models["group/image"]) models["group/image"] = { ...firstImage, name: "DuMate Image (compatibility alias)" }
   return models
 }
-
 function resolveCatalogModel(catalog, requested) {
   if (!requested) return undefined
   if (catalog?.models?.[requested]) return catalog.models[requested]
