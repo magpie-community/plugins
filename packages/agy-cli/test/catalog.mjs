@@ -1510,3 +1510,93 @@ test("config names the provider, keeping the user's own name", async () => {
     assert.deepEqual(own.provider["agy-cli"], { name: "My agy", npm: "x", options: { x: 1 } })
   })
 })
+
+test("each account keeps its own catalogRows for usage windows, including cold-start saved catalogs", async () => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-usage-catalog-rows-"))
+  const ultraRows = [
+    ["gemini-4-neon-high", "Gemini 4 Neon (High)"], ["gemini-4-neon-low", "Gemini 4 Neon (Low)"],
+    ["claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"], ["claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"],
+  ]
+  const proRows = [
+    ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
+  ]
+  const keyring = "go-keyring-base64:" + Buffer.from(JSON.stringify({
+    token: { access_token: "ya29.ultra", refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "ultra@example.com",
+  })).toString("base64") + "\n"
+  const otherAuth = { type: "oauth", key: "agy", metadata: { agyHome: "otheracct1" } }
+  const ownAuth = { type: "oauth", key: "agy", metadata: { email: "ultra@example.com" } }
+  const agy = path.join(shared, process.platform === "win32" ? "agy.exe" : "agy")
+  fs.writeFileSync(agy, "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+  const stateHome = path.join(shared, "state")
+  const otherToken = path.join(stateHome, "magpie-agy-bridge", "accounts", "otheracct1", ".gemini", "antigravity-cli", "antigravity-oauth-token")
+  fs.mkdirSync(path.dirname(otherToken), { recursive: true })
+  fs.writeFileSync(otherToken, JSON.stringify({
+    token: { access_token: "ya29.pro", refresh_token: "1//r", expiry: "0001-01-01T00:00:00Z" },
+    auth_method: "consumer", id_token_email: "pro@example.com",
+  }))
+  const usageSpawn = (_file, args, opts) => {
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.14\n" }
+    if (args[0] !== "-p") return 1
+    const isOther = Boolean(opts?.env?.SSH_CONNECTION && /otheracct1$/.test(opts.env.HOME ?? ""))
+    const groups = isOther
+      ? [{
+          name: "Claude and GPT models",
+          description: "Models within this group: Claude Sonnet 4.6",
+          buckets: [{ id: "3p-weekly", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: 0.7 }],
+        }]
+      : [{
+          name: "Claude and GPT models",
+          description: "Models within this group: Claude Sonnet 5.5",
+          buckets: [{ id: "3p-weekly", name: "Weekly Limit Remaining", window: "weekly", reset_time: "2026-11-22T00:00:00Z", remaining_fraction: 0.4 }],
+        }]
+    return { code: 0, stdout: JSON.stringify({ status: "SUCCESS", command: { name: "usage", data: { groups } } }) }
+  }
+  const env = { XDG_STATE_HOME: stateHome }
+  const net = noFetch()
+  try {
+    // 1. Live models() on both accounts: refreshing the Pro account must not
+    // overwrite the Ultra account's catalogRows when reading usage.
+    await withKit({
+      agyPath: agy, env, platform: "darwin", storedSignIn: keyring,
+      modelsBehavior: { stdout: modelsOutput(ultraRows) },
+      offeredModels: (home) => /otheracct1$/.test(home) ? proRows : ultraRows,
+      onSpawn: usageSpawn,
+    }, async (kit) => {
+      await kit.plugin.provider.models()
+      await warmed(kit)
+      kit.modelsBehavior = { stdout: modelsOutput(proRows) }
+      await kit.plugin.provider.models(undefined, { auth: otherAuth })
+      await warmed(kit)
+
+      const uUltra = await kit.plugin.auth.usage(async () => ownAuth, {})
+      const uPro = await kit.plugin.auth.usage(async () => otherAuth, {})
+      assert.equal(uUltra.error, undefined, JSON.stringify(uUltra))
+      assert.equal(uPro.error, undefined, JSON.stringify(uPro))
+      assert.deepEqual(uUltra.windows.find(w => w.aside)?.models, ["claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low"])
+      assert.deepEqual(uPro.windows.find(w => w.aside)?.models, ["claude-sonnet-4-6"])
+      await settle(kit)
+    })
+
+    // 2. Restart with saved models.json: auth.usage called BEFORE models()
+    // loads each account's saved catalog rows via useAgyPath.
+    await withKit({
+      agyPath: agy, env, platform: "darwin", storedSignIn: keyring,
+      modelsBehavior: { code: 1, stderr: "not called" },
+      onSpawn: usageSpawn,
+    }, async (kit) => {
+      const uUltra = await kit.plugin.auth.usage(async () => ownAuth, {})
+      const uPro = await kit.plugin.auth.usage(async () => otherAuth, {})
+      assert.equal(uUltra.error, undefined, JSON.stringify(uUltra))
+      assert.equal(uPro.error, undefined, JSON.stringify(uPro))
+      assert.deepEqual(uUltra.windows.find(w => w.aside)?.models, ["claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low"])
+      assert.deepEqual(uPro.windows.find(w => w.aside)?.models, ["claude-sonnet-4-6"])
+      assert.equal(kit.modelsSpawns.length, 0)
+      await settle(kit)
+    })
+  } finally {
+    net.restore()
+    fs.rmSync(shared, { recursive: true, force: true })
+  }
+})

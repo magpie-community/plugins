@@ -9511,6 +9511,10 @@ function readUsageOf(home, email = "") {
       }
       await keepOwn(email, stored)
     }
+    // Load this account's saved catalog rows before reading usage so its
+    // windows map its own models even when usage runs before models().
+    const agy = findAgy()
+    if (agy) useAgyPath(agy)
     const result = await read()
     if (email && !result.error && toldNotHeld.delete(email.toLowerCase()) && result.signIn === "kept") {
       return { ...result, signIn: "renewed" }
