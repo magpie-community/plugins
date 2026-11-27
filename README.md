@@ -33,7 +33,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [joycode](packages/joycode) | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial) | `joycode` |
 | [doubao-work](packages/doubao-work) | Doubao Work (豆包工作), whose agent runs in the cloud with no API, through the Doubao desktop app driven the way a person uses it (macOS, Windows) | `doubao-work` |
 | [gemini-web](packages/gemini-web) | The Gemini web app (gemini.google.com), not Google's API: your Google account signed in through a browser window of its own, or as a visitor; one streamed call to the app's own endpoint per request | `gemini-web` |
-| [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
+| [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in or an imported credentials file; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
 | [magnific-api](packages/magnific-api) | Magnific image and video generation, with your API key: 20 native image and video models, and tools for every agent that reach all 140 generation endpoints | `magnific` |

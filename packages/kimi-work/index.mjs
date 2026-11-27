@@ -84,6 +84,32 @@ const notHere = (revoked=false) => Object.assign(Error(revoked
   : '这个 Kimi Work 账号已不是 Kimi 桌面版当前登录的账号，本机也没有它的 Work 密钥。请在 Kimi 桌面版切换到这个账号进入一次 Work，之后切回别的账号它也能继续用。'),
   {signIn:'expired',code:'kimi_work_account_not_here'});
 const unavailable = error => Object.assign(Error('Kimi Work 连接失败：' + (error?.cause?.code || error?.message || '未知网络错误'), {cause:error}), {code:'kimi_work_connection_failed'});
+const importExpired = () => Object.assign(Error('导入的 Kimi Work 密钥已失效，请重新选择 Kimi 桌面版的 daimon/config.json 导入。'), {signIn:'expired',code:'kimi_work_login_expired'});
+const IMPORT_FROM = {
+  en: "Choose Kimi desktop's daimon/config.json from a computer signed in to Work. The imported account works here without Kimi installed. Its credentials are kept in magpie's auth store; import it again if its Work key expires.",
+  froms: {
+    zh: '选择已登录 Work 的 Kimi 桌面版 daimon/config.json。导入后本机无需安装 Kimi。文件包含敏感凭据，会保存在 magpie 认证库中；Work 密钥失效后需重新导入。',
+    'zh-TW': '選擇已登入 Work 的 Kimi 桌面版 daimon/config.json。匯入後本機無需安裝 Kimi。檔案包含敏感憑證，會保存在 magpie 認證庫中；Work 金鑰失效後需重新匯入。',
+    ja: 'Work にサインインした Kimi デスクトップの daimon/config.json を選択します。インポート後、このPCに Kimi は不要です。機密情報は magpie の認証ストアに保存されます。Work キーが失効したら再インポートしてください。',
+    de: 'Wähle daimon/config.json eines bei Work angemeldeten Kimi-Desktops. Danach ist Kimi hier nicht nötig. Die sensiblen Zugangsdaten werden in magpies Auth-Speicher abgelegt; nach Ablauf des Work-Schlüssels erneut importieren.',
+  },
+};
+const IMPORT_METHOD = {
+  label:'导入 Kimi Work 凭据（粘贴 config.json）',
+  labels:{
+    en:'Import Kimi Work credentials (paste config.json)',
+    'zh-TW':'匯入 Kimi Work 憑證（貼上 config.json）',
+    ja:'Kimi Work 認証情報をインポート（config.json を貼り付け）',
+    de:'Kimi-Work-Zugangsdaten importieren (config.json einfügen)',
+  },
+  message:'粘贴 daimon/config.json 的完整 JSON 内容。Windows 默认路径：%APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json；如果移动过 Kimi 存储位置，真实路径以 %APPDATA%\\kimi-desktop\\daimon-storage.json 中的 shareDir 为准。',
+  messages:{
+    en:'Paste the complete JSON contents of daimon/config.json. Windows default: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json; if you moved Kimi storage, use shareDir from %APPDATA%\\kimi-desktop\\daimon-storage.json.',
+    'zh-TW':'貼上 daimon/config.json 的完整 JSON 內容。Windows 預設路徑：%APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json；如果移動過 Kimi 儲存位置，真實路徑以 %APPDATA%\\kimi-desktop\\daimon-storage.json 中的 shareDir 為準。',
+    ja:'daimon/config.json の完全な JSON 内容を貼り付けてください。Windows のデフォルト: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json。Kimi の保存場所を移動した場合は、%APPDATA%\\kimi-desktop\\daimon-storage.json の shareDir を参照してください。',
+    de:'Füge den vollständigen JSON-Inhalt von daimon/config.json ein. Windows-Standard: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json; bei verschobenem Kimi-Speicher gilt shareDir aus %APPDATA%\\kimi-desktop\\daimon-storage.json.',
+  },
+};
 // spentQuota is a 403 body saying the account's allowance is used up, not
 // that the token or the model is refused (#465).
 const spentQuota = text => /resource_exhausted|usage limit|billing cycle|insufficient balance|quota/i.test(String(text??''));
@@ -377,8 +403,15 @@ function readKeys(file) {
 // A Windows path is taken apart as one wherever the plugin runs (tests).
 const pathOf = f => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(f)?path.win32:path;
 
-// Read Work credentials live. Only explicit sign-in can import the web pair;
-// usage of a reference-only account just rereads its web access token.
+function desktopCredentials(doc) {
+  const work=doc?.credentials?.kimiCode, web=doc?.credentials?.kimiWeb;
+  if(typeof work?.apiKey!=='string'||!work.apiKey || typeof web?.accessToken!=='string'||!web.accessToken
+    || typeof web.userId!=='string'||!web.userId || work.baseUrl?.replace(/\/$/,'')!==BASE) throw expired();
+  return {workToken:work.apiKey,webToken:web.accessToken,
+    webRefresh:typeof web.refreshToken==='string' ? web.refreshToken : '',uid:accountUid(web.userId)};
+}
+// Read a local account's Work credentials live. Only explicit sign-in or file
+// import copies credentials; reference-only usage rereads its web access token.
 // Kimi owns these files; this plugin never writes them.
 function readDesktop(file=desktopFile()) {
   const P=pathOf(file),daimon=P.dirname(file),share=P.dirname(daimon);
@@ -390,13 +423,14 @@ function readDesktop(file=desktopFile()) {
     const st=fs.statSync(file);
     if(!st.isFile() || st.size>8*1024*1024) throw expired();
     const doc=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
-    const work=doc.credentials?.kimiCode, web=doc.credentials?.kimiWeb;
-    if(typeof work?.apiKey!=='string'||!work.apiKey || typeof web?.accessToken!=='string'||!web.accessToken
-      || typeof web.userId!=='string'||!web.userId || work.baseUrl?.replace(/\/$/,'')!==BASE) throw expired();
-    return {workToken:work.apiKey,webToken:web.accessToken,deviceId:readDeviceId(file),
-      webRefresh:typeof web.refreshToken==='string' ? web.refreshToken : '',
-      uid:accountUid(web.userId),keys:readKeys(P.join(daimon,'kimi-code-key.json'))};
+    return {...desktopCredentials(doc),deviceId:readDeviceId(file),keys:readKeys(P.join(daimon,'kimi-code-key.json'))};
   } catch {throw Object.assign(expired(),{file});}
+}
+function parseDesktopImport(text) {
+  try {
+    if(typeof text!=='string'||Buffer.byteLength(text)>8*1024*1024)throw Error('invalid import');
+    return desktopCredentials(JSON.parse(text.replace(/^\uFEFF/,'')));
+  } catch {throw Error('文件不是有效的 Kimi Work daimon/config.json，未找到可用的 Work 和会员凭据。');}
 }
 
 function modelRows(payload) {
@@ -482,13 +516,17 @@ function workConfigRows(payload) {
 }
 
 function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platform=process.platform,now=Date.now}={}) {
-  // The account's session: Kimi's own sign-in when the account is the one
-  // Kimi is signed in to, else its Work key from Kimi's key store, with no
+  // An imported account uses its saved Work key. A local account uses Kimi's
+  // own sign-in when current, else its Work key from Kimi's key store, with no
   // web sign-in (Kimi keeps only the current user's), so its allowance
   // can't be read (#440).
   const current=auth=>{
-    const session=readSession();
     if(auth?.source!=='kimi-work-desktop')throw expired();
+    if(auth.imported===true) {
+      if(typeof auth.workToken!=='string'||!auth.workToken)throw importExpired();
+      return {workToken:auth.workToken,webToken:typeof auth.access==='string'?auth.access:'',uid:auth.uid,imported:true};
+    }
+    const session=readSession();
     if(auth.uid===session.uid)return session;
     const key=typeof auth.uid==='string'?session.keys?.[auth.uid]:undefined;
     if(!key)throw notHere();
@@ -605,6 +643,34 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
     offered.set(s.uid,ids);
     return ids;
   }
+  function signedIn(s,imported=false) {
+    const pair=s.webRefresh
+      ? {access:s.webToken,refresh:s.webRefresh,expires:expiry(s.webToken)}
+      : imported ? {access:s.webToken,refresh:'',expires:expiry(s.webToken)} : {access:'',refresh:'',expires:0};
+    return {type:'success',...pair,source:'kimi-work-desktop',
+      accountId:'Kimi Work · '+s.uid.slice(0,6),uid:s.uid,
+      ...(imported?{imported:true,workToken:s.workToken}:{})};
+  }
+  async function importFile(text,signal) {
+    let s;
+    try{s=parseDesktopImport(text);}
+    catch(error){return {type:'failed',error:error.message};}
+    try{await jsonRequest(BASE+'/models',s.workToken,undefined,signal);}
+    catch(error){
+      if(error?.status===401)return {type:'failed',error:'文件中的 Kimi Work 密钥已失效，请在 Kimi 桌面版重新进入 Work 后选择新的 config.json。'};
+      const why=error?.status?'HTTP '+error.status:error?.name==='TimeoutError'?'超时':error?.cause?.code||error?.message||'未知网络错误';
+      return {type:'failed',error:'已读取文件中的 Kimi Work 登录，但连接 Kimi Work 失败（'+why+'），请检查网络后再试。'};
+    }
+    return signedIn(s,true);
+  }
+  async function importFiles(texts,signal) {
+    const out=[];
+    for(const text of Array.isArray(texts)?texts:[texts]) {
+      signal?.throwIfAborted();
+      out.push(await importFile(text,signal));
+    }
+    return out;
+  }
   return {
     config:async cfg=>{
       cfg.provider??={};
@@ -617,6 +683,9 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
     auth:{
       provider:ID,
       maxConcurrency:1,
+      importFrom:IMPORT_FROM.en,
+      importFroms:IMPORT_FROM.froms,
+      import:(texts,{signal}={})=>importFiles(texts,signal),
       methods:[{type:'oauth',label:'使用本机 Kimi Work 登录',authorize:async()=>({
         url:'',method:'auto',instructions:'读取本机 Kimi Work 登录；支持会员续期，不修改桌面配置。',
         callback:async()=>{
@@ -637,13 +706,17 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           }
           // A user keeps a separate account id (#440). Import a complete web
           // pair when available; older desktops still get a reference account.
-          const pair=typeof s.webRefresh==='string'&&s.webRefresh
-            ? {access:s.webToken,refresh:s.webRefresh,expires:expiry(s.webToken)}
-            : {access:'',refresh:'',expires:0};
-          return {type:'success',...pair,source:'kimi-work-desktop',
-            accountId:'Kimi Work · '+s.uid.slice(0,6),uid:s.uid};
+          return signedIn(s);
         },
-      })}],
+      })},{
+        type:'oauth',label:IMPORT_METHOD.label,labels:IMPORT_METHOD.labels,
+        prompts:[{type:'password',key:'config',message:IMPORT_METHOD.message,messages:IMPORT_METHOD.messages,
+          placeholder:'{"credentials":{…}}',validate:v=>v&&v.trim()?undefined:'请粘贴 daimon/config.json 的内容'}],
+        authorize:async inputs=>({
+          url:'',method:'auto',instructions:'验证导入的 Kimi Work 凭据。',
+          callback:async(_,{signal}={})=>importFile(inputs?.config,signal),
+        }),
+      }],
       refreshLead:REFRESH_LEAD,
       async refresh(auth) {
         if(!hasPair(auth))return;
@@ -685,7 +758,7 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           let response;
           try { response=await fetchImpl(BASE+'/chat/completions',{...options,method:'POST',headers,redirect:'error'}); }
           catch(error) { if(options.signal?.aborted)throw error; throw unavailable(error); }
-          if(response.status===401) { await response.body?.cancel(); throw s.away?notHere(true):expired(); }
+          if(response.status===401) { await response.body?.cancel(); throw s.imported?importExpired():s.away?notHere(true):expired(); }
           // Kimi says a spent allowance with a 403 ("You've reached your
           // usage limit for this billing cycle", resource_exhausted
           // "insufficient balance"), which magpie reads as a key fault and
