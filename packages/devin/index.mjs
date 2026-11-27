@@ -3254,9 +3254,13 @@ async function usage(key, server, onStatus) {
   const st = u.planStatus ?? {}
   const info = st.planInfo ?? {}
   const num = (v) => (typeof v === "number" ? v : typeof v === "string" && v.trim() && !isNaN(Number(v)) ? Number(v) : 0)
-  // no plan: the row keeps the one `devin auth status` gave the sign-in
-  // ("Devin Pro"), as magpie's built-in row said it, not planName's "Pro"
+  // the plan as `devin auth status` names it ("Devin Pro"), from teamsTier,
+  // never planName's bare "Pro"; without a tier the row keeps the sign-in's.
+  // The sign-in's alone went stale: an account that went from Free to Max
+  // stayed "Devin Free" on its row
   const out = { windows: [] }
+  const plan = tierName(u.teamsTier || info.teamsTier)
+  if (plan) out.plan = plan
   if (st.planEnd) out.until = st.planEnd
   // a quota's window is shown when Devin says what is left of it. JSON
   // leaves a 0 out, so on a quota-billed plan a window with a reset and no
