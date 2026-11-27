@@ -1447,8 +1447,32 @@ async function generate(key, chat, signal, place, zdr = false) {
 // Google model's tools have the $refs Google can't take written out
 // (googleSchema). A model that wants its reasoning back (wantsReasoning)
 // has it on each assistant message (withReasoningBack).
+// Some upstreams (Command Code's prefill server) reject JSON Schema keywords
+// such as $schema, regex patterns and allOf/anyOf/oneOf in tool parameters with
+// 400 "Invalid schema for function ... is not a regex". Strip these validation-only
+// keywords from tool schemas before sending; they don't affect what tools do.
+function sanitizeToolSchema(node) {
+  if (!node || typeof node !== "object") return
+  if (Array.isArray(node)) { for (const child of node) sanitizeToolSchema(child); return }
+  delete node.$schema
+  delete node.pattern
+  delete node.allOf; delete node.anyOf; delete node.oneOf
+  for (const value of Object.values(node)) sanitizeToolSchema(value)
+}
+function cleanToolSchemas(tools) {
+  return tools.map((t) => {
+    const params = t?.function?.parameters ?? t?.input_schema
+    if (!params) return t
+    const clean = JSON.parse(JSON.stringify(params))
+    sanitizeToolSchema(clean)
+    return t?.function ? { ...t, function: { ...t.function, parameters: clean } } : { ...t, input_schema: clean }
+  })
+}
+
 function providerBody(chat) {
   let out = chat
+  // Always strip upstream-incompatible JSON Schema keywords from tool parameters.
+  if (Array.isArray(out?.tools)) out = { ...out, tools: cleanToolSchemas(out.tools) }
   if (wantsReasoning(chat?.model)) {
     const messages = withReasoningBack(chat.messages)
     if (messages !== chat.messages) out = { ...chat, messages }
