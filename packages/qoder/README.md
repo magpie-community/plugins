@@ -8,6 +8,7 @@ accounts exist only on their own:
 |---|---|---|---|
 | `qoder` | qoder.com (international) | Google, GitHub or email | `QoderAuthPlugin` |
 | `qoder-cn` | qoder.cn ([Qoder CN](#qoder-cn)) | Alibaba Cloud or phone number | `QoderCNAuthPlugin` |
+| `qoder-team` | qoder.com.cn ([Qoder Teams](#qoder-teams)) | a Teams member: phone, email or the organization's SSO | `QoderTeamAuthPlugin` |
 | `qwenwork` | gateway.qwenwork.cn ([QwenWork](#qwenwork-千问办公)) | phone number or email | `QwenWorkAuthPlugin` |
 | `qwenwork-enterprise` | the enterprise's own domain ([QwenWork](#qwenwork-千问办公)) | email OTP or enterprise SSO | `QwenWorkEnterpriseAuthPlugin` |
 
@@ -420,6 +421,42 @@ tests on a real Lingma dedicated domain. The folders and the model names
 were checked against Qoder CN IDE 1.38.0. This plugin itself has not been
 tried on one.
 
+## Qoder Teams
+
+`qoder-team` is for Qoder CN's **Teams (团队版)** seats. An organization is
+bought on Alibaba Cloud and managed on qoder.com.cn; its members are invited
+by email, by phone or through the organization's SSO, and sign in there.
+qoder.com.cn and qoder.cn serve the same app — on 2026-11-27 the same bytes at
+`/` and `/users/sign-in`, and the same `/device/selectAccounts` page — so a
+Teams account speaks the protocol [above](#qoder-cn) on the same hosts:
+
+| | `qoder-cn` | `qoder-team` |
+|---|---|---|
+| Sign-in page | qoder.cn | qoder.com.cn |
+| Accounts: poll, tokens, user info, usage | openapi.qoder.com.cn | the same |
+| Models and chat | gateway.qoder.com.cn | the same |
+| Device-flow client id | Qoder CN's CLI's | the same |
+
+The sign-in page is the only difference, and it is the domain the
+organization's invitation and SSO links point at.
+
+What a Teams account adds:
+
+- The organization its user info names (`organization_id` /
+  `organization_name`, or a nested `organization`) is kept on the credential
+  as `orgId` / `orgName`, and the account is named for it: `dev@acme.cn (Acme)`
+  is its `accountId`, `dev@acme.cn · Acme` its card. The same person's
+  personal account on `qoder-cn` therefore stays a row of its own, and a PAT
+  sign-in names the same account a browser sign-in does.
+- An account whose user info names no organization is named as `qoder-cn`
+  names it: the Teams site also serves personal accounts.
+- **Sign in with Qoder Teams Enterprise (VPC)** and **… dedicated domain** are
+  offered as they are on Qoder CN: an organization on a VPC instance or a
+  dedicated domain belongs to the same Teams plan.
+
+Tried with a real Teams seat (Qoder CN, phone sign-in, 2026-11-27): the
+sign-in, the organization read from user info, the model list and chat work.
+
 ## The card's name
 
 An account signed in with a phone is shown by that phone — masked, `138****8000` — not by
@@ -429,6 +466,10 @@ its `accountId`, which is a uuid. Qoder CN's user info answers the number as `se
 QwenWork's phone accounts answer only the last four digits, as `name`, beside a synthetic
 `phone_<uuid>@phone.local` email (measured): the card shows `****8000` and never that email.
 An email sign-in keeps its email.
+
+On a Teams site (`qoder-team`) the organization follows the name — `dev@acme.cn · Acme` —
+and the `accountId` carries it too, `dev@acme.cn (Acme)`, so a team seat and the same
+person's personal account are two accounts to magpie.
 
 `accountId` stays the account's identity — what magpie keys the user's own name for
 it, its proxy, model picks, caps and a gateway key's account list by — so it never

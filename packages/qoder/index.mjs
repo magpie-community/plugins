@@ -2,6 +2,8 @@
 // sites, whose accounts exist only on their own:
 //   - qoder: the international site, qoder.com
 //   - qoder-cn: Qoder CN, qoder.cn (Alibaba Cloud or phone sign-in)
+//   - qoder-team: Qoder CN's Teams (团队版) households, signed in on
+//     qoder.com.cn, the domain their organization's console lives on
 //
 // Qoder is signed in to the way its desktop client is: a PKCE device flow
 // (qoder.com's page, then a poll of openapi.qoder.sh for the device token),
@@ -25,6 +27,17 @@
 // gateway.qoder.com.cn, with the device-flow client id that CLI sends in
 // production and no redirect_uri. That CLI chats on the device token itself;
 // if qoder.cn won't trade it for a job token, the account does the same.
+//
+// Qoder CN's Teams (团队版) plans are an organization's seats: members are
+// invited by email, phone or the organization's SSO, and the organization is
+// managed on qoder.com.cn. qoder.com.cn and qoder.cn serve the same app
+// (measured 2026-11-27: the same bytes at / and /users/sign-in, and the same
+// device page), so a Teams account speaks the protocol above on the same
+// hosts. qoder-team signs in on qoder.com.cn, where the organization's SSO
+// and its invitation links point, and keeps the organization its user info
+// names (organization_id / organization_name). The account is named for that
+// organization, so the same person's personal account on qoder-cn stays a
+// row of its own.
 //
 // A Qoder CN enterprise VPC account (yetone/magpie#312) is signed in to with
 // its own method, which asks for the enterprise's instance name. Its calls go
@@ -723,6 +736,10 @@ async function deviceSignIn(site) {
       } catch {}
       if (site.deviceOnly && !String(uid ?? "").trim()) throw new Error(`${site.name}: the sign-in named no user`)
       if (site.vpc && !String(uid ?? "").trim()) throw new Error(`${site.name} (${site.vpc}): the sign-in named no user`)
+      // a Teams account is told apart from the same person's personal one by
+      // the organization its user info names
+      const team = teamOf(site, user)
+      const orgTag = team.orgLabel ? ` (${team.orgLabel})` : ""
       return {
         type: "success",
         ...chat,
@@ -732,18 +749,21 @@ async function deviceSignIn(site) {
         // model picks and caps all hang off it, and a gateway key keys its
         // list by it), so it stays exactly what main computes: the phone is a
         // separate field, shown by usage's `user`, never the identity.
-        accountId: site.vpc
-          ? `${email || uid} (${site.vpc})`
-          : site.deviceOnly
-            ? email || uid || name || dt.user_id
-            : email || dt.user_id,
+        accountId:
+          (site.vpc
+            ? `${email || uid} (${site.vpc})`
+            : site.deviceOnly
+              ? email || uid || name || dt.user_id
+              : email || dt.user_id) + orgTag,
         // the card's names: the phone on its own, and what magpie shows (a
         // real email first, then the phone) — never the accountId
         ...(() => {
           const label = phoneLabelOf(user, email, name)
           const suffix = (v) => (v ? (site.vpc ? `${v} (${site.vpc})` : v) : "")
-          return { phoneLabel: suffix(label), cardName: suffix(realEmailOf(email) || label) }
+          return { phoneLabel: suffix(label), cardName: cardNameOf(site, user, email, name) }
         })(),
+        ...(team.orgId ? { orgId: team.orgId } : {}),
+        ...(team.orgName ? { orgName: team.orgName } : {}),
         uid,
         email,
         name: name || dt.user_name || "",
@@ -792,6 +812,8 @@ async function patSignIn(site, pat) {
     }
   } catch {}
   if (!uid) throw new Error(`${site.name} PAT sign-in: could not determine user id`)
+  const team = teamOf(site, user)
+  const orgTag = team.orgLabel ? ` (${team.orgLabel})` : ""
   return {
     type: "success",
     ...chat,
@@ -799,9 +821,11 @@ async function patSignIn(site, pat) {
     // an account on a new sign-in when both the accountId and the uid match,
     // so a renewed PAT sign-in must keep naming the same account. A suffix
     // here would add a second row beside the lapsed one instead.
-    accountId: email || uid,
+    accountId: (email || uid) + orgTag,
     phoneLabel: phoneLabelOf(user, email, name),
-    cardName: realEmailOf(email) || phoneLabelOf(user, email, name),
+    cardName: cardNameOf(site, user, email, name),
+    ...(team.orgId ? { orgId: team.orgId } : {}),
+    ...(team.orgName ? { orgName: team.orgName } : {}),
     uid,
     email,
     name: name || "",
@@ -2810,8 +2834,9 @@ async function refreshedNames(site, token) {
     const user = site.normalizeUser ? site.normalizeUser(ui.json) : ui.json
     const label = phoneLabelOf(user, user?.email, user?.name)
     const suffix = (v) => (v ? (site.vpc ? `${v} (${site.vpc})` : v) : "")
-    // built as the sign-in builds it: a real email first, then the phone
-    return { phoneLabel: suffix(label), cardName: suffix(realEmailOf(user?.email) || label) }
+    // built as the sign-in builds it: a real email first, then the phone,
+    // then the Teams organization
+    return { phoneLabel: suffix(label), cardName: cardNameOf(site, user, user?.email, user?.name) }
   } catch {
     return {}
   }
@@ -2834,6 +2859,40 @@ function phoneLabelOf(user, email, name) {
     if (/^\d{4}$/.test(tail)) return `****${tail}`
   }
   return ""
+}
+
+/**
+ * The organization a Qoder CN Teams account belongs to, as Qoder CN's CLI
+ * reads it from user info: organization_id / organization_name, or a nested
+ * `organization` object. A personal account names none.
+ */
+function orgOf(user) {
+  const u = user && typeof user === "object" ? user : {}
+  const org = u.organization && typeof u.organization === "object" ? u.organization : {}
+  const id = String(u.organization_id ?? u.organizationId ?? u.orgId ?? org.id ?? org.org_id ?? org.orgId ?? "").trim()
+  const name = String(u.organization_name ?? u.organizationName ?? org.name ?? org.org_name ?? org.orgName ?? "").trim()
+  return id || name ? { ...(id ? { orgId: id } : {}), ...(name ? { orgName: name } : {}) } : {}
+}
+
+/**
+ * What a Teams site adds to an account's names: `orgId`, `orgName`, and the
+ * `orgLabel` its `accountId` and card are suffixed with. A site that isn't a
+ * Teams site (`orgLabel` unset), or an account whose user info names no
+ * organization, adds nothing.
+ */
+function teamOf(site, user) {
+  if (!site.orgLabel) return {}
+  const org = orgOf(user)
+  return org.orgId || org.orgName ? { ...org, orgLabel: org.orgName || org.orgId } : {}
+}
+
+/** The card's name as every path builds it: a real email first, then the
+ *  phone, the VPC instance's suffix, then the Teams organization's. */
+function cardNameOf(site, user, email, name) {
+  const shown = realEmailOf(email) || phoneLabelOf(user, email, name)
+  const vpc = site.vpc ? ` (${site.vpc})` : ""
+  const org = teamOf(site, user).orgLabel
+  return `${shown}${vpc}${org ? ` · ${org}` : ""}`
 }
 
 // changed is the fields of b that differ from a's: what auth.refresh gives.
@@ -2922,6 +2981,10 @@ const CAMPAIGN_MACHINE_TTL = 60 * 60 * 1000 // Qoder's desktop client renews its
 const RUNTIMES = {
   qoder: { name: "Qoder", environment: "3", override: "QODER_RUNTIME_INFO", app: "Qoder", linux: "Qoder", cli: "QODER_", dir: ".qoder", required: true },
   "qoder-cn": { name: "Qoder CN", environment: "0", override: "QODERCN_RUNTIME_INFO", app: "Qoder CN", linux: "Qoder-CN", cli: "QODERCN_", dir: ".qoder-cn", required: false },
+  // Teams households run Qoder CN's own desktop and CLI, so the identity is
+  // read from the same installs and the same cache (the check-in is Qoder
+  // CN's too)
+  "qoder-team": { name: "Qoder CN", environment: "0", override: "QODERCN_RUNTIME_INFO", app: "Qoder CN", linux: "Qoder-CN", cli: "QODERCN_", dir: ".qoder-cn", required: false },
 }
 
 async function campaignRuntime({ home = homedir(), platform = process.platform, arch = process.arch, env = process.env, opt = "/opt", runtime = RUNTIMES.qoder } = {}) {
@@ -3418,6 +3481,25 @@ const SITES = {
     // an enterprise's own instance, <instance>.vpc.qoder.com.cn and its
     // -openapi and -gateway hosts, as Qoder CN's CLI builds it in
     vpcDomain: "vpc.qoder.com.cn",
+    models: CN_MODELS,
+  },
+  // Qoder CN's Teams (团队版) households. qoder.com.cn is where an
+  // organization is managed and where its invitations and SSO point; it
+  // serves the same app as qoder.cn (measured 2026-11-27), and the accounts,
+  // hosts and client id are Qoder CN's. The organization is kept on the
+  // account and goes in its name, so a personal account of the same person
+  // stays a row of its own.
+  "qoder-team": {
+    id: "qoder-team",
+    name: "Qoder Teams",
+    clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",
+    web: "https://qoder.com.cn",
+    openapi: "https://openapi.qoder.com.cn",
+    api: "https://gateway.qoder.com.cn",
+    redirect: "",
+    deviceChat: true,
+    vpcDomain: "vpc.qoder.com.cn",
+    orgLabel: true,
     models: CN_MODELS,
   },
   // QwenWork's public cloud. QWENWORK_ENT_DOMAIN (the enterprise preset)
@@ -4421,6 +4503,7 @@ const makePlugin = (site) => async ({ client }) => {
 
 export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
+export const QoderTeamAuthPlugin = makePlugin(SITES["qoder-team"])
 export const QwenWorkAuthPlugin = makePlugin(SITES.qwenwork)
 
 // enterpriseDomain reads what the user entered as their enterprise's
@@ -4482,4 +4565,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, orgOf, teamOf, cardNameOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
