@@ -9,6 +9,13 @@ Use your local Factory Droid installation as a model provider in Magpie or OpenC
 3. In **Providers**, select **Factory Droid (local CLI)**. Choose **Use local Droid login** if you have already signed in to Droid as the same operating-system user. To use a key, choose **Factory API key** and enter it. You can also set `FACTORY_API_KEY` in the host environment and choose **Use local Droid login**.
 4. Select `factory-droid/default` for Droid's default model, or `factory-droid/<model-id>` for a specific model. Droid supplies the model list for the signed-in account. For models with adjustable reasoning effort, the plugin lists the available levels and applies your selection to the ACP session.
 
+## Where the sign-in is kept
+
+- **Use local Droid login**: the sign-in is Droid's own for the operating-system user. The plugin does not read or copy it. It starts `droid`, which uses it, and to tell when the login changed it checks only the metadata of the credential files under `~/.factory`. In place of a secret, the plugin saves a fixed marker, so the host lists the account as signed in.
+- **Factory API key**: the key is kept wherever the host keeps provider sign-ins. OpenCode keeps it in `~/.local/share/opencode/auth.json`, and magpie in `plugin-auth.json`. The plugin passes the key to each Droid process in the `FACTORY_API_KEY` environment variable, and sends it to Factory to read the quota windows.
+
+The model catalog of API key accounts and the session checkpoints described below are stored under `$XDG_CACHE_HOME/magpie/factory-droid`, which is `~/.cache/magpie/factory-droid` by default. Neither holds the sign-in or the message text. Each live session also has a working directory under the system's temporary directory, with its tool definitions and transient tool requests and results. The plugin removes that directory when the Droid process closes normally.
+
 ## Using Factory models from Codex
 
 After setup, select `factory-droid/deepseek-v4.1-flash-1017` in Codex if your Factory account has access to that model. You can use the same API key you use with the direct provider.
@@ -19,9 +26,9 @@ The `factory` provider builds HTTP requests for Factory's model endpoints from t
 
 `magpie plugin list` shows how many models the plugin discovered. The gateway's `/v1/models` endpoint lists the models selected in Magpie for clients to use.
 
-With an API key, the plugin caches model names, image support and reasoning levels by account and Droid executable. A new process can reuse a catalog less than a minute old. After that, a lookup starts a background refresh. If the refresh fails temporarily, the plugin can serve a catalog up to 24 hours old. If Droid rejects the credentials, the plugin clears that account's cache. The first lookup waits up to six seconds, then returns a provisional default entry while discovery continues.
+With an API key, the plugin caches model names, image support and reasoning levels by account and Droid executable. A new process can reuse a catalog less than a minute old. After that, a lookup starts a background refresh. If the refresh fails temporarily, the plugin can serve a catalog up to 24 hours old. If Droid rejects the credentials, the plugin clears that account's cache. The first lookup returns the chat models as soon as Droid lists them. If Droid takes more than six seconds to list any models, it returns a provisional default entry. While image support is still being checked, the plugin marks the chat list as provisional so Magpie can keep its previous model selections. Only the complete catalog is saved to disk. A refresh keeps serving the previous complete catalog until the new one is ready.
 
-With only a local Droid login, the catalog stays in memory. The plugin refreshes it when the local credential files change. If it cannot identify the current login from those files, it asks Droid for the catalog on every lookup and replays client history to continue tool calls.
+With only a local Droid login, the catalog stays in memory. The plugin refreshes it when the local credential files change. If those files do not identify the login, each lookup checks the current account independently. After a provisional lookup finishes in the background, the next lookup waits for its own chat and image checks so it can return a complete list for the current login. Tool calls use history replay when the login cannot be identified.
 
 ## Messages and tools
 
@@ -35,11 +42,11 @@ Droid controls sampling, the output token limit and stop sequences. The `/v1/mes
 
 ## Session reuse and recovery
 
-A stable `x-magpie-session` lets a follow-up send only new messages. The plugin checks the account, session, working directory, subagent, request configuration and conversation history. Reordering tools, changing cache markers or switching to another explicitly selected model can reuse a conversation. For reasoning effort, `x-magpie-effort` takes precedence over `output_config.effort`, followed by `reasoning_effort`. Switching back to the default model, clearing an explicit effort, changing tool definitions or editing the history causes the plugin to rebuild the context.
+A stable `x-magpie-session` lets a follow-up send only new messages. The plugin checks the account, session, working directory, subagent, request configuration and conversation history. Reordering tools, changing cache markers or switching to another explicitly selected model can reuse a conversation. For reasoning effort, `x-magpie-effort` takes precedence over `output_config.effort`, followed by `reasoning_effort`. Droid may keep or adjust the current effort when the selected model does not offer the requested level. If Droid reports a different level for a setting it lists as supported, the plugin returns HTTP 502. Switching back to the default model, clearing an explicit effort, changing tool definitions or editing the history causes the plugin to rebuild the context.
 
-Each plugin process keeps up to eight sessions. An idle session stays available for two minutes. A session waiting for a client's tool results can stay open for up to ten minutes. The ACP prompt timeout pauses during that wait.
+Each plugin process keeps up to eight sessions. An idle session stays available for two minutes. A session waiting for a client's tool results can stay open for up to ten minutes. The plugin releases it sooner when a new request has the same account, session, request configuration, model selection, reasoning effort and history through that tool call, but continues without returning its results. The ACP prompt timeout starts again whenever Droid sends output, and pauses during that wait.
 
-If the client disconnects after delivering a tool result, the plugin waits up to two minutes for the answer. Retrying the same request can retrieve that answer with its original message and call IDs. An identical request still running on its original connection, or conflicting results for the same call, returns HTTP 409. The retry cache holds up to 32 responses, each limited to 512,000 bytes.
+If the client disconnects after delivering a tool result, the plugin waits up to two minutes for the answer. Retrying the same request can retrieve that answer with its original message and call IDs. An identical request still running on its original connection, or conflicting results for the same call, returns HTTP 409. The conflict check also applies to late results handled by session resume or history replay. The retry cache holds up to 32 responses, each limited to 512,000 bytes.
 
 When Droid advertises `session/resume`, the plugin saves a checkpoint for completed turns with a stable session ID and for steps waiting on tool results. A checkpoint matches the account, request configuration and history digest. It records the usage already reported and omits the message text. The plugin keeps up to 128 checkpoints, valid for 24 hours.
 
