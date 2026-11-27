@@ -1334,7 +1334,9 @@ function anotherAccountLists(agyPath, model) {
       for (const row of rows) {
         const rowId = typeof row?.id === "string" ? row.id : ""
         if (!rowId) continue
-        const family = row.effort && rowId.endsWith("-" + row.effort) ? rowId.slice(0, -row.effort.length - 1) : rowId
+        const family = row.effort && rowId.endsWith("-" + row.effort)
+          ? rowId.slice(0, -row.effort.length - 1)
+          : rowId.replace(/-(?:minimal|low|medium|high|xhigh|max)$/i, "")
         if (rowId === base || family === base || family === bare) return true
       }
     }
@@ -1525,6 +1527,16 @@ function closestEffort(effort, efforts) {
     }
   }
   return best
+}
+
+function catalogHasModel(catalog, model) {
+  if (!model || !catalog) return false
+  if (catalog.routes.has(model) || catalog.rawIds?.has(model)) return true
+  const undated = model.replace(/-\d{8}$/, "")
+  if (catalog.routes.has(undated) || catalog.rawIds?.has(undated)) return true
+  const effortMatch = /^(.*)-(minimal|low|medium|high|xhigh|max)$/i.exec(undated)
+  const base = effortMatch ? effortMatch[1] : undated
+  return catalog.routes.has(base) || Boolean(catalog.rawIds?.has(base))
 }
 
 function resolveCatalogAlias(catalog, model) {
@@ -9709,10 +9721,19 @@ export const AntigravityBridgePlugin = async () => {
             const saidEffort = requestHeader(fetchInput, init, "x-magpie-effort")
             const listed = await loadModelCatalog(agy)
             const model = resolveAgyModel(listed, requestedModel, body, saidEffort)
-            // a family alias stands in for a model only no account has
-            const aliasOf = resolveCatalogAlias(listed.routing ?? listed, requestedModel).id
-            if (aliasOf !== requestedModel && !requestedModel.startsWith(aliasOf + "-") &&
-              anotherAccountLists(agy, requestedModel)) {
+            // a family alias stands in for a model only no account has, and an
+            // unaliased model missing from this account's fresh catalog fails
+            // fast before spawning agy when another signed-in account lists it (#1542)
+            const routing = listed.routing ?? listed
+            const aliasOf = resolveCatalogAlias(routing, requestedModel).id
+            const aliased = aliasOf !== requestedModel && !requestedModel.startsWith(aliasOf + "-")
+            const current = ms().cachedModelCatalog
+            const liveOffer = Boolean(ms().acpOfferedModels && !ms().offeredStale)
+            const liveList = !current.isFallback && current.fetchedAt > 0 &&
+              Date.now() - current.fetchedAt < MODEL_CATALOG_TTL_MS
+            const knownCatalog = liveOffer ? listed : liveList ? routing : null
+            const missingHere = aliased || (knownCatalog !== null && !catalogHasModel(knownCatalog, requestedModel))
+            if (missingHere && anotherAccountLists(agy, requestedModel)) {
               return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
             }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
