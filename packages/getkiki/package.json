@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/agent-getkiki",
+  "version": "0.1.0",
+  "description": "Kiki (getkiki.ai) as a magpie agent: magpie's gateway and models in Kiki's pi models.json, and the model Kiki starts on in its .env",
+  "type": "module",
+  "files": ["getkiki.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "kiki", "getkiki", "pi", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/getkiki" },
+  "scripts": { "test": "bun test getkiki.test.mjs" },
+  "magpie": { "agent": "./getkiki.agent.js", "icon": "https://getkiki.ai/favicon.svg" }
+}
