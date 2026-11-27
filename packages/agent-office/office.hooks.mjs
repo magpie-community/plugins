@@ -1,9 +1,10 @@
 // The host side of Agent Office. magpie loads this module in its plugin host
 // (a Bun process that lives while magpie runs), so it does two things there:
 //
-//  1. Every second and a half it reads the session files the agents write
-//     themselves — Claude Code's, Codex's, DeepSeek Harness's, Gemini CLI's,
-//     Qwen Code's, Pi's, omp's, Qoder's, WorkBuddy's, CodeBuddy's, Cursor's
+//  1. Every second and a half (MAGPIE_AGENT_OFFICE_INTERVAL) it reads the
+//     session files the agents write themselves — Claude Code's, Codex's,
+//     DeepSeek Harness's, Gemini CLI's, Qwen Code's, Pi's, omp's, Qoder's,
+//     WorkBuddy's, CodeBuddy's, Cursor's
 //     (its editor and cursor-agent) — and so
 //     knows what each one is really doing, whatever model it talks to:
 //     thinking, running a tool, waiting for an approval or an answer, done,
@@ -48,7 +49,32 @@ let scanner = null
 let jumper = null
 let timer = null
 let ticking = null
+let running = false
 let last = ""
+// The next tick is armed only after this one returns, so a scan that takes
+// longer than the interval cannot pile up behind itself. A throw while
+// reading options or writing the page must not end the chain; stop() during
+// the tick still leaves it stopped.
+let setTimer = (fn, ms) => {
+  const id = setTimeout(fn, ms)
+  id.unref?.()
+  return id
+}
+let clearTimer = (id) => { clearTimeout(id) }
+function everyMs() {
+  const n = Number(process.env.MAGPIE_AGENT_OFFICE_INTERVAL)
+  return Number.isFinite(n) && n >= 250 ? n : EVERY
+}
+function arm(delay) {
+  if (!running || ticking) return
+  const id = setTimer(() => {
+    ticking = null
+    if (!running) return
+    try { write() } catch {} finally { if (running) arm(everyMs()) }
+  }, delay)
+  id?.unref?.()
+  ticking = id
+}
 let lastJumpAt = 0
 let lastJumpPromise = null
 // fail closed: until an install's options are read, or a request carries
@@ -113,7 +139,7 @@ export function snapshot(now = Date.now()) {
 
 export function write(now = Date.now()) {
   timer = null
-  checkJumpOption()
+  try { checkJumpOption() } catch {}
   let body
   try { body = JSON.stringify(snapshot(now)) } catch { return }
   // only a change is written; the time alone is no change
@@ -137,16 +163,23 @@ function soon() {
 // the files are read from the moment the host loads this module
 export function start(opts = {}) {
   options = { ...options, ...opts }
-  if (!scanner) scanner = createScanner({ days: 2, max: 40, ...(opts.scanner || {}) })
+  if (typeof opts.setTimer === "function") setTimer = opts.setTimer
+  if (typeof opts.clearTimer === "function") clearTimer = opts.clearTimer
+  if (!scanner) scanner = createScanner({
+    days: 2, max: 40,
+    watch: process.env.MAGPIE_AGENT_OFFICE_WATCH === "0" ? false : true,
+    ...(opts.scanner || {}),
+  })
+  else scanner.resume?.()
   if (!jumper && (opts.jumper || !process.env.MAGPIE_AGENT_OFFICE_PAGE)) {
     jumper = createJumper({ onUpdate: soon, ...(opts.jumper || {}) })
     void jumper.refreshState(Date.now(), options.preferredJumpHost || "herdr-app")
   }
   if (opts.jumpRequest) checkJumpOption(opts.jumpRequest)
-  if (!ticking) {
-    write()
-    ticking = setInterval(write, EVERY)
-    ticking.unref?.()
+  if (!running) {
+    running = true
+    try { write() } catch {}
+    arm(everyMs())
   }
 }
 
@@ -159,8 +192,12 @@ export function waitForJump() {
 }
 
 export function stop() {
-  if (ticking) clearInterval(ticking)
+  running = false
+  if (ticking) clearTimer(ticking)
   ticking = null
+  if (timer) clearTimeout(timer)
+  timer = null
+  scanner?.close?.()
 }
 
 export async function onRequest(body, ctx) {
@@ -211,9 +248,14 @@ function readOptions() {
   for (const file of [join(process.cwd(), "plugins.json"), join(cfg, "magpie", "plugins.json")]) {
     let list
     try { list = JSON.parse(readFileSync(file, "utf8")) } catch { continue }
-    const me = (list.plugins || []).find((p) => matchSpec(p?.spec))
-    // the config this host runs with decides; a file without our entry is
-    // not a reason to consult another magpie's
+    // `null` is valid JSON and throws on .plugins. Skip a corrupt file and
+    // try the other location. A real file with no entry for us still decides,
+    // and is not a reason to consult another magpie's.
+    if (list == null || typeof list !== "object") continue
+    const plugins = list.plugins
+    if (plugins != null && !Array.isArray(plugins)) continue
+    let me
+    try { me = (plugins || []).find((p) => matchSpec(p?.spec)) } catch { continue }
     return me ? { ...packageOptions, ...(me.options || {}) } : null
   }
   return null
