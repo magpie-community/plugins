@@ -1128,6 +1128,33 @@ describe("native tool_use frames (kimi-k3.1-pro)", () => {
     expect(body.choices[0].message.content ?? "").not.toContain("TotallyUnknown")
   })
 
+  test("a native call missing its tool's required argument is dropped, as on the JSON path", () => {
+    // bash_output drifts to Bash by prefix, but carries BashOutput's arguments
+    const uses = [{ id: "call_1", name: "bash_output", params: '{"bash_id": "1"}' }]
+    expect(_internal.toolCallsFromUses(uses, [tool], "auto")).toEqual([])
+    expect(_internal.toolCallsFromUses([{ ...uses[0], params: '{"command": "ls"}' }], [tool], "auto")).toHaveLength(1)
+  })
+
+  test("a native call to a tool other than the one tool_choice names is dropped", () => {
+    const read = { type: "function", function: { name: "Read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }
+    const uses = [{ id: "call_1", name: "Bash", params: '{"command": "ls"}' }]
+    const named = { type: "function", function: { name: "Read" } }
+    expect(_internal.toolCallsFromUses(uses, [tool, read], named)).toEqual([])
+    expect(_internal.toolCallsFromUses(uses, [tool, read], "auto")).toHaveLength(1)
+  })
+
+  test("a native call after prose that already streamed still reaches the agent (stream)", async () => {
+    fake.state.turnFramesQueue = [[
+      { message: { content: [{ type: "text", text: "Let me look." }] } },
+      { message: { content: [{ type: "text", text: "Let me look." }, { type: "tool_use", toolCallId: "call_1", toolName: "Bash", toolParams: '{"command": "ls"}' }] }, finished: true },
+    ]]
+    const res = await ask({ tools: [tool], stream: true })
+    const text = await res.text()
+    expect(text).toContain("Let me look.")
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+  })
+
   test("with tool_choice=required a native-only reply still counts and does not retry", async () => {
     fake.state.turnFramesQueue = [nativeFrames()]
     const res = await ask({ tools: [tool], tool_choice: "required" })

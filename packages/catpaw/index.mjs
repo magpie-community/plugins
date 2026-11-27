@@ -610,9 +610,7 @@ function toolCallsFromText(text, tools, toolChoice) {
       args = p && typeof p === "object" ? p : { value: args }
     }
     if (!args || typeof args !== "object") args = {}
-    const schema = toolParamsOf(tools.find((t) => toolNameOf(t) === name))
-    const required = Array.isArray(schema?.required) ? schema.required : []
-    if (required.some((k) => args[k] === undefined)) continue
+    if (missesRequired(name, args, tools)) continue
     out.push({
       id: `call_${Date.now().toString(36)}_${out.length}`,
       type: "function",
@@ -622,15 +620,28 @@ function toolCallsFromText(text, tools, toolChoice) {
   return out
 }
 
+// a call that leaves out an argument its tool requires is dropped, on either
+// path: a drifted name matched by prefix to the wrong tool (BashOutput's
+// bash_output read as Bash) carries the other tool's arguments, and must not
+// run
+function missesRequired(name, args, tools) {
+  const schema = toolParamsOf(tools.find((t) => toolNameOf(t) === name))
+  const required = Array.isArray(schema?.required) ? schema.required : []
+  return required.some((k) => args[k] === undefined)
+}
+
 // native tool_use blocks → OpenAI tool_calls. Same drop rules as the text
-// path: unknown names are dropped, params that fail to parse are dropped
+// path: unknown names, a call to a tool other than the one tool_choice names,
+// params that fail to parse and a missing required argument are dropped
 function toolCallsFromUses(uses, tools, toolChoice) {
-  if (normalizeToolChoice(toolChoice).mode === "none") return []
+  const choice = normalizeToolChoice(toolChoice)
+  if (choice.mode === "none") return []
   if (!Array.isArray(uses) || uses.length === 0) return []
   const out = []
   for (const use of uses) {
     const name = resolveToolName(use?.name, tools)
     if (!name) continue
+    if (choice.mode === "named" && name !== choice.name) continue
     let args
     try {
       const p = typeof use.params === "string" ? parseJsonLoose(use.params) : use.params
@@ -639,6 +650,7 @@ function toolCallsFromUses(uses, tools, toolChoice) {
     } catch {
       continue
     }
+    if (missesRequired(name, args, tools)) continue
     out.push({
       id: use.id || `call_${Date.now().toString(36)}_${out.length}`,
       type: "function",
@@ -1073,11 +1085,14 @@ export async function CatPawAuthPlugin({ client } = {}) {
                         nativeUses = Array.isArray(ev.toolUses) ? ev.toolUses : []
                       }
                     }
-                    if (wantsTools && !committed) {
-                      // native tool_use blocks win; the instructed-JSON text
-                      // path stays as the fallback
-                      calls = toolCallsFromUses(nativeUses, chat.tools, chat.tool_choice)
-                      if (!calls.length) calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
+                    // native tool_use blocks win, and count after prose
+                    // that already streamed too: the model may say what it
+                    // is about to do and then call. The instructed-JSON text
+                    // path (and its retry) needs the reply held, so it stays
+                    // the fallback while nothing went out
+                    if (wantsTools) calls = toolCallsFromUses(nativeUses, chat.tools, chat.tool_choice)
+                    if (wantsTools && !committed && !calls.length) {
+                      calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
                       if (!calls.length && forced) {
                         // nothing streamed yet, so a retry is invisible to
                         // the agent; the failed reply rides along as an
