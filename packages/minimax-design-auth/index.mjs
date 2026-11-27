@@ -85,28 +85,13 @@ const SITES = {
   },
 }
 
-// Map MiniMax Design's domestic compliance aliases to canonical model IDs and
-// display names while preserving the upstream model ID in `api.id`.
-const TEXT_MODEL_ALIASES = {
-  "MiniMax-M3.1-Flash": { id: "MiniMax-M3.1-Flash", name: "MiniMax M3.1 Flash" },
-  "MiniMax-M3": { id: "MiniMax-M3", name: "MiniMax M3" },
-  "MiniMax-M2.7": { id: "MiniMax-M2.7", name: "MiniMax M2.7" },
-  alpha: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
-  alpha_high: { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-  gamma: { id: "gpt-5.5", name: "GPT-5.5" },
-  gamma_high: { id: "gpt-5.5-high", name: "GPT-5.5 High" },
-  gamma_mid: { id: "gpt-5.5-mid", name: "GPT-5.5 Mid" },
-  "gamma-6-astra": { id: "gpt-6-astra", name: "GPT-6 Astra" },
-}
-
 // Snapshot of verified models from GET /api/v1/config (excluding @ai-sdk/google
 // omega which returns 404 on /api/v1/models/*). Used before sign-in or when the
 // remote catalog cannot be reached; provider.models() replaces it with live data.
 const BOOTSTRAP = [
   {
     id: "MiniMax-M3.1-Flash",
-    apiId: "MiniMax-M3.1-Flash",
-    name: "MiniMax M3.1 Flash",
+    name: "MiniMax-M3.1-Flash",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -118,8 +103,7 @@ const BOOTSTRAP = [
   },
   {
     id: "MiniMax-M3",
-    apiId: "MiniMax-M3",
-    name: "MiniMax M3",
+    name: "MiniMax-M3",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -130,8 +114,7 @@ const BOOTSTRAP = [
   },
   {
     id: "MiniMax-M2.7",
-    apiId: "MiniMax-M2.7",
-    name: "MiniMax M2.7",
+    name: "MiniMax-M2.7",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -141,9 +124,8 @@ const BOOTSTRAP = [
     limit: { context: 196608, input: 180000, output: 128000 },
   },
   {
-    id: "claude-opus-5-5",
-    apiId: "alpha",
-    name: "Claude Opus 5.5",
+    id: "alpha",
+    name: "Gamma-Op 5.5",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -159,21 +141,8 @@ const BOOTSTRAP = [
     },
   },
   {
-    id: "claude-opus-4-6",
-    apiId: "alpha_high",
-    name: "Claude Opus 4.6",
-    npm: "@ai-sdk/anthropic",
-    attachment: true,
-    reasoning: true,
-    tool_call: true,
-    temperature: true,
-    inputs: ["text", "image", "pdf"],
-    limit: { context: 1000000, input: 900000, output: 128000 },
-  },
-  {
-    id: "gpt-5.5-high",
-    apiId: "gamma_high",
-    name: "GPT-5.5 High",
+    id: "gamma_high",
+    name: "Gamma",
     npm: "@ai-sdk/openai",
     attachment: true,
     reasoning: true,
@@ -189,9 +158,8 @@ const BOOTSTRAP = [
     },
   },
   {
-    id: "gpt-6-astra",
-    apiId: "gamma-6-astra",
-    name: "GPT-6 Astra",
+    id: "gamma-6-astra",
+    name: "Gamma-Astra",
     npm: "@ai-sdk/openai",
     attachment: true,
     reasoning: true,
@@ -819,15 +787,11 @@ function parseRemoteConfig(site, body) {
 
     for (const [modelKey, raw] of Object.entries(prov.models)) {
       if (!isRecord(raw)) continue
-      const upstreamKey = trimStr(modelKey)
-      if (!upstreamKey) continue
-      const explicitApiId = trimStr(raw.id)
-      const apiId = explicitApiId || upstreamKey
-      const alias = TEXT_MODEL_ALIASES[upstreamKey] ?? (!explicitApiId ? TEXT_MODEL_ALIASES[apiId] : undefined)
-      const id = alias?.id ?? upstreamKey
-      if (seen.has(id)) continue
+      const id = trimStr(modelKey)
+      if (!id || seen.has(id)) continue
       seen.add(id)
-      const name = alias?.name ?? (trimStr(raw.display_name) || trimStr(raw.name) || id)
+      const apiId = trimStr(raw.id) || id
+      const name = trimStr(raw.display_name) || trimStr(raw.name) || id
       const inputs = normalizeInputs(raw.modalities?.input)
       specs.push({
         id,
@@ -1227,17 +1191,12 @@ function createPlugin(
   // In-memory only: keeps verified rotated tokens alive across desktop account
   // switches during this host process; a host restart falls back to the stored auth.
   const retainedDesktopCreds = new Map() // expectedUserId -> { token, groupId, deviceId, lkgConfig }
-  const canonicalToApiId = new Map(
-    site.region === "domestic"
-      ? BOOTSTRAP.filter((m) => m.apiId && m.apiId !== m.id).map((m) => [m.id, m.apiId])
-      : [],
-  )
-  let latestMediaSpecs = null
+  const mediaSpecsByAccount = new Map() // accountScopeKey -> mediaSpecs[]
 
-  function recordTextAliases(specs) {
-    for (const m of specs) {
-      if (m.id && m.apiId) canonicalToApiId.set(m.id, m.apiId)
-    }
+  function accountScopeKey(cred) {
+    if (!cred) return null
+    if (cred.userId) return `u:${cred.userId}:${cred.groupId ?? ""}`
+    return `t:${cred.groupId ?? ""}:${cred.token.slice(-16)}`
   }
 
   function mergeMediaLookupSpecs(liveSpecs) {
@@ -1248,11 +1207,10 @@ function createPlugin(
       seen.add(s.id)
       out.push(s)
     }
-    for (const s of _mediaInternal.BOOTSTRAP_MEDIA) {
+    for (const s of bootstrapMediaSpecs(site)) {
       if (seen.has(s.id)) continue
       seen.add(s.id)
-      const { regions: _r, ...rest } = s
-      out.push(rest)
+      out.push(s)
     }
     return out
   }
@@ -1510,7 +1468,12 @@ function createPlugin(
           site,
           cloudRequest: (m, p, payload, opts) => sendCloudRequest(getAuth, m, p, payload, opts),
           externalFetch: fetchImpl,
-          getMediaSpecs: async () => mergeMediaLookupSpecs(latestMediaSpecs),
+          getMediaSpecs: async () => {
+            const auth = await getAuth().catch(() => null)
+            const cred = auth ? await resolveCredential(auth).catch(() => null) : null
+            const scope = accountScopeKey(cred)
+            return mergeMediaLookupSpecs(scope ? mediaSpecsByAccount.get(scope) : null)
+          },
           sleep,
           nowMs: nowMsImpl,
           ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
@@ -1530,27 +1493,13 @@ function createPlugin(
       body = await req.text()
     }
 
-    if (typeof body === "string") {
-      const isResponses = /\/responses(?:\?|$)/.test(url)
+    // MiniMax Design's OpenAI Responses proxy requires `store: false`.
+    if (typeof body === "string" && /\/responses(?:\?|$)/.test(url)) {
       try {
         const parsed = JSON.parse(body)
-        if (isRecord(parsed)) {
-          let mutated = false
-          // MiniMax Design's OpenAI Responses proxy requires `store: false`.
-          if (isResponses && parsed.store !== false) {
-            parsed.store = false
-            mutated = true
-          }
-          // If a caller sent a canonical model ID directly, map it back to the
-          // upstream ID expected by this site's gateway.
-          if (typeof parsed.model === "string") {
-            const mapped = canonicalToApiId.get(parsed.model)
-            if (mapped && mapped !== parsed.model) {
-              parsed.model = mapped
-              mutated = true
-            }
-          }
-          if (mutated) body = JSON.stringify(parsed)
+        if (isRecord(parsed) && parsed.store !== false) {
+          parsed.store = false
+          body = JSON.stringify(parsed)
         }
       } catch {}
     }
@@ -1824,8 +1773,8 @@ function createPlugin(
         const now = nowMsImpl()
         const cached = modelCache.get(cacheKey)
         const buildCombined = (chatSpecs, mediaSpecs) => {
-          recordTextAliases(chatSpecs)
-          if (mediaSpecs) latestMediaSpecs = mediaSpecs
+          const scope = accountScopeKey(cred)
+          if (scope && mediaSpecs) setBounded(mediaSpecsByAccount, scope, mediaSpecs)
           const effectiveMedia = mediaSpecs ?? bootstrapMediaSpecs(site)
           return {
             ...Object.fromEntries(chatSpecs.map((m) => [m.id, internalModelFromSpec(site, provider.id, m)])),
@@ -1900,7 +1849,6 @@ export const MiniMaxDesignGlobalAuthPlugin = async () => createPlugin(SITES["min
 export const _internal = {
   SITES,
   BOOTSTRAP,
-  TEXT_MODEL_ALIASES,
   CREDIT_TYPE_LABELS,
   PLACEHOLDER_KEY,
   DEFAULT_VERSION_CODE,

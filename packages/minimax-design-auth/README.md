@@ -1,6 +1,6 @@
 # @magpie-community/opencode-minimax-design-auth
 
-把本机已登录的 **MiniMax Design** 桌面端订阅接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)（兼容 OpenCode 1.x / 2.x）：只读解密桌面端会话文件（`hub-config.json` + `.token-key`），动态拉取对话模型（`@ai-sdk/anthropic` 与 `@ai-sdk/openai`）以及 magpie 原生图像/视频模型（`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`），自动将国内站合规化名映射为规范模型名，并支持实时积分钱包余额查询。
+把本机已登录的 **MiniMax Design** 桌面端订阅接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)（兼容 OpenCode 1.x / 2.x）：只读解密桌面端会话文件（`hub-config.json` + `.token-key`），动态拉取对话模型（`@ai-sdk/anthropic` 与 `@ai-sdk/openai`，保留上游原始 ID）以及 magpie 原生图像/视频模型（`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`），并支持实时积分钱包余额查询。
 
 ## 与仓库内现有 MiniMax 包的区别
 
@@ -10,7 +10,7 @@
 | [`@magpie-community/opencode-minimax-auth`](../minimax) | Provider 插件 | **MiniMax Code (`mcode`) → magpie**：走设备码 OAuth（`account.minimax.cn` / `agent.minimax.cn`），服务 MiniMax Code 的 M Plan、独立积分签到与 MCP 工具。 |
 | [`@magpie-community/agent-minimax-design`](../minimax-design) | **Agent 插件** | **magpie → MiniMax Design（方向相反）**：把 magpie 网关写进 MiniMax Design 的自定义模型列表，让 MiniMax Design 调用 magpie 下的模型。 |
 
-English: This package is an unofficial **provider plugin** (`minimax-design` for China, `minimax-design-global` for Global) that reuses the local MiniMax Design desktop client's session (read-only AES-256-GCM decryption of `hub-config.json` + `.token-key`, or a pasted `accessToken`) to serve MiniMax Design's live Anthropic Messages and OpenAI Responses chat models, native magpie image and video generation models (`/v1/images/generations`, `/v1/images/edits`, `/v1/videos`), canonical model names, and credit wallet balances inside magpie and OpenCode. It differs from [`@magpie-community/opencode-minimax-auth`](../minimax) (MiniMax Code `mcode` device OAuth and M Plan) and works in the opposite direction of [`@magpie-community/agent-minimax-design`](../minimax-design) (which configures MiniMax Design as a client of magpie).
+English: This package is an unofficial **provider plugin** (`minimax-design` for China, `minimax-design-global` for Global) that reuses the local MiniMax Design desktop client's session (read-only AES-256-GCM decryption of `hub-config.json` + `.token-key`, or a pasted `accessToken`) to serve MiniMax Design's live Anthropic Messages and OpenAI Responses chat models (keeping upstream chat model IDs), native magpie image and video generation models (`/v1/images/generations`, `/v1/images/edits`, `/v1/videos`), and credit wallet balances inside magpie and OpenCode. It differs from [`@magpie-community/opencode-minimax-auth`](../minimax) (MiniMax Code `mcode` device OAuth and M Plan) and works in the opposite direction of [`@magpie-community/agent-minimax-design`](../minimax-design) (which configures MiniMax Design as a client of magpie).
 
 ## 安装与登录
 
@@ -18,8 +18,8 @@ English: This package is an unofficial **provider plugin** (`minimax-design` for
 magpie plugin add @magpie-community/opencode-minimax-design-auth
 magpie plugin login minimax-design           # 中国区；国际版使用 minimax-design-global
 magpie provider test minimax-design MiniMax-M3.1-Flash
-magpie provider test minimax-design claude-opus-5-5
-magpie provider test minimax-design gpt-6-astra
+magpie provider test minimax-design alpha
+magpie provider test minimax-design gamma-6-astra
 magpie quota
 ```
 
@@ -34,19 +34,18 @@ magpie quota
 
 ## 模型目录与协议
 
-登录后通过 `GET /api/v1/config`（对话模型）与 `GET /api/v1/models/config`（图像与视频模型）按账号实时拉取（5 分钟缓存，断网回退解密后的 `lkgProviderConfig` 与启动表），并将国内站合规化名映射为规范模型名与 ID，底层请求仍保留上游实际模型 ID：
+登录后通过 `GET /api/v1/config`（对话模型）与 `GET /api/v1/models/config`（图像与视频模型）按账号实时拉取（5 分钟缓存，断网回退解密后的 `lkgProviderConfig` 与启动表）。对话模型保留上游原始 ID 与显示名，避免与真实账号误并入同一自动分组；图像与视频模型按站点区域隔离，并将国内站合规化名映射为规范模型 ID 与显示名：
 
 ### 对话模型
 
-| 模型 ID | 显示名 | 上游 ID | 协议（SDK） | 特性 |
-| --- | --- | --- | --- | --- |
-| `MiniMax-M3.1-Flash` | MiniMax M3.1 Flash | `MiniMax-M3.1-Flash` | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，工具调用，自适应思考 |
-| `MiniMax-M3` | MiniMax M3 | `MiniMax-M3` | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
-| `MiniMax-M2.7` | MiniMax M2.7 | `MiniMax-M2.7` | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
-| `claude-opus-5-5` | Claude Opus 5.5 | `alpha` | `@ai-sdk/anthropic` (`/messages`) | `low` / `medium` / `high`（会员） |
-| `claude-opus-4-6` | Claude Opus 4.6 | `alpha_high` | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，思考 |
-| `gpt-5.5` / `gpt-5.5-high` / `gpt-5.5-mid` | GPT-5.5 / High / Mid | `gamma` / `gamma_high` / `gamma_mid` | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high` |
-| `gpt-6-astra` | GPT-6 Astra | `gamma-6-astra` | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high`（会员） |
+| 模型 ID | 显示名 | 协议（SDK） | 特性 |
+| --- | --- | --- | --- |
+| `MiniMax-M3.1-Flash` | MiniMax-M3.1-Flash | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，工具调用，自适应思考 |
+| `MiniMax-M3` | MiniMax-M3 | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
+| `MiniMax-M2.7` | MiniMax-M2.7 | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
+| `alpha` | Gamma-Op 5.5 | `@ai-sdk/anthropic` (`/messages`) | `low` / `medium` / `high`（会员） |
+| `gamma_high` | Gamma | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high` |
+| `gamma-6-astra` | Gamma-Astra | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high`（会员） |
 
 注：`/api/v1/config` 中声明为 `@ai-sdk/google` 的 `omega-3.1-pro` 直连 `/api/v1/models/*` 返回 404，本插件已主动过滤。
 

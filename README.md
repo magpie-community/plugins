@@ -40,7 +40,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [mclaw](packages/mclaw) | China Mobile Cloud's MClaw agent (ai.yun.139.com), with a browser sign-in that harvests the ticket and auto-fetches the llm key: live models with token multipliers, aitokens pool usage, auto renewal (unofficial) | `mclaw` |
 | [minimax](packages/minimax) | MiniMax Code (China): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code` |
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
-| [minimax-design-auth](packages/minimax-design-auth) | MiniMax Design desktop (China): read-only local session reuse or pasted token, live chat + native image/video models (canonical names) and credit wallet; separate from MiniMax Code and opposite in direction to agent-minimax-design (unofficial) | `minimax-design` |
+| [minimax-design-auth](packages/minimax-design-auth) | MiniMax Design desktop (China): read-only local session reuse or pasted token, live chat + native image/video models and credit wallet; separate from MiniMax Code and opposite in direction to agent-minimax-design (unofficial) | `minimax-design` |
 | [minimax-design-auth](packages/minimax-design-auth) | MiniMax Design desktop (international): read-only local session reuse or pasted token, live chat + native image/video models and credit wallet (unofficial) | `minimax-design-global` |
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |

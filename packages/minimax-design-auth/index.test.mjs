@@ -302,21 +302,20 @@ describe("crypto & desktop credential reading", () => {
 })
 
 describe("model catalog & usage parsing", () => {
-  test("parseRemoteConfig extracts multi-SDK models, maps compliance aliases to canonical names, sanitizes untrusted baseURL, and handles empty catalogs", () => {
+  test("parseRemoteConfig extracts multi-SDK models, preserves upstream chat IDs, sanitizes untrusted baseURL, and handles empty catalogs", () => {
     const specs = parseRemoteConfig(SITES["minimax-design"], SAMPLE_REMOTE_CONFIG)
     assert.ok(Array.isArray(specs))
     const byId = Object.fromEntries(specs.map((s) => [s.id, s]))
     assert.equal(byId["MiniMax-M3.1-Flash"].npm, "@ai-sdk/anthropic")
     assert.equal(byId["MiniMax-M3.1-Flash"].name, "MiniMax M3.1 Flash")
-    assert.equal(byId["claude-opus-5-5"].npm, "@ai-sdk/anthropic")
-    assert.equal(byId["claude-opus-5-5"].apiId, "alpha")
-    assert.equal(byId["claude-opus-5-5"].name, "Claude Opus 5.5")
-    assert.equal(byId.alpha, undefined)
-    assert.equal(byId["gpt-5.5-high"].npm, "@ai-sdk/openai")
-    assert.equal(byId["gpt-5.5-high"].apiId, "gamma_high")
-    assert.equal(byId["gpt-5.5-high"].name, "GPT-5.5 High")
-    assert.equal(byId["gpt-5.5-high"].limit.context, 270000)
-    assert.equal(byId["gpt-5.5-high"].options.store, false)
+    assert.equal(byId.alpha.npm, "@ai-sdk/anthropic")
+    assert.equal(byId.alpha.apiId, "alpha")
+    assert.equal(byId.alpha.name, "Gamma-Op 5.5")
+    assert.equal(byId.gamma_high.npm, "@ai-sdk/openai")
+    assert.equal(byId.gamma_high.apiId, "gamma_high")
+    assert.equal(byId.gamma_high.name, "Gamma")
+    assert.equal(byId.gamma_high.limit.context, 270000)
+    assert.equal(byId.gamma_high.options.store, false)
     assert.equal(byId["omega-3.1-pro"], undefined)
 
     // Non-allowlisted baseURL in remote config falls back to site.defaultLlmBase
@@ -494,22 +493,22 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       const models1 = await hooks.provider.models(prov, { auth: storedAuth })
       const models2 = await hooks.provider.models(prov, { auth: storedAuth })
       assert.equal(configCalls, 1)
-      assert.ok(models1["MiniMax-M3.1-Flash"] && models2["gpt-5.5-high"])
-      assert.equal(models2["gpt-5.5-high"].api.id, "gamma_high")
-      assert.equal(models2["claude-opus-5-5"].api.id, "alpha")
+      assert.ok(models1["MiniMax-M3.1-Flash"] && models2.gamma_high)
+      assert.equal(models2.gamma_high.api.id, "gamma_high")
+      assert.equal(models2.alpha.api.id, "alpha")
       assert.ok(models2["gpt-image-2.6-sunburst"] && models2["MiniMax-H3"])
       fakeNow += MODELS_TTL_MS + 1000
       await hooks.provider.models(prov, { auth: storedAuth })
       assert.equal(configCalls, 2)
 
-      // Loader omits baseURL, enforces store:false even when store:true, maps canonical model ID to upstream apiId, retries auth-403 on disk rotation
+      // Loader omits baseURL, enforces store:false even when store:true, and retries auth-403 on disk rotation
       const loaded = await hooks.auth.loader(async () => storedAuth)
       assert.equal(loaded.baseURL, undefined)
 
       const res = await loaded.fetch("https://hub.minimaxi.com/api/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-5.5-high", store: true, input: "hi" }),
+        body: JSON.stringify({ model: "gamma_high", store: true, input: "hi" }),
       })
       assert.equal(res.status, 200)
       assert.equal(res.headers.get("X-Magpie-Sign-In"), "renewed")
@@ -1309,21 +1308,23 @@ describe("native image & video models + canonical naming", () => {
 
     const cfg = { provider: {} }
     await hooks.config(cfg)
-    // Bootstrap config includes canonical chat + image + video entries
-    assert.equal(cfg.provider["minimax-design"].models["claude-opus-5-5"].id, "alpha")
-    assert.equal(cfg.provider["minimax-design"].models["claude-opus-5-5"].name, "Claude Opus 5.5")
-    assert.equal(cfg.provider["minimax-design"].models["gpt-6-astra"].id, "gamma-6-astra")
+    // Bootstrap config keeps upstream chat IDs + region-filtered image & video entries
+    assert.equal(cfg.provider["minimax-design"].models.alpha.id, "alpha")
+    assert.equal(cfg.provider["minimax-design"].models.alpha.name, "Gamma-Op 5.5")
+    assert.equal(cfg.provider["minimax-design"].models["gamma-6-astra"].id, "gamma-6-astra")
     assert.deepEqual(cfg.provider["minimax-design"].models["gpt-image-2.6-sunburst"].modalities.output, ["image"])
     assert.deepEqual(cfg.provider["minimax-design"].models["seedance-2.5"].modalities.output, ["video"])
+    assert.equal(cfg.provider["minimax-design"].models["veo-3.1"], undefined)
 
     const models = await hooks.provider.models(
       { id: "minimax-design", models: cfg.provider["minimax-design"].models },
       { auth: { type: "api", key: validJwt } },
     )
-    // Chat models have canonical IDs & names with upstream api.id preserved
-    assert.equal(models["claude-opus-5-5"].api.id, "alpha")
-    assert.equal(models["gpt-5.5-high"].api.id, "gamma_high")
-    assert.equal(models["gpt-5.5-high"].capabilities.output.text, true)
+    // Chat models keep their upstream IDs & vendor names
+    assert.equal(models.alpha.api.id, "alpha")
+    assert.equal(models.alpha.name, "Gamma-Op 5.5")
+    assert.equal(models.gamma_high.api.id, "gamma_high")
+    assert.equal(models.gamma_high.capabilities.output.text, true)
     // Image models have output.image=true & @ai-sdk/openai-compatible so magpie lists them as drawers
     assert.equal(models["gpt-image-2.6-sunburst"].api.npm, "@ai-sdk/openai-compatible")
     assert.equal(models["gpt-image-2.6-sunburst"].capabilities.output.text, false)
@@ -1568,7 +1569,7 @@ describe("native image & video models + canonical naming", () => {
     const sdPoll = await loaded.fetch(`${base}/videos/${encodeURIComponent(sdJob.id)}`, { method: "GET" })
     assert.equal((await sdPoll.json()).status, "completed")
 
-    // 3. Wan 3.0 & Kling 3.0 Omni & Veo 3.1
+    // 3. Wan 3.0 & Kling 3.0 Omni (China rejects Global-only models; Global accepts Veo 3.1)
     const wanCreate = await loaded.fetch(`${base}/videos`, {
       method: "POST",
       body: JSON.stringify({ model: "wan-3.0-video", prompt: "sunrise", seconds: 5 }),
@@ -1582,12 +1583,29 @@ describe("native image & video models + canonical naming", () => {
     assert.equal((await klingCreate.json()).id, "kling-v3-omni-video::kling-task-4")
     assert.equal(sent.find((s) => s.url.endsWith("/api/v1/video/kling-omni/generate")).body.model_name, "kling-v3-omni")
 
-    const veoCreate = await loaded.fetch(`${base}/videos`, {
+    const sentBeforeGlobalOnly = sent.length
+    const cnVeo = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "veo-3.1", prompt: "ocean wave" }),
+    })
+    assert.equal(cnVeo.status, 400)
+    const cnMj7 = await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "midjourney-7", prompt: "lighthouse" }),
+    })
+    assert.equal(cnMj7.status, 400)
+    assert.equal(sent.length, sentBeforeGlobalOnly)
+
+    const globalHooks = createPlugin(SITES["minimax-design-global"], { fetchImpl: fakeFetch, versionCode: TEST_VERSION })
+    const globalLoaded = await globalHooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const globalBase = "https://hub.minimax.io/api/v1"
+    const veoCreate = await globalLoaded.fetch(`${globalBase}/videos`, {
       method: "POST",
       body: JSON.stringify({ model: "veo-3.1", prompt: "ocean wave", input_reference: "data:image/png;base64,iVBORw0KGgo=" }),
     })
     assert.equal((await veoCreate.json()).id, "veo-3.1::veo-task-6")
-    const veoSub = sent.find((s) => s.url.includes("/api/v1/video/veo3/generate"))
+    const veoSub = sent.find((s) => s.url.startsWith("https://design.minimax.io/api/v1/video/veo3/generate"))
+    assert.ok(veoSub)
     assert.equal(veoSub.body.instances[0].image.mime_type, "image/png")
 
     // 4. kling-avatar refuses missing sound_file with 400, accepts image + extra.sound_file
@@ -1626,5 +1644,72 @@ describe("native image & video models + canonical naming", () => {
     const r401 = await expLoaded.fetch(`${base}/videos`, { method: "POST", body: JSON.stringify({ model: "MiniMax-H3", prompt: "hi" }) })
     assert.equal(r401.status, 401)
     assert.equal(r401.headers.get("X-Magpie-Sign-In"), "expired")
+  })
+
+  test("media lookup catalog is scoped per account so one account's live models never leak to another", async () => {
+    const exp = Math.floor(Date.now() / 1000) + 3600
+    const tokenA = makeJwt({ exp, user: { id: "acct-a" } })
+    const tokenB = makeJwt({ exp, user: { id: "acct-b" } })
+    const authA = { type: "api", key: tokenA, metadata: { userId: "acct-a" } }
+    const authB = { type: "api", key: tokenB, metadata: { userId: "acct-b" } }
+    const sent = []
+
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url)
+      const h = new Headers(init.headers)
+      sent.push({ url: u, token: h.get("token") })
+      if (u.endsWith("/api/v1/config")) return new Response(JSON.stringify(SAMPLE_REMOTE_CONFIG), { status: 200 })
+      if (u.endsWith("/api/v1/models/config")) {
+        if (h.get("token") === tokenA) {
+          return new Response(
+            JSON.stringify({
+              imageModels: [{ id: "g-image-3-beta", model_name: "gpt-image-3-beta", name: "GPT Image 3 Beta", backend: "openai", params: {} }],
+              videoModels: [],
+            }),
+            { status: 200 },
+          )
+        }
+        return new Response(JSON.stringify({ imageModels: [], videoModels: [] }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/image/openai/generate")) return new Response(JSON.stringify({ task_id: "t-a-1" }), { status: 200 })
+      if (u.endsWith("/api/v2/image/openai/tasks/t-a-1")) {
+        return new Response(JSON.stringify({ status: "success", image_url: "https://cdn.example.test/a.png" }), { status: 200 })
+      }
+      return new Response("not found", { status: 404 })
+    }
+
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: fakeFetch,
+      versionCode: TEST_VERSION,
+      sleepImpl: async () => {},
+      pollIntervalMs: 1,
+    })
+    const cfg = { provider: {} }
+    await hooks.config(cfg)
+    const prov = { id: "minimax-design", models: cfg.provider["minimax-design"].models }
+
+    const modelsA = await hooks.provider.models(prov, { auth: authA })
+    assert.ok(modelsA["gpt-image-3-beta"])
+    await hooks.provider.models(prov, { auth: authB })
+
+    const loadedA = await hooks.auth.loader(async () => authA)
+    const loadedB = await hooks.auth.loader(async () => authB)
+    const base = "https://hub.minimaxi.com/api/v1"
+
+    // Account A can invoke its live model
+    const resA = await loadedA.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-image-3-beta", prompt: "city" }),
+    })
+    assert.equal(resA.status, 200)
+
+    // Account B MUST NOT inherit Account A's cached media catalog
+    const sentBeforeB = sent.length
+    const resB = await loadedB.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-image-3-beta", prompt: "city" }),
+    })
+    assert.equal(resB.status, 400)
+    assert.equal(sent.length, sentBeforeB)
   })
 })
