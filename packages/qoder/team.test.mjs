@@ -195,6 +195,10 @@ test("models and chats are served from gateway.qoder.com.cn", async () => {
 test("a renewal names the card for the organization, without renaming the account", async () => {
   expect(_internal.cardNameOf({ orgLabel: true }, TEAM, TEAM.email, TEAM.name)).toBe("dev@acme.cn · Acme")
   expect(_internal.cardNameOf({ orgLabel: true }, { email: "x@y" }, "x@y", "")).toBe("x@y")
+  // an account with neither a real email nor a phone has no card name, as
+  // on main: never a bare VPC or organization suffix
+  expect(_internal.cardNameOf({ vpc: "acme" }, {}, "", "")).toBe("")
+  expect(_internal.cardNameOf({ orgLabel: true }, { organization_name: "Acme" }, "", "")).toBe("")
   expect(_internal.teamOf({}, TEAM)).toEqual({})
   expect(_internal.orgOf({ organization: { id: "o", name: "N" } })).toEqual({ orgId: "o", orgName: "N" })
 })

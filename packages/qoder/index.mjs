@@ -2890,6 +2890,9 @@ function teamOf(site, user) {
  *  phone, the VPC instance's suffix, then the Teams organization's. */
 function cardNameOf(site, user, email, name) {
   const shown = realEmailOf(email) || phoneLabelOf(user, email, name)
+  // nothing to show is no name at all, as before: a bare " (acme)" or
+  // " · Acme" would replace the card's own fallback
+  if (!shown) return ""
   const vpc = site.vpc ? ` (${site.vpc})` : ""
   const org = teamOf(site, user).orgLabel
   return `${shown}${vpc}${org ? ` · ${org}` : ""}`
