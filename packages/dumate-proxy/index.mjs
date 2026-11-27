@@ -319,6 +319,47 @@ export const DuMateProxyPlugin = async (input = {}) => {
       provider: PROVIDER_ID,
       single: false,
       icon: ICON,
+      importFrom: "上传两个文件：auth.json 和 .cookie-key 的 Base64 文本（.txt）",
+      importFroms: {
+        zh: "选择两个文件：auth.json 和 .cookie-key 的 Base64 文本（.txt）。",
+        en: "Choose two files: DuMate auth.json and the Base64 text of .cookie-key (.txt).",
+      },
+      async import(texts) {
+        const files = (Array.isArray(texts) ? texts : []).filter((text) => typeof text === "string" && text.trim())
+        let authRaw = ""
+        let keyRaw = ""
+
+        for (const raw of files) {
+          const value = raw.trim()
+          try {
+            const parsed = JSON.parse(value)
+            if (typeof parsed?.authJson === "string" && parsed.authJson.trim()) authRaw = parsed.authJson.trim()
+            else if (parsed?.auth && typeof parsed.auth === "object") authRaw = JSON.stringify(parsed.auth)
+            else if (typeof parsed?.cookies === "string" && parsed.cookies) authRaw = value
+            if (parsed?.cookieKey != null) keyRaw = parsed.cookieKey
+            else if (parsed?.key != null) keyRaw = parsed.key
+            else if (Array.isArray(parsed) && parsed.length === 32) keyRaw = value
+          } catch {
+            if (parseCookieKey(value)) keyRaw = value
+          }
+          if (!authRaw && value.startsWith("{") && value.includes('"cookies"')) authRaw = value
+          if (!keyRaw && parseCookieKey(value)) keyRaw = value
+        }
+
+        if (!authRaw) return { type: "failed", error: "没读到 auth.json，请选择 auth.json 文件" }
+        if (!keyRaw) return { type: "failed", error: "没读到 .cookie-key 的 Base64 文本，请先生成 .cookie-key.b64" }
+
+        const login = decryptDesktopAuth(authRaw, keyRaw, "imported-auth")
+        if (!login) return { type: "failed", error: "auth.json 与 .cookie-key 不匹配，或登录态已失效" }
+
+        let info
+        try {
+          info = await consoleGet("/api/dumate/user/info", cookieHeaderOf(login.cookies), fetchImpl)
+        } catch (error) {
+          return { type: "failed", error: `登录态验证失败：${error?.message ?? error}` }
+        }
+        return seat(login.cookies, "imported-auth", { ...login, ...info })
+      },
       async refresh(auth) {
         const current = readDesktopLogin({ userDataDir: config.userDataDir })
         if (!current) return undefined
@@ -449,45 +490,6 @@ export const DuMateProxyPlugin = async (input = {}) => {
               return seat(login.cookies, "desktop", login)
             },
           }),
-        },
-        {
-          type: "oauth",
-          label: "粘贴 DuMate auth.json 登录态（服务器可用）",
-          prompts: [
-            {
-              type: "text",
-              key: "authJson",
-              message: "auth.json 完整内容（从百度搭子用户目录复制）",
-              placeholder: '{"cookies":"...","accountProfiles":[...]}',
-              validate: (value) => {
-                try {
-                  const auth = JSON.parse(String(value ?? ""))
-                  if (typeof auth?.cookies !== "string" || !auth.cookies) return "auth.json 缺少 cookies 字段"
-                  return undefined
-                } catch {
-                  return "auth.json 不是合法 JSON"
-                }
-              },
-            },
-            {
-              type: "text",
-              key: "cookieKey",
-              message: ".cookie-key 内容（Base64；也支持 64 位十六进制）",
-              placeholder: "certutil -encode .cookie-key key.b64 后复制 key.b64 内容",
-              validate: (value) => parseCookieKey(value) ? undefined : ".cookie-key 必须是 32 字节，请粘贴 Base64 或 64 位十六进制文本",
-            },
-          ],
-          authorize: async (inputs) => {
-            const login = decryptDesktopAuth(inputs?.authJson ?? inputs?.auth, inputs?.cookieKey ?? inputs?.key, "pasted-auth")
-            if (!login) return { type: "failed", error: "auth.json 与 .cookie-key 内容不匹配，或登录态已失效" }
-            let info
-            try {
-              info = await consoleGet("/api/dumate/user/info", cookieHeaderOf(login.cookies), fetchImpl)
-            } catch (error) {
-              return { type: "failed", error: `登录态验证失败：${error?.message ?? error}` }
-            }
-            return seat(login.cookies, "pasted-auth", { ...login, ...info })
-          },
         },
         {
           type: "oauth",
