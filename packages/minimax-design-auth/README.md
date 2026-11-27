@@ -1,16 +1,16 @@
 # @magpie-community/opencode-minimax-design-auth
 
-把本机已登录的 **MiniMax Design** 桌面端订阅接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)（兼容 OpenCode 1.x / 2.x）：只读解密桌面端会话文件（`hub-config.json` + `.token-key`），动态拉取多协议模型目录（`@ai-sdk/anthropic` 与 `@ai-sdk/openai`），支持流式对话、工具调用与实时积分钱包余额查询。
+把本机已登录的 **MiniMax Design** 桌面端订阅接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)（兼容 OpenCode 1.x / 2.x）：只读解密桌面端会话文件（`hub-config.json` + `.token-key`），动态拉取对话模型（`@ai-sdk/anthropic` 与 `@ai-sdk/openai`）以及 magpie 原生图像/视频模型（`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`），自动将国内站合规化名映射为规范模型名，并支持实时积分钱包余额查询。
 
 ## 与仓库内现有 MiniMax 包的区别
 
 | 包 | 类型 | 方向与用途 |
 | --- | --- | --- |
-| **本包（`@magpie-community/opencode-minimax-design-auth`）** | **Provider 插件** | **MiniMax Design → magpie**：把本机 MiniMax Design 桌面端订阅（`design.minimax.cn` / `hub.minimaxi.com` 与国际版 `design.minimax.io` / `hub.minimax.io`）接入 magpie，提供 `minimax-design` 与 `minimax-design-global` 两个 provider，供其他 agent 调用其 Anthropic/OpenAI Responses 模型与积分钱包。 |
+| **本包（`@magpie-community/opencode-minimax-design-auth`）** | **Provider 插件** | **MiniMax Design → magpie**：把本机 MiniMax Design 桌面端订阅（`design.minimax.cn` / `hub.minimaxi.com` 与国际版 `design.minimax.io` / `hub.minimax.io`）接入 magpie，提供 `minimax-design` 与 `minimax-design-global` 两个 provider，供其他 agent 调用其对话模型、原生图像/视频生成与积分钱包。 |
 | [`@magpie-community/opencode-minimax-auth`](../minimax) | Provider 插件 | **MiniMax Code (`mcode`) → magpie**：走设备码 OAuth（`account.minimax.cn` / `agent.minimax.cn`），服务 MiniMax Code 的 M Plan、独立积分签到与 MCP 工具。 |
 | [`@magpie-community/agent-minimax-design`](../minimax-design) | **Agent 插件** | **magpie → MiniMax Design（方向相反）**：把 magpie 网关写进 MiniMax Design 的自定义模型列表，让 MiniMax Design 调用 magpie 下的模型。 |
 
-English: This package is an unofficial **provider plugin** (`minimax-design` for China, `minimax-design-global` for Global) that reuses the local MiniMax Design desktop client's session (read-only AES-256-GCM decryption of `hub-config.json` + `.token-key`, or a pasted `accessToken`) to serve MiniMax Design's live Anthropic Messages and OpenAI Responses models and credit wallet balances inside magpie and OpenCode. It differs from [`@magpie-community/opencode-minimax-auth`](../minimax) (MiniMax Code `mcode` device OAuth and M Plan) and works in the opposite direction of [`@magpie-community/agent-minimax-design`](../minimax-design) (which configures MiniMax Design as a client of magpie).
+English: This package is an unofficial **provider plugin** (`minimax-design` for China, `minimax-design-global` for Global) that reuses the local MiniMax Design desktop client's session (read-only AES-256-GCM decryption of `hub-config.json` + `.token-key`, or a pasted `accessToken`) to serve MiniMax Design's live Anthropic Messages and OpenAI Responses chat models, native magpie image and video generation models (`/v1/images/generations`, `/v1/images/edits`, `/v1/videos`), canonical model names, and credit wallet balances inside magpie and OpenCode. It differs from [`@magpie-community/opencode-minimax-auth`](../minimax) (MiniMax Code `mcode` device OAuth and M Plan) and works in the opposite direction of [`@magpie-community/agent-minimax-design`](../minimax-design) (which configures MiniMax Design as a client of magpie).
 
 ## 安装与登录
 
@@ -18,7 +18,8 @@ English: This package is an unofficial **provider plugin** (`minimax-design` for
 magpie plugin add @magpie-community/opencode-minimax-design-auth
 magpie plugin login minimax-design           # 中国区；国际版使用 minimax-design-global
 magpie provider test minimax-design MiniMax-M3.1-Flash
-magpie provider test minimax-design gamma_high
+magpie provider test minimax-design claude-opus-5-5
+magpie provider test minimax-design gpt-6-astra
 magpie quota
 ```
 
@@ -33,18 +34,26 @@ magpie quota
 
 ## 模型目录与协议
 
-登录后通过 `GET /api/v1/config` 按账号实时拉取（5 分钟缓存，断网回退解密后的 `lkgProviderConfig` 与启动表）：
+登录后通过 `GET /api/v1/config`（对话模型）与 `GET /api/v1/models/config`（图像与视频模型）按账号实时拉取（5 分钟缓存，断网回退解密后的 `lkgProviderConfig` 与启动表），并将国内站合规化名映射为规范模型名与 ID，底层请求仍保留上游实际模型 ID：
 
-| 模型 ID | 显示名 | 协议（SDK） | 特性 |
-| --- | --- | --- | --- |
-| `MiniMax-M3.1-Flash` | MiniMax M3.1 Flash | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，工具调用，自适应思考 |
-| `MiniMax-M3` | MiniMax-M3 | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
-| `MiniMax-M2.7` | MiniMax-M2.7 | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
-| `alpha` | Gamma-Op 5.5 | `@ai-sdk/anthropic` (`/messages`) | `low` / `medium` / `high`（会员） |
-| `gamma_high` | Gamma | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high` |
-| `gamma-6-astra` | Gamma-Astra | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high`（会员） |
+### 对话模型
 
-注：`/api/v1/config` 中声明为 `@ai-sdk/google` 的 `omega` 条目直连 `/api/v1/models/*` 返回 404，本插件已主动过滤。
+| 模型 ID | 显示名 | 上游 ID | 协议（SDK） | 特性 |
+| --- | --- | --- | --- | --- |
+| `MiniMax-M3.1-Flash` | MiniMax M3.1 Flash | `MiniMax-M3.1-Flash` | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，工具调用，自适应思考 |
+| `MiniMax-M3` | MiniMax M3 | `MiniMax-M3` | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
+| `MiniMax-M2.7` | MiniMax M2.7 | `MiniMax-M2.7` | `@ai-sdk/anthropic` (`/messages`) | 工具调用，思考 |
+| `claude-opus-5-5` | Claude Opus 5.5 | `alpha` | `@ai-sdk/anthropic` (`/messages`) | `low` / `medium` / `high`（会员） |
+| `claude-opus-4-6` | Claude Opus 4.6 | `alpha_high` | `@ai-sdk/anthropic` (`/messages`) | 1M 上下文，思考 |
+| `gpt-5.5` / `gpt-5.5-high` / `gpt-5.5-mid` | GPT-5.5 / High / Mid | `gamma` / `gamma_high` / `gamma_mid` | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high` |
+| `gpt-6-astra` | GPT-6 Astra | `gamma-6-astra` | `@ai-sdk/openai` (`/responses`) | 自动强制 `store: false`，`low` / `medium` / `high`（会员） |
+
+注：`/api/v1/config` 中声明为 `@ai-sdk/google` 的 `omega-3.1-pro` 直连 `/api/v1/models/*` 返回 404，本插件已主动过滤。
+
+### 原生图像与视频模型（magpie Settings → Images / Video）
+
+- **图像（`/v1/images/generations`、`/v1/images/edits`）**：`MiniMax-H3-Image`、`MiniMax-H3-Image-Highspeed`、`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2`、`nano-banana-2`、`nano-banana-pro`、`doubao-seedream-5-0-pro-260628`、`doubao-seedream-4-5-251128`、`midjourney-8.2`（国际版另含 `midjourney-8.1` / `midjourney-7` / `midjourney-niji7`）。编辑请求中的参考图会自动通过 `/api/v1/files/upload` 上传（`openai` / `nano_banana` 使用 data URI），不支持 mask 蒙版编辑（返回 400）。
+- **视频（`/v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`）**：`MiniMax-H3`、`MiniMax-H3-Max`、`seedance-2.5`、`seedance-2.5-draft`、`seedance-2.0`、`wan-3.0-video`、`wan-3.0-video-prime`、`kling-v3-omni-video`、`kling-avatar`（需传 `input_reference` 与 `extra.sound_file`），国际版另含 `veo-3.1`、`veo-3.1-fast`。
 
 ## 额度查询（`auth.usage`）
 

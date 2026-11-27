@@ -10,10 +10,12 @@
 //
 // Upstream APIs (verified against MiniMax Design 4.0.18):
 //   - Live OpenCode provider & model config: GET <cloud>/api/v1/config
+//   - Live image & video model catalog:      GET <cloud>/api/v1/models/config
 //   - Account profile:                       GET <cloud>/api/v1/account/profile
 //   - Credit wallet & subscription:          GET <cloud>/api/v1/credit/wallet
 //   - Credit balance fallback:               GET <cloud>/api/v1/credit/balance
 //   - LLM gateway (Anthropic & OpenAI Resp): POST <llmBase>/messages | /responses
+//   - Media tasks (images & videos):         POST/GET <cloud>/api/v[12]/(image|video)/*
 //     Required headers: `token: <accessToken>`, `version_code: <semver>`
 //     Optional headers: `X-Group-Id: <groupId>`, `device_id: <deviceId>`
 //
@@ -23,6 +25,15 @@ import { createDecipheriv } from "node:crypto"
 import { lstatSync, readFileSync, statSync } from "node:fs"
 import { homedir as osHomedir } from "node:os"
 import { join, posix, win32 } from "node:path"
+import {
+  _mediaInternal,
+  bootstrapMediaSpecs,
+  handleMediaFetch,
+  mediaBootstrapConfigModels,
+  mediaInternalModel,
+  mediaPath,
+  parseModelsConfig,
+} from "./native.mjs"
 
 const ENCRYPTED_V2_PREFIX = "v2enc:"
 const LEGACY_ENCRYPTED_PREFIX = "encrypted:"
@@ -74,12 +85,27 @@ const SITES = {
   },
 }
 
+// Map MiniMax Design's domestic compliance aliases to canonical model IDs and
+// display names while preserving the upstream model ID in `api.id`.
+const TEXT_MODEL_ALIASES = {
+  "MiniMax-M3.1-Flash": { id: "MiniMax-M3.1-Flash", name: "MiniMax M3.1 Flash" },
+  "MiniMax-M3": { id: "MiniMax-M3", name: "MiniMax M3" },
+  "MiniMax-M2.7": { id: "MiniMax-M2.7", name: "MiniMax M2.7" },
+  alpha: { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  alpha_high: { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+  gamma: { id: "gpt-5.5", name: "GPT-5.5" },
+  gamma_high: { id: "gpt-5.5-high", name: "GPT-5.5 High" },
+  gamma_mid: { id: "gpt-5.5-mid", name: "GPT-5.5 Mid" },
+  "gamma-6-astra": { id: "gpt-6-astra", name: "GPT-6 Astra" },
+}
+
 // Snapshot of verified models from GET /api/v1/config (excluding @ai-sdk/google
 // omega which returns 404 on /api/v1/models/*). Used before sign-in or when the
 // remote catalog cannot be reached; provider.models() replaces it with live data.
 const BOOTSTRAP = [
   {
     id: "MiniMax-M3.1-Flash",
+    apiId: "MiniMax-M3.1-Flash",
     name: "MiniMax M3.1 Flash",
     npm: "@ai-sdk/anthropic",
     attachment: true,
@@ -92,7 +118,8 @@ const BOOTSTRAP = [
   },
   {
     id: "MiniMax-M3",
-    name: "MiniMax-M3",
+    apiId: "MiniMax-M3",
+    name: "MiniMax M3",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -103,7 +130,8 @@ const BOOTSTRAP = [
   },
   {
     id: "MiniMax-M2.7",
-    name: "MiniMax-M2.7",
+    apiId: "MiniMax-M2.7",
+    name: "MiniMax M2.7",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -113,8 +141,9 @@ const BOOTSTRAP = [
     limit: { context: 196608, input: 180000, output: 128000 },
   },
   {
-    id: "alpha",
-    name: "Gamma-Op 5.5",
+    id: "claude-opus-5-5",
+    apiId: "alpha",
+    name: "Claude Opus 5.5",
     npm: "@ai-sdk/anthropic",
     attachment: true,
     reasoning: true,
@@ -130,8 +159,21 @@ const BOOTSTRAP = [
     },
   },
   {
-    id: "gamma_high",
-    name: "Gamma",
+    id: "claude-opus-4-6",
+    apiId: "alpha_high",
+    name: "Claude Opus 4.6",
+    npm: "@ai-sdk/anthropic",
+    attachment: true,
+    reasoning: true,
+    tool_call: true,
+    temperature: true,
+    inputs: ["text", "image", "pdf"],
+    limit: { context: 1000000, input: 900000, output: 128000 },
+  },
+  {
+    id: "gpt-5.5-high",
+    apiId: "gamma_high",
+    name: "GPT-5.5 High",
     npm: "@ai-sdk/openai",
     attachment: true,
     reasoning: true,
@@ -147,8 +189,9 @@ const BOOTSTRAP = [
     },
   },
   {
-    id: "gamma-6-astra",
-    name: "Gamma-Astra",
+    id: "gpt-6-astra",
+    apiId: "gamma-6-astra",
+    name: "GPT-6 Astra",
     npm: "@ai-sdk/openai",
     attachment: true,
     reasoning: true,
@@ -709,7 +752,7 @@ function configEntryFromModel(site, m) {
   const npm = m.npm || "@ai-sdk/anthropic"
   const attachment = typeof m.attachment === "boolean" ? m.attachment : inputs.length > 1
   return {
-    id: m.id,
+    id: m.apiId || m.id,
     name: m.name || m.id,
     provider: { npm, api: base },
     reasoning: Boolean(m.reasoning),
@@ -754,7 +797,10 @@ function internalModelFromSpec(site, providerID, m) {
 }
 
 function bootstrapConfigModels(site) {
-  return Object.fromEntries(BOOTSTRAP.map((m) => [m.id, configEntryFromModel(site, m)]))
+  return {
+    ...Object.fromEntries(BOOTSTRAP.map((m) => [m.id, configEntryFromModel(site, m)])),
+    ...mediaBootstrapConfigModels(site),
+  }
 }
 
 function parseRemoteConfig(site, body) {
@@ -773,11 +819,15 @@ function parseRemoteConfig(site, body) {
 
     for (const [modelKey, raw] of Object.entries(prov.models)) {
       if (!isRecord(raw)) continue
-      const id = trimStr(modelKey)
-      const apiId = trimStr(raw.id) || id
-      if (!id || seen.has(id)) continue
+      const upstreamKey = trimStr(modelKey)
+      if (!upstreamKey) continue
+      const explicitApiId = trimStr(raw.id)
+      const apiId = explicitApiId || upstreamKey
+      const alias = TEXT_MODEL_ALIASES[upstreamKey] ?? (!explicitApiId ? TEXT_MODEL_ALIASES[apiId] : undefined)
+      const id = alias?.id ?? upstreamKey
+      if (seen.has(id)) continue
       seen.add(id)
-      const name = trimStr(raw.display_name) || trimStr(raw.name) || id
+      const name = alias?.name ?? (trimStr(raw.display_name) || trimStr(raw.name) || id)
       const inputs = normalizeInputs(raw.modalities?.input)
       specs.push({
         id,
@@ -909,6 +959,46 @@ async function fetchRemoteConfig(site, cred, versionCode, fetchImpl) {
   const specs = parseRemoteConfig(site, body)
   if (specs === null) throw new Error(`${site.name} config: invalid provider payload`)
   return specs
+}
+
+async function fetchRemoteModelsConfig(site, cred, versionCode, fetchImpl) {
+  const res = await siteFetch(
+    site,
+    `${site.cloud}/api/v1/models/config`,
+    { headers: buildApiHeaders(cred, versionCode), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
+    { fetchImpl, what: `${site.name} media models` },
+  )
+  if (res.status === 401) {
+    throw Object.assign(
+      new Error(
+        msg(
+          site.lang,
+          `${site.name} 登录态已失效（HTTP 401），请重新登录`,
+          `${site.name} sign-in expired (HTTP 401); please sign in again`,
+        ),
+      ),
+      { signIn: "expired", status: 401 },
+    )
+  }
+  if (res.status === 403) {
+    const text = await res.text().catch(() => "")
+    if (isAuthError403(403, text)) {
+      throw Object.assign(
+        new Error(
+          msg(
+            site.lang,
+            `${site.name} 登录态已失效（HTTP 403），请重新登录`,
+            `${site.name} sign-in expired (HTTP 403); please sign in again`,
+          ),
+        ),
+        { signIn: "expired", status: 403 },
+      )
+    }
+    return null
+  }
+  if (!res.ok) return null
+  const body = await res.json().catch(() => null)
+  return parseModelsConfig(body)
 }
 
 // Prepaid credit wallets report a numeric remaining balance (without `used`,
@@ -1125,16 +1215,47 @@ function createPlugin(
     sleepImpl,
     nowMsImpl = () => Date.now(),
     versionCode,
+    pollIntervalMs,
+    maxWaitMs,
   } = {},
 ) {
   const sleep = sleepImpl ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
   const resolvedVersion = normalizeVersionCode(versionCode ?? detectInstalledVersion({ env, platform, readFileImpl }))
-  const modelCache = new Map() // cacheKey -> { at, specs }
+  const modelCache = new Map() // cacheKey -> { at, specs, mediaSpecs }
   const diskCache = new Map() // cacheKey -> { mtimeMs, cred }
   const verifiedTokenOwners = new Map() // token -> { uid, expiresAt }
   // In-memory only: keeps verified rotated tokens alive across desktop account
   // switches during this host process; a host restart falls back to the stored auth.
   const retainedDesktopCreds = new Map() // expectedUserId -> { token, groupId, deviceId, lkgConfig }
+  const canonicalToApiId = new Map(
+    site.region === "domestic"
+      ? BOOTSTRAP.filter((m) => m.apiId && m.apiId !== m.id).map((m) => [m.id, m.apiId])
+      : [],
+  )
+  let latestMediaSpecs = null
+
+  function recordTextAliases(specs) {
+    for (const m of specs) {
+      if (m.id && m.apiId) canonicalToApiId.set(m.id, m.apiId)
+    }
+  }
+
+  function mergeMediaLookupSpecs(liveSpecs) {
+    const out = []
+    const seen = new Set()
+    for (const s of liveSpecs ?? []) {
+      if (seen.has(s.id)) continue
+      seen.add(s.id)
+      out.push(s)
+    }
+    for (const s of _mediaInternal.BOOTSTRAP_MEDIA) {
+      if (seen.has(s.id)) continue
+      seen.add(s.id)
+      const { regions: _r, ...rest } = s
+      out.push(rest)
+    }
+    return out
+  }
 
   function setBounded(map, key, value, maxSize = OWNER_CACHE_MAX) {
     if (map.has(key)) map.delete(key)
@@ -1315,28 +1436,121 @@ function createPlugin(
     return authResult({ ...cred, method: "desktop" }, profile)
   }
 
+  async function sendCloudRequest(getAuth, reqMethod, path, payload, { signal, timeoutMs = REQUEST_TIMEOUT_MS, label } = {}) {
+    const auth = await getAuth()
+    let cred = await resolveCredential(auth)
+    if (!cred) {
+      return {
+        res: jsonErrorResponse(401, `${site.name}: not signed in`, { type: "authentication_error" }, { "X-Magpie-Sign-In": "expired" }),
+        renewed: false,
+      }
+    }
+
+    const url = `${site.cloud}${path}`
+    const encodedBody = payload !== undefined ? JSON.stringify(payload) : undefined
+    const sendOnce = async (c) => {
+      const headers = buildApiHeaders(c, resolvedVersion)
+      if (encodedBody !== undefined) headers["content-type"] = "application/json"
+      const combinedSignal = signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs)
+      return siteFetch(
+        site,
+        url,
+        { method: reqMethod, headers, ...(encodedBody !== undefined ? { body: encodedBody } : {}), signal: combinedSignal },
+        { fetchImpl, what: `${site.name} ${label ?? path}` },
+      )
+    }
+
+    let res
+    let preReadText = null
+    let renewed = cred.renewedFromSaved
+    try {
+      res = await sendOnce(cred)
+      let shouldRetryAuth = res.status === 401
+      if (!shouldRetryAuth && res.status === 403) {
+        preReadText = await res.text()
+        shouldRetryAuth = isAuthError403(403, preReadText)
+      }
+      if (shouldRetryAuth && auth?.metadata?.method === "desktop") {
+        const fresh = await resolveCredential(auth, { forceRefresh: true })
+        if (fresh && fresh.token !== cred.token) {
+          if (preReadText === null) await res.body?.cancel?.().catch(() => {})
+          preReadText = null
+          cred = fresh
+          renewed = true
+          res = await sendOnce(cred)
+        }
+      }
+    } catch (error) {
+      if (error instanceof OtherSite) {
+        return {
+          res: jsonErrorResponse(502, error.message, { type: "region_mismatch" }, { "X-Magpie-Sign-In": "kept" }),
+          renewed,
+        }
+      }
+      throw error
+    }
+
+    return { res: await normalizeUpstreamResponse(site, res, renewed, preReadText), renewed }
+  }
+
   async function sendLlmRequest(getAuth, input, init = {}) {
+    const req = input instanceof Request ? input : null
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : req?.url ?? String(input)
+    const method = init.method ?? req?.method ?? "POST"
+
+    if (mediaPath(url)) {
+      let mediaBody = init.body
+      if (req && mediaBody === undefined && method !== "GET" && method !== "HEAD") {
+        mediaBody = await req.arrayBuffer()
+      }
+      return handleMediaFetch(
+        url,
+        { method, body: mediaBody, headers: init.headers ?? req?.headers, signal: init.signal ?? req?.signal },
+        {
+          site,
+          cloudRequest: (m, p, payload, opts) => sendCloudRequest(getAuth, m, p, payload, opts),
+          externalFetch: fetchImpl,
+          getMediaSpecs: async () => mergeMediaLookupSpecs(latestMediaSpecs),
+          sleep,
+          nowMs: nowMsImpl,
+          ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
+          ...(maxWaitMs !== undefined ? { maxWaitMs } : {}),
+        },
+      )
+    }
+
     const auth = await getAuth()
     let cred = await resolveCredential(auth)
     if (!cred) {
       return jsonErrorResponse(401, `${site.name}: not signed in`, { type: "authentication_error" }, { "X-Magpie-Sign-In": "expired" })
     }
 
-    const req = input instanceof Request ? input : null
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : req?.url ?? String(input)
-    const method = init.method ?? req?.method ?? "POST"
     let body = init.body
     if (req && body === undefined && method !== "GET" && method !== "HEAD") {
       body = await req.text()
     }
 
-    // MiniMax Design's OpenAI Responses proxy requires `store: false`.
-    if (typeof body === "string" && /\/responses(?:\?|$)/.test(url)) {
+    if (typeof body === "string") {
+      const isResponses = /\/responses(?:\?|$)/.test(url)
       try {
         const parsed = JSON.parse(body)
-        if (isRecord(parsed) && parsed.store !== false) {
-          parsed.store = false
-          body = JSON.stringify(parsed)
+        if (isRecord(parsed)) {
+          let mutated = false
+          // MiniMax Design's OpenAI Responses proxy requires `store: false`.
+          if (isResponses && parsed.store !== false) {
+            parsed.store = false
+            mutated = true
+          }
+          // If a caller sent a canonical model ID directly, map it back to the
+          // upstream ID expected by this site's gateway.
+          if (typeof parsed.model === "string") {
+            const mapped = canonicalToApiId.get(parsed.model)
+            if (mapped && mapped !== parsed.model) {
+              parsed.model = mapped
+              mutated = true
+            }
+          }
+          if (mutated) body = JSON.stringify(parsed)
         }
       } catch {}
     }
@@ -1607,20 +1821,54 @@ function createPlugin(
         if (!cred) return provider.models
 
         const cacheKey = `${cred.userId ?? ""}:${cred.groupId ?? ""}:${cred.token.slice(-16)}`
+        const now = nowMsImpl()
         const cached = modelCache.get(cacheKey)
-        if (cached && nowMsImpl() - cached.at < MODELS_TTL_MS) {
-          return Object.fromEntries(cached.specs.map((m) => [m.id, internalModelFromSpec(site, provider.id, m)]))
+        const buildCombined = (chatSpecs, mediaSpecs) => {
+          recordTextAliases(chatSpecs)
+          if (mediaSpecs) latestMediaSpecs = mediaSpecs
+          const effectiveMedia = mediaSpecs ?? bootstrapMediaSpecs(site)
+          return {
+            ...Object.fromEntries(chatSpecs.map((m) => [m.id, internalModelFromSpec(site, provider.id, m)])),
+            ...Object.fromEntries(effectiveMedia.map((m) => [m.id, mediaInternalModel(site, provider.id, m)])),
+          }
+        }
+
+        if (cached && now - cached.at < MODELS_TTL_MS) {
+          return buildCombined(cached.specs, cached.mediaSpecs)
         }
 
         let specs = null
+        let mediaSpecs = null
         try {
-          specs = await fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl)
+          const [chatRes, mediaRes] = await Promise.allSettled([
+            fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl),
+            fetchRemoteModelsConfig(site, cred, resolvedVersion, fetchImpl),
+          ])
+          if (chatRes.status === "fulfilled") {
+            specs = chatRes.value
+          } else {
+            throw chatRes.reason
+          }
+          if (mediaRes.status === "fulfilled") {
+            mediaSpecs = mediaRes.value
+          } else if (mediaRes.reason?.signIn === "expired") {
+            throw mediaRes.reason
+          }
         } catch (error) {
           if (error?.signIn === "expired" && auth?.metadata?.method === "desktop") {
             const fresh = await resolveCredential(auth, { forceRefresh: true })
             if (fresh && fresh.token !== cred.token) {
               cred = fresh
-              specs = await fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl)
+              const [chatRes, mediaRes] = await Promise.allSettled([
+                fetchRemoteConfig(site, cred, resolvedVersion, fetchImpl),
+                fetchRemoteModelsConfig(site, cred, resolvedVersion, fetchImpl),
+              ])
+              if (chatRes.status === "fulfilled") {
+                specs = chatRes.value
+              } else {
+                throw chatRes.reason
+              }
+              mediaSpecs = mediaRes.status === "fulfilled" ? mediaRes.value : null
             } else {
               throw error
             }
@@ -1634,11 +1882,13 @@ function createPlugin(
             }
             if (specs === null && cached) specs = cached.specs
             if (specs === null) return provider.models
+            mediaSpecs = cached?.mediaSpecs ?? null
           }
         }
 
-        modelCache.set(cacheKey, { at: nowMsImpl(), specs })
-        return Object.fromEntries(specs.map((m) => [m.id, internalModelFromSpec(site, provider.id, m)]))
+        const effectiveMedia = mediaSpecs ?? cached?.mediaSpecs ?? null
+        modelCache.set(cacheKey, { at: nowMsImpl(), specs, mediaSpecs: effectiveMedia })
+        return buildCombined(specs, effectiveMedia)
       },
     },
   }
@@ -1650,6 +1900,7 @@ export const MiniMaxDesignGlobalAuthPlugin = async () => createPlugin(SITES["min
 export const _internal = {
   SITES,
   BOOTSTRAP,
+  TEXT_MODEL_ALIASES,
   CREDIT_TYPE_LABELS,
   PLACEHOLDER_KEY,
   DEFAULT_VERSION_CODE,
@@ -1666,6 +1917,7 @@ export const _internal = {
   probeDesktopCredential,
   waitForDesktopCredential,
   parseRemoteConfig,
+  parseModelsConfig,
   bootstrapConfigModels,
   configEntryFromModel,
   internalModelFromSpec,
@@ -1679,4 +1931,5 @@ export const _internal = {
   jwtOwnerId,
   isAuthError403,
   siteFetch,
+  _mediaInternal,
 }

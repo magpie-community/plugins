@@ -22,6 +22,7 @@ const {
   readDesktopCredential,
   waitForDesktopCredential,
   parseRemoteConfig,
+  parseModelsConfig,
   usageFromWallet,
   usageFromBalance,
   normalizeUpstreamResponse,
@@ -30,6 +31,7 @@ const {
   isExpiredJwt,
   jwtOwnerId,
   siteFetch,
+  _mediaInternal,
 } = _internal
 
 const TEST_VERSION = "4.0.18"
@@ -300,16 +302,21 @@ describe("crypto & desktop credential reading", () => {
 })
 
 describe("model catalog & usage parsing", () => {
-  test("parseRemoteConfig extracts multi-SDK models, preserves aliases, sanitizes untrusted baseURL, and handles empty catalogs", () => {
+  test("parseRemoteConfig extracts multi-SDK models, maps compliance aliases to canonical names, sanitizes untrusted baseURL, and handles empty catalogs", () => {
     const specs = parseRemoteConfig(SITES["minimax-design"], SAMPLE_REMOTE_CONFIG)
     assert.ok(Array.isArray(specs))
     const byId = Object.fromEntries(specs.map((s) => [s.id, s]))
     assert.equal(byId["MiniMax-M3.1-Flash"].npm, "@ai-sdk/anthropic")
     assert.equal(byId["MiniMax-M3.1-Flash"].name, "MiniMax M3.1 Flash")
-    assert.equal(byId.alpha.npm, "@ai-sdk/anthropic")
-    assert.equal(byId.gamma_high.npm, "@ai-sdk/openai")
-    assert.equal(byId.gamma_high.limit.context, 270000)
-    assert.equal(byId.gamma_high.options.store, false)
+    assert.equal(byId["claude-opus-5-5"].npm, "@ai-sdk/anthropic")
+    assert.equal(byId["claude-opus-5-5"].apiId, "alpha")
+    assert.equal(byId["claude-opus-5-5"].name, "Claude Opus 5.5")
+    assert.equal(byId.alpha, undefined)
+    assert.equal(byId["gpt-5.5-high"].npm, "@ai-sdk/openai")
+    assert.equal(byId["gpt-5.5-high"].apiId, "gamma_high")
+    assert.equal(byId["gpt-5.5-high"].name, "GPT-5.5 High")
+    assert.equal(byId["gpt-5.5-high"].limit.context, 270000)
+    assert.equal(byId["gpt-5.5-high"].options.store, false)
     assert.equal(byId["omega-3.1-pro"], undefined)
 
     // Non-allowlisted baseURL in remote config falls back to site.defaultLlmBase
@@ -487,19 +494,22 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       const models1 = await hooks.provider.models(prov, { auth: storedAuth })
       const models2 = await hooks.provider.models(prov, { auth: storedAuth })
       assert.equal(configCalls, 1)
-      assert.ok(models1["MiniMax-M3.1-Flash"] && models2.gamma_high)
+      assert.ok(models1["MiniMax-M3.1-Flash"] && models2["gpt-5.5-high"])
+      assert.equal(models2["gpt-5.5-high"].api.id, "gamma_high")
+      assert.equal(models2["claude-opus-5-5"].api.id, "alpha")
+      assert.ok(models2["gpt-image-2.6-sunburst"] && models2["MiniMax-H3"])
       fakeNow += MODELS_TTL_MS + 1000
       await hooks.provider.models(prov, { auth: storedAuth })
       assert.equal(configCalls, 2)
 
-      // Loader omits baseURL, enforces store:false even when store:true, retries auth-403 on disk rotation
+      // Loader omits baseURL, enforces store:false even when store:true, maps canonical model ID to upstream apiId, retries auth-403 on disk rotation
       const loaded = await hooks.auth.loader(async () => storedAuth)
       assert.equal(loaded.baseURL, undefined)
 
       const res = await loaded.fetch("https://hub.minimaxi.com/api/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "gamma_high", store: true, input: "hi" }),
+        body: JSON.stringify({ model: "gpt-5.5-high", store: true, input: "hi" }),
       })
       assert.equal(res.status, 200)
       assert.equal(res.headers.get("X-Magpie-Sign-In"), "renewed")
@@ -509,6 +519,7 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
       assert.equal(respCalls[0].version, TEST_VERSION)
       assert.equal(respCalls[0].groupId, "20002")
       assert.equal(JSON.parse(respCalls[0].body).store, false)
+      assert.equal(JSON.parse(respCalls[0].body).model, "gamma_high")
       assert.equal(respCalls[1].token, rotatedToken)
 
       const usage = await hooks.auth.usage(async () => storedAuth)
@@ -815,6 +826,9 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
         if (u.endsWith("/api/v1/credit/balance")) {
           return new Response(JSON.stringify({ total_credit: "500", team_credit: "0" }), { status: 200 })
         }
+        if (u.endsWith("/api/v1/models/config")) {
+          return new Response("not found", { status: 404 })
+        }
         sentTokens.push(tok)
         return new Response("{}", { status: 200 })
       },
@@ -1025,7 +1039,12 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
   test("authoritative empty remote catalog returns {} instead of bootstrap models", async () => {
     const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
     const hooks = createPlugin(SITES["minimax-design"], {
-      fetchImpl: async () => new Response(JSON.stringify({ enabled_providers: [], provider: {} }), { status: 200 }),
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/api/v1/models/config")) {
+          return new Response(JSON.stringify({ imageModels: [], videoModels: [] }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ enabled_providers: [], provider: {} }), { status: 200 })
+      },
       versionCode: TEST_VERSION,
     })
     const cfg = { provider: {} }
@@ -1213,5 +1232,399 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
 
     assert.equal(typeof opencode2.id, "string")
     assert.equal(typeof opencode2.setup, "function")
+  })
+})
+
+const SAMPLE_MODELS_CONFIG = {
+  imageModels: [
+    { id: "MiniMax-H3-Image", model_name: "MiniMax-H3-Image", name: "MiniMax H3 Image", backend: "minimax_image", params: { aspect_ratio: { default: "1:1", options: ["1:1", "16:9", "9:16"] }, resolution: { default: "4K", options: ["1K", "2K", "4K"] } } },
+    { id: "g-image-2.6-sunburst", model_name: "gpt-image-2.6-sunburst", name: "Design Image 2.6 Pro", backend: "openai", params: { aspect_ratio: { default: "1:1", options: ["1:1", "16:9", "9:16"] }, resolution: { default: "2k", options: ["1k", "2k", "4k"] }, quality: { default: "high", options: ["low", "medium", "high"] } } },
+    { id: "banana-2", model_name: "nano_banana_2_flash", name: "General Image 2", backend: "nano_banana", params: { aspect_ratio: { default: "auto", options: ["auto", "1:1", "16:9"] }, resolution: { default: "auto", options: ["auto", "1K", "2K", "4K"] } } },
+    { id: "banana-pro", model_name: "nano_banana_2", name: "General Image Pro", backend: "nano_banana" },
+    { id: "doubao-seedream-5-0-pro-260628", model_name: "doubao-seedream-5-0-pro-260628", name: "Seedream 5.0 Pro", backend: "seedream", params: { resolution: { default: "2K", options: ["1K", "2K"] } } },
+    { id: "doubao-seedream-4-5-251128", model_name: "doubao-seedream-4-5-251128", name: "Seedream 4.5", backend: "seedream", params: { resolution: { default: "2K", options: ["2K", "4K"] } } },
+    { id: "midjourney-8.2", name: "悠船 8.2", backend: "midjourney", params: { aspect_ratio: { default: "1:1", options: ["auto", "1:1", "16:9"] } } },
+    { id: "g-image-3-future", model_name: "gpt-image-3-future", name: "Design Image 3 Future", backend: "openai" },
+    { id: "hidden-img", model_name: "hidden-img", name: "Hidden", backend: "minimax_image", visibility: "hidden" },
+    { id: "unsupported-img", model_name: "unsupported", name: "Other", backend: "unknown_backend" },
+  ],
+  videoModels: [
+    { id: "MiniMax-H3", model_name: "MiniMax-H3", name: "MiniMax H3", backend: "minimax_v3", params: { duration: { default: "5", options: ["4", "5", "6", "10"] }, aspect_ratio: { default: "adaptive", options: ["adaptive", "16:9", "9:16"] }, resolution: { default: "2K", options: ["768P", "2K"] } } },
+    { id: "seedance2.5", model_name: "seedance2.5", name: "SD 2.5", backend: "seedance", params: { duration: { default: "5", options: ["4", "5", "10"] }, resolution: { default: "720p", options: ["480p", "720p", "1080p"] } } },
+    { id: "seedance2.5-draft", model_name: "seedance2.5-draft", name: "SD 2.5 样片", backend: "seedance", params: { resolution: { default: "480p", options: ["480p"] } } },
+    { id: "seedance2.0", model_name: "seedance2.0", name: "SD 2.0 满血版", backend: "seedance" },
+    { id: "wan3.0-video", model_name: "wan3.0-video", name: "Wan 3.0", backend: "wan_i2v", params: { duration: { default: "5", options: ["2", "5", "10"] }, resolution: { default: "1080P", options: ["480P", "720P", "1080P"] } } },
+    { id: "kling-v3-omni-video", model_name: "kling-v3-omni", name: "Kling 3.0 Omni", backend: "kling", params: { mode: { default: "pro", options: ["std", "pro"] }, duration: { default: "5", options: ["3", "5", "10"] }, aspect_ratio: { default: "16:9", options: ["16:9", "9:16", "1:1"] } } },
+    { id: "kling-avatar", model_name: "kling-avatar", name: "Kling Avatar", backend: "kling_avatar", params: { mode: { default: "std", options: ["std", "pro"] } } },
+    { id: "veo-3.1-generate-001", model_name: "veo-3.1-generate-001", name: "Veo3.1", backend: "veo3", params: { duration: { default: "8", options: ["8"] }, resolution: { default: "720p", options: ["720p", "1080p"] }, aspect_ratio: { default: "16:9", options: ["16:9", "9:16"] } } },
+  ],
+}
+
+describe("native image & video models + canonical naming", () => {
+  test("parseModelsConfig maps domestic compliance aliases to canonical IDs and names, drops hidden/unsupported models", () => {
+    const specs = parseModelsConfig(SAMPLE_MODELS_CONFIG)
+    assert.ok(Array.isArray(specs))
+    const byId = Object.fromEntries(specs.map((s) => [s.id, s]))
+
+    assert.equal(byId["gpt-image-2.6-sunburst"].name, "GPT Image 2.6 Sunburst")
+    assert.equal(byId["gpt-image-2.6-sunburst"].upstreamId, "g-image-2.6-sunburst")
+    assert.equal(byId["gpt-image-2.6-sunburst"].modelName, "gpt-image-2.6-sunburst")
+    assert.equal(byId["g-image-2.6-sunburst"], undefined)
+
+    assert.equal(byId["nano-banana-2"].name, "Nano Banana 2")
+    assert.equal(byId["nano-banana-2"].modelName, "nano_banana_2_flash")
+    assert.equal(byId["nano-banana-pro"].name, "Nano Banana Pro")
+    assert.equal(byId["nano-banana-pro"].modelName, "nano_banana_2")
+
+    assert.equal(byId["midjourney-8.2"].name, "Midjourney 8.2")
+    assert.equal(byId["gpt-image-3-future"].name, "GPT Image 3 Future")
+
+    assert.equal(byId["seedance-2.5"].name, "Seedance 2.5")
+    assert.equal(byId["seedance-2.5"].modelName, "seedance2.5")
+    assert.equal(byId["seedance-2.5-draft"].name, "Seedance 2.5 Draft")
+    assert.equal(byId["seedance-2.0"].name, "Seedance 2.0")
+    assert.equal(byId["wan-3.0-video"].name, "Wan 3.0")
+    assert.equal(byId["kling-v3-omni-video"].modelName, "kling-v3-omni")
+    assert.equal(byId["veo-3.1"].name, "Veo 3.1")
+    assert.equal(byId["veo-3.1"].modelName, "veo-3.1-generate-001")
+
+    // MiniMax-H3-Image defaults to 2K (not 4K) so callers omitting size don't burn 4K credits
+    assert.equal(byId["MiniMax-H3-Image"].defaultResolution, "2K")
+    // Hidden and unsupported backends are omitted
+    assert.equal(byId["hidden-img"], undefined)
+    assert.equal(byId["unsupported-img"], undefined)
+  })
+
+  test("provider.models merges live chat models with live image & video models using magpie native capabilities", async () => {
+    const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: async (url) => {
+        const u = String(url)
+        if (u.endsWith("/api/v1/config")) return new Response(JSON.stringify(SAMPLE_REMOTE_CONFIG), { status: 200 })
+        if (u.endsWith("/api/v1/models/config")) return new Response(JSON.stringify(SAMPLE_MODELS_CONFIG), { status: 200 })
+        return new Response("not found", { status: 404 })
+      },
+      versionCode: TEST_VERSION,
+    })
+
+    const cfg = { provider: {} }
+    await hooks.config(cfg)
+    // Bootstrap config includes canonical chat + image + video entries
+    assert.equal(cfg.provider["minimax-design"].models["claude-opus-5-5"].id, "alpha")
+    assert.equal(cfg.provider["minimax-design"].models["claude-opus-5-5"].name, "Claude Opus 5.5")
+    assert.equal(cfg.provider["minimax-design"].models["gpt-6-astra"].id, "gamma-6-astra")
+    assert.deepEqual(cfg.provider["minimax-design"].models["gpt-image-2.6-sunburst"].modalities.output, ["image"])
+    assert.deepEqual(cfg.provider["minimax-design"].models["seedance-2.5"].modalities.output, ["video"])
+
+    const models = await hooks.provider.models(
+      { id: "minimax-design", models: cfg.provider["minimax-design"].models },
+      { auth: { type: "api", key: validJwt } },
+    )
+    // Chat models have canonical IDs & names with upstream api.id preserved
+    assert.equal(models["claude-opus-5-5"].api.id, "alpha")
+    assert.equal(models["gpt-5.5-high"].api.id, "gamma_high")
+    assert.equal(models["gpt-5.5-high"].capabilities.output.text, true)
+    // Image models have output.image=true & @ai-sdk/openai-compatible so magpie lists them as drawers
+    assert.equal(models["gpt-image-2.6-sunburst"].api.npm, "@ai-sdk/openai-compatible")
+    assert.equal(models["gpt-image-2.6-sunburst"].capabilities.output.text, false)
+    assert.equal(models["gpt-image-2.6-sunburst"].capabilities.output.image, true)
+    assert.equal(models["nano-banana-2"].name, "Nano Banana 2")
+    assert.equal(models["midjourney-8.2"].name, "Midjourney 8.2")
+    // Video models have output.video=true so magpie lists them as videomakers
+    assert.equal(models["seedance-2.5"].capabilities.output.text, false)
+    assert.equal(models["seedance-2.5"].capabilities.output.video, true)
+    assert.equal(models["MiniMax-H3"].capabilities.output.video, true)
+    assert.equal(models["veo-3.1"].capabilities.output.video, true)
+  })
+
+  test("POST /images/generations and /images/edits route all 5 image backends, upload multipart refs, refuse mask/local paths, and isolate CDN headers", async () => {
+    const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const sent = []
+    const pollCounts = new Map()
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d])
+
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url)
+      const h = new Headers(init.headers)
+      const bodyObj = typeof init.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) : null
+      sent.push({ url: u, method: init.method ?? "GET", token: h.get("token"), body: bodyObj })
+
+      if (u.endsWith("/api/v1/files/upload")) {
+        return new Response(JSON.stringify({ url: "https://cdn.example.test/uploaded-ref.png" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/image/minimax/generate")) return new Response(JSON.stringify({ task_id: "t-mm" }), { status: 200 })
+      if (u.endsWith("/api/v2/image/minimax/tasks/t-mm")) {
+        const c = (pollCounts.get("t-mm") ?? 0) + 1
+        pollCounts.set("t-mm", c)
+        if (c === 1) return new Response(JSON.stringify({ status: "processing" }), { status: 200 })
+        return new Response(JSON.stringify({ status: "success", image_url: "https://cdn.example.test/mm-out.png" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/image/openai/generate")) return new Response(JSON.stringify({ task_id: "t-oai" }), { status: 200 })
+      if (u.endsWith("/api/v2/image/openai/tasks/t-oai")) {
+        return new Response(JSON.stringify({ status: "success", image_urls: ["https://cdn.example.test/oai-1.png", "https://cdn.example.test/oai-2.png"] }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/image/nano_banana/generate")) return new Response(JSON.stringify({ task_id: "t-nb" }), { status: 200 })
+      if (u.endsWith("/api/v2/image/nano_banana/tasks/t-nb")) {
+        return new Response(JSON.stringify({ status: "success", image_url: "https://cdn.example.test/nb-out.png" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/image/seedream/generate")) return new Response(JSON.stringify({ task_id: "t-sd" }), { status: 200 })
+      if (u.endsWith("/api/v2/image/seedream/tasks/t-sd")) {
+        return new Response(JSON.stringify({ status: "success", image_url: "https://cdn.example.test/sd-out.png" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/image/midjourney/generate")) return new Response(JSON.stringify({ task_id: "t-mj" }), { status: 200 })
+      if (u.endsWith("/api/v1/image/midjourney/tasks/t-mj")) {
+        return new Response(JSON.stringify({ status: "completed", image_urls: ["https://cdn.example.test/mj-1.png", "https://cdn.example.test/mj-2.png"] }), { status: 200 })
+      }
+      if (u === "https://cdn.example.test/mm-out.png") {
+        // Must NEVER receive MiniMax credentials on third-party CDN download
+        assert.equal(h.get("token"), null)
+        return new Response(pngBytes, { status: 200, headers: { "content-type": "image/png" } })
+      }
+      if (u === "https://cdn.example.test/insecure-redirect.png") {
+        return new Response("", { status: 302, headers: { location: "http://cdn.example.test/plain.png" } })
+      }
+      return new Response("not found", { status: 404 })
+    }
+
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: fakeFetch,
+      versionCode: TEST_VERSION,
+      sleepImpl: async () => {},
+      pollIntervalMs: 1,
+    })
+    const loaded = await hooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const base = "https://hub.minimaxi.com/api/v1"
+
+    // 1. MiniMax-H3-Image with b64_json + polling pending -> success
+    const rMm = await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "minimax-design/MiniMax-H3-Image", prompt: "a lighthouse", size: "1280x720", response_format: "b64_json" }),
+    })
+    assert.equal(rMm.status, 200)
+    assert.equal(rMm.headers.get("X-Magpie-Sign-In"), "kept")
+    const jMm = await rMm.json()
+    assert.equal(jMm.data.length, 1)
+    assert.equal(jMm.data[0].b64_json, pngBytes.toString("base64"))
+    const mmSub = sent.find((s) => s.url.endsWith("/api/v2/image/minimax/generate"))
+    assert.deepEqual(mmSub.body, { prompt: "a lighthouse", model: "MiniMax-H3-Image", image_paths: [], resolution: "1K", aspect_ratio: "16:9" })
+
+    // 2. OpenAI image backend (canonical ID -> model: gpt-image-2.6-sunburst, n=2)
+    const rOai = await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-image-2.6-sunburst", prompt: "editorial poster", size: "16:9", n: 2, quality: "high" }),
+    })
+    assert.equal(rOai.status, 200)
+    assert.equal((await rOai.json()).data.length, 2)
+    const oaiSub = sent.find((s) => s.url.endsWith("/api/v2/image/openai/generate"))
+    assert.equal(oaiSub.body.model, "gpt-image-2.6-sunburst")
+    assert.equal(oaiSub.body.n, 2)
+    assert.equal(oaiSub.body.size, "3840x2160")
+
+    // 3. Nano Banana 2 (canonical ID -> model_name: nano_banana_2_flash)
+    const rNb = await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "nano-banana-2", prompt: "glass fruit", size: "1024x1024" }),
+    })
+    assert.equal(rNb.status, 200)
+    const nbSub = sent.find((s) => s.url.endsWith("/api/v2/image/nano_banana/generate"))
+    assert.equal(nbSub.body.model_name, "nano_banana_2_flash")
+    assert.equal(nbSub.body.aspect_ratio, "1:1")
+    assert.equal(nbSub.body.resolution, "1K")
+
+    // 4. Seedream 4.5 includes seed & guidance_scale; Seedream 5.0 omits them
+    await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "doubao-seedream-4-5-251128", prompt: "mountain" }),
+    })
+    await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "doubao-seedream-5-0-pro-260628", prompt: "ocean" }),
+    })
+    const sdSubs = sent.filter((s) => s.url.endsWith("/api/v2/image/seedream/generate"))
+    assert.equal(sdSubs[0].body.seed, -1)
+    assert.equal(sdSubs[0].body.guidance_scale, 5)
+    assert.equal(sdSubs[1].body.seed, undefined)
+
+    // 5. Midjourney 8.2 via multipart /images/edits uploads binary PNG to /api/v1/files/upload and prepends URL + flags
+    const form = new FormData()
+    form.append("model", "midjourney-8.2")
+    form.append("prompt", "ink wash dragon")
+    form.append("size", "16:9")
+    form.append("n", "1")
+    form.append("image", new Blob([pngBytes], { type: "image/png" }), "ref.png")
+    const rMj = await loaded.fetch(`${base}/images/edits`, { method: "POST", body: form })
+    assert.equal(rMj.status, 200)
+    const jMj = await rMj.json()
+    assert.equal(jMj.data.length, 1)
+    assert.equal(jMj.data[0].url, "https://cdn.example.test/mj-1.png")
+    const mjSub = sent.find((s) => s.url.endsWith("/api/v1/image/midjourney/generate"))
+    assert.equal(mjSub.body.prompt, "https://cdn.example.test/uploaded-ref.png ink wash dragon --ar 16:9 --v 8.2")
+
+    // 6. Mask edits and non-HTTPS / local file references are refused with HTTP 400
+    const maskForm = new FormData()
+    maskForm.append("model", "MiniMax-H3-Image")
+    maskForm.append("prompt", "edit")
+    maskForm.append("image", new Blob([pngBytes], { type: "image/png" }), "a.png")
+    maskForm.append("mask", new Blob([pngBytes], { type: "image/png" }), "m.png")
+    const rMask = await loaded.fetch(`${base}/images/edits`, { method: "POST", body: maskForm })
+    assert.equal(rMask.status, 400)
+    assert.match(await rMask.text(), /mask/)
+
+    const rLocal = await loaded.fetch(`${base}/images/generations`, {
+      method: "POST",
+      body: JSON.stringify({ model: "MiniMax-H3-Image", prompt: "hi", image: "file:///etc/passwd" }),
+    })
+    assert.equal(rLocal.status, 400)
+  })
+
+  test("POST/GET /videos and /videos/:id/content route all 6 video backends, resolve H3 file_id, reject unsafe IDs, and propagate 401/429", async () => {
+    const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const sent = []
+    const mp4Bytes = Buffer.from("ftypmp42-fake-video")
+    let h3Ready = false
+
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url)
+      const h = new Headers(init.headers)
+      const bodyObj = typeof init.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) : null
+      sent.push({ url: u, method: init.method ?? "GET", token: h.get("token"), body: bodyObj })
+
+      if (u.endsWith("/api/v1/files/upload")) {
+        return new Response(JSON.stringify({ url: "https://cdn.example.test/frame.png" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/minimax-v3/generate")) return new Response(JSON.stringify({ task_id: "h3-task-1" }), { status: 200 })
+      if (u.endsWith("/api/v1/video/minimax-v3/tasks/h3-task-1")) {
+        return new Response(JSON.stringify(h3Ready ? { status: "Success", file_id: "file-99" } : { status: "Processing" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/minimax/files/file-99")) {
+        return new Response(JSON.stringify({ file: { download_url: "https://cdn.example.test/h3.mp4" } }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/seedance/generate")) return new Response(JSON.stringify({ task_id: "sd-task-2" }), { status: 200 })
+      if (u.endsWith("/api/v1/video/seedance/tasks/sd-task-2")) {
+        return new Response(JSON.stringify({ status: "succeeded", video_url: "https://cdn.example.test/sd.mp4" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/wan3/generate")) return new Response(JSON.stringify({ output: { task_id: "wan-task-3" } }), { status: 200 })
+      if (u.endsWith("/api/v1/video/wan3/tasks/wan-task-3")) {
+        return new Response(JSON.stringify({ output: { task_status: "SUCCEEDED", video_url: "https://cdn.example.test/wan.mp4" } }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/kling-omni/generate")) return new Response(JSON.stringify({ code: 0, data: { task_id: "kling-task-4" } }), { status: 200 })
+      if (u.endsWith("/api/v1/video/kling-omni/tasks/kling-task-4")) {
+        return new Response(JSON.stringify({ data: { task_status: "succeed", task_result: { videos: [{ url: "https://cdn.example.test/kling.mp4" }] } } }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/video/kling/avatar")) return new Response(JSON.stringify({ code: 0, data: { task_id: "av-task-5" } }), { status: 200 })
+      if (u.includes("/api/v1/video/veo3/generate?model=veo-3.1-generate-001")) return new Response(JSON.stringify({ task_id: "veo-task-6" }), { status: 200 })
+      if (u.endsWith("/api/v1/video/veo3/tasks/veo-task-6")) {
+        return new Response(JSON.stringify({ status: "completed", video_url: "https://cdn.example.test/veo.mp4" }), { status: 200 })
+      }
+      if (u.startsWith("https://cdn.example.test/") && u.endsWith(".mp4")) {
+        assert.equal(h.get("token"), null)
+        return new Response(mp4Bytes, { status: 200, headers: { "content-type": "video/mp4" } })
+      }
+      return new Response("not found", { status: 404 })
+    }
+
+    const hooks = createPlugin(SITES["minimax-design"], { fetchImpl: fakeFetch, versionCode: TEST_VERSION })
+    const loaded = await hooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const base = "https://hub.minimaxi.com/api/v1"
+
+    // 1. MiniMax-H3: create -> poll in_progress -> content 409 -> poll completed -> 2-step file retrieve + download
+    const h3Create = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "MiniMax-H3",
+        prompt: "paper boat in the rain",
+        seconds: "6",
+        size: "1280x720",
+        input_reference: "data:image/png;base64,iVBORw0KGgo=",
+      }),
+    })
+    assert.equal(h3Create.status, 200)
+    const h3Job = await h3Create.json()
+    assert.equal(h3Job.id, "MiniMax-H3::h3-task-1")
+    const h3Sub = sent.find((s) => s.url.endsWith("/api/v1/video/minimax-v3/generate"))
+    assert.equal(h3Sub.body.first_frame_image, "https://cdn.example.test/frame.png")
+    assert.equal(h3Sub.body.duration, 6)
+    assert.equal(h3Sub.body.resolution, "768P")
+
+    const notReady = await loaded.fetch(`${base}/videos/${encodeURIComponent(h3Job.id)}/content`, { method: "GET" })
+    assert.equal(notReady.status, 409)
+
+    h3Ready = true
+    const h3Poll = await loaded.fetch(`${base}/videos/${encodeURIComponent(h3Job.id)}`, { method: "GET" })
+    assert.equal((await h3Poll.json()).status, "completed")
+    const h3Content = await loaded.fetch(`${base}/videos/${encodeURIComponent(h3Job.id)}/content`, { method: "GET" })
+    assert.equal(h3Content.status, 200)
+    assert.equal(h3Content.headers.get("content-type"), "video/mp4")
+    assert.deepEqual(Buffer.from(await h3Content.arrayBuffer()), mp4Bytes)
+
+    // 2. Seedance 2.5 (canonical seedance-2.5 -> model: seedance2.5)
+    const sdCreate = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "seedance-2.5", prompt: "neon street", seconds: 5 }),
+    })
+    const sdJob = await sdCreate.json()
+    assert.equal(sdJob.id, "seedance-2.5::sd-task-2")
+    assert.equal(sent.find((s) => s.url.endsWith("/api/v1/video/seedance/generate")).body.model, "seedance2.5")
+    const sdPoll = await loaded.fetch(`${base}/videos/${encodeURIComponent(sdJob.id)}`, { method: "GET" })
+    assert.equal((await sdPoll.json()).status, "completed")
+
+    // 3. Wan 3.0 & Kling 3.0 Omni & Veo 3.1
+    const wanCreate = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "wan-3.0-video", prompt: "sunrise", seconds: 5 }),
+    })
+    assert.equal((await wanCreate.json()).id, "wan-3.0-video::wan-task-3")
+
+    const klingCreate = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "kling-v3-omni-video", prompt: "orbit shot", seconds: 5, size: "16:9" }),
+    })
+    assert.equal((await klingCreate.json()).id, "kling-v3-omni-video::kling-task-4")
+    assert.equal(sent.find((s) => s.url.endsWith("/api/v1/video/kling-omni/generate")).body.model_name, "kling-v3-omni")
+
+    const veoCreate = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "veo-3.1", prompt: "ocean wave", input_reference: "data:image/png;base64,iVBORw0KGgo=" }),
+    })
+    assert.equal((await veoCreate.json()).id, "veo-3.1::veo-task-6")
+    const veoSub = sent.find((s) => s.url.includes("/api/v1/video/veo3/generate"))
+    assert.equal(veoSub.body.instances[0].image.mime_type, "image/png")
+
+    // 4. kling-avatar refuses missing sound_file with 400, accepts image + extra.sound_file
+    const avBad = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "kling-avatar", prompt: "hello" }),
+    })
+    assert.equal(avBad.status, 400)
+    const avOk = await loaded.fetch(`${base}/videos`, {
+      method: "POST",
+      body: JSON.stringify({ model: "kling-avatar", prompt: "hello", input_reference: "https://cdn.example.test/face.png", extra: { sound_file: "https://cdn.example.test/voice.mp3" } }),
+    })
+    assert.equal((await avOk.json()).id, "kling-avatar::av-task-5")
+
+    // 5. Path traversal task ID rejected locally with 404 without sending any upstream request
+    const sentBeforeBadId = sent.length
+    const badId = await loaded.fetch(`${base}/videos/${encodeURIComponent("MiniMax-H3::../secret")}`, { method: "GET" })
+    assert.equal(badId.status, 404)
+    assert.equal(sent.length, sentBeforeBadId)
+
+    // 6. Upstream 402 credit exhaustion becomes 429 + kept; 401 becomes 401 + expired
+    const errHooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: async () => new Response(JSON.stringify({ error: { message: "insufficient credits" } }), { status: 402 }),
+      versionCode: TEST_VERSION,
+    })
+    const errLoaded = await errHooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const r402 = await errLoaded.fetch(`${base}/videos`, { method: "POST", body: JSON.stringify({ model: "MiniMax-H3", prompt: "hi" }) })
+    assert.equal(r402.status, 429)
+    assert.equal(r402.headers.get("X-Magpie-Sign-In"), "kept")
+
+    const expHooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: async () => new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 401 }),
+      versionCode: TEST_VERSION,
+    })
+    const expLoaded = await expHooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const r401 = await expLoaded.fetch(`${base}/videos`, { method: "POST", body: JSON.stringify({ model: "MiniMax-H3", prompt: "hi" }) })
+    assert.equal(r401.status, 401)
+    assert.equal(r401.headers.get("X-Magpie-Sign-In"), "expired")
   })
 })
