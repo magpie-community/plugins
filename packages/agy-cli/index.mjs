@@ -184,7 +184,9 @@ const ATTEMPT_LINE = /^⚠ API error \(attempt \d+\): ?(.*)$/
 // quota is left. agy 1.5.9 retries it in the same turn with a banner each
 // time, and only ends the turn after its last retry: to the client the turn
 // hung (Lmohn39 on X, pi through agy-cli, 11-14). A banner with it ends the
-// turn at once, as the 429 ending would.
+// turn at once, as the 429 ending would. agy 1.5.13 and later retry it
+// silently, saying so only in their log, and the log's line ends it
+// (#watchRetries).
 const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail)
 // agy writes this into the reply when the model's first call came back with
 // neither text nor tool calls, then calls the model again in the same turn.
@@ -3317,7 +3319,7 @@ class Proc {
         this.sessionPrompts++
         if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
-        const capacityWatch = this.#watchCapacity(turn)
+        const retryWatch = this.#watchRetries(turn)
         try {
           result = await this.conn.request("session/prompt", {
             sessionId: this.sessionId,
@@ -3325,7 +3327,7 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
-          clearInterval(capacityWatch)
+          clearInterval(retryWatch)
         }
         if (promptNumber === 1) {
           // how long agy took to answer, beside the session row's start-up steps
@@ -3481,17 +3483,34 @@ class Proc {
   // A try Antigravity answered with the bare 429 ends the turn now, with the
   // same error as agy's own 429 ending, instead of after agy's retries: the
   // process goes, as on a timeout, since agy is still retrying in it.
-  // Reads agy's log while nothing has reached the client, for the retry of
-  // a "no capacity" 503 (noCapacity).
-  #watchCapacity(turn) {
+  // Reads the lines agy adds to its log while the prompt runs: since agy
+  // 1.5.13 its retries are silent (its changelog: "retries are now silent
+  // … the chat shows an error only when every retry fails"), so the bare 429
+  // is no longer an attempt banner in the reply (refusedDetail) but only a
+  // log line, "Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429):
+  // Resource has been exhausted (e.g. check quota).), retrying in 4s", and
+  // agy tried 8 times over ~155s before its 429 ending (#1151's log): to the
+  // client, Claude Code and pi through agy-cli sat silent for minutes, then
+  // failed (lanmao on linux.do, herryhengAI on X, 11-22). The retry of a "no
+  // capacity" 503 (noCapacity) ends the turn only while nothing has reached
+  // the client, so a reply is never cut off for it.
+  #watchRetries(turn) {
     let reading = false
+    let from = turn.logOffset
     const quiet = () => !turn.done && turn.firstOutputAt == null && !turn.calls.length
     const timer = setInterval(async () => {
-      if (reading || !quiet()) return
+      if (reading || turn.done) return
       reading = true
       try {
-        const detail = await lastAgentError(this.logPath, turn.logOffset)
-        if (noCapacity(detail) && quiet()) this.capacityTurn(turn, detail)
+        const read = await logLines(this.logPath, from)
+        from = read.next
+        const details = agentErrorsIn(read.text)
+        const refused = details.find((detail) => refused429(detail))
+        if (refused) this.refuseTurn(turn, refused)
+        else {
+          const busy = details.findLast((detail) => noCapacity(detail))
+          if (busy && quiet()) this.capacityTurn(turn, busy)
+        }
       } finally {
         reading = false
       }
@@ -3999,20 +4018,47 @@ async function logTail(file, offset) {
   }
 }
 
-// agy writes the real upstream error only to its log; read what this turn added.
-async function lastAgentError(file, offset) {
-  const text = await logTail(file, offset)
-  if (!text) return ""
-  let found = ""
-  for (const line of text.split("\n")) {
+// The whole lines agy logged from offset (its last LOG_TAIL_BYTES at most),
+// and the offset after them: a line still being written is read next time.
+async function logLines(file, offset) {
+  try {
+    if ((await fs.promises.stat(file)).size <= offset) return { text: "", next: offset }
+    const handle = await fs.promises.open(file, "r")
+    try {
+      const size = (await handle.stat()).size
+      const start = Math.max(offset, size - LOG_TAIL_BYTES)
+      const buffer = Buffer.alloc(Math.max(0, size - start))
+      await handle.read(buffer, 0, buffer.length, start)
+      const last = buffer.lastIndexOf(0x0a)
+      if (last < 0) return { text: "", next: offset }
+      return { text: buffer.subarray(0, last + 1).toString("utf8"), next: start + last + 1 }
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { text: "", next: offset }
+  }
+}
+
+// The upstream errors in text, agy's log, in the order agy logged them
+function agentErrorsIn(text) {
+  const out = []
+  for (const line of String(text || "").split("\n")) {
     const match = /\] (?:agent executor error|failed to construct executor|inference connection failed[^:]*): (.+)$/.exec(line) ||
       /\] (?:Run|CallWithRetry): attempt \d+ failed \((.+)\), retrying in /.exec(line)
-    if (match) found = match[1]
+    if (!match) continue
+    let found = match[1]
+    const cut = found.lastIndexOf("generating and executing: ")
+    if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
+    found = found.trim().slice(0, 1000)
+    if (found) out.push(found)
   }
-  if (!found) return ""
-  const cut = found.lastIndexOf("generating and executing: ")
-  if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
-  return found.trim().slice(0, 1000)
+  return out
+}
+
+// agy writes the real upstream error only to its log; read what this turn added.
+async function lastAgentError(file, offset) {
+  return agentErrorsIn(await logTail(file, offset)).at(-1) || ""
 }
 
 // Where agy's three-line notice (the output cap's, a malformed call's) ends,

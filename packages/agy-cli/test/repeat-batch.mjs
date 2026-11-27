@@ -1827,6 +1827,83 @@ test("Lmohn39: a try that fails another way still waits for agy's next one", asy
   })
 })
 
+// agy 1.5.13 made its retries silent ("retries are now silent … the chat
+// shows an error only when every retry fails"): the bare 429 is no longer a
+// banner in the reply but a line in agy's log, as #1151's log has it, and
+// agy tried 8 times over ~155s before its ending. Claude Code and pi through
+// agy-cli sat silent for minutes, then failed (lanmao on linux.do,
+// herryhengAI on X, 11-22). The first such line ends the turn.
+// how often the bridge reads agy's log (AGY_BRIDGE_CAPACITY_POLL_MS's default)
+const RETRY_POLL_MS = 500
+const REFUSED_RETRY = (n) => `I1122 13:27:37.072566 6120 run.go:316] Run: attempt ${n} failed (RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).), retrying in 4s\n`
+
+test("agy 1.5.13's silent retry of the bare 429 ends the turn at once, for Claude Code's and pi's prompts", async () => {
+  const PI = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code."
+  const CLAUDE_CODE = "You are Claude Code, Anthropic's official CLI for Claude.\n\nHelp the user."
+  for (const [system, stream, before] of [
+    [CLAUDE_CODE, true, ""], [CLAUDE_CODE, false, ""], [PI, true, ""], [PI, false, ""],
+    // the reply had begun when the next model call was refused
+    [CLAUDE_CODE, true, "Looking. "],
+  ]) {
+    await withKit({}, async (kit) => {
+      let tries = 0
+      let ended = null
+      kit.defaultPrompt = async (agent) => {
+        tries++
+        if (before) await agent.text(before)
+        // the log line agy writes while the line it goes on is half-written
+        const line = REFUSED_RETRY(1)
+        fs.appendFileSync(agyLogOf(kit), line.slice(0, 50))
+        await sleep(RETRY_POLL_MS * 3)
+        fs.appendFileSync(agyLogOf(kit), line.slice(50))
+        // agy waits, then tries again: here it gives up after 20s
+        ended = await Promise.race([agent.waitCancel().then(() => "cancelled"), sleep(20_000).then(() => "gave up")])
+        return { stopReason: "end_turn" }
+      }
+      const started = Date.now()
+      const response = await kit.request(baseBody({ metadata: { user_id: `refused-retry-${stream}-${!!before}` }, system,
+        messages: [{ role: "user", content: "hello" }], stream }))
+      const text = await Promise.race([response.text(), sleep(8_000).then(() => "still waiting after 8s")])
+      assert.ok(Date.now() - started < 8_000, `ended after ${Date.now() - started}ms, not at agy's give-up`)
+      assert.notEqual(ended, "gave up", "the reply didn't wait for agy to give up")
+      assert.equal(tries, 1)
+      const error = stream ? sseError(text) : JSON.parse(text).error
+      if (!stream) assert.equal(response.status, 429)
+      assert.equal(error.type, "rate_limit_error")
+      assert.match(error.message, /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\): Resource has been exhausted.*not a quota/)
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      // the cloak reached the prompt agy was handed, with no setup
+      const sent = prompts(kit).join("")
+      assert.ok(sent.includes("<external_system_instructions>"))
+      assert.ok(!/You are Claude Code, Anthropic's official CLI|coding assistant running inside pi/i.test(sent), sent.slice(0, 300))
+    })
+  }
+})
+
+test("a 429 retry logged before the prompt, or a retry of another error, doesn't end the turn", async () => {
+  await withKit({}, async (kit) => {
+    let first = true
+    kit.defaultPrompt = async (agent) => {
+      if (!first) {
+        fs.appendFileSync(agyLogOf(kit), "I1122 13:27:41.000000 6120 run.go:316] Run: attempt 1 failed (UNAVAILABLE (code 503): try again.), retrying in 4s\n")
+        await sleep(RETRY_POLL_MS * 4)
+      }
+      first = false
+      await agent.text("answer")
+      return { stopReason: "end_turn" }
+    }
+    const opening = await readSse(await kit.request(baseBody({ metadata: { user_id: "refused-before" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(opening.error, null)
+    // an earlier prompt's refused try, already in the log
+    fs.appendFileSync(agyLogOf(kit), REFUSED_RETRY(1))
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "refused-before" },
+      messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "answer" }, { role: "user", content: "again" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), "answer")
+  })
+})
+
 // ---------------------------------------------------------------- one opening, several models at once
 
 // magpie's "Test models" sends every model the same smallest request, four at a

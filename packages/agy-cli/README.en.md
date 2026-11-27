@@ -421,7 +421,11 @@ since 11-14 Google's check reads past them. Reworded in the first user turn
 (the default), Claude Code's prompt is answered; in agy's session
 instructions (`AGY_BRIDGE_SYSTEM_APPEND=1`) it is still turned away. So a
 bare 429 there is reported as a 400 about the prompt, and in the user turn
-as a rate limit the client can retry or another account can take.
+as a rate limit the client can retry or another account can take. Either
+way it ends the turn on the first try that got it: since agy 1.5.13 retries
+it silently for minutes (eight tries over about two and a half), writing it
+only to its log, so the plugin reads that log while the prompt runs instead
+of waiting for agy to give up.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider
