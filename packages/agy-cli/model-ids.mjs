@@ -1,5 +1,9 @@
-// The runtime catalog `agy models` listed, so usage windows can name the ids
-// the provider serves (usage.mjs stays import-free of index.mjs).
+import { currentHome } from "./account.mjs"
+
+// The runtime catalog `agy models` listed for each account (keyed by
+// currentHome() ?? ""), so usage windows name the ids that account serves
+// without one account's refresh overwriting another's (usage.mjs stays
+// import-free of index.mjs).
 //
 // rows(): [{ id, name, effort? }] — the shape `agy models` parses into
 // (parseAgyModels), the saved catalog, and FALLBACK_MODELS.
@@ -9,15 +13,20 @@
 // in it, plus the bare family id itself even when agy lists no variant of
 // that name (the catalog serves it as its default).
 
-let rows = null
-let index = new Map()
+const states = new Map()
 
 export function storeCatalogRows(list) {
-  rows = Array.isArray(list) ? list.filter(model => model && typeof model.id === "string" && model.id) : null
-  index = null
+  const key = currentHome() ?? ""
+  const rows = Array.isArray(list) ? list.filter(model => model && typeof model.id === "string" && model.id) : null
+  if (!rows) {
+    states.delete(key)
+    return
+  }
+  states.set(key, { rows, index: null })
 }
 
 export function catalogRows() {
+  const rows = states.get(currentHome() ?? "")?.rows
   return rows ? [...rows] : null
 }
 
@@ -40,37 +49,38 @@ function listedNames(description) {
 }
 
 export function nameIndex() {
-  if (index) return index
-  index = new Map()
-  if (rows) {
-    const families = new Map()
-    const shown = new Map() // family -> its display name
-    const claims = new Map() // display name -> the families that use it
-    for (const model of rows) {
-      const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(model.id)?.[1]?.toLowerCase() || ""
-      const family = effort ? model.id.slice(0, -(effort.length + 1)) : model.id
-      if (!families.has(family)) families.set(family, new Set())
-      families.get(family).add(model.id)
-      const name = normalizeName(model.name)
-      if (!name) continue
-      // the family's name as agy shows it, its effort word left off
-      if (!shown.has(family)) shown.set(family, stripEffortSuffix(String(model.name).trim().replace(/\s+/g, " ")))
-      for (const alias of [name, stripEffortSuffix(name)]) {
-        if (!claims.has(alias)) claims.set(alias, new Set())
-        claims.get(alias).add(family)
-      }
-    }
-    for (const [family, ids] of families) {
-      // the bare id the catalog serves even when agy lists no variant of it
-      ids.add(family)
-    }
-    for (const [name, owners] of claims) {
-      // one name, two families: no match, rather than whichever came first
-      if (owners.size !== 1) continue
-      const [family] = owners
-      index.set(name, { family, ids: families.get(family), name: shown.get(family) || family })
+  const state = states.get(currentHome() ?? "")
+  if (!state?.rows) return new Map()
+  if (state.index) return state.index
+  const index = new Map()
+  const families = new Map()
+  const shown = new Map() // family -> its display name
+  const claims = new Map() // display name -> the families that use it
+  for (const model of state.rows) {
+    const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(model.id)?.[1]?.toLowerCase() || ""
+    const family = effort ? model.id.slice(0, -(effort.length + 1)) : model.id
+    if (!families.has(family)) families.set(family, new Set())
+    families.get(family).add(model.id)
+    const name = normalizeName(model.name)
+    if (!name) continue
+    // the family's name as agy shows it, its effort word left off
+    if (!shown.has(family)) shown.set(family, stripEffortSuffix(String(model.name).trim().replace(/\s+/g, " ")))
+    for (const alias of [name, stripEffortSuffix(name)]) {
+      if (!claims.has(alias)) claims.set(alias, new Set())
+      claims.get(alias).add(family)
     }
   }
+  for (const [family, ids] of families) {
+    // the bare id the catalog serves even when agy lists no variant of it
+    ids.add(family)
+  }
+  for (const [name, owners] of claims) {
+    // one name, two families: no match, rather than whichever came first
+    if (owners.size !== 1) continue
+    const [family] = owners
+    index.set(name, { family, ids: families.get(family), name: shown.get(family) || family })
+  }
+  state.index = index
   return index
 }
 
