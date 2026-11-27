@@ -5,6 +5,7 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { baseBody, continueWithToolResults, createBridgeKit, readSse } from "./testkit.mjs"
 
 const b64 = (hex, tail = "") => Buffer.concat([Buffer.from(hex, "hex"), Buffer.from(tail)]).toString("base64")
@@ -83,4 +84,88 @@ test("a -preview flash id goes to the account's flash model; an -image one does 
     await (await kit.request(baseBody({ stream: false, model: "agy-cli/gemini-3.1-flash-image" }))).text()
     assert.ok(!kit.setModels.slice(before).includes(flash), JSON.stringify(kit.setModels.slice(before)))
   })
+})
+
+test("a user image is validated and hashed once per parsed block within a turn and on continuation", async () => {
+  const largePng = b64("89504e470d0a1a0a0000000d49484452", "x".repeat(2048))
+  const kit = await createBridgeKit({
+    promptImages: true,
+    sessionResume: true,
+    agentVersion: "1.5.17",
+    indexTransform: (source) => {
+      const prelude =
+        "const __imgCounts = { imageContent: 0, imageDigest: 0 };\n" +
+        "export function __resetImageCounts() { __imgCounts.imageContent = 0; __imgCounts.imageDigest = 0; }\n" +
+        "export function __getImageCounts() { return { ...__imgCounts }; }\n"
+      return prelude + source
+        .replace("function imageContent(block) {", "function imageContent(block) { __imgCounts.imageContent++;")
+        .replace("function digest(value) {", `function digest(value) { if (value === ${JSON.stringify(largePng)}) __imgCounts.imageDigest++;`)
+    },
+  })
+  try {
+    kit.defaultPrompt = async (agent) => { await agent.text("ok"); return { stopReason: "end_turn" } }
+    const firstBody = baseBody({ messages: [{ role: "user", content: [image(largePng), { type: "text", text: "describe" }] }] })
+    kit.module.__resetImageCounts()
+    const first = await readSse(await kit.request(firstBody))
+    assert.equal(first.stopReason, "end_turn")
+    assert.deepEqual(kit.module.__getImageCounts(), { imageContent: 1, imageDigest: 1 })
+
+    const secondBody = JSON.parse(JSON.stringify({
+      ...firstBody,
+      messages: [
+        ...firstBody.messages,
+        { role: "assistant", content: first.content },
+        { role: "user", content: "follow up" },
+      ],
+    }))
+    kit.module.__resetImageCounts()
+    const second = await readSse(await kit.request(secondBody))
+    assert.equal(second.stopReason, "end_turn")
+    assert.deepEqual(kit.module.__getImageCounts(), { imageContent: 1, imageDigest: 1 })
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/prompt").length, 2)
+  } finally {
+    await kit.dispose()
+  }
+})
+
+test("cached user image parsing and digests invalidate on mutation and isolate callers", async () => {
+  const kit = await createBridgeKit({
+    promptImages: true,
+    indexTransform: (source) => source + "\nexport { parseUserImage, userImageDigest }\n",
+  })
+  try {
+    const { parseUserImage, userImageDigest } = kit.module
+    const sha = (data) => createHash("sha256").update(data).digest("hex")
+    const block = image(PNG)
+
+    const first = parseUserImage(block)
+    assert.deepEqual(first, { type: "image", data: PNG, mimeType: "image/png" })
+    assert.equal(userImageDigest(block, first.data), sha(PNG))
+
+    first.mimeType = "mutated"
+    assert.equal(parseUserImage(block).mimeType, "image/png")
+
+    block.source.data = JPEG
+    const swapped = parseUserImage(block)
+    assert.deepEqual(swapped, { type: "image", data: JPEG, mimeType: "image/jpeg" })
+    assert.equal(userImageDigest(block, swapped.data), sha(JPEG))
+
+    block.source.media_type = "image/bmp"
+    assert.throws(() => parseUserImage(block), /PNG, JPEG, GIF or WebP/)
+
+    block.source.media_type = "image/jpeg"
+    block.source.type = "url"
+    assert.throws(() => parseUserImage(block), /other than base64/)
+
+    block.source.type = "base64"
+    block.source.data = TEXT
+    assert.throws(() => parseUserImage(block), /not an image/)
+    assert.throws(() => parseUserImage(block), /not an image/)
+
+    block.source.data = PNG
+    assert.equal(parseUserImage(block).mimeType, "image/png")
+    assert.equal(userImageDigest(block, PNG), sha(PNG))
+  } finally {
+    await kit.dispose()
+  }
 })
