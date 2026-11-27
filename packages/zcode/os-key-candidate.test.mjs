@@ -28,6 +28,11 @@ const moved = mkdtempSync(join(tmpdir(), "zcode-moved-"))
 process.env.HOME = home
 process.env.USERPROFILE = home
 process.env.LOCALAPPDATA = join(home, "LocalAppData")
+// bun's os.homedir() keeps the account's own home from before the line
+// above, so the plugin would read the real ~/.zcode and never the store
+// this test writes.
+const realOs = await import("node:os")
+mock.module("node:os", () => ({ ...realOs, homedir: () => home, default: { ...realOs, homedir: () => home } }))
 delete process.env.ZCODE_CREDENTIAL_SECRET
 delete process.env.ZCODE_CREDENTIAL_SECRET_FILE
 
