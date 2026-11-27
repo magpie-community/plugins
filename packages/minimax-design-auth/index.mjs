@@ -1132,6 +1132,8 @@ function createPlugin(
   const modelCache = new Map() // cacheKey -> { at, specs }
   const diskCache = new Map() // cacheKey -> { mtimeMs, cred }
   const verifiedTokenOwners = new Map() // token -> { uid, expiresAt }
+  // In-memory only: keeps verified rotated tokens alive across desktop account
+  // switches during this host process; a host restart falls back to the stored auth.
   const retainedDesktopCreds = new Map() // expectedUserId -> { token, groupId, deviceId, lkgConfig }
 
   function setBounded(map, key, value, maxSize = OWNER_CACHE_MAX) {
@@ -1653,6 +1655,7 @@ export const _internal = {
   DEFAULT_VERSION_CODE,
   MODELS_TTL_MS,
   OWNER_VERIFY_FAIL_TTL_MS,
+  OWNER_CACHE_MAX,
   OtherSite,
   createPlugin,
   decryptV2Token,

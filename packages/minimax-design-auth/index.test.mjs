@@ -12,6 +12,7 @@ const {
   SITES,
   MODELS_TTL_MS,
   OWNER_VERIFY_FAIL_TTL_MS,
+  OWNER_CACHE_MAX,
   OtherSite,
   createPlugin,
   decryptV2Token,
@@ -859,6 +860,136 @@ describe("plugin runtime: auth, loader, models, usage, security & race guards", 
         { auth: authA },
       )
       assert.ok(models["MiniMax-M3.1-Flash"])
+
+      // 4. Once retained rotatedA expires, resolveCredential MUST NOT send the expired retained token
+      fakeNow += 8_000_000
+      await loadedA.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(sentTokens[1], origA)
+    } finally {
+      rmSync(dirObj.root, { recursive: true, force: true })
+    }
+  })
+
+  test("handles non-auth profile/wallet 403s, balance fallback auth 403, wallet upgrade 403, missing-uid negative cache, and owner cache eviction", async () => {
+    let fakeNow = Date.now()
+    const validToken = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" } })
+    const dirObj = makeTempDesktopDir({ userID: "10001", groupId: "team-1", token: validToken })
+
+    try {
+      // 1. fetchAccountProfile non-auth 403 MUST NOT abort a region-confirmed desktop sign-in as expired
+      const hooksProfile403 = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async () => new Response(JSON.stringify({ error: { message: "profile feature disabled" } }), { status: 403 }),
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
+      })
+      const start = await hooksProfile403.auth.methods[0].authorize()
+      const signed = await start.callback()
+      assert.equal(signed.type, "success")
+      assert.equal(signed.accountId, "10001")
+
+      const storedAuth = {
+        type: "api",
+        key: validToken,
+        metadata: { userId: "10001", tokenOwnerId: "owner-10001", groupId: "team-1", dataDir: dirObj.root, configFile: "hub-config.json", method: "desktop" },
+      }
+
+      // 2. First-attempt wallet non-auth 403 falls through to /credit/balance cleanly (NOT marked expired)
+      const hooksFirstWallet403 = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith("/api/v1/credit/wallet")) {
+            return new Response(JSON.stringify({ error: { message: "team wallet unavailable" } }), { status: 403 })
+          }
+          return new Response(JSON.stringify({ total_credit: "500", team_credit: "120" }), { status: 200 })
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
+      })
+      const firstFallback = await hooksFirstWallet403.auth.usage(async () => storedAuth)
+      assert.equal(firstFallback.signIn, undefined)
+      assert.deepEqual(firstFallback.windows[0], { name: "团队积分", balance: 120, unit: "积分" })
+
+      // 3. /credit/balance fallback receiving auth 403 ("token expired") MUST report signIn: "expired"
+      const hooksBalAuth403 = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith("/api/v1/credit/wallet")) {
+            return new Response(JSON.stringify({ error: { message: "team wallet unavailable" } }), { status: 403 })
+          }
+          return new Response(JSON.stringify({ error: { message: "token expired" } }), { status: 403 })
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
+      })
+      const balExpired = await hooksBalAuth403.auth.usage(async () => storedAuth)
+      assert.equal(balExpired.signIn, "expired")
+
+      // 4. Wallet client_upgrade_required 403 returns immediately with signIn: "kept" without calling /credit/balance
+      let balanceCalls = 0
+      const hooksUpgrade = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith("/api/v1/credit/balance")) {
+            balanceCalls++
+            return new Response(JSON.stringify({ total_credit: "500" }), { status: 200 })
+          }
+          return new Response(JSON.stringify({ error: { code: "client_upgrade_required", message: "upgrade client" } }), { status: 403 })
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
+      })
+      const upg = await hooksUpgrade.auth.usage(async () => storedAuth)
+      assert.equal(upg.signIn, "kept")
+      assert.match(upg.error, /MINIMAX_DESIGN_VERSION_CODE/)
+      assert.equal(balanceCalls, 0)
+
+      // 5. Missing uid in profile 200 response negative-caches for 30s, and OWNER_CACHE_MAX evicts oldest entry
+      let profileCalls = 0
+      let returnUid = false
+      const hooksCache = createPlugin(SITES["minimax-design"], {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith("/api/v1/account/profile")) {
+            profileCalls++
+            return new Response(JSON.stringify(returnUid ? { uid: "10001", user_name: "Alice" } : { user_name: "NoUid" }), { status: 200 })
+          }
+          return new Response("{}", { status: 200 })
+        },
+        env: { MINIMAX_DESIGN_DATA_DIR: dirObj.root },
+        versionCode: TEST_VERSION,
+        nowMsImpl: () => fakeNow,
+      })
+      const writeRot = (tok, offsetMs) => {
+        writeFileSync(
+          join(dirObj.root, "hub-config.json"),
+          JSON.stringify({ ...dirObj.cfg, tokens: { ...dirObj.cfg.tokens, accessToken: encryptV2(tok, dirObj.keyBuf) } }),
+        )
+        const t = new Date(fakeNow + offsetMs)
+        utimesSync(join(dirObj.root, "hub-config.json"), t, t)
+      }
+      const loaded = await hooksCache.auth.loader(async () => storedAuth)
+      const noUidTok = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, seq: 0 })
+      writeRot(noUidTok, 2000)
+      await loaded.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(profileCalls, 1)
+      fakeNow += 5_000
+      await loaded.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(profileCalls, 1) // negative-cached within 30s
+      returnUid = true
+      fakeNow += OWNER_VERIFY_FAIL_TTL_MS
+      await loaded.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(profileCalls, 2) // re-queried after 30s and succeeded
+
+      // Fill cache beyond OWNER_CACHE_MAX so noUidTok (oldest) is evicted
+      for (let i = 1; i <= OWNER_CACHE_MAX; i++) {
+        const tok = makeJwt({ exp: Math.floor(fakeNow / 1000) + 7200, user: { id: "owner-10001" }, seq: i })
+        writeRot(tok, (i + 2) * 2000)
+        await loaded.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      }
+      const callsBeforeRevisit = profileCalls
+      writeRot(noUidTok, (OWNER_CACHE_MAX + 5) * 2000)
+      await loaded.fetch("https://hub.minimaxi.com/api/v1/messages", { method: "POST", body: "{}" })
+      assert.equal(profileCalls, callsBeforeRevisit + 1)
     } finally {
       rmSync(dirObj.root, { recursive: true, force: true })
     }
