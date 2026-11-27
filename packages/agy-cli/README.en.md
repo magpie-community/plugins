@@ -102,6 +102,12 @@ MCP server. The control port listens on loopback only, with a token per process.
   newer, because the ACP server has to advertise image support. An image a tool
   returns (a screenshot from `read`) goes to agy as a prompt image too: over MCP,
   agy would save it to a file the model can't open.
+- **Video and audio input** (Gemini models): inline base64. agy's ACP prompt
+  carries neither, so each is written to `attachments/<sha256>.<ext>` in the
+  session's folder and the model is asked to read it with agy's own
+  `view_file`, which hands Gemini the frames and the sound. Only a
+  conversation that carries one gets `view_file`; agy's tools stay off
+  otherwise. A video or audio URL gets HTTP 400.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.

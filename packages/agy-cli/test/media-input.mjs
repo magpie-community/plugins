@@ -8,7 +8,7 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
-import { baseBody, createBridgeKit, readSse, sleep, usageTotal } from "./testkit.mjs"
+import { BASE_MODEL_ROWS, baseBody, createBridgeKit, readSse, sleep, tick, usageTotal } from "./testkit.mjs"
 
 const MP4 = Buffer.concat([Buffer.from("000000186674797069736f6d", "hex"), Buffer.from("a video's bytes")])
 const MP3 = Buffer.concat([Buffer.from("494433", "hex"), Buffer.from("an audio's bytes")])
@@ -179,4 +179,18 @@ test("a video by URL is refused before agy, and a video counts as an image does,
     // the note in the video's place is no history cut from the prompt
     assert.equal(usageTotal((await readSse(await kit.request(body("video", "video/mp4")))).usage), counted)
   })
+})
+
+test("Gemini models take video and audio; Claude and GPT-OSS don't", async () => {
+  await withKit(async (kit) => {
+    await kit.models()
+    // the probe session says what agy offers
+    for (let i = 0; i < 20 && kit.children.size; i++) await sleep(10)
+    await tick()
+    const models = await kit.models()
+    assert.deepEqual(models["gemini-4-argon"].capabilities.input, { text: true, image: true, video: true, audio: true })
+    assert.deepEqual(models["gemini-3.8-flash"].capabilities.input, { text: true, image: true, video: true, audio: true })
+    assert.deepEqual(models["claude-opus-5-5"].capabilities.input, { text: true, image: true })
+    assert.equal(models["gpt-oss-120b"].capabilities.input, undefined)
+  }, { offeredModels: BASE_MODEL_ROWS })
 })

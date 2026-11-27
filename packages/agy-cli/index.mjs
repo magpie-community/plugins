@@ -10087,6 +10087,9 @@ export const AntigravityBridgePlugin = async () => {
         }
         for (const model of catalog.models) {
           const imageModel = /^(?:gemini-|claude-)/.test(model.id)
+          // a video or audio reaches the model as a file view_file reads
+          // (stageMedia); of agy's models, only Gemini takes one
+          const mediaModel = model.id.startsWith("gemini-")
           out[model.id] = {
             id: model.id,
             name: model.name,
@@ -10094,7 +10097,7 @@ export const AntigravityBridgePlugin = async () => {
             limit: modelLimits(model.id),
             api: { id: model.id, url: "agy://local", npm: NPM_ANTHROPIC },
             capabilities: {
-              ...(imageModel ? { attachment: true, input: { text: true, image: true }, output: { text: true } } : {}),
+              ...(imageModel ? { attachment: true, input: { text: true, image: true, ...(mediaModel ? { video: true, audio: true } : {}) }, output: { text: true } } : {}),
               ...(model.variants ? { reasoning: true } : {}),
             },
             ...(model.variants ? {
