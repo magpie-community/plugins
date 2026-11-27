@@ -45,3 +45,18 @@ test("client-side: the spark shape parses after the middleware", () => {
   expect(a.calls[0].id).toBe("call_1");
   expect(a.calls[0].name).toBe("ops_glob");
 });
+
+test("client-side: a bare value with a space parses after the middleware", () => {
+  const c = cases(import.meta.dir).find((x) => x.name === "repair: a bare value keeps its internal spaces");
+  const events = [];
+  const ctx = { protocol: "chat", stream: true, options: {}, state: {} };
+  for (const e of c.events) {
+    if (typeof e.data !== "object") { events.push(e.data); continue; }
+    const r = mod.onEvent(JSON.parse(JSON.stringify(e.data)), ctx);
+    if (r === null) continue;
+    events.push(r ?? e.data);
+  }
+  const a = assemble(events);
+  expect(a.finish).toBe("tool_calls");
+  expect(JSON.parse(a.calls[0].args)).toEqual({ path: "C:/x y" });
+});

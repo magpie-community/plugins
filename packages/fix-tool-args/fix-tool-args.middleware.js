@@ -142,8 +142,11 @@ function parsesAsObject(s) {
 //   - a bare KEY (a run in an object's key slot that a ':' follows) is
 //     quoted;
 //   - a bare VALUE (a run in a value slot that starts like no JSON value)
-//     is quoted up to the next structural character — colons and internal
-//     spaces belong to it (a dropped-quote path like C:/x or a glob);
+//     is quoted up to the next structural character — internal spaces and
+//     colons belong to it (a dropped-quote path like C:/x y, a glob, a
+//     shell command). A `,` or closing bracket still ends the value: the
+//     run cannot be told apart from the next member's, so a command that
+//     needs one (ls a, b) stays broken;
 //   - a ',' directly before } or ] is dropped (trailing comma);
 //   - a raw control character inside a string is escaped (the same fix
 //     pi-ai's own repairJson applies client-side).
@@ -187,8 +190,10 @@ function repairJsonLoose(s) {
       continue;
     }
     // A bare run may begin here. Which slot it sits in decides where it
-    // ends: a key slot (an object, right after { or ,) ends at ':'; a
-    // value slot (after :, or anywhere in an array) ends at , } ] { [.
+    // ends: a key slot (an object, right after { or ,) ends at whitespace
+    // or ':'; a value slot (after :, or anywhere in an array) ends at
+    // , } ] { [ and keeps its internal whitespace — a shell command or a
+    // Windows path with spaces is the common dropped-quote case.
     let p = out.length;
     while (p > 0 && isWs(out[p - 1])) p--;
     const prev = p > 0 ? out[p - 1] : '';
@@ -198,7 +203,8 @@ function repairJsonLoose(s) {
     if (keySlot || valueSlot) {
       if (!valueStart(c)) {
         let j = i;
-        while (j < n && !isWs(s[j]) && structural.indexOf(s[j]) < 0 && !(keySlot && s[j] === ':')) j++;
+        while (j < n && structural.indexOf(s[j]) < 0 &&
+               !(keySlot && (isWs(s[j]) || s[j] === ':'))) j++;
         if (keySlot) {
           let k = j;
           while (k < n && isWs(s[k])) k++;

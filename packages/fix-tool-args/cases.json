@@ -573,5 +573,590 @@
     ]
    }
   ]
+ },
+ {
+  "name": "repair: a bare value keeps its internal spaces",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c7",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"path\":C:/x y}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c7",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"path\":\"C:/x y\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: a bare shell command with spaces",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c8",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"cmd\":ls -la /tmp}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c8",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"cmd\":\"ls -la /tmp\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: multiple spaces in a bare value stay in it",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c9",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"path\":C:/Program  Files/x}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c9",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"path\":\"C:/Program  Files/x\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: a tab inside a bare value is escaped",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c10",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"cmd\":ls\t-la /tmp}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c10",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"cmd\":\"ls\\t-la /tmp\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: separator whitespace before the delimiter stays outside the quotes",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c11",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"cmd\":ls -la }"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c11",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"cmd\":\"ls -la\" }"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: a bare value before a comma and another property",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c12",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"path\":C:/x y, \"cmd\":ls -la}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c12",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"path\":\"C:/x y\", \"cmd\":\"ls -la\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: a quoted value with escapes is kept while a bare one is repaired",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c13",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"a\":\"say \\\"hi\\\" \\\\ ok\",\"path\":C:/x y}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c13",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"a\":\"say \\\"hi\\\" \\\\ ok\",\"path\":\"C:/x y\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "repair: a trailing comma after a bare number",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c14",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"a\":1,}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c14",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"a\":1}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "pass: a bare value a comma would split is left broken",
+  "ctx": {
+   "protocol": "chat",
+   "stream": true
+  },
+  "events": [
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "tool_calls": [
+         {
+          "index": 0,
+          "id": "c15",
+          "type": "function",
+          "function": {
+           "name": "f",
+           "arguments": "{\"cmd\":ls a, b}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "tool_calls"
+      }
+     ]
+    }
+   }
+  ],
+  "expect_events": [
+   {
+    "choices": [
+     {
+      "index": 0,
+      "delta": {
+       "tool_calls": [
+        {
+         "index": 0,
+         "id": "c15",
+         "type": "function",
+         "function": {
+          "name": "f",
+          "arguments": "{\"cmd\":ls a, b}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ]
+   }
+  ]
  }
 ]
