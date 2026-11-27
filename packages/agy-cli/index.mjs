@@ -4996,10 +4996,28 @@ function unwrapCallMcpArguments(args) {
   return args
 }
 
+const parsedUserImages = new WeakMap()
+
 function parseUserImage(block) {
   if (block?.type !== "image") return null
-  const mediaType = String(block.source?.media_type || "").toLowerCase()
-  return imageContent({ ...block, source: { ...block.source, media_type: mediaType === "image/jpg" ? "image/jpeg" : mediaType } })
+  const source = block.source
+  const mediaType = String(source?.media_type || "").toLowerCase()
+  const data = source?.data
+  const previous = parsedUserImages.get(block)
+  if (previous && source?.type === "base64" && previous.data === data && previous.mediaType === mediaType) {
+    return { ...previous.image }
+  }
+  const image = imageContent({ ...block, source: { ...source, media_type: mediaType === "image/jpg" ? "image/jpeg" : mediaType } })
+  parsedUserImages.set(block, { data, mediaType, image, sha256: null })
+  return { ...image }
+}
+
+function userImageDigest(block, data) {
+  const entry = parsedUserImages.get(block)
+  if (entry && entry.data === data) {
+    return (entry.sha256 ??= digest(data))
+  }
+  return digest(data)
 }
 
 function parseUserDocumentText(block, inToolResult = false) {
@@ -5476,7 +5494,7 @@ function openingImagesOf(message) {
     if (block?.type !== "image") continue
     try {
       const image = parseUserImage(block)
-      if (image) out.push(`${image.mimeType}:${digest(image.data)}`)
+      if (image) out.push(`${image.mimeType}:${userImageDigest(block, image.data)}`)
     } catch {
       const source = block.source || {}
       out.push(`invalid:${source.media_type || ""}:${digest(String(source.data || ""))}`)
@@ -6104,7 +6122,7 @@ function historyBlock(block, ids) {
     value = { type: "text", text: parseSearchResultText(block) }
   } else if (block.type === "image") {
     const image = parseUserImage(block)
-    value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
+    value = { type: "image", mimeType: image.mimeType, sha256: userImageDigest(block, image.data) }
   } else if (block.type === "tool_use") {
     const ordinal = ids.size + 1
     ids.set(block.id, ordinal)
