@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -133,7 +134,8 @@ describe("sign-in methods", () => {
     const fallback = await (await method.authorize({ token: "0123456789abcdef" })).callback()
     expect(fallback.type).toBe("success")
     expect(fallback.accountId).toBe("手动粘贴")
-    expect(fallback.uid).toBe("manual-89abcdef")
+    // the fingerprint is the token's hash, not a slice of the token itself
+    expect(fallback.uid).toBe(`manual-${createHash("sha256").update("0123456789abcdef").digest("hex").slice(0, 8)}`)
     expect(fake.state.currentUserCalls).toBe(2)
   })
 

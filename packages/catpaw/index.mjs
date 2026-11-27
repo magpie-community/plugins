@@ -257,6 +257,7 @@ async function bodyText(input, init) {
 
 // ── credentials: the desktop client's file, read live ─────────────────────
 
+const { createHash } = await import("node:crypto")
 const fs = await import("node:fs")
 const os = await import("node:os")
 const path = await import("node:path")
@@ -1390,7 +1391,9 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 if (data.userName) accountId = data.userName
               }
             } catch {}
-            if (!uid) uid = `manual-${token.slice(-8)}`
+            // the fingerprint keeps two pastes apart without keeping a piece
+            // of the token in the account's stored id, which the page shows
+            if (!uid) uid = `manual-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`
             return {
               url: "",
               instructions: "已取到粘贴的 token，确认即完成登录。",
