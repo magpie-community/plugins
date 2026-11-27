@@ -8,6 +8,7 @@
  * 2. Explicit `options.quotasPath` / `options.quotaFile` / `options.magpieConfigDir` when explicitly configured by the user
  */
 
+import { logWarning } from "./catalog.js";
 import { normalizeQuotaSnapshot } from "./quota.js";
 
 const nodeFs = globalThis.process?.getBuiltinModule?.("node:fs") || null;
@@ -84,7 +85,7 @@ function describeSchemaProblem(parsed, nowMs) {
 function reportLoad(signature, message) {
   if (signature === reportedSignature) return;
   reportedSignature = signature;
-  if (message) console.warn(`agentcompass: ${message}`);
+  if (message) logWarning(message);
 }
 
 function hasExplicitTimestamp(item) {

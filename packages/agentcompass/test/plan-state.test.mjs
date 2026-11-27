@@ -184,7 +184,7 @@ test("Q3 the decision provider response lists accounts and warnings", async () =
     {
       model: "agentcompass-systemone",
       state: { task: "Refactor the parser and add tests.", profile: implProfile, quotas },
-      questions: { work_kind: { choices: ["general_implementation"] } },
+      questions: { work_kind: { choices: ["code_implementation"] } },
     },
     { candidateModels: ["gpt-6.1-sol", "claude-sonnet-5-5"], decisionProviderDetails: true }
   );
@@ -315,7 +315,7 @@ test("M2: hooks, middleware, and session continuation preserve warnings/accounts
       state: {
         turn: "继续",
         profile: implProfile,
-        previous_message_kind: "general_implementation",
+        previous_message_kind: "code_implementation",
         previous_message_reasoning: "high",
         quotas: [{ provider: "claude", account: "acc1", plan: "free", status: "expired", updated_at: iso(T0 - 60_000), windows: [win()] }],
       },
@@ -362,7 +362,7 @@ test("R2-M1: 503 and onAccount global skip only trigger on account-blocked candi
   const hardMsg = [{ role: "user", content: "Audit the cross-module state machine for deadlocks and prove liveness invariants." }];
   const hardProfile = {
     ...implProfile,
-    reasoning_depth: 3,
+    primary_level: 3,
     code_complexity: 3,
     context_scale: 3,
     hallucination_risk: 3,

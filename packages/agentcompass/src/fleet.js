@@ -17,19 +17,21 @@
 
 import {
   DISPATCH_EFFORTS,
-  EFFORT_ORDER,
   FAMILIES,
   MODEL_ALIASES,
+  PROVIDER_NAMES,
   SCORING_POLICY,
   healthKey,
+  listedPreset,
   nameFixesEffort,
-  resolveModel,
+  resolveListed,
   splitEffortSuffix,
 } from "./catalog.js";
 import { PLAN_CAPACITY } from "./reference-data.js";
 import { canonicalWindowId, configuredPlan, planDefaults, planTable, planUnknownText } from "./plans.js";
-import { defaultScoredModels, scoredModels } from "./axis-scores.js";
-import { dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
+import { defaultScoredModels, userScoredModels } from "./axis-scores.js";
+import { EFFORTS } from "./user-scores.js";
+import { bundlePresets, bundleProviders, dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
 import { inferModelProviderFamily, normalizeProviderFamily, providerMatchesModel, providersMatch } from "./quota.js";
 
 export const GATEWAY_ACCOUNT = "_gateway";
@@ -102,9 +104,9 @@ export function accountFrom(entry, nowMs) {
  * `{ fleet, usage, entries }` for a quota snapshot (already normalized into `entries`) or none. The fleet is the allocator's
  * accounts document: scored models, aliases, family patterns, launch efforts, the scoring policy and the accounts.
  */
-export function buildFleet({ entries = null, nowMs = Date.now(), policy = SCORING_POLICY, models = null, aliases = MODEL_ALIASES, userScores = null } = {}) {
-  const scored = models || (userScores ? scoredModels({ aliases, userScores }) : defaultScoredModels());
-  const fleet = { models: scored, aliases, families: FAMILIES, scoring: policy, dispatch_efforts: DISPATCH_EFFORTS, accounts: {} };
+export function buildFleet({ entries = null, nowMs = Date.now(), policy = SCORING_POLICY, models = null, aliases = MODEL_ALIASES, userScores = null, providerNames = PROVIDER_NAMES } = {}) {
+  const scored = models || (userScores ? userScoredModels({ aliases, userScores, providerNames }) : defaultScoredModels());
+  const fleet = { models: scored, aliases, families: FAMILIES, providerNames, scoring: policy, dispatch_efforts: DISPATCH_EFFORTS, accounts: {} };
   const usage = { accounts: {} };
   for (const entry of entries || []) {
     const { spec, usage: row } = accountFrom(entry, nowMs);
@@ -118,7 +120,8 @@ export function buildFleet({ entries = null, nowMs = Date.now(), policy = SCORIN
 // ---------------------------------------------------------------------------- pool entries to bundles
 
 const lc = (v) => String(v).trim().toLowerCase();
-const withoutUnconstrainingTag = (raw) => raw.replace(/:(?:auto|off|default)$/i, "");
+/** A pool name without the tag that constrains no effort (`:auto`, `:off`, `:default`). */
+export const withoutUnconstrainingTag = (raw) => raw.replace(/:(?:auto|off|default)$/i, "");
 
 /** The name of a pool entry: a string, or the object's `model`. */
 export const entryModel = (entry) => (typeof entry === "string" ? entry.trim() : entry && typeof entry === "object" ? String(entry.model || "").trim() : "");
@@ -138,7 +141,7 @@ export function bareEfforts(provider, model, fleet) {
   if (allowed !== null && allowed.length === 0) return [null];
   const timed = Object.keys((((info.five_axis || {}).duration) || {}).by_effort || {});
   const pool = allowed !== null ? allowed : timed;
-  const known = EFFORT_ORDER.filter((e) => pool.includes(e));
+  const known = EFFORTS.filter((e) => pool.includes(e));
   return known.length > 0 ? known : [null];
 }
 
@@ -149,35 +152,32 @@ export function effortRows(entry, fleet) {
   const obj = typeof entry === "object" ? entry : {};
   const stripped = withoutUnconstrainingTag(name);
   const { name: modelName, effort: colon } = splitEffortSuffix(stripped);
-  const resolved = resolveModel(modelName, fleet.models, fleet.aliases, fleet.families);
+  const resolved = resolveListed(modelName, fleet.models, fleet.aliases, fleet.families, fleet.providerNames);
   const suffix = colon || resolved.effort || null;
-  const fixedBySuffix = suffix && EFFORT_ORDER.includes(suffix);
+  const fixedBySuffix = suffix && EFFORTS.includes(suffix);
   const model = fixedBySuffix ? modelName : stripped;
   const provider = obj.provider || inferModelProviderFamily(model, fleet.aliases) || "gateway";
+  // A row that lists its efforts is launched at those: the list is the host's (Cindy's `tasks.models()`) or the operator's
+  // (Magpie's plugin options), and either outranks the launch table shipped with a version, which speaks only for a row that
+  // lists none. An effort the data does not score leaves automatic routing in the evaluation with the missing data named.
+  const listed = Array.isArray(obj.efforts) ? obj.efforts.map(lc).filter(Boolean) : [];
   let efforts;
-  let notDispatchable = false;
   if (fixedBySuffix) efforts = [obj.effort ? lc(obj.effort) : suffix];
   else if (obj.effort) efforts = [lc(obj.effort)];
-  else if (Array.isArray(obj.efforts)) {
-    const listed = obj.efforts.map(lc).filter(Boolean);
-    const allowed = dispatchAllowedEfforts({ ...obj, model, provider }, fleet, model);
-    efforts = allowed && allowed.length > 0 ? listed.filter((e) => allowed.includes(e)) : listed;
-    if (efforts.length === 0 && listed.length > 0) {
-      efforts = listed;
-      notDispatchable = true;
-    }
-  } else {
-    efforts = bareEfforts(provider, model, fleet);
-  }
-  const own = Array.isArray(obj.efforts) ? obj.efforts.map(lc) : null;
+  else if (listed.length > 0) efforts = listed;
+  else efforts = bareEfforts(provider, model, fleet);
+  const own = listed.length > 0 ? listed : null;
   const split = efforts.length > 1 && obj.id;
+  // A Magpie list id is offered on its preset: the preset id as Magpie gives it, and the catalogs it serves, so a name the user
+  // prefixes with either names this row (`account_fleet.bundle_presets`, `bundle_providers`). Only the Magpie adapter's table has a host.
+  const preset = obj.presets ? null : listedPreset(modelName, fleet.providerNames);
   return efforts.map((effort) => ({
     ...obj,
+    ...(preset ? { presets: [preset.preset], ...(obj.served ? {} : { served: preset.served }) } : {}),
     model,
     effort,
     provider,
     ...(fixedBySuffix ? { offered_efforts: [effort], effort_fixed: true } : own ? { offered_efforts: own } : {}),
-    ...(notDispatchable ? { not_dispatchable: true } : {}),
     ...(split ? { id: `${obj.id}:${effort}`, source_id: obj.id } : {}),
   }));
 }
@@ -201,10 +201,13 @@ export function expandBundles(poolEntries, fleet, entries) {
   const bundles = [];
   for (const row of rows) {
     const accounts = matchingAccounts(row, entries, fleet.aliases);
-    const targets = accounts.length > 0 ? accounts.map((e) => ({ account: e.key, provider: normalizeProviderFamily(e.provider) })) : [{ account: GATEWAY_ACCOUNT, provider: row.provider }];
+    // A Magpie quota seat keeps its id (`<provider>/<seat>`) as the account and its seat name beside it: a pin's prefix names either.
+    const targets = accounts.length > 0
+      ? accounts.map((e) => ({ account: e.key, provider: normalizeProviderFamily(e.provider), seat: e.account && e.account !== e.key ? e.account : null }))
+      : [{ account: GATEWAY_ACCOUNT, provider: row.provider, seat: null }];
     for (const t of targets) {
       const baseId = row.id || `${row.model}:${row.effort ?? "default"}`;
-      bundles.push({ ...row, id: baseId, account: t.account, provider: t.provider, harness: row.harness || t.provider });
+      bundles.push({ ...row, id: baseId, account: t.account, provider: t.provider, harness: row.harness || t.provider, ...(t.seat ? { seat: t.seat } : {}) });
     }
   }
   const perId = new Map();
@@ -218,19 +221,38 @@ export function expandBundles(poolEntries, fleet, entries) {
   return out;
 }
 
-/** An effort the user unchecked on an account and model is no landing for any row of them (a family row is another model). */
+/**
+ * Where a row is offered: the Magpie presets it is listed under; a row listed under none, the catalogs it serves, else the part of
+ * its name before the first `/` (`<preset>/<model>`), lowercase; empty for a bare name. Presets that serve one catalog (`qwen` and
+ * `qwen-cn`, `zai` and `zhipu`) are distinct places: an effort unchecked on one is not unchecked on the other.
+ */
+function offeredOn(row) {
+  const presets = bundlePresets(row);
+  const ids = presets.length > 0 ? presets : [...bundleProviders(row)];
+  if (ids.length === 0 && String(row.model || "").includes("/")) ids.push(String(row.model).slice(0, String(row.model).indexOf("/")));
+  return new Set(ids.map((id) => id.toLowerCase()));
+}
+
+/**
+ * An effort the user unchecked on an account and model is no landing for any row of them (a family row is another model). An
+ * unchecked row listed under a preset (`<preset>/<model>`, a preset's own list) turns the effort off on that preset only; a bare
+ * unchecked row turns it off on every row of the account.
+ */
 export function attachDisabledEfforts(rows, fleet) {
   const groups = new Map();
-  const keyOf = (c) => JSON.stringify([c.account || "", c.harness || "", healthKey(c.model, fleet.models, fleet.aliases, fleet.families)]);
+  const keyOf = (c) => JSON.stringify([c.account || "", c.harness || "", healthKey(c.model, fleet.models, fleet.aliases, fleet.families, fleet.providerNames)]);
   for (const c of rows) {
     if (!c.disabled || c.disabled_by_default) continue;
     const key = keyOf(c);
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c.effort);
+    groups.get(key).push({ effort: c.effort, on: offeredOn(c) });
   }
   for (const c of rows) {
-    const disabled = groups.get(keyOf(c));
-    if (disabled) c.disabled_efforts = disabled;
+    const unchecked = groups.get(keyOf(c));
+    if (!unchecked) continue;
+    const on = offeredOn(c);
+    const efforts = unchecked.filter((u) => u.on.size === 0 || [...u.on].some((id) => on.has(id))).map((u) => u.effort);
+    if (efforts.length > 0) c.disabled_efforts = efforts;
   }
 }
 

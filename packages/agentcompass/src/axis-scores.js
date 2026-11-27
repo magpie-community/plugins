@@ -7,83 +7,37 @@
  *   continuity = max positive (t3 - t2) among the demanded categories when coupling == "high"
  *   score N    = fit + continuity + boost - quota_cost
  *
- * Nothing here reads a task's text; the classifier states how much the task needs (0..3) of `divergence`, `coding`,
- * `aesthetics` and `tool_operation` (`axis_demand`).
+ * Nothing here reads a task's text; the task's `axis_demand` (0..3 of `creativity`, `coding`, `aesthetics` and `tool_operation`) is
+ * projected in `task-intake.js` from the classifier's work kind and depth.
  *
  * Pure ES2022 module with zero external or Node-only dependencies (Bun and Magpie's `moejs`).
  */
 
-import { MODELS, MODEL_ALIASES, SCORING_POLICY, pyRound } from "./catalog.js";
-import { FIVE_AXIS_ANCHOR, FIVE_AXIS_MODELS, MAINTAINER_SCORES } from "./reference-data.js";
+import { MODELS, MODEL_ALIASES, PROVIDER_NAMES, SCORING_POLICY, pyRound } from "./catalog.js";
+import { FIVE_AXIS_ANCHOR, FIVE_AXIS_EFFORT_READINGS, FIVE_AXIS_EFFORT_STEPS, FIVE_AXIS_MODELS, FIVE_AXIS_SCHEMA, MAINTAINER_SCORES } from "./reference-data.js";
 import { CATEGORIES, TOOL_LEVEL_FACETS, applyOverlay, validateScores } from "./user-scores.js";
 
 export const FIVE_AXES = CATEGORIES;
 export { TOOL_LEVEL_FACETS };
+/**
+ * The facets each demand level asks of the categories that ask per facet (`calibration/five_axis.LEVEL_FACETS`): `aesthetics` asks
+ * `design` at level 1 and `min(design, image_recognition)` at levels 2 and 3 (sharing `tool_operation.image_recognition`);
+ * `tool_operation` asks nothing at level 1, `responsiveness` at level 2, and `min(responsiveness, image_recognition)` at level 3.
+ */
+export const AESTHETICS_LEVEL_FACETS = { 1: ["design"], 2: ["design", "image_recognition"], 3: ["design", "image_recognition"] };
+export const LEVEL_FACETS = { aesthetics: AESTHETICS_LEVEL_FACETS, tool_operation: TOOL_LEVEL_FACETS };
+export const FACET_CATEGORY = { design: "aesthetics", responsiveness: "tool_operation", image_recognition: "tool_operation" };
+/**
+ * The schema of `five-axis-scores.json` this code reads: level 3 of a facet is the panel maximum (/6), a value at every effort and
+ * the `effort_steps` a manual score fills from (/7), `minimal` (/8), `ultra` and the declared `effort_readings` (/9), `none` (/10).
+ */
+export const CURRENT_FIVE_AXIS_SCHEMA = "agent-compass.five-axis-scores/12";
 /** `tool_operation` at this level must read images: a text-only model leaves the task. */
 export const IMAGE_INPUT_LEVEL = 3;
 export const FIVE_AXIS_DEFAULTS = {
   // Fit and continuity are both in panel standard deviations: one unit each, not a hand-set trade-off.
   weights: { fit: 1.0, continuity: 1.0 },
   demanded_level: 1, // rule B: a category demanded at this level or above must have data
-};
-
-/** What each demand level 0..3 means per category: the one text the classifier schema and the Jev questions are built from. */
-export const FIVE_AXIS_DEMAND_LEVELS = {
-  divergence: [
-    "Divergent work: creative writing, brainstorming, research synthesis and data analysis, and decomposing a problem from first principles outside the existing architecture.",
-    [
-      "execute a known spec or checklist",
-      "small judgment calls or wording choices",
-      "several options or hypotheses to generate and compare, or a research or data-analysis question to investigate and synthesize",
-      "open-ended creative writing, open research synthesis across many sources, or a first-principles redesign outside the existing architecture",
-    ],
-  ],
-  coding: [
-    "Coding ability: reading, writing, reviewing and changing code correctly, doing exactly what was asked and reporting it honestly.",
-    [
-      "no code read or written",
-      "a small script or config change, or a result a test verifies",
-      "a production module with its tests, or a review or audit of one",
-      "changes across coupled modules, concurrency, protocol or core-library work, a whole-system review or audit, or a defect would be costly or irreversible",
-    ],
-  ],
-  aesthetics: [
-    "Visual and design judgment: GUI and interaction design, layout and typesetting, tables and charts, 2D or 3D modeling.",
-    [
-      "no visual output",
-      "plain output where only tidy formatting matters",
-      "a user-facing screen, page, chart or document whose look matters",
-      "design-led work: a new interface or interaction, a visual identity, a 3D scene or model",
-    ],
-  ],
-  tool_operation: [
-    "Operating tools fast: per-turn speed inside a tool loop, and reading images. Writing or fixing software about real-time systems is coding, not a live loop.",
-    [
-      "reads files and runs a few shell commands",
-      "routine tool or API calls",
-      "heavy tool or API orchestration, or the worker itself stays inside a live external system (a game, a ticket queue, an order book, a live page or chat) where slow turns degrade the outcome",
-      "must read images or screenshots inside the loop, or operate a desktop or browser GUI through screenshots",
-    ],
-  ],
-};
-
-export const FIVE_AXIS_DEMAND_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [...FIVE_AXES],
-  description:
-    "How much the task needs each capability category of the model, 0..3. Economy is not a task demand: the router prices it from cost and live quota.",
-  properties: Object.fromEntries(
-    Object.entries(FIVE_AXIS_DEMAND_LEVELS).map(([axis, [intro, levels]]) => [
-      axis,
-      {
-        type: "integer",
-        minimum: 0,
-        maximum: 3,
-        description: `${intro} ${levels.map((text, i) => `${i} = ${text}`).join("; ")}.`,
-      },
-    ]),
-  ),
 };
 
 export function fiveAxisConfig(policy) {
@@ -122,7 +76,8 @@ const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stri
  * image input, fast mode and duration of `five-axis-scores.json`, the cited `usd_per_hour` (an unsourced one is removed, never
  * defaulted), then the maintainer's manual scores and, when given, the operator's own (`userScores`).
  */
-export function scoredModels({ models = MODELS, aliases = MODEL_ALIASES, userScores = null } = {}) {
+export function scoredModels({ models = MODELS, aliases = MODEL_ALIASES, userScores = null, providerNames = PROVIDER_NAMES } = {}) {
+  requireCurrentSchema(FIVE_AXIS_SCHEMA);
   const local = validateScores(userScores, "user");
   const out = {};
   for (const [name, row] of Object.entries(models)) {
@@ -132,6 +87,7 @@ export function scoredModels({ models = MODELS, aliases = MODEL_ALIASES, userSco
     const cats = (five && five.categories) || {};
     const usd = five ? five.usd_per_hour : null;
     info.five_axis = {
+      effort_readings: { ...FIVE_AXIS_EFFORT_READINGS },
       categories: Object.fromEntries(FIVE_AXES.filter((a) => cats[a] && typeof cats[a] === "object").map((a) => [a, clone(cats[a])])),
       scores: Object.fromEntries(FIVE_AXES.map((a) => [a, (cats[a] || {}).value ?? null])),
       missing: five ? [...(five.missing || [])] : [...FIVE_AXES],
@@ -147,17 +103,46 @@ export function scoredModels({ models = MODELS, aliases = MODEL_ALIASES, userSco
     else delete info.usd_per_hour;
     out[name] = info;
   }
-  applyOverlay(out, FIVE_AXIS_ANCHOR.targets, { publicScores: MAINTAINER_SCORES, localScores: local, aliases });
+  applyOverlay(out, FIVE_AXIS_ANCHOR.targets, { publicScores: MAINTAINER_SCORES, localScores: local, aliases, effortSteps: FIVE_AXIS_EFFORT_STEPS, providerNames });
   for (const info of Object.values(out)) {
     if (info && info.five_axis) info.five_axis.shares = fiveAxisShares(fiveAxisValues(info.five_axis, "high"), FIVE_AXIS_ANCHOR.targets);
   }
   return out;
 }
 
+/** `five_axis_overlay`'s `require_current_schema`: a shipped data file of another schema would be read on the wrong scale. */
+export function requireCurrentSchema(schema) {
+  if (schema !== CURRENT_FIVE_AXIS_SCHEMA) {
+    throw new Error(`five-axis-scores has schema ${JSON.stringify(schema)}; this code reads ${CURRENT_FIVE_AXIS_SCHEMA}: run npm run catalog:sync`);
+  }
+}
+
 let defaultScored = null;
 /** `scoredModels()` of the shipped catalogue, built once. */
 export function defaultScoredModels() {
   return (defaultScored ||= scoredModels());
+}
+
+// How many operators' score documents one set of aliases and provider names keeps scored tables for.
+const USER_SCORED_SIZE = 16;
+const userScored = new WeakMap();
+/**
+ * `scoredModels` of the shipped catalogue under an operator's scores, built once per scores document (read by its content, so a
+ * document changed in place is scored again) and aliases and provider names, as `defaultScoredModels` is built once: a request ranks
+ * its pool several times, and each ranking would otherwise score every row again and resolve every name on a table of its own.
+ */
+export function userScoredModels({ aliases = MODEL_ALIASES, userScores, providerNames = PROVIDER_NAMES }) {
+  let byNames = userScored.get(aliases);
+  if (!byNames) userScored.set(aliases, (byNames = new WeakMap()));
+  let tables = byNames.get(providerNames);
+  if (!tables) byNames.set(providerNames, (tables = new Map()));
+  const key = JSON.stringify(userScores);
+  if (!tables.has(key)) {
+    const table = scoredModels({ aliases, userScores, providerNames });
+    if (tables.size >= USER_SCORED_SIZE) tables.clear();
+    tables.set(key, table);
+  }
+  return tables.get(key);
 }
 
 // ---------------------------------------------------------------------------- values, targets and fit
@@ -174,13 +159,38 @@ export function atEffort(cell, effort) {
   return cell.value === undefined || cell.value === null ? null : Number(cell.value);
 }
 
-/** `{ category: z }`, with `tool_operation` as `{ facet: z }`: this model's panel standard scores at `effort` (null where none). */
+/** A facet cell's value at `effort` (`_facet_at_effort`), null when the category has no such facet. */
+export function facetAtEffort(cats, category, facet, effort) {
+  const cell = cats[category];
+  const facets = cell && typeof cell === "object" ? cell.facets : null;
+  if (facets && typeof facets === "object" && facet in facets) return atEffort(facets[facet], effort);
+  return null;
+}
+
+/**
+ * `reading_effort`: the effort whose stored values a launch at `effort` reads. An effort name off the scale reads the effort
+ * `five-axis-scores.json` `effort_readings` declares for it (`default`: High); a bundle that names no effort runs its single
+ * configuration, the `default` reading; an effort on the scale (`EFFORTS`) reads itself. `state` is a model's `five_axis`.
+ */
+export function readingEffort(state, effort) {
+  const key = effort || "default";
+  const readings = (state && state.effort_readings) || {};
+  return Object.hasOwn(readings, key) ? readings[key] : key;
+}
+
+/**
+ * `{ category: z }`, with `aesthetics` and `tool_operation` as `{ facet: z }`: this model's panel standard scores at `effort` (null
+ * where none; an effort off the scale reads its declared effort, `readingEffort`). `aesthetics` shares
+ * `tool_operation.image_recognition` beside its own `design`.
+ */
 export function fiveAxisValues(state, effort) {
+  effort = readingEffort(state, effort);
   const cats = (state && state.categories) || {};
   const out = {};
-  for (const a of FIVE_AXES) if (a !== "tool_operation") out[a] = atEffort(cats[a], effort);
-  const facets = ((cats.tool_operation || {}).facets) || {};
-  out.tool_operation = Object.fromEntries(TOOL_LEVEL_FACETS[3].map((f) => [f, atEffort(facets[f], effort)]));
+  for (const a of FIVE_AXES) if (!(a in LEVEL_FACETS)) out[a] = atEffort(cats[a], effort);
+  for (const [a, byLevel] of Object.entries(LEVEL_FACETS)) {
+    out[a] = Object.fromEntries(byLevel[3].map((f) => [f, facetAtEffort(cats, FACET_CATEGORY[f], f, effort)]));
+  }
   return out;
 }
 
@@ -191,7 +201,7 @@ export function fiveAxisTargets(demand, targets) {
   for (const [a, w] of Object.entries(demand)) {
     if (w <= 0) continue;
     const row = (((targets[a] || {}).levels || {})[String(w)]) || {};
-    if (a === "tool_operation") {
+    if (a in LEVEL_FACETS) {
       if (row.by_facet && Object.keys(row.by_facet).length > 0) out[a] = { by_facet: Object.fromEntries(Object.entries(row.by_facet).map(([f, r]) => [f, rowOf(r, w)])) };
     } else if (row.target !== undefined && row.target !== null) {
       out[a] = rowOf(row, w);
@@ -277,7 +287,7 @@ export function fiveAxisHeadroom(rows, targets) {
   return out;
 }
 
-/** `{ category: 0..1 }` for display: `(min(z, t3) - t1) / (t3 - t1)`, 0 at the panel's weakest and 1 at the anchor. */
+/** `{ category: 0..1 }` for display: `(min(z, t3) - t1) / (t3 - t1)`, 0 at the panel's weakest and 1 at the panel's best. */
 export function fiveAxisShares(values, targets) {
   const share = (z, row) => {
     if (z === null || z === undefined || !row || row.target === undefined || row.target === null || row.target <= row.zero) return null;
@@ -286,8 +296,9 @@ export function fiveAxisShares(values, targets) {
   const out = {};
   for (const a of FIVE_AXES) {
     const level3 = (((targets[a] || {}).levels || {})["3"]) || {};
-    if (a === "tool_operation") {
-      const parts = Object.entries(level3.by_facet || {}).map(([f, r]) => share((values[a] || {})[f], r));
+    if (a in LEVEL_FACETS) {
+      const valMap = values[a] && typeof values[a] === "object" ? values[a] : {};
+      const parts = Object.entries(level3.by_facet || {}).map(([f, r]) => share(valMap[f], r));
       out[a] = parts.length > 0 && parts.every((p) => p !== null) ? Math.min(...parts) : null;
     } else {
       out[a] = share(values[a], level3);

@@ -17,7 +17,7 @@ import { onRequest as mwOnRequest } from "../src/middleware.js";
 import { profile } from "./profile.mjs";
 
 const T0 = 1_790_000_000_000;
-const AXES = ["divergence", "coding", "aesthetics", "tool_operation"];
+const AXES = ["creativity", "coding", "aesthetics", "tool_operation"];
 const P = profile();
 const rank = (p, options = {}) => rankCandidates(p, { now: T0, ...options });
 const quiet = (t) => t.mock.method(console, "warn", () => {});
@@ -81,8 +81,8 @@ test("a candidate's score does not depend on the others in the pool", () => {
 });
 
 test("a higher demand on one category never shrinks the shortfall of any candidate", () => {
-  for (const axis of ["divergence", "coding", "aesthetics"]) {
-    const at = (level) => rank(profile({ code_complexity: level > 0 && axis === "coding" ? 2 : 0, access: axis === "coding" ? "write" : "read-only", axis_demand: { divergence: 0, coding: 0, aesthetics: 0, tool_operation: 0, [axis]: level } }));
+  for (const axis of ["creativity", "coding", "aesthetics"]) {
+    const at = (level) => rank(profile({ access: axis === "coding" ? "write" : "read-only", axis_demand: { creativity: 0, coding: 0, aesthetics: 0, tool_operation: 0, [axis]: level } }));
     const low = at(1);
     const high = at(3);
     let compared = 0;
@@ -97,7 +97,7 @@ test("a higher demand on one category never shrinks the shortfall of any candida
 });
 
 test("a fit counts a category's score only up to its cap: a model past the cap gains nothing more", () => {
-  const ranked = rank(profile({ axis_demand: { divergence: 0, coding: 1, aesthetics: 0, tool_operation: 0 } }));
+  const ranked = rank(profile({ axis_demand: { creativity: 0, coding: 1, aesthetics: 0, tool_operation: 0 } }));
   // Level 1 caps at its target, so the fit of every eligible candidate is bounded by the same number
   const fits = ranked.ranking.map((c) => c.components.fit);
   const top = Math.max(...fits);
@@ -144,7 +144,7 @@ test("needs_visual is a required modality at every tool_operation level: the sam
 });
 
 test("a profile the schema does not hold is refused, not routed", () => {
-  for (const bad of [{ axis_demand: { coding: 4 } }, { axis_demand: { coding: 2, speed: 1 } }, { access: "workspace-write" }, { reasoning_depth: 9 }]) {
+  for (const bad of [{ axis_demand: { coding: 4 } }, { axis_demand: { coding: 2, speed: 1 } }, { access: "workspace-write" }, { primary_level: 9 }]) {
     const d = selectBestRoute({ ...P, ...bad }, { candidateModels: ["gpt-6.1-sol"], now: T0 });
     assert.equal(d.ok, false, JSON.stringify(bad));
     assert.match(d.refusal || d.error || "", /invalid_caller_profile/, JSON.stringify(bad));
@@ -221,8 +221,8 @@ test("the same profile gives the same route on every call, and a different deman
   assert.equal(first.modelWithEffort, again.modelWithEffort);
   assert.equal(first.score, again.score);
   const seen = new Set();
-  for (const demand of [{ coding: 0 }, { coding: 3 }, { divergence: 3 }, { aesthetics: 3 }, { tool_operation: 3 }]) {
-    const p = profile({ needs_visual: demand.tool_operation === 3, code_complexity: demand.coding === 0 ? 0 : 2, access: demand.coding === 0 ? "read-only" : "write", axis_demand: demand.coding === 0 ? { ...demand, coding: 0 } : demand });
+  for (const demand of [{ coding: 0 }, { coding: 3 }, { creativity: 3 }, { aesthetics: 3 }, { tool_operation: 3 }]) {
+    const p = profile({ needs_visual: demand.tool_operation === 3, access: demand.coding === 0 ? "read-only" : "write", axis_demand: demand.coding === 0 ? { ...demand, coding: 0 } : demand });
     const d = selectBestRoute(p, { now: T0 });
     assert.equal(d.ok, true, JSON.stringify(demand));
     seen.add(d.modelWithEffort);

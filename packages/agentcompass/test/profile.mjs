@@ -1,25 +1,22 @@
 /**
- * A valid v0.6.0 task profile for tests: the fields the classifier answers, with the per-category demand (`axis_demand`, levels
- * 0..3). `profile({ ...overrides })` overrides any field; `demand({ coding: 3 })` overrides the demand alone. Tests that need a
+ * A valid v0.7.0 task profile for tests: the fields the classifier answers (the work kind and its depth, the optional second kind,
+ * the access split, the flags, the hours and the task count), with the per-category demand (`axis_demand`, levels 0..3) stated
+ * explicitly so a test controls it; without it the demand is projected from the kinds (`projectAxisDemand`).
+ * `profile({ ...overrides })` overrides any field; `demand({ coding: 3 })` overrides the demand alone. Tests that need a
  * particular shape say so here and nowhere else.
  */
 export const BASE_PROFILE = Object.freeze({
-  work_kind: "general_implementation",
-  reasoning_depth: 2,
-  code_complexity: 2,
-  needs_visual: false,
-  needs_gui: false,
-  local_only: false,
-  wants_fast: false,
-  read_only_review: false,
+  work_kind: "code_implementation",
+  primary_level: 2,
+  secondary_kind: "none",
+  secondary_level: 0,
   access: "write",
-  interaction_style: "engineering",
+  local_only: false,
+  needs_visual: false,
+  wants_fast: false,
   expected_hours: 0.5,
-  hours_confidence: "medium",
-  urgency: "unknown",
-  multi_task: false,
   task_count: "1",
-  axis_demand: Object.freeze({ divergence: 0, coding: 2, aesthetics: 0, tool_operation: 0 }),
+  axis_demand: Object.freeze({ creativity: 0, coding: 2, aesthetics: 0, tool_operation: 0 }),
 });
 
 export function demand(overrides = {}) {
@@ -32,6 +29,6 @@ export function profile(overrides = {}) {
 }
 
 /** A read-only review: no production code written, demand on coding only. */
-export const REVIEW = profile({ code_complexity: 0, access: "read-only", read_only_review: true, axis_demand: { coding: 2 } });
+export const REVIEW = profile({ work_kind: "code_audit", access: "read-only", axis_demand: { coding: 2 } });
 /** Routine work: nothing to think hard about, a little code. */
-export const ROUTINE = profile({ reasoning_depth: 1, code_complexity: 1, axis_demand: { coding: 1 } });
+export const ROUTINE = profile({ primary_level: 1, axis_demand: { coding: 1 } });

@@ -6,7 +6,6 @@
  * Pure ES2022 module with zero external or Node-only dependencies (Bun and Magpie's `moejs`).
  */
 
-import { canonicalModel } from "./catalog.js";
 import { capacityUsd } from "./quota-economy.js";
 
 const INF = Number.POSITIVE_INFINITY;
@@ -56,14 +55,18 @@ export function bindsAny(names, ...sources) {
 
 // ---------------------------------------------------------------------------- applicable windows and observations
 
-/** `[window id, spec, observed window]` for the windows of an account that bind this model. */
+/**
+ * `[window id, spec, observed window]` for the windows of an account that bind this model. `model` is the name already resolved
+ * (the caller's `canonicalOf`), matched as it is and never read again as a name (`account_fleet.row_spec`); `rawModel` the
+ * bundle's own spelling.
+ */
 export function applicableWindows(accountSpec, model, usageRow, bundle, rawModel) {
   const observed = {};
   for (const w of (usageRow && usageRow.windows) || []) if (w && w.id && !(w.id in observed)) observed[w.id] = w;
   const configured = (accountSpec && accountSpec.windows) || {};
   const windows = { ...configured };
   for (const wid of Object.keys(observed)) if (!(wid in windows)) windows[wid] = {};
-  const names = [canonicalModel(rawModel || model || ""), rawModel || model || ""];
+  const names = [model || rawModel || "", rawModel || model || ""];
   return Object.entries(windows)
     .filter(([wid, wspec]) => bindsAny(names, wspec, observed[wid]))
     .map(([wid, wspec]) => [wid, wspec, observed[wid] || null]);

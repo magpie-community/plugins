@@ -12,7 +12,7 @@
  *    - Shape A (`jevLevelled` probe in `decide.go:310`): `state.kinds` + `questions.levels` + `questions.work0..N`
  *    - Shape B (`jevBody` turn classification in `decide.go:167`): `state.turn` / `state.message` +
  *      `state.previous_message_kind` / `state.previous_message_reasoning` + `questions.intent` / `questions.level` + `questions.effort`
- *    - Shape C (Direct AgentCompass task-profile `/v1/systemone` query): `state.task` + `questions.work_kind` / `reasoning_depth` / etc.
+ *    - Shape C (Direct AgentCompass task-profile `/v1/systemone` query): `state.task` + `questions.work_kind` / `primary_level` / etc.
  */
 
 import {
@@ -22,13 +22,15 @@ import {
   effortUnchecked,
   logRouteWarnings,
   mergePinOptions,
+  pinKeepsHold,
+  sessionProfile,
   pinOptionsOf,
   pinsFixEffort,
   refusalSummary,
   rankCandidates,
   selectBestRoute,
 } from "./allocator.js";
-import { ROUTES, canonicalModel } from "./catalog.js";
+import { ROUTES, canonicalModel, logWarning, magpieOptions, providerNamesOf } from "./catalog.js";
 import {
   SessionContinuityStore,
   analyzeTurnState,
@@ -43,7 +45,6 @@ import {
   stripAgentNoise,
   userSaidFromText,
 } from "./continuity.js";
-import { FIVE_AXES } from "./axis-scores.js";
 import { extractRequestFacts } from "./profiler-core.js";
 import {
   isModelQuotaExhausted,
@@ -55,21 +56,38 @@ import {
 } from "./quota.js";
 import { resolveCallerProfile, unroutedDecision } from "./profiler-core.js";
 import { clearQuotasCache, getQuotasLoadStatus, loadLiveQuotas, resolveMagpieQuotasFile } from "./quota-loader.js";
+import { heldTurn } from "./middleware.js";
 import { askClassifier, scoreTaskLive, scorerOptionsOf } from "./scorer-live.js";
+import { readingEffort } from "./axis-scores.js";
+import { FIVE_AXIS_EFFORT_READINGS } from "./reference-data.js";
+import { EFFORTS } from "./user-scores.js";
 
 export const PROVIDER_ID = "agentcompass";
 export const DECISION_MODEL_ID = "agentcompass-systemone";
 export const AGENTCOMPASS_ICON_DATA_URI =
   "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjgiIHN0cm9rZT0iIzNCODJGNiIgc3Ryb2tlLXdpZHRoPSI0IiBmaWxsPSIjMEYxNzJBIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjIiIHN0cm9rZT0iIzYwQTVGQSIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1kYXNoYXJyYXk9IjMgMyIvPjxwb2x5Z29uIHBvaW50cz0iMzIsMTIgMzgsMzIgMzIsMjggMjYsMzIiIGZpbGw9IiNFRjQ0NDQiLz48cG9seWdvbiBwb2ludHM9IjMyLDUyIDM4LDMyIDMyLDM2IDI2LDMyIiBmaWxsPSIjRTJFOEYwIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMy41IiBmaWxsPSIjRjhGQUZDIi8+PC9zdmc+";
 
-const EFFORT_TO_JEV_SCORE = {
-  low: 0.0,
-  medium: 1.0,
-  high: 2.0,
-  xhigh: 3.0,
-  max: 3.0,
-  ultra: 3.0,
-};
+/**
+ * The scale of Magpie's effort question to a decision provider (Magpie v0.1.4470 `internal/gateway/decide.go`: `jevLevels`, lowest
+ * first, and the answer read as `jevLevels[clamp(round(score), 0, 3)]`): a score from 0 to 3, one point per level.
+ */
+export const JEV_EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
+
+/**
+ * The score each effort answers on that scale: a level of the scale answers its own point; an effort outside it answers the
+ * nearest end (`none`, `minimal` the bottom; `max`, `ultra` the top); `default` answers what the data reads it as
+ * (`readingEffort`). An effort not named here has no answer.
+ */
+export const EFFORT_TO_JEV_SCORE = Object.freeze(
+  Object.fromEntries(
+    [...EFFORTS, "default"].map((effort) => {
+      const reads = readingEffort({ effort_readings: FIVE_AXIS_EFFORT_READINGS }, effort);
+      const at = JEV_EFFORT_LEVELS.indexOf(reads);
+      const nearestEnd = EFFORTS.indexOf(reads) < EFFORTS.indexOf(JEV_EFFORT_LEVELS[0]) ? 0 : JEV_EFFORT_LEVELS.length - 1;
+      return [effort, at >= 0 ? at : nearestEnd];
+    }),
+  ),
+);
 
 function buildChoiceDistribution(choices, bestChoice, winnerProb = 0.88) {
   const probabilities = {};
@@ -126,8 +144,10 @@ function classifierChoice(answers, name, criteriaObj) {
   return typeof choice === "string" && choices.includes(choice) ? buildChoiceDistribution(choices, choice, 0.88) : null;
 }
 
-function buildEffortAnswer(effort, confidence = 0.9) {
-  const effScore = EFFORT_TO_JEV_SCORE[effort] ?? 2.0;
+/** The answer to Magpie's effort question for `effort`, or null for an effort the scale does not name (the answer is then left out). */
+export function buildEffortAnswer(effort, confidence = 0.9) {
+  if (!Object.hasOwn(EFFORT_TO_JEV_SCORE, String(effort))) return null;
+  const effScore = EFFORT_TO_JEV_SCORE[effort];
   const idx = String(Math.max(0, Math.min(3, Math.round(effScore))));
   const rem = Math.round(((1.0 - confidence) / 3) * 10000) / 10000;
   const probs = { "0": rem, "1": rem, "2": rem, "3": rem };
@@ -144,7 +164,9 @@ function buildEffortAnswer(effort, confidence = 0.9) {
  * This is a public gateway route, so `agentcompass` holds the conclusion only: accounts, quotas, the pool and health go to the
  * local log, and to the caller only under the operator's `decisionProviderDetails: true`.
  */
-export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
+export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
+  // Names here are Magpie list ids (`magpieOptions`).
+  const pluginOptions = magpieOptions(givenOptions);
   const model = bodyObj?.model || DECISION_MODEL_ID;
   const state = bodyObj?.state || {};
   const questions = bodyObj?.questions || {};
@@ -214,10 +236,15 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
   const candidateModels = pluginOptions.candidateModels || pluginOptions.allowedModels;
   const chatSessionKey = chatFacts ? chatFacts.sessionKey || computeSessionKey(bodyObj, { options: pluginOptions }) : "";
   const chatSessionState = chatSessionKey ? store.get(chatSessionKey, now) : null;
-  const chatCont =
+  // The pins are read before the hold: a session is held past a pin only on a bundle the pin names (contract R3).
+  const pins = mergePinOptions(pinOptionsOf(pluginOptions), state, rawTaskObj);
+  let chatCont =
     chatFacts && chatSessionKey
       ? evaluateProviderContinuation(chatFacts, chatSessionState, {
           now,
+          pins,
+          // A pin keeps the hold only on a bundle it names in this pool that can run (contract R3); a malformed one never does.
+          pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle, profile: sessionProfile(session) }, { ...pluginOptions, candidateModels: explicitCandidateModels(pluginOptions) || undefined, quotas: liveQuotas, now }),
           affinityMode: pluginOptions.affinityMode || pluginOptions.affinity || "cache",
           availableModels: candidateModels,
           unhealthyModels: pluginOptions.unhealthyModels,
@@ -228,10 +255,10 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
           cacheTtl: pluginOptions.cacheTtl,
           models: pluginOptions.catalog?.models,
           aliases: pluginOptions.catalog?.aliases,
+          providerNames: providerNamesOf(pluginOptions.catalog),
         })
       : null;
 
-  const pins = mergePinOptions(pinOptionsOf(pluginOptions), state, rawTaskObj);
   const withDetails = pluginOptions.decisionProviderDetails === true;
   const blockedAnswer = (blocked, decision) => {
     logRouteWarnings(blocked.warnings);
@@ -260,34 +287,20 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
     };
   };
 
-  if (chatCont && chatCont.shouldHold && chatCont.model) {
-    const heldEffort = keepsEffort(
-      chatSessionState,
-      chatCont.effort || chatSessionState?.effort || "high",
-      chatFacts.estimatedInputTokens,
-      now,
-      pluginOptions
-    );
-    const heldModel = chatCont.model;
-    store.recordRequest(
-      chatSessionKey,
-      {
-        model: heldModel,
-        effort: heldEffort,
-        provider: chatCont.provider || chatSessionState?.provider || "",
-        workKind: chatSessionState?.workKind || "general_implementation",
-        difficulty: chatSessionState?.difficulty || "routine",
-        why: chatCont.why,
-        held: true,
-      },
-      chatFacts,
-      now
-    );
+  // A held turn is answered and recorded as onRequest and hooks do it (`heldTurn`): the route as the candidates name it, the effort the
+  // pool still offers, the pin it is on; when the held effort is gone the request routes again with the session's own profile.
+  const turn = chatCont && chatCont.shouldHold && chatCont.model
+    ? heldTurn(chatCont, chatSessionState, chatFacts, { pins, candidateModels: explicitCandidateModels(pluginOptions), options: pluginOptions, now })
+    : null;
+  if (turn?.gone) chatCont = turn.gone;
+  if (turn && !turn.gone) {
+    const { target: heldModel, effort: heldEffort } = turn;
+    store.recordRequest(chatSessionKey, turn.record, chatFacts, now);
     const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, pluginOptions.catalog?.policy) : undefined;
     const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, pluginOptions.catalog?.policy) : [];
     const answers = {};
     const syntheticDecision = {
-      workKind: chatSessionState?.workKind || "general_implementation",
+      workKind: chatSessionState?.workKind || "other_or_mixed",
       difficulty: chatSessionState?.difficulty || "routine",
       targetModel: heldModel,
       targetEffort: heldEffort,
@@ -299,7 +312,8 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
       answers.level = matchMagpieIntentChoice(questions.level.criteria, syntheticDecision);
     }
     if (questions.effort) {
-      answers.effort = buildEffortAnswer(heldEffort, 0.94);
+      const effort = buildEffortAnswer(heldEffort, 0.94);
+      if (effort) answers.effort = effort;
     }
     return {
       model,
@@ -347,7 +361,10 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
       : state.profile ?? chatFacts?.callerProfile,
     taskFacts.hasVisualInput,
   );
-  const { profile, meta } = caller?.error
+  // A hold whose effort is gone routes again with the session's own profile, as onRequest does.
+  const { profile, meta } = chatCont?.why === "effort_gone"
+    ? { profile: sessionProfile(chatSessionState), meta: { source: "session", why: "effort_gone" } }
+    : caller?.error
     ? { profile: null, meta: { source: "caller", reason: caller.error } }
     : caller
       ? { profile: caller.profile, meta: { source: "caller" } }
@@ -355,7 +372,7 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
 
   if (!profile) {
     const unrouted = unroutedDecision(meta.reason);
-    console.warn(`agentcompass: ${unrouted.notice} (${unrouted.reason})`);
+    logWarning(`${unrouted.notice} (${unrouted.reason})`);
     const answers = {};
     if (questions.intent?.criteria) answers.intent = noneAnswer(questions.intent.criteria);
     if (questions.level?.criteria) answers.level = noneAnswer(questions.level.criteria);
@@ -437,27 +454,18 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
   }
 
   if (questions.effort) {
-    answers.effort = buildEffortAnswer(effectiveEffort, 0.9);
+    const effort = buildEffortAnswer(effectiveEffort, 0.9);
+    if (effort) answers.effort = effort;
   }
 
   // Case 3: Direct task-profile System-One questions (when called as a general Jev endpoint)
   if (questions.work_kind && !answers.work_kind) {
     answers.work_kind = { choice: decision.workKind, confidence: 0.9 };
   }
-  if (questions.interaction_style && !answers.interaction_style) {
-    answers.interaction_style = { choice: profile.interaction_style, confidence: 0.9 };
-  }
-  for (const dim of ["reasoning_depth", "code_complexity"]) {
-    if (questions[dim] && !answers[dim]) {
-      const low = dim === "code_complexity" ? 0 : 1;
-      answers[dim] = { score: Math.max(0, (profile[dim] ?? low) - low) };
-    }
-  }
-  for (const axis of FIVE_AXES) {
-    const name = `demand_${axis}`;
-    if (questions[name] && !answers[name]) answers[name] = { score: (profile.axis_demand || {})[axis] ?? 0 };
-  }
-  for (const flag of ["needs_visual", "needs_gui", "local_only", "wants_fast", "read_only_review", "multi_task"]) {
+  if (questions.secondary_kind && !answers.secondary_kind) answers.secondary_kind = { choice: profile.secondary_kind, confidence: 0.9 };
+  if (questions.primary_level && !answers.primary_level) answers.primary_level = { score: profile.primary_level - 1 };
+  if (questions.secondary_level && !answers.secondary_level) answers.secondary_level = { score: profile.secondary_level };
+  for (const flag of ["local_only", "needs_visual", "wants_fast"]) {
     if (questions[flag] && !answers[flag]) {
       answers[flag] = { noul: profile[flag] ? 0.95 : 0.05 };
     }

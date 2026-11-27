@@ -11,7 +11,7 @@
 import { pyRound } from "./catalog.js";
 import { fiveAxisConfig, fiveAxisContinuityValue, fiveAxisDemand, fiveAxisTargets } from "./axis-scores.js";
 import { FIVE_AXIS_ANCHOR } from "./reference-data.js";
-import { evaluateBundle, namedEffortBundles } from "./candidate-eval.js";
+import { evaluateBundle, namedEffortBundles, pinMatchedIds } from "./candidate-eval.js";
 import { applyFiveAxisEconomy } from "./quota-economy.js";
 
 export const FIVE_AXIS_ORDER_KEYS = ["net_score", "wait_hours", "completion_hours", "usd", "axis_level", "harness_place"];
@@ -29,9 +29,8 @@ export function fiveAxisOrder(candidate) {
   return [-Number(candidate.score), pyRound(waitH, 4), doneKey, pyRound(usd, 4), -pyRound(Number(k.five_axis_level || 0.0), 4), k.harness_place || 0];
 }
 
-export function compareOrder(a, b) {
-  const x = fiveAxisOrder(a);
-  const y = fiveAxisOrder(b);
+/** Two `fiveAxisOrder` tuples compared, in tuple order. */
+function compareKeys(x, y) {
   for (let i = 0; i < x.length; i++) {
     if (x[i] < y[i]) return -1;
     if (x[i] > y[i]) return 1;
@@ -39,12 +38,19 @@ export function compareOrder(a, b) {
   return 0;
 }
 
-/** The name of the first key of `fiveAxisOrder` on which `first` beats `second` ("tie" when none does). */
-export function fiveAxisDecidingKey(first, second) {
-  const x = fiveAxisOrder(first);
-  const y = fiveAxisOrder(second);
+export function compareOrder(a, b) {
+  return compareKeys(fiveAxisOrder(a), fiveAxisOrder(b));
+}
+
+/** The name of the first key of two `fiveAxisOrder` tuples on which the first beats the second ("tie" when none does). */
+function decidingKey(x, y) {
   for (let i = 0; i < FIVE_AXIS_ORDER_KEYS.length; i++) if (x[i] !== y[i]) return FIVE_AXIS_ORDER_KEYS[i];
   return "tie";
+}
+
+/** The name of the first key of `fiveAxisOrder` on which `first` beats `second` ("tie" when none does). */
+export function fiveAxisDecidingKey(first, second) {
+  return decidingKey(fiveAxisOrder(first), fiveAxisOrder(second));
 }
 
 /** The ranking row for a bundle id: `<id>` is the row itself; a row built from a bundle entry also answers to its `base_id`. */
@@ -60,6 +66,8 @@ export function rank(taskIn, ctx) {
   const { policy, fleet } = ctx;
   const poolBundles = { ...ctx.bundles }; // the catalogue, before a task-named effort adds bundles to it
   Object.assign(ctx.bundles, namedEffortBundles(taskIn, ctx));
+  // What the user named, over every bundle the pool offers (named-effort rows included) before any filter.
+  ctx._pin_matched_ids = pinMatchedIds(taskIn, ctx);
   const five = (ctx.five_axis = fiveAxisConfig(policy));
   ctx.targets = FIVE_AXIS_ANCHOR.targets;
   const demand = fiveAxisDemand(taskIn);
@@ -73,7 +81,7 @@ export function rank(taskIn, ctx) {
   // When `--model` is named without `--effort` (and no bundle is pinned), never let an unscored effort beat a scored effort of
   // the same model via a silent 0.0 default. Only when ALL eligible candidates lack trusted scores do they proceed together as
   // an explicit `unscored_named_dispatch` with `fit = null`.
-  if (task.constraint_model && !task.constraint_effort && !task.pinned_bundle) {
+  if (task.constraint_model && !task.constraint_effort && !task.pinned_bundle && !task.constraint_bundle) {
     const eligNow = candidates.filter((c) => c.excluded.length === 0);
     if (eligNow.some((c) => !c._five_blind_msg)) {
       for (const c of eligNow) {
@@ -85,7 +93,7 @@ export function rank(taskIn, ctx) {
           c.data_errors = c.data_errors.filter((e) => e !== msg);
           if (c.data_errors.length === 0) delete c.data_errors;
         }
-        c.excluded.push(`data error: ${msg} (excluded because another effort of ${task.constraint_model} has trusted data)`);
+        c.excluded.push(`data error: ${msg} (excluded because another effort of ${task.constraint_raw_model || task.constraint_model} has trusted data)`);
       }
     }
   }
@@ -106,6 +114,8 @@ export function rank(taskIn, ctx) {
     needs_gui: false,
     wants_fast: false,
     read_only_review: false,
+    constraint_bundle: null,
+    constraint_raw_model: null,
     constraint_model: null,
     constraint_effort: null,
     pinned_bundle: null,
@@ -113,7 +123,6 @@ export function rank(taskIn, ctx) {
     metered_ok: true,
     metered_fallback: false,
     disable_fast: false,
-    force_fast: false,
     _economy_pool: true,
   };
   const pool = Object.values(poolBundles)
@@ -129,9 +138,11 @@ export function rank(taskIn, ctx) {
     c.score = Number(1.0 + raw) - 1.0;
   }
   for (const c of eligible) c.components.harness_place = 0;
-  eligible.sort(compareOrder);
+  // Each candidate's tuple once, not once per comparison: the order is `compareOrder`'s.
+  const keys = new Map(eligible.map((c) => [c, fiveAxisOrder(c)]));
+  eligible.sort((a, b) => compareKeys(keys.get(a), keys.get(b)));
   eligible.forEach((c, i) => {
-    c.components.decided_by = i + 1 < eligible.length ? fiveAxisDecidingKey(c, eligible[i + 1]) : "only_candidate";
+    c.components.decided_by = i + 1 < eligible.length ? decidingKey(keys.get(c), keys.get(eligible[i + 1])) : "only_candidate";
   });
   const system = { weights: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, pyRound(v, 3)])), quota_windows: quotaWindows };
   return { candidates, eligible, system, task };
