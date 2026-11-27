@@ -63,6 +63,27 @@ It repairs what the vendor streams. It does not touch request history:
 arguments that reached the client in a past turn are the client's, and a
 model reading its own broken call back sees what it sent.
 
+## Protocols
+
+It acts on OpenAI Chat Completions-style streams only: chunks whose
+`choices[].delta` carries `tool_calls`. An Anthropic Messages stream
+(`input_json_delta`) and an OpenAI Responses stream pass through
+untouched, and so does a non-streaming chat body — only streamed chat
+deltas are held and repaired. An agent that talks to magpie in one of
+those other protocols gets nothing from this middleware: a Claude Code
+or Codex user should not expect it to fix their tool arguments.
+
+## Streaming behavior
+
+Holding the fragments is how the repair works, and it holds every tool
+call's arguments — valid ones included — until the chunk carrying
+`finish_reason`, then emits them as one whole argument fragment. Tool
+arguments therefore do not stream to the client incrementally anymore:
+a consumer that renders them as they arrive sees each call's arguments
+once, at the end of the turn. That latency is the trade-off for being
+able to repair the stream at all; if a vendor never needs the repair,
+turn the middleware off (`mode: "off"`).
+
 ## Provenance
 
 Built against the real failure of one xfyun spark-x2.6 session
