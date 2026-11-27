@@ -1,0 +1,46 @@
+{
+  "name": "@magpie-community/page-clash-nodes-verge",
+  "version": "0.2.0",
+  "description": "Pick a node from your Clash Verge Rev subscription and assign it to a provider, or to each account of a provider, inside magpie's window. Fork of player462/magpie-clash-nodes adapted to Clash Verge Rev paths.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "page/index.html",
+    "page/app.js",
+    "page/style.css",
+    "page/icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-page",
+    "clash",
+    "clash-verge",
+    "mihomo",
+    "proxy",
+    "nodes"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/clash-nodes-verge"
+  },
+  "bugs": { "url": "https://github.com/magpie-community/plugins/issues" },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/clash-nodes-verge#readme",
+  "engines": { "magpie": ">=0.1.418" },
+  "magpie": {
+    "name": "Clash 节点 (Verge)",
+    "page": {
+      "title": "Clash 节点",
+      "titles": { "zh": "梯子节点", "zh-TW": "梯子节点", "ja": "Clash ノード" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "permissions": ["providers:list"]
+  }
+}
