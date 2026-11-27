@@ -86,25 +86,28 @@ const signFor = (key) => async (input, init = {}) => {
 }
 
 // amr-link opens a thinking turn on Anthropic's messages with a
-// `redacted_thinking` block (empty thinking, a `data` id) and then sends
-// `signature_delta` on it. Anthropic's own `redacted_thinking` carries no
-// signature and never streams deltas into it, and Claude Code treats that
-// pair as a malformed stream: it aborts the request (the routing log's
-// 499/canceled) and re-asks without streaming, so a third of OpenDesign's
-// requests died that way. Upstream doesn't validate the shape on the way
-// back (plugins#1607), so the block is renamed to the standard `thinking`
-// here and its `signature_delta` dropped — the plain-text `thinking_delta`s
-// stay, and the turn streams as any other model's does.
+// `redacted_thinking` block and then streams `signature_delta` into it,
+// which Claude Code reads as a malformed stream: it aborts the request (the
+// routing log's 499/canceled) and re-asks without streaming, so a third of
+// OpenDesign's requests died that way. A `signature_delta` is legal on a
+// `thinking` block, so amr-link's block is renamed to that; its signature,
+// like the plain-text `thinking_delta`s, goes through untouched, so the id
+// amr-link gave the block is the one sent back on the next turn.
+//
+// Only amr-link's block is renamed. Anthropic's own `redacted_thinking`
+// carries `data` and nothing else; amr-link's also carries `thinking` and
+// `signature`. Every model is served on /messages, Claude's included, and a
+// real redacted block must keep its encrypted `data` — renaming it would
+// hand the next turn an empty thinking block with no encrypted reasoning.
 //
 // The rewrite is per event and incremental: an event split across chunks is
 // held until its blank-line separator arrives, and every event it doesn't
-// touch passes through byte for byte. An event is handled whole because
-// dropping its `data:` line alone would leave the `event:` line that opened
-// it dangling.
+// touch passes through byte for byte.
+const isAmrRedacted = (b) => b?.type === "redacted_thinking" && typeof b.thinking === "string"
+
 function plainThinkingSse(source) {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
-  const renamed = new Set() // indices of blocks turned from redacted_thinking
   let pending = ""
 
   const emit = (block, sep, controller) => {
@@ -116,15 +119,13 @@ function plainThinkingSse(source) {
         ev = JSON.parse(lines[at].replace(/^data: ?/, "").replace(/\r$/, ""))
       } catch {}
     }
-    if (ev?.type === "content_block_start" && ev.content_block?.type === "redacted_thinking") {
-      renamed.add(ev.index)
-      ev.content_block = { type: "thinking", thinking: "" }
+    if (ev?.type === "content_block_start" && isAmrRedacted(ev.content_block)) {
+      ev.content_block = { type: "thinking", thinking: "", signature: "" }
       // the line keeps its own terminator: a CRLF stream stays CRLF
       lines[at] = `data: ${JSON.stringify(ev)}${lines[at].endsWith("\r") ? "\r" : ""}`
       controller.enqueue(encoder.encode(lines.join("\n") + sep))
       return
     }
-    if (ev?.type === "content_block_delta" && ev.delta?.type === "signature_delta" && renamed.has(ev.index)) return
     controller.enqueue(encoder.encode(block + sep))
   }
 

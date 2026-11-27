@@ -130,16 +130,22 @@ editor works there too.
 ## Thinking blocks on Anthropic's messages
 
 `amr-link` streams a thinking turn on `/v1/messages` as a
-`redacted_thinking` block with `signature_delta`s on it. Anthropic's own
-`redacted_thinking` carries no signature and takes no deltas, and Claude Code
-reads that pair as a malformed stream: it aborts the request and re-asks
-without streaming, which the routing log shows as `499`/`canceled` — a third
-of OpenDesign's requests ended that way (#1607). Upstream doesn't check the
-shape of a thinking block sent back to it, so the plugin's own `fetch`
-renames that block to the standard `thinking` and drops its
-`signature_delta`s as the stream passes; the plain-text `thinking_delta`s
-are left as they came. The rewrite is streaming and per event, and touches
-only a streaming `/messages` response.
+`redacted_thinking` block and then puts `signature_delta`s into it. Claude Code
+reads a `redacted_thinking` block that receives deltas as a malformed stream:
+it aborts the request and re-asks without streaming, which the routing log
+shows as `499`/`canceled` — a third of OpenDesign's requests ended that way
+(#1607). A `signature_delta` is legal on a standard `thinking` block, so the
+plugin's own `fetch` renames amr-link's block to `thinking` as the stream
+passes and leaves its `signature_delta`s alone: the id amr-link gave the block
+is the one sent back on the next turn. The plain-text `thinking_delta`s are
+left as they came.
+
+Only amr-link's block is renamed. Anthropic's own `redacted_thinking` carries
+`data` and nothing else; amr-link's also carries `thinking` and `signature`,
+which is what tells them apart — every model is served on `/messages`,
+Claude's included, and a real redacted block must keep its encrypted `data`.
+The rewrite is streaming and per event, and touches only a streaming
+`/messages` response.
 
 ## Where the sign-in is kept
 
