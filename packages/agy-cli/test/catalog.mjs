@@ -1190,6 +1190,58 @@ test("#3501 请求：会话一个型号都不开放时答 403 和 Google 的原�
   })
 })
 
+// plugins#1602 (cyclonevox: agy 1.5.18, Google AI Pro, region SG):
+// loadCodeAssist names standard-tier current, g1-pro-tier paid, and
+// free-tier ineligible (UNSUPPORTED_LOCATION). `agy models` refuses on
+// that entry while agy acp serves the account and names its tier; magpie
+// said "Google refuses this account" and listed nothing.
+const REFUSED_REGION = { code: 1, stderr: "error: Eligibility check failed: Your current account is not eligible for Gemini Code Assist for individuals because it is not currently available in your location.\n" }
+const PRO_TIER = { name: "Gemini Code Assist in Google One AI Pro", id: "g1-pro-tier", upgradeUri: "" }
+const OFFERED_PRO = [["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"], ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"]]
+
+test("#1602 agy models 在资格检查拒绝、agy acp 却给出档位时，用 agy acp 开放的型号，不说账号被拒", async () => {
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER }, async (kit) => {
+    await kit.models().catch(() => {})
+    await warmed(kit)
+    const listed = await kit.models()
+    assert.ok(listed["gemini-4-argon"], `got ${ids(listed).join(", ")}`)
+    assert.ok(listed["claude-opus-5-5-high"], `got ${ids(listed).join(", ")}`)
+  })
+  // the sign-in check takes the account too
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER }, async (kit) => {
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.equal(started.method, "auto")
+    assert.equal((await started.callback()).type, "success")
+    assert.ok((await kit.models())["gemini-4-argon"])
+    await warmed(kit)
+  })
+  // a turn whose model agy won't set is the model's, not a refusal
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO, sessionTier: PRO_TIER, setModelError: { code: -32603, message: "Unknown model ID: gemini-4-argon-high" } }, async (kit) => {
+    const response = await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] }))
+    assert.equal(response.status, 400)
+    assert.match((await response.json()).error.message, /unavailable to this agy account/)
+    await settle(kit)
+  })
+})
+
+test("#1602 agy acp 不给档位（真不合格）或一个型号都不开放时，仍说账号被拒", async () => {
+  for (const options of [{ offeredModels: OFFERED_PRO }, { offeredModels: null, sessionTier: PRO_TIER }]) {
+    await withKit({ modelsBehavior: REFUSED_REGION, ...options }, async (kit) => {
+      await kit.models().catch(() => {})
+      await warmed(kit)
+      const error = await kit.models().then(() => null, e => e)
+      assert.ok(error, "真不合格的账号给了一份列表")
+      assert.match(error.message, /Google refuses this account for Antigravity/)
+    })
+  }
+  // the sign-in check doesn't take it for signed in either: authorize goes
+  // on to Google's sign-in
+  await withKit({ modelsBehavior: REFUSED_REGION, offeredModels: OFFERED_PRO }, async (kit) => {
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.notEqual(started.method, "auto")
+  })
+})
+
 // plugins#1218 (shenggxhz on X): settings.json's "modelProvider": "gemini"
 // (an AI Studio key) made a bare `agy models` fail without GEMINI_API_KEY in
 // magpie's environment, and the old catalog stayed. agy 1.5.9's own help

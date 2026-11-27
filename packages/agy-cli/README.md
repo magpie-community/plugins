@@ -207,8 +207,13 @@ agy 存的登录令牌去直接请求 Google 的额度接口，也不替 agy 续
 冷启动、Windows、新加的账号或网络/代理慢时更久，所以插件给它 45 秒。Magpie 一次只等 20 秒：
 超过时账号显示「agy 还在读这个账号的额度」，agy 接着读完，下次刷新直接显示结果，不再运行一次 agy。
 45 秒内仍没读完时，账号说明 agy 自己的读取没在 45 秒内完成、通常是网络或代理慢，一分钟后再试。
-agy 因地区拒绝 `/usage`（"not currently available in your location"）时，账号显示 agy 的拒绝原因，
-不显示数字。
+agy 因地区拒绝 `/usage`（"not currently available in your location"）时，插件先问 agy acp
+这个账号在哪个档位上服务。Google 可能在账号实际用的付费档位旁边，再列一个它用不了的档位（未开放地区的
+免费档位）；agy 的打印模式和 `agy models` 只因这一条就拒绝，agy 的 ACP 和终端界面却照常服务这个账号。
+有档位时，插件在自己的终端里启动 agy 的终端界面，带一个只用于这一次的状态栏（`--settings`，不保存），
+取 agy 交给状态栏的额度后关掉 agy；不往里输入任何东西，也不发提示词。型号列表这时用 agy acp 开放的型号
+（plugins#1602）。没有档位时，账号显示 agy 的拒绝原因，不显示数字。Windows 上插件没有终端可给 agy，
+仍显示拒绝。
 
 Antigravity 应用的网关打开时（`~/.gemini/config/config.json` 里 `gateway.enabled`，例如 Magpie
 接管了 Antigravity），agy 读同一个文件，会走网关而不是你的 Google 账号，`/usage` 只得到

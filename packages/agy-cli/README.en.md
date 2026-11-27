@@ -298,7 +298,17 @@ its quota, agy reads on, and the next refresh shows what it read without
 running agy again. A read that doesn't finish in 45 seconds says so, names a
 slow network or proxy as the usual cause, and is tried again a minute later.
 When agy refuses `/usage` for the account's region ("not currently available
-in your location"), the account shows agy's refusal and no numbers.
+in your location"), the plugin asks agy acp which tier it serves the account
+on. Google can name a tier the account can't have (the free one, in a region
+it isn't offered in) beside the paid one it is served on, and agy's print
+mode and `agy models` refuse on that alone while agy's ACP server and its
+terminal UI serve the account. With a tier, the plugin starts agy's terminal
+UI in a terminal of its own, with a status line for that run only
+(`--settings`, never saved), takes the quota agy hands the status line, and
+stops agy; nothing is typed into it and no prompt is sent. The model list
+then comes from what agy acp offers (plugins#1602). With no tier, the
+account shows agy's refusal and no numbers. On Windows, where the plugin has
+no terminal to give agy, the refusal stays.
 
 While Antigravity's app has its gateway on (`gateway.enabled` in
 `~/.gemini/config/config.json`, as when magpie takes over Antigravity), agy

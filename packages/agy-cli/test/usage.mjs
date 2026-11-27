@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, GATEWAY_NO_FOLDER, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
+import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, GATEWAY_NO_FOLDER, parseStatusLineQuota, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
@@ -342,7 +342,55 @@ const record = {
 }
 fs.appendFileSync(process.env.TEST_LOG, JSON.stringify(record) + "\n")
 const mode = process.env.TEST_MODE
-if (mode === "version-hang" && version || mode === "hang" && !version) {
+// plugins#1602: print mode refuses at the eligibility check (agy 1.5.18's
+// bytes); agy acp's session/new names TEST_TIER; the TUI, in a terminal,
+// asks for the cursor first and then hands its statusLine command agy's
+// payloads, TEST_QUOTA in the second.
+if (mode === "eligibility" && !version) {
+  const note = extra => fs.appendFileSync(process.env.TEST_LOG, JSON.stringify({ pid: process.pid, ...extra }) + "\n")
+  if (args[0] === "acp") {
+    let buf = ""
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", chunk => {
+      buf += chunk
+      let n
+      while ((n = buf.indexOf("\n")) >= 0) {
+        const message = JSON.parse(buf.slice(0, n))
+        buf = buf.slice(n + 1)
+        note({ acp: message.method })
+        const result = message.method === "initialize"
+          ? { protocolVersion: 1, agentCapabilities: { _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } }, agentInfo: { name: "Antigravity ACP Server", version: "1.5.18" } }
+          : { sessionId: "d622672b-c237-40d5-9037-7861087f972f", ...(process.env.TEST_TIER ? { _meta: { antigravity: { tier: JSON.parse(process.env.TEST_TIER) } } } : {}) }
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n")
+      }
+    })
+  } else if (args.includes("-p")) {
+    console.log(JSON.stringify({ conversation_id: "", status: "ERROR", response: "", error: "Eligibility check failed: Your current account is not eligible for Gemini Code Assist for individuals because it is not currently available in your location.", duration_seconds: 0, num_turns: 0, usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, finished_reason: "error" }))
+    console.error("error: Eligibility check failed: Your current account is not eligible for Gemini Code Assist for individuals because it is not currently available in your location.")
+    process.exitCode = 1
+    process.exit()
+  } else {
+    const settings = JSON.parse(args[args.indexOf("--settings") + 1])
+    note({ tty: Boolean(process.stdin.isTTY && process.stdout.isTTY), settings })
+    process.stdin.setRawMode?.(true)
+    process.stdout.write("\x1b[6n")
+    let heard = ""
+    process.stdin.on("data", chunk => {
+      heard += chunk
+      if (!heard.includes("\x1b[1;1R") || heard.includes("done")) return
+      heard += "done"
+      note({ answered: true })
+      const payload = state => JSON.stringify({ cwd: process.cwd(), version: "1.5.18", product: "antigravity", agent_state: state, terminal_width: 120 })
+      spawnSync("/bin/sh", ["-c", settings.statusLine.command], { input: payload("authenticating") })
+      if (process.env.TEST_QUOTA) {
+        const quota = JSON.parse(payload("initializing"))
+        quota.quota = JSON.parse(process.env.TEST_QUOTA)
+        spawnSync("/bin/sh", ["-c", settings.statusLine.command], { input: JSON.stringify(quota) })
+      }
+    })
+  }
+  setInterval(() => {}, 1000)
+} else if (mode === "version-hang" && version || mode === "hang" && !version) {
   if (process.env.TEST_ERROR) console.error(process.env.TEST_ERROR)
   setInterval(() => {}, 1000)
 }
@@ -1046,10 +1094,130 @@ test("a quota read and a refusal alike go through agy -p, never a request of the
   assert.deepEqual(no.windows, [])
   assert.match(no.error, /not eligible/)
   assert.equal(no.signIn, "kept")
-  assert.deepEqual((await refused.logs()).map(l => l.args[0]), ["--version", "-p"])
+  // agy acp is asked for the account's tier (plugins#1602), and names none
+  assert.deepEqual((await refused.logs()).map(l => l.args[0]), process.platform !== "win32" && typeof globalThis.Bun?.Terminal === "function" ? ["--version", "-p", "acp"] : ["--version", "-p"])
   assert.deepEqual(asked, [])
   await f.assertClean()
   await refused.assertClean()
+})
+
+// plugins#1602 (cyclonevox: agy 1.5.18, Google AI Pro, region SG):
+// loadCodeAssist names standard-tier current and allowed, g1-pro-tier
+// paid, and free-tier ineligible (UNSUPPORTED_LOCATION). agy -p refuses at
+// "Eligibility check failed" while agy acp and its TUI serve the account,
+// so the card said "not eligible". The quota comes from agy's TUI, handed
+// to a statusLine command of this run's, once agy acp names a tier.
+const PRO_TIER = JSON.stringify({ name: "Gemini Code Assist in Google One AI Pro", id: "g1-pro-tier", upgradeUri: "" })
+// the statusLine's quota as agy 1.5.18 hands it: bucket ids alone, a
+// fraction of 0 kept, an unknown one as remaining_amount 0, an unknown
+// reset as the epoch
+const STATUS_QUOTA = {
+  "gemini-weekly": { remaining_fraction: 0.75, reset_time: "2026-11-30T11:19:33Z", reset_in_seconds: 300000 },
+  "gemini-5h": { remaining_fraction: 0.5, reset_time: "2026-11-27T16:19:33Z", reset_in_seconds: 10000 },
+  "3p-weekly": { remaining_fraction: 0, reset_time: "2026-11-29T09:01:10Z", reset_in_seconds: 200000 },
+  "3p-5h": { remaining_amount: 0, reset_time: "1970-01-01T00:00:00Z", reset_in_seconds: 0 },
+  "gemini-argon-wtu-weekly": { remaining_fraction: 0.53, reset_time: "2026-11-30T11:19:33Z", reset_in_seconds: 300000, disabled: true },
+}
+const PTY = process.platform !== "win32" && typeof globalThis.Bun?.Terminal === "function"
+
+test("the statusLine's buckets read as /usage's groups, by the same names and the catalog's models", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseStatusLineQuota(structuredClone(STATUS_QUOTA))
+  const pools = result.windows.filter(w => !w.model)
+  // in /usage's order, the 1970 reset read as none
+  assert.deepEqual(pools.map(w => [w.pool, w.name, w.used, w.resetsAt]), [
+    ["Gemini", "7 days", 25, "2026-11-30T11:19:33.000Z"],
+    ["Gemini", "5 hours", 50, "2026-11-27T16:19:33.000Z"],
+    ["Claude & GPT", "7 days", 100, "2026-11-29T09:01:10.000Z"],
+    ["Claude & GPT", "5 hours", undefined, undefined],
+  ])
+  // the disabled Argon bucket is left out, as /usage's is
+  assert.ok(!result.windows.some(w => w.pool === "Gemini 4 Argon"))
+  assert.ok(pools[2].models.includes("claude-opus-5-5") && pools[2].models.includes("gpt-oss-120b"))
+  assert.ok(!pools[2].models.some(m => m.startsWith("gemini")))
+  // with an Argon bucket of its own, Argon is not in the Gemini pool
+  assert.ok(pools[0].models.includes("gemini-4-hydrogen") && pools[0].models.includes("gemini-3.8-flash") && !pools[0].models.some(m => m.includes("argon")))
+  const opus = result.windows.find(w => w.model === "claude-opus-5-5")
+  assert.deepEqual([opus.pool, opus.used], ["Claude & GPT", 100])
+
+  const argon = structuredClone(STATUS_QUOTA)
+  delete argon["gemini-argon-wtu-weekly"].disabled
+  const own = parseStatusLineQuota(argon).windows.filter(w => !w.model && w.pool === "Gemini 4 Argon")
+  assert.deepEqual(own.map(w => [w.name, w.used]), [["7 days", 47]])
+  assert.ok(own[0].models.includes("gemini-4-argon-high"))
+  // no Argon bucket: its models share the Gemini pool
+  const shared = structuredClone(STATUS_QUOTA)
+  delete shared["gemini-argon-wtu-weekly"]
+  assert.ok(parseStatusLineQuota(shared).windows.find(w => !w.model && w.pool === "Gemini").models.includes("gemini-4-argon"))
+  storeCatalogRows(null)
+  // no catalog: the pools still read
+  assert.deepEqual(parseStatusLineQuota(structuredClone(STATUS_QUOTA)).windows.filter(w => !w.model).map(w => w.pool), ["Gemini", "Gemini", "Claude & GPT", "Claude & GPT"])
+  // a bucket agy adds later gets a pool of its own name
+  assert.deepEqual(parseStatusLineQuota({ "nano-5h": { remaining_fraction: 0.9 } }).windows.map(w => [w.pool, w.name, w.used]), [["nano", "5 hours", 10]])
+  assert.throws(() => parseStatusLineQuota({}))
+})
+
+test("an account agy -p calls ineligible while agy acp names its tier reads its quota from agy's TUI", { skip: !PTY }, async t => {
+  const asked = noFetch(t)
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  t.after(() => storeCatalogRows(null))
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA), TEST_VERSION: "1.5.18" })
+  const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 20_000 })
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.windows.filter(w => !w.model).map(w => [w.pool, w.name, w.used]), [
+    ["Gemini", "7 days", 25], ["Gemini", "5 hours", 50], ["Claude & GPT", "7 days", 100], ["Claude & GPT", "5 hours", undefined],
+  ])
+  const logs = await f.logs()
+  const runs = logs.filter(l => l.args)
+  assert.deepEqual(runs.map(l => l.args[0]), ["--version", "-p", "acp", "--settings"])
+  // ACP: initialize, then session/new, nothing else (no prompt)
+  assert.deepEqual(logs.filter(l => l.acp).map(l => l.acp), ["initialize", "session/new"])
+  // the TUI ran in a terminal, its statusLine this run's only
+  const tui = logs.find(l => l.settings)
+  assert.equal(tui.tty, true)
+  assert.deepEqual(Object.keys(tui.settings), ["statusLine"])
+  assert.equal(tui.settings.statusLine.type, "command")
+  assert.ok(logs.some(l => l.answered))
+  // nothing agy ran outlives the read
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
+  await f.assertClean()
+  assert.deepEqual(asked, [])
+})
+
+test("an account agy acp names no tier for keeps the refusal, and agy's TUI is never started", { skip: !PTY }, async t => {
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_QUOTA: JSON.stringify(STATUS_QUOTA) })
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 20_000 }), /not eligible for Antigravity/)
+  const logs = await f.logs()
+  assert.deepEqual(logs.filter(l => l.args).map(l => l.args[0]), ["--version", "-p", "acp"])
+  assert.ok(!logs.some(l => l.settings))
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
+  await f.assertClean()
+})
+
+test("a tier with no quota in the statusLine keeps the refusal, and agy is stopped at the deadline", { skip: !PTY }, async t => {
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER })
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 3_000 }), /not eligible for Antigravity/)
+  const logs = await f.logs()
+  assert.deepEqual(logs.filter(l => l.args).map(l => l.args[0]), ["--version", "-p", "acp", "--settings"])
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
+  await f.assertClean()
+})
+
+test("another refusal than the eligibility check asks agy nothing more", { skip: !PTY }, async t => {
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: JSON.stringify({ status: "ERROR", error: "Your Google account was disabled." }) })
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 5_000 }))
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+})
+
+test("on the app's gateway, agy acp and its TUI read the folder without it too", { skip: !PTY }, async t => {
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA) })
+  const folder = path.join(path.dirname(f.env.TEST_LOG), "agy-own")
+  const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 20_000, geminiDir: async () => ({ gateway: true, dir: folder }) })
+  assert.ok(result.windows.length > 0)
+  const runs = (await f.logs()).filter(l => l.args).map(l => l.args)
+  assert.deepEqual(runs[2], ["acp", "--gemini-dir", folder])
+  assert.deepEqual(runs[3].slice(0, 3), ["--gemini_dir", folder, "--settings"])
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
 })
 
 // plugins#1234 (qiankun229): agy run for usage with an ended access token

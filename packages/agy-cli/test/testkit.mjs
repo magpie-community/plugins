@@ -322,7 +322,8 @@ class FakeAgy {
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
       const sendNew = () => {
-        this.respond(id, { sessionId: this.sessionId, models })
+        // the tier agy acp names for the signed-in account (agy 1.5.18)
+        this.respond(id, { sessionId: this.sessionId, models, ...(this.kit.sessionTier ? { _meta: { antigravity: { tier: this.kit.sessionTier } } } : {}) })
         if (Array.isArray(this.kit.availableCommands)) {
           this.send({
             method: "session/update",
@@ -540,6 +541,7 @@ export async function createBridgeKit(options = {}) {
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    sessionTier: options.sessionTier ?? null,
     setModelError: options.setModelError ?? null,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
     initializeDelayMs: options.initializeDelayMs ?? 0,

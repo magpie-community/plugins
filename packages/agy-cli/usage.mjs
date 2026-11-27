@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
-import { familiesInGroup } from "./model-ids.mjs"
+import { familiesInGroup, nameIndex } from "./model-ids.mjs"
 import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
 
 // agy's own read, --version included. Magpie waits 20 seconds for a usage
@@ -111,6 +111,16 @@ export function verifyRefused(link) {
 // network failure ("Eligibility check failed: EOF"), in agy's own words.
 // agy's diagnostic log lines are not read: a background poll it logs can
 // fail on its own.
+// agy's eligibility check refused (agyRefusal), not a license, a disabled
+// account or a verification: agy's print mode and `agy models` refuse an
+// account whose loadCodeAssist names any ineligible tier, which agy acp
+// may still serve (plugins#1602)
+const ELIGIBILITY_REFUSED = "Google refuses this account for Antigravity: "
+
+export function isEligibilityRefusal(why) {
+  return String(why ?? "").startsWith(ELIGIBILITY_REFUSED)
+}
+
 export function agyRefusal(output) {
   const said = withoutDiagnostics(String(output ?? ""))
   if (LICENSE_REFUSAL.test(said)) return LICENSE_REFUSED
@@ -118,7 +128,7 @@ export function agyRefusal(output) {
   if (VERIFY_REFUSAL.test(said)) return verifyRefused(verifyLinkIn(said))
   if (!ELIGIBILITY.test(said) || NETWORK.test(said)) return ""
   const line = said.split(/\r?\n/).map(l => l.trim().replace(/^error:\s*/i, "")).find(l => ELIGIBILITY.test(l)) || ""
-  return `Google refuses this account for Antigravity: ${line.slice(0, 400)}. agy itself gets the same answer. ` +
+  return `${ELIGIBILITY_REFUSED}${line.slice(0, 400)}. agy itself gets the same answer. ` +
     "Antigravity isn't offered in every region: turn off a VPN or proxy that puts you in another one, or use an account Google serves there."
 }
 
@@ -130,7 +140,7 @@ function commandFailure(output) {
   const eligibility = ELIGIBILITY.test(output)
   const network = NETWORK.test(output)
   if (network) return new UsageError(`agy usage ${eligibility ? "eligibility check " : ""}failed on a network request. Check network or proxy settings.`)
-  if (eligibility) return new UsageError("agy reports that this account is not eligible for Antigravity.")
+  if (eligibility) return Object.assign(new UsageError("agy reports that this account is not eligible for Antigravity."), { ineligible: true })
   return new UsageError("agy could not read usage. Run `agy` in a terminal to check its status.")
 }
 
@@ -397,6 +407,230 @@ export const GATEWAY_NO_FOLDER = "Antigravity's app is set to a gateway (~/.gemi
 // agy's flag parser naming --gemini_dir as one it doesn't know
 const NO_GEMINI_DIR_FLAG = /flags? provided but not defined:\s*-+gemini[-_]dir/i
 
+// plugins#1602 (cyclonevox, agy 1.5.18, Google AI Pro in SG): Google's
+// loadCodeAssist names a tier the account can't have (free-tier,
+// UNSUPPORTED_LOCATION) beside the ones it is served on (current
+// standard-tier, paid g1-pro-tier). agy's print mode, `agy models` and its
+// headless runs refuse on any such entry ("Eligibility check failed"),
+// while its ACP server and its TUI serve the account: the TUI's /usage
+// warns "Eligibility Check" and shows the whole panel. So when print mode
+// refuses, agy is asked twice more, the way it serves its own clients:
+//
+// 1. agy acp's session/new says the account's tier
+//    (_meta.antigravity.tier). With none, the account is turned away for
+//    real (only the refused tier, nothing allowed), and the error stays.
+// 2. agy's TUI, run in a terminal of the plugin's with a statusLine of
+//    this run only (--settings, never saved), hands that command the
+//    quota agy read, as JSON on its stdin (agy's documented statusLine).
+//    agy is stopped once it has. It comes while agy's first screen
+//    (onboarding, the folder's trust) is still up: nothing is typed or
+//    agreed to, and no prompt goes to a model.
+//
+// Each request Google sees is one agy makes at its own start; nothing is
+// asked of Google here (U7). The terminal is Bun's (the plugin host runs
+// Bun), so this is POSIX only: on Windows the error stays.
+const STATUS_LINE_POLL_MS = 100
+
+function terminalSpawn() {
+  const bun = globalThis.Bun
+  return process.platform !== "win32" && typeof bun?.spawn === "function" && typeof bun?.Terminal === "function" ? bun.spawn : null
+}
+
+function killGroup(pid) {
+  try { process.kill(-pid, "SIGKILL") } catch {
+    try { process.kill(pid, "SIGKILL") } catch {}
+  }
+}
+
+// acpTier is the tier agy acp's session/new names for the signed-in
+// account ({ id, name }), or null when it names none or doesn't answer.
+export function acpTier(file, folderArgs, { cwd, env, deadline, signal }) {
+  return new Promise((resolve) => {
+    let child
+    let done = false
+    let buf = ""
+    let timer
+    const finish = (tier) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", abortNow)
+      if (child?.pid) killGroup(child.pid)
+      child?.stdout?.destroy()
+      resolve(tier)
+    }
+    const abortNow = () => finish(null)
+    if (signal?.aborted || Date.now() >= deadline) return finish(null)
+    try {
+      child = spawn(file, ["acp", ...folderArgs], { cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"] })
+    } catch {
+      return finish(null)
+    }
+    signal?.addEventListener("abort", abortNow, { once: true })
+    timer = setTimeout(() => finish(null), Math.max(1, deadline - Date.now()))
+    const send = (id, method, params) => {
+      try { child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n") } catch { finish(null) }
+    }
+    child.on("error", () => finish(null))
+    child.on("close", () => finish(null))
+    child.stdin.on("error", () => finish(null))
+    child.stdout.setEncoding("utf8")
+    child.stdout.on("data", (chunk) => {
+      buf += chunk
+      if (buf.length > MAX_OUTPUT_BYTES) return finish(null)
+      let n
+      while ((n = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, n)
+        buf = buf.slice(n + 1)
+        let message
+        try { message = JSON.parse(line) } catch { continue }
+        if (message?.method && message.id != null) {
+          // agy asks nothing before session/new; whatever it asks is declined
+          try { child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "not served" } }) + "\n") } catch {}
+          continue
+        }
+        if (message?.id === 1) {
+          if (message.error) return finish(null)
+          send(2, "session/new", { cwd, mcpServers: [] })
+        } else if (message?.id === 2) {
+          const tier = message.result?._meta?.antigravity?.tier
+          const id = text(tier?.id)
+          finish(id ? { id, name: text(tier?.name) } : null)
+        }
+      }
+    })
+    send(1, "initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
+  })
+}
+
+// What agy's TUI asks of its terminal before it draws (a cursor position,
+// the terminal's kind, its colours, the keyboard protocol): with no answer
+// it waits and draws nothing, and runs no statusLine.
+const TERMINAL_ANSWERS = [
+  [/\x1b\[6n/g, "\x1b[1;1R"],
+  [/\x1b\[>0?c/g, "\x1b[>0;276;0c"],
+  [/\x1b\[0?c/g, "\x1b[?62;22c"],
+  [/\x1b\]11;\?/g, "\x1b]11;rgb:0000/0000/0000\x1b\\"],
+  [/\x1b\]10;\?/g, "\x1b]10;rgb:ffff/ffff/ffff\x1b\\"],
+  [/\x1b\[\?u/g, "\x1b[?0u"],
+]
+
+// statusLineQuota is the quota agy's TUI hands its statusLine command
+// (bucket id -> { remaining_fraction, reset_time, … }), or null.
+export async function statusLineQuota(file, folderArgs, { cwd, env, deadline, signal }) {
+  const start = terminalSpawn()
+  if (!start || signal?.aborted || Date.now() >= deadline) return null
+  // a file of the plugin's own: the command is its quoted path, read by
+  // any shell agy runs it with
+  const script = path.join(cwd, "status-line")
+  const out = path.join(cwd, "status-line.json")
+  if (/['\\\n\r]/.test(script)) return null
+  await fs.writeFile(script, '#!/bin/sh\nd=$(dirname "$0")\ncat > "$d/status-line.$$" && mv -f "$d/status-line.$$" "$d/status-line.json"\n', { mode: 0o700 })
+  const settings = JSON.stringify({ statusLine: { type: "command", command: `'${script}'` } })
+  let proc
+  let exited = false
+  let tail = ""
+  try {
+    proc = start([file, ...folderArgs, "--settings", settings], {
+      cwd,
+      env,
+      terminal: {
+        cols: 120,
+        rows: 40,
+        data(term, data) {
+          // a query split across two reads is seen whole once, with the
+          // end of the read before it
+          const said = tail + Buffer.from(data).toString("utf8")
+          for (const [asked, answer] of TERMINAL_ANSWERS) {
+            for (const match of said.matchAll(asked)) {
+              if (match.index + match[0].length > tail.length) try { term.write(answer) } catch {}
+            }
+          }
+          tail = said.slice(-16)
+        },
+      },
+    })
+  } catch {
+    return null
+  }
+  proc.exited?.then?.(() => { exited = true }, () => { exited = true })
+  try {
+    while (!exited && !signal?.aborted && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, STATUS_LINE_POLL_MS))
+      let payload
+      try { payload = JSON.parse(await fs.readFile(out, "utf8")) } catch { continue }
+      const quota = payload?.quota
+      if (quota && typeof quota === "object" && !Array.isArray(quota) && Object.keys(quota).length) return quota
+    }
+    return null
+  } finally {
+    if (proc?.pid) killGroup(proc.pid)
+    try { proc?.terminal?.close?.() } catch {}
+    await proc?.exited?.catch?.(() => {})
+  }
+}
+
+// The statusLine names each bucket by its id alone (gemini-5h,
+// gemini-weekly, 3p-5h, 3p-weekly, gemini-argon-wtu-weekly), not the
+// groups /usage prints. Each goes to the group /usage puts it in, by the
+// same names, and the group lists the catalog's models of that family, so
+// the card reads as it does from /usage.
+const STATUS_POOLS = [
+  { bucket: /^gemini-argon-/i, name: "Gemini 4 Argon", family: id => /^gemini-.*argon/i.test(id) },
+  { bucket: /^gemini-/i, name: "Gemini Models", family: (id, argon) => /^gemini-/i.test(id) && !(argon && /argon/i.test(id)) },
+  { bucket: /^3p-/i, name: "Claude and GPT Models", family: id => /^(?:claude|gpt)/i.test(id) },
+]
+
+// /usage's order: Gemini, Claude and GPT, Argon, then the week before the
+// 5 hours
+const POOL_ORDER = ["Gemini Models", "Claude and GPT Models", "Gemini 4 Argon"]
+const bucketSpan = id => /weekly|7d$/i.test(id) ? 604800 : /daily|1d$/i.test(id) ? 86400 : /5h$/i.test(id) ? 18000 : 0
+
+export function parseStatusLineQuota(quota) {
+  const rank = id => {
+    const at = POOL_ORDER.indexOf(STATUS_POOLS.find(p => p.bucket.test(id))?.name)
+    return at < 0 ? POOL_ORDER.length : at
+  }
+  const ids = Object.keys(quota && typeof quota === "object" ? quota : {}).filter(Boolean)
+    .sort((a, b) => rank(a) - rank(b) || bucketSpan(b) - bucketSpan(a) || (a < b ? -1 : a > b ? 1 : 0))
+  const argon = ids.some(id => STATUS_POOLS[0].bucket.test(id))
+  const families = [...new Map([...nameIndex().values()].map(e => [e.family, e])).values()]
+  const groups = new Map()
+  for (const id of ids) {
+    const value = quota[id]
+    if (!value || typeof value !== "object") continue
+    const pool = STATUS_POOLS.find(p => p.bucket.test(id))
+    const name = pool?.name || id.replace(/-(?:5h|weekly|daily|\d+[hd])$/i, "")
+    if (!groups.has(name)) {
+      const names = pool ? families.filter(e => pool.family(e.family, argon)).map(e => e.name).filter(n => !/,|\sand\s/i.test(n)) : []
+      groups.set(name, {
+        displayName: name,
+        // the Argon group's own name is its model's
+        ...(names.length && pool !== STATUS_POOLS[0] ? { description: `Models within this group: ${names.join(", ")}` } : {}),
+        buckets: [],
+      })
+    }
+    groups.get(name).buckets.push({
+      bucketId: id,
+      remainingFraction: field(value, "remainingFraction", "remaining_fraction"),
+      resetTime: field(value, "resetTime", "reset_time"),
+      ...(value.disabled === true ? { disabled: true } : {}),
+    })
+  }
+  return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data: { groups: [...groups.values()] } } })
+}
+
+// served is the quota of an account print mode refused at the eligibility
+// check while agy serves it (above), or null: the refusal then stands.
+async function servedQuota(agy, folder, options) {
+  if (!terminalSpawn()) return null
+  const tier = await acpTier(agy, folder?.gateway ? ["--gemini-dir", folder.dir] : [], options)
+  if (!tier) return null
+  const quota = await statusLineQuota(agy, folder?.gateway ? ["--gemini_dir", folder.dir] : [], options)
+  if (!quota) return null
+  try { return parseStatusLineQuota(quota) } catch { return null }
+}
+
 export async function fetchUsage(agy, {
   env = process.env,
   timeoutMs = env.AGY_BRIDGE_USAGE_TIMEOUT_MS,
@@ -479,6 +713,10 @@ export async function fetchUsage(agy, {
       ? text(report.error) || text(report.response)
       : result.stderr + "\n" + result.stdout
     const failure = commandFailure(said)
+    if (failure.ineligible) {
+      const served = await servedQuota(agy, folder, options)
+      if (served) return served
+    }
     throw failure
   } finally {
     for (let attempt = 0; attempt < 4; attempt++) {

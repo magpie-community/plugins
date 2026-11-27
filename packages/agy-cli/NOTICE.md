@@ -64,7 +64,7 @@ A1–A16、U1–U6 逐项并入。两边都有、且 `acb8d84` 写法更新的�
 | U4 | Windows 上拦截浏览器启动：写入内容为 `@exit /b 1` 的 `open.cmd`，并让 `BROWSER` 指向它 |
 | U5 | PATH 大小写去重：删除非大写的 `Path` 键，继承 `env.PATH`，没有时回落到 `env.Path` |
 | U6 | 临时目录删除遇到 `EBUSY`、`EPERM`、`ENOTEMPTY` 时，先等待在途的 `taskkill` 释放目录句柄，再最多重试 4 次，每次间隔递增 50 ms |
-| U7 | 用量只经 agy 自己读取（`agy -p /usage`）：插件不读 agy 存的登录令牌去直接请求 Google 的额度接口（`loadCodeAssist`、`retrieveUserQuotaSummary`），也不替 agy 续期令牌；Google 看到的每个额度请求都是 agy 自己发的 |
+| U7 | 用量只经 agy 自己读取（`agy -p /usage`；它因资格检查拒绝、agy acp 却给出账号档位时，读 agy 终端界面交给本次 `--settings` 状态栏的额度，plugins#1602）：插件不读 agy 存的登录令牌去直接请求 Google 的额度接口（`loadCodeAssist`、`retrieveUserQuotaSummary`），也不替 agy 续期令牌；Google 看到的每个额度请求都是 agy 自己发的 |
 
 ## 5. 包与文档层改动
 
