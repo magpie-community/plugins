@@ -123,6 +123,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 | [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
 | [specstream](packages/specstream) | `web_search` (live web answers with the source page of each value) and `extract` (page text from up to 20 URLs a call), with a SpecStream API key; also listed under Web search |
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [ccx](packages/ccx) | `sessions` lists Claude Code or Codex conversations, `read` reads one in pages (messages, tool calls in short, the plan) so another agent can carry on the task. Nothing is read until you allow it; what is read goes to the model that asks |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>

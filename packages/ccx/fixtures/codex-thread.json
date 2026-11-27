@@ -1,0 +1,54 @@
+{
+  "thread": {
+    "id": "01a1e3b1-7071-7731-ae71-c5b64dfbd374",
+    "name": "Fix the login bug",
+    "cwd": "/tmp/app",
+    "updatedAt": 1794851563,
+    "turns": [
+      {
+        "id": "turn-1",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "msg-1",
+            "content": [{ "type": "text", "text": "the login form 500s" }]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg-2",
+            "phase": "commentary",
+            "text": "Looking at the route."
+          },
+          {
+            "type": "reasoning",
+            "id": "rs-1",
+            "summary": ["Check the handler first"]
+          },
+          {
+            "type": "commandExecution",
+            "id": "ce-1",
+            "command": "rg 'login' src"
+          },
+          {
+            "type": "functionCall",
+            "id": "fc-1",
+            "name": "apply_patch",
+            "arguments": { "path": "src/login.ts" }
+          },
+          {
+            "type": "functionCallOutput",
+            "id": "fco-1",
+            "name": "apply_patch",
+            "output": "patched src/login.ts"
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg-3",
+            "phase": "final_answer",
+            "text": "The 500 came from a missing await. Fixed."
+          }
+        ]
+      }
+    ]
+  }
+}
