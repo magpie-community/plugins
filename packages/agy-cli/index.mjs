@@ -1887,14 +1887,17 @@ export function ideToolOf(toolCall) {
   return ""
 }
 
-function agentDefinition() {
+// media: the conversation carries a video or audio (stageMedia), which the
+// model reads with agy's own view_file. Otherwise agy's tools stay off: with
+// --add-dir, view_file would read the client's files unasked.
+function agentDefinition(media) {
   const lines = [
     "---",
     `name: ${AGENT_NAME}`,
     "description: Bridges only client-declared tools",
     "mainAgent: true",
     "subagent: false",
-    "tools: []",
+    media ? "tools: [view_file]" : "tools: []",
     // Never expose the user's global MCP servers, skills or plugins.
     "inheritMcp: false",
     "inheritCustomizations: false",
@@ -2563,6 +2566,7 @@ class Proc {
     this.home = currentHome()
     this.#assign(convKey, opts)
     this.workDir = opts.workDir
+    this.media = !!opts.media
     this.spareKey = null
     this.token = randomUUID()
     this.sessionId = null
@@ -2689,7 +2693,7 @@ class Proc {
   }
 
   async #spawn() {
-    this.launchKey = await launchKey(this.agyPath, this.workDir)
+    this.launchKey = await launchKey(this.agyPath, this.workDir, this.media)
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
@@ -2704,7 +2708,7 @@ class Proc {
     }
     const agentDir = path.join(this.workspace, ".agents", "agents", AGENT_NAME)
     await fs.promises.mkdir(agentDir, { recursive: true })
-    await fs.promises.writeFile(path.join(agentDir, "agent.md"), agentDefinition(), { mode: 0o600 })
+    await fs.promises.writeFile(path.join(agentDir, "agent.md"), agentDefinition(this.media), { mode: 0o600 })
     this.logPath = path.join(this.workspace, "agy-acp.log")
 
     const args = [
@@ -4196,6 +4200,7 @@ function writeParked(proc, midTurn) {
     instructionsInSession: !!proc.instructionsInSession,
     workDir: proc.workDir,
     workspace: proc.workspace,
+    media: proc.media,
     ...midTurn ? { midTurn: true, count: proc.expectedMessages.length } : {},
     at: Date.now(),
   })
@@ -4240,6 +4245,9 @@ function takeParked(convKey, opts, miss = {}) {
   saveParked()
   miss.reason = Date.now() - entry.at > RESUME_TTL_MS ? "expired"
     : (entry.workDir ?? null) !== (opts.workDir ?? null) ? "work_dir"
+    // agy resumes a session with the tools it was opened with, whatever the
+    // agent it runs now says: one opened without view_file can't read a video
+    : !!entry.media !== !!opts.media ? "media"
     : entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions, legacy)) ? "instructions"
     : entry.userCloak !== USER_CLOAK ? "user_cloak"
     : entry.instructionsInSession !== (systemAppend() && !!opts.instructions) ? "instructions_place"
@@ -4385,11 +4393,11 @@ function sparesOn() {
 }
 
 // Everything that decides how Proc starts agy for the current work.
-async function launchKey(agyPath, workDir) {
+async function launchKey(agyPath, workDir, media = false) {
   let mtime = 0
   try { mtime = (await fs.promises.stat(agyPath)).mtimeMs } catch {}
   const own = await geminiDirArgs(agyPath)
-  return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "",
+  return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "", media,
     await noDefaultCustomizationsArgs(agyPath), await telemetryArgs(agyPath), own.args, childEnv(process.env)]))
 }
 
@@ -4398,9 +4406,9 @@ function dropSpare(spare) {
   return spare.stop().catch(() => {})
 }
 
-async function takeSpare(agyPath, workDir) {
+async function takeSpare(agyPath, workDir, media) {
   if (!spares.size || !sparesOn()) return null
-  const key = await launchKey(agyPath, workDir)
+  const key = await launchKey(agyPath, workDir, media)
   const spare = spares.get(key)
   if (!spare) return null
   spares.delete(key)
@@ -4477,7 +4485,7 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
   const launch = !forceNew && isFreshConversation && freshToolless(opts)
-    ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
+    ? await launchKey(agyPath, opts.workDir, opts.media).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
@@ -4581,7 +4589,8 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     // than the empty history, so matchesHistory turns the next one away.
     const retriedOpening = isFreshConversation && existing.failedOpening
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
-      existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
+      existing.workDir === opts.workDir && existing.media === opts.media &&
+      sameInstructions(existing.instructions, opts.instructions) &&
       (existing.matchesHistory(matchedHistory) || continuedFresh)
     if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh || retriedOpening)) {
       if (continuedFresh) {
@@ -4603,6 +4612,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         Array.isArray(matchedHistory) && !matchedHistory.length
       why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
         existing.workDir !== opts.workDir ? "work_dir" :
+        existing.media !== opts.media ? "media" :
         !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
         newOpening ? "fresh_after_first" :
         !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
@@ -4629,7 +4639,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   const parkMiss = { reason: isFreshConversation ? null : forceNew && !opts.resumeStep ? "forced" : null }
   const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts, parkMiss)
   // a spare runs in a folder of its own, and a resumed session needs its own
-  const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
+  const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir, opts.media)
   while (!spare && allProcs.size >= maxProcs()) {
     const idle = spares.values().next().value
     if (idle) {
@@ -6708,6 +6718,10 @@ function blockText(block) {
     parseUserImage(block)
     return "[image]"
   }
+  if (isMedia(block)) {
+    mediaData(block)
+    return `[${block.type}]`
+  }
   if (block.type === "tool_result") {
     const inner = Array.isArray(block.content)
       ? block.content.map((part) => {
@@ -6726,6 +6740,52 @@ function messageText(message) {
   if (typeof message.content === "string") return message.content
   if (Array.isArray(message.content)) return message.content.map(blockText).join("")
   return String(message.content ?? "")
+}
+
+// A user's video or audio: magpie's Messages video block, and audio in the
+// same shape. agy drops or refuses every way ACP has to attach one (an
+// audio block, a resource or resource_link, @path); only its own view_file
+// hands Gemini the media itself, so stageMedia leaves it in a file to read.
+function isMedia(block) {
+  return block?.type === "video" || block?.type === "audio"
+}
+
+function hasMedia(message) {
+  return Array.isArray(message.content) && message.content.some(isMedia)
+}
+
+function mediaData(block) {
+  const source = block.source
+  if (source?.type !== "base64" || typeof source.data !== "string" || !source.data) {
+    throw new UnsupportedContent(`a ${block.type} source other than base64; provide inline ${block.type} data instead of a URL`)
+  }
+  return source.data
+}
+
+// stageMedia is the message with each video or audio written to
+// dir/attachments, named by its sha256 so a history that sends it every turn
+// writes it once, and a note to read it in its place. Synchronous: an await
+// before the turn starts would leave the process idle, to be evicted.
+function stageMedia(message, dir) {
+  return hasMedia(message)
+    ? { ...message, content: message.content.map((block) => isMedia(block) ? stagedMedia(block, dir) : block) }
+    : message
+}
+
+function stagedMedia(block, dir) {
+  const bytes = Buffer.from(mediaData(block), "base64")
+  const type = String(block.source.media_type || "").toLowerCase().split(";")[0].trim()
+  const sub = /^(?:video|audio)\/(?:x-)?([a-z0-9]{1,16})$/.exec(type)?.[1]
+  const ext = type === "audio/mpeg" ? "mp3" : sub === "quicktime" ? "mov" : sub || (block.type === "audio" ? "mp3" : "mp4")
+  const file = path.join(dir, "attachments", `${digest(bytes)}.${ext}`)
+  if (!fs.existsSync(file)) {
+    // whole or not at all: one cut short by a failed write would pass for it
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const part = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.part`
+    fs.writeFileSync(part, bytes)
+    fs.renameSync(part, file)
+  }
+  return { type: "text", text: `[The user attached ${block.type === "video" ? "a video" : "an audio file"}: ${file}. Read it with your file reading tool before answering.]` }
 }
 
 function imageContent(block) {
@@ -8974,7 +9034,7 @@ function estimateInputTokens(body) {
       return
     }
     if (typeof value === "object") {
-      if (value.type === "image" && value.source?.type === "base64") {
+      if ((value.type === "image" || isMedia(value)) && value.source?.type === "base64") {
         images++
         return
       }
@@ -9210,18 +9270,22 @@ function withoutAnswered(messages, answered) {
 
 async function beginTurn(proc, history, body, callerWorkDir, model, selection, answered, grownTools = null) {
   const reminder = outputFormatReminder(body)
-  const flattened = proc.pendingFlattenedTurn
+  let flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
+  // the prompt names each video or audio by its file; the session is still
+  // matched by body.messages
+  const messages = body.messages.map((message) => stageMedia(message, proc.workspace))
+  if (flattened) flattened = stageMedia(flattened, proc.workspace)
   let baseParts
   let replay = null
   if (!isFirstTurn && proc.resumedStep) {
     proc.resumedStep = false
-    baseParts = renderResumedStepParts(body.messages.slice(history.length))
+    baseParts = renderResumedStepParts(messages.slice(history.length))
   } else if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
-      ? [flattened, ...body.messages.slice(1)]
-      : withoutAnswered(body.messages.slice(history.length), answered))
+      ? [flattened, ...messages.slice(1)]
+      : withoutAnswered(messages.slice(history.length), answered))
     // a step ended for tools loaded mid-turn: its results are in, so the
     // prompt says what can be called now and to go on
     if (grownTools?.length) baseParts = mergePromptParts([{ type: "text", text: grownToolsNote(grownTools) }], baseParts)
@@ -9229,7 +9293,7 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     // A history bigger than one prompt goes in over several (seedHistory),
     // up to the model's window, where agy can take them.
     const budget = seedsHistory(proc.agentVersion) ? Math.max(maxInitialPromptBytes(), maxReplayBytes(model, selection?.model)) : maxInitialPromptBytes()
-    const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
+    const initial = renderInitialPrompt({ ...body, messages }, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0, budget)
     baseParts = initial.parts
     if (initial.stats.messages_before) replay = { ...initial.stats, prompt_bytes: promptTextBytes(baseParts), budget_bytes: budget }
@@ -9267,14 +9331,14 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
   }
   if (isFirstTurn) {
-    const rawEstimate = estimateInputTokens(body)
+    const rawEstimate = estimateInputTokens({ ...body, messages })
     const sessionOverhead = (proc.instructionsInSession && body.system
       ? estimateInputTokens({ system: body.system, messages: [] })
       : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts) +
       seeds.reduce((sum, parts) => sum + estimatePromptPartsTokens(parts), 0))
     const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
-    const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
+    const promptClipped = utf8Bytes(JSON.stringify(messages)) > clipThreshold &&
       rawEstimate > sentEstimate + 64
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
   }
@@ -9750,7 +9814,8 @@ export const AntigravityBridgePlugin = async () => {
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
                 legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : "",
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
+                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope,
+                media: body.messages.some(hasMedia) }
               let answeredIds = null
               // tools the steered prompt names as callable now (grown mid-turn)
               let grownTools = null
