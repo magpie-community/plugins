@@ -55,6 +55,7 @@ for (const [name, mocks] of [
   ["park-reread.mjs", false],
   ["same-opening.mjs", false],
   ["claude-code-sessions.mjs", false],
+  ["media-input.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
