@@ -1,0 +1,42 @@
+{
+  "name": "@magpie-community/page-token-receipt",
+  "version": "0.1.0",
+  "description": "A page in magpie's window that prints a day, week, month, the last 7, 30 or 90 days, or all of your AI usage as a receipt on a paper printer: cost per model, tokens, the agents that made them. Save it as a PNG or copy it as a picture",
+  "files": [
+    "page",
+    "README.md",
+    "NOTICE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "usage",
+    "tokens",
+    "cost",
+    "receipt"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/token-receipt"
+  },
+  "engines": {
+    "magpie": ">=0.1.3427"
+  },
+  "magpie": {
+    "page": {
+      "title": "Token receipt",
+      "titles": {
+        "zh": "Token 账单",
+        "zh-TW": "Token 帳單",
+        "ja": "トークン明細"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "permissions": [
+      "usage:day"
+    ]
+  }
+}

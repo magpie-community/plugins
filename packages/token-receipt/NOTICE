@@ -1,0 +1,13 @@
+The receipt printer's design, styles and PNG export are ported from
+dsh-token-receipt (MIT, the same author): https://github.com/maxlee/dsh-token-receipt
+Its stepped paper feed is adapted from the dqnamo receipt-printer study.
+
+page/logo.js inlines magpie's mark, from https://usemagpie.ai/img/magpie-small.svg.
+The mark belongs to the magpie project and is not covered by this package's MIT
+license.
+
+page/fonts.js embeds subsets of Inter and JetBrains Mono, both under the SIL Open
+Font License 1.1 (page/fonts.LICENSE.txt).
+
+All usage and costs come from magpie's own records through the `usage:day` read.
+The page bundles no price catalogue and makes no network request.
