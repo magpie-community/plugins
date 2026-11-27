@@ -8,9 +8,14 @@ const oldKey = randomBytes(32).toString("base64url")
 const activeKey = randomBytes(32).toString("base64url")
 let credentialReads = 0
 
+// both store readers share the read counter, so whichever platform runs the
+// test sees the home entry first and the moved folder's second: a store CLI
+// (secret-tool, security) prints the password itself, Windows' CredReadW
+// wrapper prints the blob as base64 (the password UTF-16LE within)
 mock.module("node:child_process", () => ({
   execFileSync() {
-    return ""
+    const key = credentialReads++ === 0 ? oldKey : activeKey
+    return key
   },
   execSync() {
     const key = credentialReads++ === 0 ? oldKey : activeKey
