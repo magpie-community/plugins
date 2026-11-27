@@ -156,6 +156,41 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     not as a 0% miss (0.2.26). So does one that counts 0 read and 0
     written: Trae answers that while it bills the turn at its cache price
     (0.2.31).
+  - After the answer the plugin reads Trae's commercial session usage
+    (`/api/v1/commercial/get_session_usage`). That record is the
+    conversation's, since `session_id` is (above), and it holds all of its
+    turns' charges and cache reads together, so a turn reports its share of
+    it: the record now, less the record last read for that conversation. A
+    turn with no baseline yet — the conversation's first one here, or a
+    caller that names each request's own session — is reported as it is when
+    the record holds only that turn's own prompt and reply; one that holds
+    more is the conversation's, and is only the baseline of the turns after
+    it. A record that hasn't moved past that baseline is one still being
+    written — it holds the earlier turns already — so it is read again within
+    the wait; a turn whose record never moves reports nothing, no `credit`
+    and no `cached_tokens`, rather than a false 0, and the next turn's share
+    then covers both. Its `credits_by_source` (a string, where `credits_float` rounds
+    a small charge to 0) goes on the response as `usage.credit` (and
+    `usage.credits`): magpie's ledger reads the singular `credit`, as kiro
+    reports it (yetone/magpie#4328), and its
+    `extra_info.cache_read_token` fills `cached_tokens` when `token_usage`
+    named no cache read (0.2.58). A cache count the stream did name wins;
+    a refused or failed lookup leaves the answer unchanged. The host is
+    `TRAE_USAGE_API_HOST` when set, else the realm's own — and Trae CN is the
+    one realm that has one: Trae Global's commercial host is not known
+    (`api5-normal.trae.ai` does not resolve), so its turns read no settlement
+    at all rather than ask a host that never answers. A read has a
+    timeout of its own (2 s), and an answer's end waits for it only as long
+    as its wait allows: 400 ms for a stream, whose end must not be held back
+    by a record that settles slowly, and 2.5 s for a body, which closes
+    nothing early. An enterprise model asked at its own endpoint (0.2.53) is
+    the tenant's own service, which Trae books nothing for: its usage is that
+    endpoint's own, and no settlement is read.
+    Two requests of one conversation in flight together (a title asked
+    beside the body, a subagent) each read the record from the same last
+    reading, so the earlier turn's share can be counted in both; Trae's own
+    totals stay right, and reads are not serialized because a turn would
+    then wait behind another's read.
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,
@@ -268,11 +303,25 @@ body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
 put them under `user_message_context.model_info`, and an enterprise seat got
 4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
 config, where Trae's list doesn't carry it, sent no `model_name`, and got
-4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
-the model, the functions tried and the host, and says when the account's
-list doesn't have the model. Context is the list's `context_window_tokens.dev`,
-output the `__dev` model's `max_tokens` (an enterprise model's own detail's,
-since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
+4023 "something went wrong") — **not verified with a real enterprise seat**.
+An enterprise model whose `config_name` a Trae preset has too (Trae CN lists
+`kimi-k3.1-pro` as both, the tenant's one on `aliyuncs`) is listed as
+`<provider>//<config_name>`, as the enterprise console writes it
+(`aliyuncs//kimi-k3.1-pro`), and is still asked by its bare `config_name`
+with `config_source` 2; the preset keeps the bare id. Before 0.2.59 both
+went under the bare id, the preset's entry won, and the enterprise model
+couldn't be asked (#1605). An enterprise model no preset shares a name with
+keeps its `config_name` as its id, and answers to `<provider>//<config_name>`
+too. A refused chat's error names
+the model, the functions tried and the host, says when the account's
+list doesn't have the model, and names a preset's enterprise twin. Context is the list's
+`context_window_tokens.max` for a model measured to serve a prompt past its
+`dev` budget on the base entry (yetone/magpie#5809 and the measurements in
+its follow-up, all on Trae CN; the models are listed in `WIDENED`, and
+Trae Global's keep `dev`), else `dev`; `dev` is
+the budget Trae's own agent asks with, and on a model with that evidence a
+request past it is served rather than refused. Output the `__dev` model's
+`max_tokens` (an enterprise model's own detail's, since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
 held to it and it sent when the agent names none, as Trae's own client
 sends the model's `max_tokens` with each model: asked with none, an
 enterprise seat's replies stopped at exactly 2000 output tokens (0.2.43).
@@ -283,7 +332,54 @@ CN 3.4.22's own agent task puts it — read from the binary, **not verified
 with a real enterprise seat**. A reply Trae ends with "stop" (or no reason)
 after using every token it was let have — the `max_tokens` sent, or 2000
 for an enterprise model — ends with `finish_reason: "length"`, so an agent
-knows it was cut. A model with a `__max` model and
+knows it was cut. Trae's `completion_tokens` count the reasoning, which
+`max_tokens` doesn't bound, so since 0.2.54 a reply is taken as cut at
+`max_tokens` only when the count is that limit exactly or what it said past
+its reasoning reached it (plugins#1503: GLM-5.3's whole "OK" to
+`max_tokens` 16, 55 tokens of them 52 reasoning, went out as `length`). Since 0.2.48 a tool call such a reply was cut in (its
+arguments not whole JSON) is not sent as a call: the reply ends with
+`length` and the text before the call (plugins#1366, a call cut at 2000
+went out as `tool_calls` and the agent stopped on it). A whole call in a
+cut reply goes out as a call; a stream holds back only a call whose
+arguments aren't whole until it ends. Trae CN 3.4.22's own llm_utils_chat
+requests carry no field that lifts the 2000, so since 0.2.49 an
+enterprise model's reply that Trae cut at exactly 2000 with text written
+and no whole call is asked on: the same request, session and function
+again, the text so far as the assistant's turn and a short ask to go on
+where it stopped after it, with what is left of the agent's limit as
+`max_tokens`. The answers go out as one reply, in a body or a stream, its
+usage summed, its end the last answer's. A cut call is left out and the
+next answer writes it. Asking stops at a whole call, at the agent's limit,
+after 16 answers, or when a next ask fails (the reply then ends cut, with
+`length`). A cut reply with only reasoning, or a call with nothing written
+before it, is not asked on. Since 0.2.50 a later answer that Trae cut in
+the model's reasoning or in a call, with no text of its own, is asked on
+too, from the text the earlier answers wrote (a reasoning model asked to go
+on reasons again first, and its round 2 was 7683 characters of reasoning
+cut at 2000), up to 3 such answers in a row. While a next ask waits, the
+stream is sent an SSE comment (`: keepalive`) after 2 seconds with nothing
+sent, so the agent doesn't take the pause for a dead stream; with
+`MAGPIE_TRAE_DEBUG=1` each next ask's line says its `round=` and
+`wait_ms=`. **Not verified with a real enterprise seat**,
+nor how cleanly a model goes on from where it stopped.
+
+Since 0.2.53 an enterprise custom model whose detail carries a usable
+`custom_config` (provider `custom_openai_compatible`, `status` true,
+`auth_type` 0, an `ak`, and a `base_url` ending in `/chat/completions`) is
+not asked through `llm_utils_chat` at all: its chat goes straight to that
+`base_url`, as Trae CN 3.4.22's own client sends it (plugins#1366, the
+reporter's captures: 8274 and 12182 output tokens with `stop` on the
+same model that `llm_utils_chat` cuts at 2000). The request carries
+`Authorization: Bearer <ak>`, `X-Model-Provider`, `User-Agent: hertz`,
+the detail's `model_name` as `model`, the agent's `max_tokens` held to the
+detail's (the detail's when none is asked), the messages and tools as the
+agent sent them, and is always a stream with its usage; tool calls come
+back in OpenAI form. If the endpoint isn't reached, answers an error
+status, isn't a stream or a completion, or fails before writing anything,
+the request goes through `llm_utils_chat` as before; a 401 or 403 there
+keeps that model on `llm_utils_chat` until its list gives another `ak`.
+Any other `auth_type`, or a field missing, is `llm_utils_chat` too.
+**Not tried on a real enterprise seat.** A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3
@@ -401,7 +497,30 @@ IDE may therefore ask you to sign in again after magpie renews.
 | --- | --- |
 | 401 / code 1001 (both), 20101 (Global) | 401, and the account is marked for a new sign-in |
 | code 4008 / 1005 (quota, plan; both), 4011 (Global) | 429 |
+| code 1005 naming a plan (`extra` `{"plan":2}`), from any function | 403 "the model is not available to this account's plan", naming the plan, the model and the functions tried |
 | Anything else | Trae's message and code, as a 502 or Trae's own status |
+
+### Seeing what is sent
+
+Start magpie with `MAGPIE_TRAE_DEBUG=1` in its environment and each chat
+request writes two or three lines to magpie's log (`app.log`, and the
+terminal or `docker logs` when magpie runs as `magpie serve`):
+
+- `trae debug: request <id> POST <url> <body>`: the body the plugin sends
+  Trae's `llm_utils_chat`, `max_tokens` and `enterprise_custom_hyper_params`
+  included. Each message is only its role and length, each tool only its
+  name; the headers, which carry the sign-in, are never written.
+- `trae debug: request <id> answered <status> <content-type>`.
+- `trae debug: reply <id> trae_finish=… usage=… calls=… finish_sent=…`: the
+  finish Trae gave (`""` is Trae's "stop" or none), its usage, the calls
+  Trae gave, `cut_calls=N` when N of them were cut and not sent, and the
+  finish the agent was sent.
+
+An enterprise model asked at its own endpoint (0.2.53) writes
+`trae debug: request <id> POST <base_url> direct ak_chars=<n> <body>`: the
+`ak`'s length only, never the `ak`. Any other request goes to Trae, whose
+cloud asks the enterprise model's gateway, so that body is not in magpie's
+log.
 
 ## Usage
 
@@ -418,7 +537,12 @@ page the realm bills on:
   WorkBuddy's.
 
 **Trae CN, an enterprise (SaaS) account** — Trae's enterprise console, which
-bills in yuan rather than in the credits the consumer page counts:
+bills in yuan rather than in the credits the consumer page counts. The
+console's callback names its host bare (`console.enterprise.trae.cn`);
+since 0.2.54 that is read as https, and an enterprise sign-in that names no
+usable host keeps its console. A seat kept with no host before then (its
+token's scope is `saas`, at its top or, since 0.2.55, under `data`) is read
+as its console's with no new sign-in (plugins#1516):
 
 - **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
   for the allowance and `…/get_user_model_usage` for the spend, both POST

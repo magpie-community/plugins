@@ -15,6 +15,16 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-agy-state-"))
 const originalAutoUpdate = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
 delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE
 delete process.env.AGY_BRIDGE_MINIMAL_AGENT
+// Every ban-risk warning the bridge prints, from the first import on: none
+// while AGY_BRIDGE_MINIMAL_AGENT is off, one in the process once it is on.
+const minimalWarnings = []
+{
+  const write = process.stderr.write
+  process.stderr.write = function (chunk, ...args) {
+    if (String(chunk).includes('"event":"agy_bridge_warning"') && String(chunk).includes("AGY_BRIDGE_MINIMAL_AGENT")) minimalWarnings.push(String(chunk))
+    return write.call(this, chunk, ...args)
+  }
+}
 process.env.FAKE_AGY_LOG = logPath
 process.env.FAKE_AGY_STATE = stateDir
 const bridgeStateFile = path.join(stateDir, "bridge-sessions.json")
@@ -399,13 +409,16 @@ async function prompt(params) {
     chunk("After tool search.\n")
     return finish("After tool search.\n")
   }
-  if (text.includes("TOOLSEARCHGROW")) {
+  if (text.includes("TOOLSEARCHGROW") || text.includes("can be called now: loaded_tool")) {
     // Like agy 1.5.3: a call is checked against the tools listed before this
     // prompt began; a tools/list_changed during the prompt does not reach it.
     const known = new Set(tools.map(tool => tool.name))
-    if (!text.includes("<conversation_history>")) {
+    if (text.includes("TOOLSEARCHGROW") && !text.includes("<conversation_history>")) {
       const result = await invoke("ToolSearch", { query: "select:loaded_tool" })
       if (result?.isError) return finish("ToolSearch failed")
+      // the bridge ended this step after the result: agy stops before its
+      // next model call
+      if (activePromptScope?.cancelled) return finish("")
     }
     if (!known.has("loaded_tool")) {
       log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
@@ -728,7 +741,9 @@ const legacyModel = "agy-cli/gemini-test-low"
   const pw = usage.windows?.find(w => !w.model)
   check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
   check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
+  check("auth.usage sets the pools' windows aside, its models' not, and keeps bridge auth", usage.windows?.every(w => (w.aside === true) === !w.model) && usage.signIn === "kept")
+  // agy -p /usage (checked below) names no account or plan; only a direct
+  // read does
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
@@ -939,6 +954,13 @@ async function launchedModel(body) {
   check("high thinking budget selects high", await launchedModel({ model, thinking: { type: "enabled", budget_tokens: 24000 }, messages: [{ role: "user", content: "MODEL high effort" }] }) === "gemini-test-high")
   check("output effort without thinking keeps the default", await launchedModel({ model, output_config: { effort: "low" }, messages: [{ role: "user", content: "MODEL title request" }] }) === "gemini-test-high")
   check("legacy effort ids pass through unchanged", await launchedModel({ model: legacyModel, thinking: { type: "enabled", budget_tokens: 10000 }, messages: [{ role: "user", content: "MODEL legacy id" }] }) === "gemini-test-low")
+  // plugins#1540: magpie says the client's effort in X-Magpie-Effort; its
+  // Anthropic body has only a budget held under max_tokens, or no thinking.
+  const told = async (effort, body) => { await readSSE(await callFetch(body, { "X-Magpie-Effort": effort })); return lastOf("user")?.model }
+  check("magpie's effort header beats a thinking budget held under max_tokens", await told("high", { model, thinking: { type: "enabled", budget_tokens: 3000 }, messages: [{ role: "user", content: "MODEL told high" }] }) === "gemini-test-high")
+  check("magpie's effort header counts with no thinking in the body", await told("low", { model, messages: [{ role: "user", content: "MODEL told low" }] }) === "gemini-test-low")
+  check("a level in an alias's id beats one guessed from a thinking budget", await launchedModel({ model: "agy-cli/gemini-3.5-pro-medium", thinking: { type: "enabled", budget_tokens: 30000 }, messages: [{ role: "user", content: "MODEL alias medium" }] }) === "gemini-test-medium")
+  check("thinking turned off still beats magpie's effort header", await told("low", { model, thinking: { type: "disabled" }, messages: [{ role: "user", content: "MODEL told off" }] }) === "gemini-test-high")
   check("single-effort model requests pass through unchanged", await launchedModel({ model: "agy-cli/claude-test-medium", thinking: { type: "enabled", budget_tokens: 4096 }, messages: [{ role: "user", content: "MODEL singleton" }] }) === "claude-test-medium")
   check("modern sessions select models and levels through ACP config options", logs().some(event => event.type === "setConfig" && event.configId === "model") && logs().some(event => event.type === "setConfig" && event.configId === "thought_level" && event.value === "low"))
   const offered = await plugin.provider.models()
@@ -1092,11 +1114,19 @@ async function launchedModel(body) {
   check("UTF-8 split inside a code point preserves text", textOf(events).includes("中文😀"), textOf(events))
 }
 
+// a project folder of its own: os.tmpdir() holds HOME where HOME is a
+// mktemp folder (CI's), and a folder above home is never added (plugins#1405)
+const project = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smoke-project-"))
 for (const [name, system, headers, expectedDir, named] of [
-  ["local prompt", `Working directory: ${os.tmpdir()}`, {}, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["local prompt", `Working directory: ${project}`, {}, path.resolve(project), project],
   ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
-  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(os.tmpdir()) }, path.resolve(os.tmpdir()), os.tmpdir()],
+  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(project) }, path.resolve(project), project],
   ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
+  // plugins#1405 (Danco): the home folder is told, never added
+  ["home folder prompt", `Working directory: ${os.homedir()}`, {}, null, os.homedir()],
+  // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
+  // sentence after the closing quote
+  ["quoted prompt ending a sentence", `Current working directory: "${project}".`, {}, path.resolve(project), project],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events
@@ -2171,7 +2201,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const convId = inits().at(-1).convId
   const before = inits().length
   const second = continuation(first, events, [
-    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANAAAA" } },
   ])
   second.messages.at(-1).content.push(
     { type: "text", text: "[Image: original 3423x1834, displayed at 2000x1072. Multiply coordinates by 1.71 to map to original image.]" },
@@ -2191,7 +2221,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     !content.some(part => part.type === "image") &&
     content.some(part => part.text === IMAGE_FOLLOWS) &&
     steer.convId === convId &&
-    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANAAAA") &&
     steer.text.includes("Multiply coordinates by 1.71") &&
     steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
 
@@ -2202,7 +2232,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const readBefore = inits().length
   const readSecond = continuation(readFirst, readEvents, [
     { type: "text", text: "Image read successfully" },
-    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4AAQSkZJRgABcmVhZGltYWdl" } },
   ])
   const readResponse = await callFetch(readSecond)
   const readFinal = (await readSSE(readResponse)).events
@@ -2212,7 +2242,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
     JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
     readSteer.convId === readConv && readSteer.images === 1 &&
-    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    readSteer.content.some(part => part.type === "image" && part.data === "/9j/4AAQSkZJRgABcmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
     !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
   // Claude Code's Read of a PDF: the tool_result holds the file as a base64
@@ -2256,7 +2286,9 @@ for (const location of ["inline", "system", "developer", "user"]) {
 
 {
   // #942: a tool ToolSearch loads mid-turn is unknown to agy for the rest of
-  // that prompt, so the bridge replays the round in a new session/prompt.
+  // that prompt. plugins#1371 (_paper_hands on X): the bridge ends that step
+  // and goes on in a new session/prompt of the same session, which starts
+  // after agy has listed the grown catalog; no new session, no replay.
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const loadedTool = { name: "loaded_tool", description: "Loaded by ToolSearch", input_schema: { type: "object", properties: { text: { type: "string" } } } }
   const ask = "TOOLSEARCHGROW load a deferred tool"
@@ -2264,16 +2296,23 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const events = (await readSSE(await callFetch(first))).events
   const old = inits().at(-1)
   const before = inits().length
+  const opened = lastOf("user")
   const second = continuation(first, events, [{ type: "tool_reference", tool_name: "loaded_tool" }])
   second.tools = [searchTool, loadedTool]
   const secondRes = await callFetch(second)
   const secondEvents = (await readSSE(secondRes)).events
-  const replay = lastOf("user")
-  check("a tool loaded mid-turn starts a new session/prompt",
-    secondRes.status === 200 && inits().length === before + 1 && replay.convId !== old.convId, `got ${secondRes.status}`)
-  check("the new prompt replays the ToolSearch round and sends the user's turn once",
-    replay.text.includes("<conversation_history>") && replay.text.includes("Loaded tool: loaded_tool") &&
-    replay.text.split(ask).length === 2, replay.text)
+  const next = lastOf("user")
+  check("a tool loaded mid-turn keeps the session and starts its next prompt",
+    secondRes.status === 200 && inits().length === before && next.convId === old.convId && opened.convId === old.convId &&
+    next.prompt === opened.prompt + 1,
+    `got ${secondRes.status} inits ${inits().length - before} prompt ${next.prompt}`)
+  check("the next prompt names the loaded tool and replays nothing",
+    next.text.includes("can be called now: loaded_tool") && !next.text.includes("<conversation_history>") &&
+    !next.text.includes(ask), next.text)
+  check("the ToolSearch result reached agy in the first prompt",
+    mcpResultText(old.convId).includes("Loaded tool: loaded_tool"))
+  check("agy listed the grown catalog before the next prompt",
+    logs().some(event => event.type === "toolsList" && event.convId === old.convId && event.tools.includes("loaded_tool")))
   check("no call to the loaded tool reaches agy's validator in the old prompt",
     !logs().some(event => event.type === "unknownTool"))
   const calls = toolCalls(secondEvents)
@@ -2282,11 +2321,16 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const third = continuation(second, secondEvents, "loaded-tool-result")
   const thirdRes = await callFetch(third)
   const final = (await readSSE(thirdRes)).events
-  const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === replay.convId).at(-1)
-  check("the loaded tool's result continues the new session with no second replay",
-    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before + 1 &&
-    lastOf("user").convId === replay.convId && delivered?.name === "loaded_tool" &&
+  const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === old.convId).at(-1)
+  check("the loaded tool's result continues the same session",
+    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
+    lastOf("user").convId === old.convId && delivered?.name === "loaded_tool" &&
     delivered?.result?.content?.[0]?.text === "loaded-tool-result")
+  const after = nextTurn(third, final, "MEMORY after the loaded tool")
+  const afterRes = await callFetch(after)
+  await readSSE(afterRes)
+  check("the next user turn stays in the same session",
+    afterRes.status === 200 && inits().length === before && lastOf("user").convId === old.convId)
 }
 
 {
@@ -2354,7 +2398,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
         role: "user",
         content: [
           { type: "text", text: "Hello token counter 中文" },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(4000) } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAAN" + "A".repeat(3984) } },
         ],
       }],
     }),
@@ -2690,7 +2734,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
       { type: "text", text: "look at this" },
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "cmVwbGF5aW1hZ2U=" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2702,7 +2746,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       imgReplay.text.includes("look at this") &&
       !imgReplay.text.includes("MIXED_IMAGE_RESULT") && mcpResultText(imgOld).includes("MIXED_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "cmVwbGF5aW1hZ2U="),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U="),
       `status=${imgRes.status}`)
   }
 
@@ -2715,7 +2759,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgSecond = continuation(imgFirst, imgEvents, "ONLY_IMAGE_RESULT")
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
-      { type: "image", source: { type: "base64", media_type: "image/png", data: "b25seWltYWdl" } },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANb25seWltYWdl" } },
       resultBlock,
     ]
     const imgRes = await callFetch(imgSecond)
@@ -2726,7 +2770,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
       imgReplay.convId === imgOld && inits().length === imgBefore &&
       !imgReplay.text.includes("ONLY_IMAGE_RESULT") && mcpResultText(imgOld).includes("ONLY_IMAGE_RESULT") &&
-      imgReplay.content.some(part => part.type === "image" && part.data === "b25seWltYWdl"),
+      imgReplay.content.some(part => part.type === "image" && part.data === "iVBORw0KGgoAAAANb25seWltYWdl"),
       `status=${imgRes.status}`)
   }
 
@@ -2868,12 +2912,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
 {
   const first = { model, messages: [{ role: 'user', content: 'ESCCALL replay tool image regression' }], tools: [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
-  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cmVwbGF5aW1hZ2U=' } }])
+  const second = continuation(first, events, [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U=' } }])
   second.messages.at(-1).content.push({ type: 'text', text: 'The user sent a new message while you were working:\nInspect that returned image' })
   const response = await callFetch(second)
   if (response.status === 200) await readSSE(response)
   else await response.text()
-  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'cmVwbGF5aW1hZ2U='))
+  check('fresh replay retains image bytes inside a tool_result', response.status === 200 && lastOf('user').content.some(part => part.type === 'image' && part.data === 'iVBORw0KGgoAAAANcmVwbGF5aW1hZ2U='))
   if (response.status !== 200) await drive(first, events, 'cleanup replay image')
 }
 
@@ -3103,16 +3147,24 @@ for (const location of ["inline", "system", "developer", "user"]) {
 
 {
   // AGY_BRIDGE_MINIMAL_AGENT=1 drops agy's own prompt components, for a session started after it is set.
+  check("no ban-risk warning while AGY_BRIDGE_MINIMAL_AGENT is off", minimalWarnings.length === 0, minimalWarnings.join(""))
   const before = inits().length
   process.env.AGY_BRIDGE_MINIMAL_AGENT = "1"
   try {
-    const response = await callFetch({ model, messages: [{ role: "user", content: "minimal agent opt-in " + Date.now() }] })
-    await readSSE(response)
+    // two sessions: the warning is still printed once (limengy88811922 on X)
+    for (const n of [1, 2]) {
+      const response = await callFetch({ model, messages: [{ role: "user", content: `minimal agent opt-in ${n} ` + Date.now() }] })
+      await readSSE(response)
+    }
   } finally {
     delete process.env.AGY_BRIDGE_MINIMAL_AGENT
   }
+  const minimal = inits().slice(before).filter(event => event.agentConfig?.includes("excludeDefaultComponents: true"))
   const init = inits().slice(before).at(-1)
   check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
+  check("AGY_BRIDGE_MINIMAL_AGENT=1 prints its ban-risk warning once for two sessions", minimal.length >= 2 && minimalWarnings.length === 1
+    && /no longer look like the official agy client's/.test(minimalWarnings[0]) && /banned/.test(minimalWarnings[0]) && /Not recommended/.test(minimalWarnings[0]),
+    `${minimal.length} minimal sessions; ${minimalWarnings.join("")}`)
 }
 
 {
@@ -3130,6 +3182,7 @@ else process.env.AGY_CLI_DISABLE_AUTO_UPDATE = originalAutoUpdate
 
 try { fs.rmSync(here, { recursive: true, force: true }) } catch {}
 try { fs.rmSync(stateDir, { recursive: true, force: true }) } catch {}
+try { fs.rmSync(project, { recursive: true, force: true }) } catch {}
 
 console.log(failures === 0 ? `\nALL OK (${checks} checks)` : `\n${failures} FAILURES (${checks} checks)`)
 process.exit(failures === 0 ? 0 : 1)

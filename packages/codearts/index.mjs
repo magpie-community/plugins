@@ -235,6 +235,9 @@ const DISABLE_THINKING = { type: "disabled" }
 // (or `disabled`) means the same thing.
 const NO_THINKING = new Set(["none", "off", "disabled"])
 
+/** GLM models: the ones whose tool-call arguments stream only when `tool_stream` is asked for. */
+const GLM_MODEL = /^glm-/i
+
 // The reasoning levels each model takes, measured 2026-11-04 against the
 // gateway (the account of the report that opened this): a level the model does
 // not take is a 400
@@ -330,13 +333,24 @@ const CATALOG = [
   { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
 ]
 
-// Every model listed takes text alone: the vision ones (`-vl`) are left out
-// (parseModelInfo), and the rest answer an image with
+// CodeArts' agent kernel (0.2.9, measured 2026-11-23) declares these five in
+// its `multimodalModels` init config. The kernel sends the image to the same
+// `/api/v2/chat/completions` endpoint as a data URL, and all five answered one
+// on a real account. Every other model is text-only: the vision ones (`-vl`)
+// are left out (parseModelInfo), and the rest answer an image with
 // `InferHub.001001020.406` "The request model is not multimodal". Said in so
 // many words (`image: false`, not left out, which magpie reads as unknown),
-// so magpie describes an image for the model or leaves it out, and an agent
-// is told it takes none.
+// so magpie describes an image for a text-only model or leaves it out, and an
+// agent is told it takes none.
 const TEXT_ONLY = { input: { text: true, image: false, audio: false, video: false, pdf: false } }
+const MULTIMODAL = new Set([
+  "deepseek-v4.1-flash-1017",
+  "glm-5.3-flash",
+  "deepseek-v4.1-flash",
+  "kimi-k3.1-pro",
+  "kimi-k3",
+])
+const isMultimodal = (id) => MULTIMODAL.has(String(id ?? "").toLowerCase())
 
 // ---- small helpers ---------------------------------------------------------
 
@@ -1100,13 +1114,25 @@ function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {})
   }
   const injected = thinking && spoken === "" && body.thinking === undefined
   if (injected) body.thinking = ENABLE_THINKING
+  // GLM holds a tool call's arguments back until the whole call is written
+  // and then sends them in one chunk: nothing reaches the gateway meanwhile,
+  // and its 60 s idle timeout cuts the reply off ("connection lost mid-reply",
+  // ECONNRESET) once a call takes longer than that to write. Measured
+  // 2026-11-25 on glm-5.3-flash with one write_file tool: 300 lines went
+  // silent 25 s and came as 2 frames; 600 lines were cut at the 60 s mark.
+  // GLM's own `tool_stream` streams the arguments as they are written
+  // (300 lines: 2247 frames, first at 5.8 s; 600 lines with 57 tools and a
+  // 60k-character system prompt: 71 s, 4893 frames, finish tool_calls).
+  const toolStream = GLM_MODEL.test(String(body.model ?? "")) &&
+    Array.isArray(body.tools) && body.tools.length > 0 && body.tool_stream === undefined
+  if (toolStream) body.tool_stream = true
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
   normalizeStop(body, station)
   const fold = body.stream !== true
   body.stream = true
-  return { body, fold, injected, names }
+  return { body, fold, injected, names, toolStream }
 }
 
 /**
@@ -1373,9 +1399,25 @@ function isBodyTooLarge(text) {
   return /body too large/i.test(String(text ?? ""))
 }
 
-function bodyTooLargeResponse(bytes, code = "") {
+function bodyTooLargeResponse(bytes, code = "", limit = 12) {
   const mb = (bytes / (1024 * 1024)).toFixed(1)
-  return errorResponse(413, code, `CodeArts 网关只接受 12 MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话，或去掉较大的图片后再试`)
+  return errorResponse(413, code, `CodeArts 网关只接受 ${limit} MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话、压缩上下文，或去掉较大的图片后再试`)
+}
+
+/**
+ * Past APIG, InferHub takes a chat of about 10 MB at most. A larger one is
+ * answered `InferHub.001001005.400` "The request param is invalid", the
+ * same code a bad parameter gets, on every account and every try (Discord,
+ * 2026-11-25: a 449-message session with 23 images, 9.36 MB answered and
+ * 10.03 MB refused, sent straight to the gateway). That code on a body this
+ * large is the size, so it is said as the size: a 413, never a retry, a
+ * renewal or a fault of the account. A smaller body's 001001005 is left as
+ * the gateway's own words.
+ */
+const INFERHUB_BODY_LIMIT = 10 * 1000 * 1000
+
+function isOverInferHubLimit(bytes, codeOrText) {
+  return bytes > INFERHUB_BODY_LIMIT && /InferHub\.001001005\b/.test(String(codeOrText ?? ""))
 }
 
 /** A 401/400 that only means the temporary AK/SK/security-token went stale. */
@@ -1965,6 +2007,7 @@ async function signedFetch(cred, input, init, context) {
       }
 
       if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, code)
+      if (isOverInferHubLimit(body.length, code || text)) return bodyTooLargeResponse(body.length, code, 10)
       if (res.status === 401 || isStaleCredential(text)) {
         if (!renewed && context.renewCredential) {
           renewed = true
@@ -1983,6 +2026,14 @@ async function signedFetch(cred, input, init, context) {
       if (res.status === 400 && chat.injected && /thinking/i.test(text)) {
         chat.injected = false
         delete chat.body.thinking
+        body = utf8(JSON.stringify(chat.body))
+        continue
+      }
+      // `tool_stream` is the plugin's own too: a model that refuses it gets
+      // the request without it (its arguments then come in one piece).
+      if (res.status === 400 && chat.toolStream && /tool_stream/i.test(text)) {
+        chat.toolStream = false
+        delete chat.body.tool_stream
         body = utf8(JSON.stringify(chat.body))
         continue
       }
@@ -3213,15 +3264,19 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
   // The ledger's key: the signer, which outlives a sign-in; else the session.
   const ledgerKey = async (cred) => accountIdentityOf(cred).id || (await accountSessionIds(cred)).sessionId
 
-  const configModel = (m) => ({
-    name: m.name ?? m.id,
-    // Declared so a caller never sends its own, larger default.
-    limit: { context: m.context ?? 0, output: MAX_OUTPUT_TOKENS },
-    tool_call: true,
-    // Text only (TEXT_ONLY): said, not left out, so an agent sends no image.
-    attachment: false,
-    modalities: { input: ["text"], output: ["text"] },
-  })
+  const configModel = (m) => {
+    const sees = isMultimodal(m.id)
+    return {
+      name: m.name ?? m.id,
+      // Declared so a caller never sends its own, larger default.
+      limit: { context: m.context ?? 0, output: MAX_OUTPUT_TOKENS },
+      tool_call: true,
+      // Said either way, never left out: magpie reads a missing input.image as
+      // unknown and falls back to models.dev's vote for a same-named model.
+      attachment: sees,
+      modalities: { input: sees ? ["text", "image"] : ["text"], output: ["text"] },
+    }
+  }
 
   /**
    * The reasoning levels a host is told about.
@@ -3243,12 +3298,14 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
 
   const modelOf = (provider, live, state) => {
     const base = provider.models?.[live.id] ?? {}
+    const sees = isMultimodal(live.id)
     const capabilities = {
-      temperature: true, toolcall: true, output: { text: true }, attachment: false,
+      temperature: true, toolcall: true, output: { text: true }, attachment: sees,
       ...(base.capabilities ?? {}),
       ...(live.reasoning ? { reasoning: true } : {}),
-      // what the user's own config says of a kind stands; the rest is text only
-      input: { ...TEXT_ONLY.input, ...(base.capabilities?.input ?? {}) },
+      // what the user's own config says of a kind stands; the known multimodal
+      // set and TEXT_ONLY fill the rest
+      input: { ...TEXT_ONLY.input, ...(sees ? { image: true } : {}), ...(base.capabilities?.input ?? {}) },
     }
     // magpie's own fields: `free` (from the free daily pool, the same answer
     // the signed `maas_type: benefit` header follows, so a model never shows

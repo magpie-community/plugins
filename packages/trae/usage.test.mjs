@@ -104,7 +104,7 @@ test("the lists are asked in one batch, as TRAE SOLO CN asks them, and DeepSeek 
   expect(live["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1000000, output: 128000 })
   const m = live["deepseek-v4.1-flash"]
   expect(m.name).toBe("DeepSeek-V4.1-Flash")
-  expect(m.limit).toEqual({ context: 200000, output: 64000 })
+  expect(m.limit).toEqual({ context: 1000000, output: 64000 })
   expect(live["glm-5.2"].limit).toEqual({ context: 200000, output: 32000 })
   const opts = await hooks.auth.loader(async () => signedIn())
   const ask = async (model) => {
@@ -321,7 +321,7 @@ test("a model whose lists mostly name it alike keeps that name, its limit and it
   const p = await given(hooks)
   const live = await hooks.provider.models(p, { auth: signedIn() })
   expect(live["deepseek-v4.1-flash"].name).toBe("DeepSeek-V4.1-Flash")
-  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 200000, output: 32000 })
+  expect(live["deepseek-v4.1-flash"].limit).toEqual({ context: 1000000, output: 32000 })
   expect(live["deepseek-v4.1-flash-max"].name).toBe("DeepSeek-V4.1-Flash (Max)")
   const opts = await hooks.auth.loader(async () => signedIn())
   const ask = async (model) => {

@@ -768,11 +768,11 @@ function screenshotHistory(data) {
 }
 
 test("historyKey keys a tool_result image by its hash, not its bytes", () => {
-  const data = "A".repeat(200_000)
+  const data = "iVBORw0KGgoAAAAN" + "A".repeat(200_000)
   const key = historyKey(screenshotHistory(data))
   assert.ok(key.length < 2_000, `key is ${key.length} chars`)
   assert.ok(!key.includes("AAAAAAAAAAAAAAAA"))
-  assert.notEqual(key, historyKey(screenshotHistory("B".repeat(200_000))))
+  assert.notEqual(key, historyKey(screenshotHistory("iVBORw0KGgoAAAAN" + "B".repeat(200_000))))
   assert.equal(key, historyKey(screenshotHistory(data)))
 })
 

@@ -980,24 +980,48 @@ async function toClaim(s) {
   return { plans, unread, rate: null }
 }
 
-// RECHECK is how long an "nothing to claim" stands before magpie's loop
-// asks again: ZCode drops gift plans into the feed during the day (a
-// weekend banner, say) on its own schedule, and the day's ask
-// may have run hours before, so an inactive settled for the day lets a
-// plan sit unclaimed past its short life (the weekend plan of
-// testdata/touch-1030-wk.json starts 19:00 Beijing). `until` wakes the
-// loop again in half an hour, and it asks again all day while neither
-// list names a plan — two GETs and no claim posted. The other settled
-// answers stand for the day: a claimed plan leaves the feed, so asking
-// a claimed account again half an hour later finds nothing and flips
-// its card from "Checked in today" to "No check-in event now"; a
-// captcha plan re-asked makes ZCode demand its captcha again each time,
-// and a done plan re-asked posts a claim it already answered 1003. The
-// same shape as Qoder's campaign that opens mid-day, asked again on
-// magpie's side there (yetone/magpie#2696). A failed needs no until:
-// magpie asks a failed again after 30 minutes of its own.
+// RECHECK is how long an answer that leaves the day open stands before
+// magpie's loop asks again: ZCode drops gift plans into the feed during
+// the day on its own schedule (the weekend plan of
+// testdata/touch-1030-wk.json starts 19:00 Beijing; @aaron0x10 on X,
+// 11-22: a second one follows at 19:30), and the day's ask may have run
+// hours before, so an answer settled for the day lets a plan sit
+// unclaimed past its short life. `until` wakes the loop again in half an
+// hour, and it asks again all day — one GET each time. That holds after a
+// claim too (claimed, done): the recheck posts only plans this account
+// has no answer for today (dayAnswers), so a plan claimed, answered 1003
+// or held for the captcha is never posted again, and one that has left
+// the feed is still the day's claim — answered done, so the card keeps
+// "Checked in today" instead of flipping to "No check-in event now". A
+// captcha needs no until: magpie leaves it for the day, as it waits on
+// the user. A failed needs none either: magpie asks a failed again after
+// 30 minutes of its own. The same shape as Qoder's campaign that opens
+// mid-day, asked again on magpie's side there (yetone/magpie#2696).
 const RECHECK_MS = 30 * 60_000
 const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
+
+// dayAnswers is what each account's plans answered today (Beijing):
+// holdKey -> { day, plans: Map(plan_id -> { name, outcome }) }, for the
+// answers that settle a plan for the day — claimed, done (1003) and
+// captcha (3007). A recheck posts only plans not in it, so none of those
+// is asked again; an ineligible or failed one is not kept, and is asked
+// again. It lives in this process's memory: a magpie restart forgets it,
+// and the next check-in posts a plan still in the feed once more (1003,
+// done, as before).
+const dayAnswers = new Map()
+const SETTLES = new Set(["claimed", "done", "captcha"])
+const uniq = (xs) => [...new Set(xs)]
+const beijingDay = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+function answersToday(s) {
+  const k = holdKey(s), day = beijingDay()
+  let a = dayAnswers.get(k)
+  if (!a || a.day !== day) dayAnswers.set(k, (a = { day, plans: new Map() }))
+  return a.plans
+}
+// resetDayAnswers is for tests: it forgets every account's answers today.
+export function resetDayAnswers() {
+  dayAnswers.clear()
+}
 
 // claimDaily claims every gift plan ZCode offers the account (#503:
 // toClaim, the app's banners and its preview), as auth.checkin's answer:
@@ -1016,9 +1040,10 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // v0.1.3165 honors a failed's `until` itself; older versions wait for
 // this hold, which is why it stays.
 // A failed one is asked again later in the
-// day, when a plan claimed now answers 1003. An inactive stands only
-// until RECHECK_MS from now, so a plan dropped into the feed later in
-// the day is still claimed; the other settled answers stand for the day
+// day. An inactive, ineligible, claimed or done stands only until
+// RECHECK_MS from now, so a plan dropped into the feed later in the day
+// is still claimed; a plan answered today (dayAnswers) is not posted
+// again, and after the day's claim an ask that finds nothing new is done
 // (see RECHECK).
 // Nothing here marks the account: a failed claim keeps its sign-in.
 async function claimDaily(s) {
@@ -1035,14 +1060,23 @@ async function claimDaily(s) {
     const message = unread.join("; ") || "ZCode rate limited this account"
     return { outcome: "failed", message, until: noteRateLimit(holdKey(s), rate, message) }
   }
+  // the plans this account answered for already today: never posted again
+  const today = answersToday(s)
+  const checkedToday = () => [...today.values()].filter((a) => a.outcome === "claimed" || a.outcome === "done").map((a) => a.name)
+  const fresh = plans.filter((p) => !today.has(p.plan_id))
   // the feed answered and no claim is read: the wait is over. It is not
   // forgotten before the claims below, so a claim ZCode keeps limiting
   // waits longer each time (see noteRateLimit)
-  if (!plans.length) {
+  if (!fresh.length) {
     rateWait.delete(holdKey(s))
-    return unread.length
-      ? { outcome: "failed", message: unread.join("; ") }
-      : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+    if (unread.length) return { outcome: "failed", message: unread.join("; ") }
+    // nothing new since the day's claim: still checked in today, and
+    // looked at again half an hour out (see RECHECK)
+    const had = checkedToday()
+    if (had.length) return { outcome: "done", message: `already claimed: ${uniq(had).join(", ")}`, until: recheck() }
+    // only plans held for the captcha, still listed: named again, not posted
+    if (plans.length) return { outcome: "captcha", message: plans.map((p) => `${p.name}: claim it in the ZCode app (${today.get(p.plan_id).why})`).join("; ") }
+    return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
   }
   // a claim ZCode guards with its security check is not posted: the app
   // passes it before each claim and sends the proof in a header, which
@@ -1059,11 +1093,15 @@ async function claimDaily(s) {
   }
   if (guarded !== false) {
     rateWait.delete(holdKey(s))
-    if (guarded === null) return { outcome: "failed", message: [...plans.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
-    return { outcome: "captcha", message: plans.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
+    if (guarded === null) return { outcome: "failed", message: [...fresh.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
+    return { outcome: "captcha", message: fresh.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
   }
   const got = []
-  for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
+  for (const p of fresh) {
+    const g = { name: p.name, ...(await claimOne(s, p.plan_id)) }
+    if (SETTLES.has(g.outcome)) today.set(p.plan_id, { name: p.name, outcome: g.outcome, why: g.why })
+    got.push(g)
+  }
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
   const claimed = named("claimed")
   const said = [
@@ -1082,12 +1120,16 @@ async function claimDaily(s) {
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
-  if (claimed.length) return { outcome: "claimed", message: said }
+  // claimed and done keep looking for the day's later plans (see RECHECK)
+  if (claimed.length) return { outcome: "claimed", message: said, until: recheck() }
+  const had = checkedToday()
+  const notOffered = got.filter((g) => g.outcome === "ineligible").map((g) => `${g.name}: ${g.why}`)
   // a plan not offered now can be offered later in the day (11-04: an
   // account's GLOBAL BUILD banner showed 28 minutes after it signed in),
-  // so an ineligible is read again half an hour out, as an inactive is
-  if (got.some((g) => g.outcome === "ineligible")) return { outcome: "ineligible", message: said, until: recheck() }
-  return { outcome: "done", message: `already claimed: ${named("done").join(", ")}` }
+  // so an ineligible is read again half an hour out, as an inactive is;
+  // after the day's claim the card stays checked in
+  if (!had.length) return { outcome: "ineligible", message: said, until: recheck() }
+  return { outcome: "done", message: [`already claimed: ${uniq(had).join(", ")}`, ...notOffered].join("; "), until: recheck() }
 }
 
 // GIFT_SIGN_IN is the card's line for an account whose gift plans can't
@@ -1532,6 +1574,7 @@ async function authorize(site, log, onTeam = false) {
           continue // a hiccup: ask again
         }
         const token = site === "bigmodel" ? first(got.bigmodel?.access_token, got.bigmodel?.accessToken) : first(got.zai?.access_token)
+        if (got.status === "ready" && !token) return fail(`${SITES[site].name} sign-in: the poll answered ready without an OAuth access token; sign in again`)
         if (got.status === "pending" || !got.status) continue
         if (got.status === "failed") return fail(`the sign-in was declined on ${SITES[site].name}`)
         if (got.status !== "ready" || !token) return fail("ZCode sign-in: unexpected answer " + got.status)
@@ -2203,7 +2246,8 @@ function narrowed(key) {
   const busy = startGate.lanes.get(key)?.busy ?? 0
   if (busy < 2) return false
   const limit = Math.max(1, Math.min(limitOf(key), busy - 1))
-  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR })
+  // busy is kept to say why, in startQueueAnswer
+  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR, busy })
   return true
 }
 
@@ -2220,19 +2264,23 @@ const startFull = (key) => {
 function startSlot(key, signal, { wait = startGate.wait, front = false } = {}) {
   const lanes = startGate.lanes
   let l = lanes.get(key)
-  if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
+  // held is when each slot taken now was taken, for startQueueAnswer
+  if (!l) lanes.set(key, (l = { busy: 0, queue: [], held: new Set() }))
   const next = () => {
     while (l.busy < limitOf(key) && l.queue.length) l.queue.shift()()
     if (!l.busy && !l.queue.length && lanes.get(key) === l) lanes.delete(key)
   }
   const take = () => {
     l.busy++
+    const at = { at: startGate.now() }
+    l.held.add(at)
     let gone = false
     return {
       release() {
         if (gone) return
         gone = true
         l.busy--
+        l.held.delete(at)
         next()
       },
     }
@@ -2332,21 +2380,53 @@ function released(res, slot, signal) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
 }
 
-// startQueueAnswer is a request that waited its whole turn behind the
-// account's others and was never sent: a 429 magpie reads as a rate limit,
-// so it tries the next account, and a short Retry-After.
-function startQueueAnswer(key) {
+// startQueueAnswer is a request whose wait for a slot ran out, never sent
+// (or, refused, not sent again): a 429 magpie reads as a rate limit, so it
+// tries the next account, and a short Retry-After. It says what the wait
+// was behind, as the gate saw it when the wait ran out: how many of the
+// lane's requests held its slots and since when, how many more waited, and
+// why the account's gate is below three, if it is. plugins#1572: "1 request
+// at a time … waited 120s behind the others and was not sent" named no
+// others, and the request had been sent and refused twice before it waited.
+function startQueueAnswer(key, { refused = false } = {}) {
   const n = limitOf(key)
   const s = n === 1 ? "" : "s"
-  const error = {
-    type: "rate_limit_error",
-    message: key === ADDRESS
-      ? `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`
-      : `ZCode's free Start Plan serves this account ${n} request${s} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+  const waited = `${Math.round(startGate.wait / 1000)}s`
+  const l = startGate.lanes.get(key)
+  const busy = l?.busy ?? 0
+  const queued = l?.queue.length ?? 0
+  const now = startGate.now()
+  const oldest = l?.held?.size ? Math.min(...[...l.held].map((h) => h.at)) : null
+  const holders = busy === 0
+    ? "no request held a slot when it ran out"
+    : `${busy} of ${key === ADDRESS ? "this computer's Start Plan requests" : "this account's requests"} held ${busy === 1 ? "its slot" : "the slots"}${oldest != null ? `, ${busy === 1 ? "in flight" : "the oldest in flight"} for ${lasted(now - oldest)}` : ""}`
+  const behind = `${holders}${queued ? `, and ${queued} more ${queued === 1 ? "was" : "were"} waiting` : ""}`
+  let message
+  if (key === ADDRESS) {
+    message = `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${waited} for a slot and was not sent: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
+  } else {
+    const nr = startGate.narrow.get(key)
+    const why = nr && n < startGate.inflight
+      ? ` for the next ${lasted(nr.until - now)}, since ZCode refused a request as busy again at its re-ask while ${nr.busy} of this account's were in flight from this computer`
+      : ""
+    const head = refused
+      ? `ZCode refused this request as busy at its first ask and again at its re-ask, and its free Start Plan now serves this account ${n} request${s} at a time${why}; it waited ${waited} for a slot to send it again and was not sent again`
+      : `ZCode's free Start Plan serves this account ${n} request${s} at a time${why}; this one waited ${waited} for a slot and was not sent`
+    message = `${head}: ${behind}. Run fewer agents or subagents on ZCode at once, or try again`
   }
+  const error = { type: "rate_limit_error", message }
   return new Response(JSON.stringify({ type: "error", error }), {
     status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
   })
+}
+
+// lasted says a duration as a person reads it: 45s, 2m 5s, 66m.
+function lasted(ms) {
+  const t = Math.max(0, Math.round(ms / 1000))
+  if (t < 60) return `${t}s`
+  const m = Math.floor(t / 60)
+  if (m >= 10) return `${m}m`
+  return t % 60 ? `${m}m ${t % 60}s` : `${m}m`
 }
 
 // busyHold is the firewall's countdown. Two days of logs (11-05 23:06–23:15
@@ -3414,7 +3494,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 own.slot?.release()
                 own.slot = null
                 const got = await startSlots(gateKey, opts.signal, { wait: until - Date.now(), front: true })
-                if (!got.release) return kept(startQueueAnswer(got.key))
+                if (!got.release) return kept(startQueueAnswer(got.key, { refused: true }))
                 own.slot = got
                 if (edgeHeld()) return kept(edgeHeldAnswer())
                 if (busyHeld()) return kept(busyHeldAnswer())

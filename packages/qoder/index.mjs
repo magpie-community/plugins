@@ -48,10 +48,14 @@ const MODELS_PATH = "/algo/api/v2/model/list?Encode=1"
 // talks through — the worker runtime bundled in the app — because the
 // envelope also says Cosy-ClientType: 10 (desktop) and carries that app's
 // machine identity; the CLI's channel publishes a different, later number
-// that no desktop build runs. Taken from app 0.4.8 (build 79743374,
-// 2026-10-14), whose transport config names 1.1.69. Raise it when the app
-// moves, not when the CLI does.
-const COSY_VERSION = "1.1.69"
+// that no desktop build runs. Taken from app 0.5.20 (both feeds, Qoder
+// and Qoder CN, 2026-11-27), whose bundled worker runtime's
+// runtime-info.json names 1.1.96-hotfix.8, the number its envelope and its
+// chat's business.version say. 0.4.8 named 1.1.69: sending that, every
+// request of one Qoder CN account was queued again after each wait, while
+// the app answered the same account at once (plugins#1560). Raise it when
+// the app moves, not when the CLI does.
+const COSY_VERSION = "1.1.96-hotfix.8"
 const SIGN_IN_TIMEOUT = 15 * 60 * 1000
 const REFRESH_LEAD = 5 * 60 * 1000 // a chat token this close to its end is refreshed before a request
 const RENEW_LEAD = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
@@ -70,6 +74,31 @@ XcW+ML9FoCI6AOvOzwIDAQAB
 -----END PUBLIC KEY-----`
 
 const QODER_SYS = "You are a Qoder agent. Use the instructions below and the tools available to you to assist the user."
+
+// Qoder answers a system prompt that opens with Claude Code's identity
+// line with 400 "Cannot find model", on any model; the same request with
+// only that line swapped for the Claude Agent SDK's goes through (ByFanX
+// on X, 11-24). asAgentSDK makes that swap, in what Qoder is sent only:
+// the line is matched whatever its white space, and the rest of the
+// prompt goes as written. Claude Code's SDK form (", running within the
+// Claude Agent SDK.") is swapped the same way.
+const CLAUDE_CODE_LINE = /You\s+are\s+Claude\s+Code,\s+Anthropic's\s+official\s+CLI\s+for\s+Claude(?:,\s+running\s+within\s+the\s+Claude\s+Agent\s+SDK)?\./g
+const AGENT_SDK_LINE = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+const asAgentSDK = (text) => text.replace(CLAUDE_CODE_LINE, AGENT_SDK_LINE)
+
+// Qoder CN puts a request whose system prompt holds DeepSeek Harness's
+// opener, "You are an AI agent powered by DeepSeek Harness.", in a queue
+// that never moves: 10605, nothing ahead, keepalives until the agent gives
+// up (#1517, #1220). The same request with that line one character shorter,
+// or with no such line, is answered at once, every time (lirenQa1's bisect
+// on #1220: the flip sits on exactly those 48 characters; tools, size,
+// max_completion_tokens and the session header changed nothing). The match
+// is the line whole, as WorkBuddy's on the same opener (its OPENERS), so a
+// comma before "powered by" says the same thing and passes. harnessComma
+// sets it in the system text Qoder is sent only; the user's own messages go
+// as written.
+const HARNESS_OPENER = /(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b/gi
+const harnessComma = (text) => text.replace(HARNESS_OPENER, "$1, $2")
 
 const hexID = () => randomUUID().replaceAll("-", "")
 
@@ -1402,7 +1431,8 @@ const TASK_IDLE = 2 * 60 * 60 * 1000
 const taskName = (prompt) => (prompt.length > 10 ? prompt.slice(0, 10) : prompt)
 
 // taskOf is the task chat's call belongs to, in session sid: made on its
-// first call, the same one on every call after.
+// first call, the same one on every call after. A task let go, or one of
+// the session's before a new prompt, ends (endTask).
 function taskOf(sid, chat, now = Date.now()) {
   const msgs = chat.messages ?? []
   const at = msgs.findLastIndex((x) => x?.role === "user")
@@ -1410,15 +1440,34 @@ function taskOf(sid, chat, now = Date.now()) {
   for (const [k, t] of TASKS) {
     if (now - t.used <= TASK_IDLE) break
     TASKS.delete(k)
+    endTask(t)
   }
   let t = TASKS.get(key)
-  if (t && now - t.used > TASK_IDLE) t = undefined
+  if (t && now - t.used > TASK_IDLE) {
+    endTask(t)
+    t = undefined
+  }
   TASKS.delete(key)
-  t ??= { id: randomUUID(), begin: now, answered: false, name: taskName(at < 0 ? "" : textOf(msgs[at].content)) }
+  if (!t) {
+    for (const o of TASKS.values()) if (o.sid === sid) endTask(o)
+    t = { id: randomUUID(), sid, begin: now, answered: false, name: taskName(at < 0 ? "" : textOf(msgs[at].content)) }
+  }
   t.used = now
   TASKS.set(key, t)
-  while (TASKS.size > TASK_MAX) TASKS.delete(TASKS.keys().next().value)
+  while (TASKS.size > TASK_MAX) {
+    const k = TASKS.keys().next().value
+    endTask(TASKS.get(k))
+    TASKS.delete(k)
+  }
   return t
+}
+
+// endTask ends task t: its queue leases are let go (release) now, or when
+// its last request in flight is done.
+function endTask(t) {
+  if (!t) return
+  if (t.inflight) t.ended = true
+  else void release(t)
 }
 
 // Qoder CN's kmodel (Kimi K3.1 Pro) fails a chat whose tools hold a oneOf
@@ -1498,13 +1547,21 @@ function modelConfig(m, thinking) {
 // 0.4.3 and QwenWork 1.0.46 build their record without it, so a site that
 // ships such a client says businessModelKey: false.
 //
+// APP_CHAT is what Qoder's desktop app (0.5.20, its worker runtime's
+// remote chat body) says of every chat request it sends, whatever the
+// prompt: a streamed free-input turn, version "3". It goes with
+// COSY_VERSION, so only to the sites that speak as that app; QwenWork and
+// Lingma, with versions of their own, send their own clients' bodies.
+const APP_CHAT = { stream: true, chat_task: "FREE_INPUT", is_reply: true, is_retry: false, source: 1, version: "3", aliyun_user_type: "" }
+
 // qoderBody is the plaintext agent_chat_generation takes for a chat
 // completion request, for model m, in the session the agent named (named,
 // "" when none) and the task it is a call of (taskOf's, a new one when
 // none is given). A site on this protocol with its own values (QwenWork)
 // passes itself last.
 function qoderBody(chat, m, named = "", task, site) {
-  const system = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
+  const given = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
+  const system = harnessComma(asAgentSDK(given))
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
   const baseSystem = site?.systemPrompt ?? QODER_SYS
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
@@ -1526,6 +1583,8 @@ function qoderBody(chat, m, named = "", task, site) {
     request_set_id: task.id,
     chat_record_id: request,
     session_id: session,
+    // what the app's request says of itself beside its version
+    ...(site?.cosyVersion ? {} : APP_CHAT),
     parameters: params,
     business: { product: site?.businessProduct ?? "app", version: site?.cosyVersion ?? COSY_VERSION, type: "agent", id: task.id, name: task.name ?? "", begin_at: task.begin, stage: task.answered ? "processing" : "start", ...(site?.businessModelKey === false ? {} : { model_key: m.key }) },
     agent_id: "agent_common",
@@ -1715,10 +1774,18 @@ const errorResponse = ({ status, message, signIn = status === 401 ? "kept" : und
 // refusal as the stream's error. A request not streamed has nothing to
 // keep its client alive with, and waits QUEUE.budget at most, then the
 // 503 with Retry-After it was before, so magpie may ask another account.
-// Qoder's client also tells
-// /api/v2/service/ask/finish when its turn ends; that is left out, and its
-// own log says Qoder's TTL releases the lease when finish is not heard.
+// A queued request holds a lease in Qoder's queue, under its
+// request_set_id and model, until Qoder hears /api/v2/service/ask/finish
+// (queueFinish); unheard, only Qoder's TTL lets it go. Qoder's client
+// (qoderclicn 1.1.98 and Qoder.app's qoder-worker-runtime, "[ModelQueue]")
+// registers one on each 10605 and tells finish when its turn ends, when
+// its session ends, and at once when the request gives up waiting. The
+// plugin never told it (plugins#1560: a Qoder CN account queued in p2 and
+// p4 while its plan's credits went unused). Here a lease ends when the
+// request gives up the wait, and when its task does: the session's next
+// prompt, or the task let go for TASK_IDLE or TASK_MAX.
 const QUEUE_STATUS_PATH = "/algo/api/v2/service/ask/queue/status"
+const QUEUE_FINISH_PATH = "/algo/api/v2/service/ask/finish?Encode=1"
 const QUEUE = {
   budget: 4 * 60 * 1000, // the longest a request not streamed is held, its first answer's wait included
   held: 60 * 60 * 1000, // the longest a streamed one is, as Qoder's client waits
@@ -1729,6 +1796,7 @@ const QUEUE = {
   recoveries: 10, // the queue waited out this many times, at most, for one request
   failures: 3, // status asks failing in a row that end the wait
   ask: 30_000, // the longest one status ask may take
+  finish: 3_000, // the longest a finish may take, as Qoder's client gives it
   // the longest a call waits for Qoder's first event (headers included).
   // Qoder CN once held a call 15 minutes with nothing sent and nothing to
   // log (#1204); after this it is a 504 that says so, which magpie can
@@ -1745,6 +1813,9 @@ const QUEUE = {
   // Qoder's client waits it (#807).
   stuck: 5 * 60 * 1000,
   now: () => Date.now(),
+  // a line for magpie's log (the plugin host's stderr, app.log's
+  // "plugin: " lines): each step of a queued request's wait
+  log: (line) => console.warn(line),
   // every calls fn each ms until the returned stop is called
   every: (fn, ms) => {
     const t = setInterval(fn, ms)
@@ -1775,6 +1846,23 @@ function queuePause(seconds) {
 
 class QueueEnd extends Error {}
 
+// queueSays is a queue state as Qoder gave it, its fields by Qoder's names,
+// for magpie's log and the refusal a wait ends with: what the queue said
+// (plugins#1560: the reporter had no way to see it).
+const QUEUE_FIELDS = ["isQueued", "serviceAvailable", "queueType", "queueCount", "retryAfterSeconds", "waitTime", "subCode", "modelKey"]
+function queueSays(st) {
+  if (!st || typeof st !== "object") return "nothing of the queue"
+  const said = QUEUE_FIELDS.filter((k) => st[k] !== undefined && st[k] !== null && st[k] !== "").map((k) => `${k} ${st[k]}`)
+  return said.length ? said.join(", ") : "nothing of the queue"
+}
+
+// queueLog logs a step of the wait of ask, the request of site
+function queueLog(site, ask, text) {
+  try {
+    QUEUE.log(`${site?.id ?? "qoder"}: ${ask.modelKey} in request set ${String(ask.requestSetId).slice(0, 8)}: ${text}`)
+  } catch {}
+}
+
 // queueState is the queue's state in a status reply, found as Qoder's
 // client finds it: the object, or one under data/result/message/body, as
 // an object or a JSON string, that says isQueued or serviceAvailable.
@@ -1797,7 +1885,7 @@ function queueState(text) {
     if (isQueued !== undefined || serviceAvailable !== undefined) {
       const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v))
       const str = (v) => (typeof v === "string" && v ? v : undefined)
-      return { isQueued, serviceAvailable, modelKey: str(o.modelKey), queueType: str(o.queueType), retryAfterSeconds: num(o.retryAfterSeconds), queueCount: num(o.queueCount), subCode: str(o.subCode) }
+      return { isQueued, serviceAvailable, modelKey: str(o.modelKey), queueType: str(o.queueType), retryAfterSeconds: num(o.retryAfterSeconds), queueCount: num(o.queueCount), waitTime: num(o.waitTime), subCode: str(o.subCode) }
     }
     for (const k of ["data", "result", "message", "body"]) {
       const v = o[k]
@@ -1829,6 +1917,49 @@ async function queueStatus(api, cred, { requestSetId, modelKey, queueType, reque
   return st
 }
 
+// queueReady: the queue lets the request through, as Qoder's client reads
+// a status (qoderclicn 1.1.98, qoder-worker-runtime: isQueued false and
+// serviceAvailable not false). isQueued false with the service unavailable
+// is waited on: sent then, the request is only queued again.
+const queueReady = (st) => st.isQueued === false && st.serviceAvailable !== false
+
+// queueFinish tells Qoder's queue a lease is done, as Qoder's client's
+// finish does: POST /api/v2/service/ask/finish?Encode=1, signed, its body
+// {payload, encodeVersion: "1"} encoded as a chat's is, the payload the
+// lease's model_key and request_set_id, the user's id and the
+// milliseconds since the lease began. Best effort: it waits QUEUE.finish
+// at most, and a failure leaves the lease to Qoder's TTL, as there.
+async function queueFinish(lease) {
+  const { api, cred, site, requestSetId, modelKey, began } = lease
+  if (!cred?.uid) return
+  try {
+    const url = api + QUEUE_FINISH_PATH
+    const payload = JSON.stringify({ model_key: modelKey, request_set_id: requestSetId, user_id: cred.uid, time_consumed: Math.max(0, Math.round(QUEUE.now() - began)) })
+    const wire = encodeBody(JSON.stringify({ payload, encodeVersion: "1" }))
+    const res = await fetch(url, { method: "POST", headers: cosyHeaders(url, cred, wire, site), body: wire, signal: AbortSignal.timeout(QUEUE.finish) })
+    await res.arrayBuffer()
+  } catch {}
+}
+
+// leaseOf registers the queue's lease for a request of task t, once for
+// its request_set_id and model, from the first 10605.
+function leaseOf(t, lease) {
+  t.leases ??= new Map()
+  const key = JSON.stringify([lease.requestSetId, lease.modelKey])
+  if (!t.leases.has(key)) t.leases.set(key, lease)
+  return key
+}
+
+// release tells finish for task t's leases (key's alone when given), and
+// forgets them.
+function release(t, key) {
+  if (!t?.leases?.size) return Promise.resolve()
+  const done = key === undefined ? [...t.leases.values()] : t.leases.has(key) ? [t.leases.get(key)] : []
+  if (key === undefined) t.leases.clear()
+  else t.leases.delete(key)
+  return Promise.all(done.map(queueFinish))
+}
+
 // stuckKey is what a queue's state says of the request's place in it, or
 // "" when others are ahead of it (a queue that moves while they are
 // served is waited out, QUEUE.stuck never ends it).
@@ -1843,6 +1974,7 @@ function stuckKey(st) {
 // (false). A wait ended by QUEUE.stuck sets ask.stuck. A cancelled request
 // throws.
 async function queueWait(api, cred, ask, first, signal, deadline, site) {
+  const began = QUEUE.now()
   let q = first ?? {}
   let asked = false
   let failed = 0
@@ -1850,35 +1982,47 @@ async function queueWait(api, cred, ask, first, signal, deadline, site) {
   let since = QUEUE.now()
   for (;;) {
     if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError")
-    if (QUEUE.now() >= deadline) return false
+    const ranOut = () => (queueLog(site, ask, `the wait ran out after ${Math.round((QUEUE.now() - began) / 1000)}s`), false)
+    if (QUEUE.now() >= deadline) return ranOut()
     if (asked) await QUEUE.pause(Math.min(queuePause(q.retryAfterSeconds), Math.max(0, deadline - QUEUE.now())), signal)
     asked = true
-    if (QUEUE.now() >= deadline) return false
+    if (QUEUE.now() >= deadline) return ranOut()
     let st
     try {
       st = await queueStatus(api, cred, { ...ask, modelKey: q.modelKey ?? ask.modelKey, queueType: q.queueType ?? ask.queueType }, signal, deadline, site)
     } catch (e) {
       if (signal?.aborted) throw signal.reason ?? e
-      if (e instanceof QueueEnd) return false
-      if (++failed >= QUEUE.failures) return false
+      if (e instanceof QueueEnd) {
+        queueLog(site, ask, `the wait ends: ${e.message}`)
+        return false
+      }
+      queueLog(site, ask, `queue status ask failed: ${e?.message ?? e}`)
+      if (++failed >= QUEUE.failures) {
+        queueLog(site, ask, `the wait ends: ${failed} status asks failed in a row`)
+        return false
+      }
       q = { ...q, retryAfterSeconds: undefined }
       continue
     }
     failed = 0
+    ask.last = st
+    queueLog(site, ask, `queue status: ${queueSays(st)}${queueReady(st) ? "; through, sending it again" : ""}`)
     q = { ...st, modelKey: st.modelKey ?? q.modelKey, queueType: st.queueType ?? q.queueType }
     const key = stuckKey(q)
     if (!key || key !== same) {
       same = key
       since = QUEUE.now()
-    } else if (QUEUE.now() - since >= QUEUE.stuck && st.isQueued !== false) {
+    } else if (QUEUE.now() - since >= QUEUE.stuck && !queueReady(st)) {
       ask.stuck = true
+      queueLog(site, ask, `the wait ends: the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead`)
       return false
     }
-    if (st.isQueued === false) {
+    if (queueReady(st)) {
       if (st.retryAfterSeconds > 0) await QUEUE.pause(Math.min(queuePause(st.retryAfterSeconds), Math.max(0, deadline - QUEUE.now())), signal)
       return QUEUE.now() < deadline
     }
     if (st.serviceAvailable === false || st.isQueued === true) continue
+    queueLog(site, ask, "the wait ends: the status is neither queued nor through")
     return false
   }
 }
@@ -3879,7 +4023,28 @@ const makePlugin = (site) => async ({ client }) => {
         // with another account, provider or group member after this one
         // (magpie's X-Magpie-Fallback), a queued request isn't waited out:
         // its 503 goes back at once, saying the queue, and the next is asked
-        if (!f?.queue || waited >= QUEUE.recoveries || fallback) return f ? errorResponse(f) : answer(open, chat, servedName)
+        if (!f?.queue) return f ? errorResponse(f) : answer(open, chat, servedName)
+        // queued: the lease Qoder's queue now holds for it, let go at once
+        // when the request gives up waiting, else when its task ends
+        const lease = leaseOf(task, { api, cred, site: siteOf(site, cred), requestSetId: ask.requestSetId, modelKey: m.key, began: QUEUE.now() })
+        const giveUp = (r) => {
+          void release(task, lease)
+          return r
+        }
+        const said = siteOf(site, cred)
+        queueLog(said, ask, `queued (${QUEUED}) on send ${sent + 1}: ${queueSays(f.queue)}`)
+        if (fallback) {
+          queueLog(said, ask, "not waited: another candidate follows")
+          return giveUp(errorResponse(f))
+        }
+        // the queue said it was through each time, and each resend was
+        // queued again: said in the refusal, with the queue's last status,
+        // so the reason is readable where the error is (plugins#1560)
+        if (waited >= QUEUE.recoveries) {
+          const again = `Qoder's queue let it through ${waited} times and queued each resend again; its last status: ${queueSays(ask.last)}`
+          queueLog(said, ask, `the wait ends: ${again}`)
+          return giveUp(errorResponse({ ...f, message: `${f.message} (${again})` }))
+        }
         if (chat.stream && !held) {
           held = holdQueued(f, init.signal)
           signal = held.signal
@@ -3888,14 +4053,19 @@ const makePlugin = (site) => async ({ client }) => {
         }
         try {
           if (!(await queueWait(api, cred, ask, f.queue, signal, deadline, siteOf(site, cred))))
-            return errorResponse(ask.stuck ? { ...f, message: `${f.message} (the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead)` } : f)
+            return giveUp(errorResponse(ask.stuck ? { ...f, message: `${f.message} (the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead)` } : f))
         } catch (e) {
-          return errorResponse({ status: 502, message: e?.message ?? String(e) })
+          return giveUp(errorResponse({ status: 502, message: e?.message ?? String(e) }))
         }
         waited++
       }
     }
-    const done = run().catch((e) => errorResponse({ status: 502, message: e?.message ?? String(e) }))
+    task.inflight = (task.inflight ?? 0) + 1
+    const done = run()
+      .catch((e) => errorResponse({ status: 502, message: e?.message ?? String(e) }))
+      .finally(() => {
+        if (--task.inflight === 0 && task.ended) void release(task)
+      })
     const res = await Promise.race([done, heard])
     if (res !== held?.response) return res
     held.follow(done)
@@ -4274,4 +4444,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }

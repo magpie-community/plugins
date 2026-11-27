@@ -194,6 +194,100 @@ export function reword(system) {
 // with USER_TURNED_AWAY's lines reworded and everything else as written
 export const cloakUser = (text) => cloak(text, USER_TURNED_AWAY)
 
+// agy hydrates slash commands in every prompt it is handed: the prompt is
+// split at white space (Go's unicode.IsSpace), and a word that is "/" and
+// one of the session's command names, exactly and case and all, gets that
+// command's whole text in an <ADDITIONAL_METADATA> block ("/learn is a
+// [Slash Command]: <LEARN>…") and the command after the turn (the last
+// such word, when there are several). A client's system prompt, a skill
+// list, a replayed reply or a tool result that names a command is read as
+// the user running it: Cindy's (Pi) "when the user directly invokes /learn
+// or /skill:learn in Pi" had every turn start agy's /learn (plugins#1294,
+// huangzhenhao90, and dyss1992 on agy-cli 0.1.147, each on a real account).
+// A word joiner (U+2060) after the "/" makes it another word, so agy finds
+// no command, and the model reads the same words. Only such a word is
+// touched: /learn. /learning /skill:learn /Learn `/learn` /path/to/learn
+// and URLs aren't commands to agy and go as written. Checked against agy
+// 1.5.18 itself through a local gateway (11-27): a tab, \v, a no-break
+// space, U+0085, U+2002, U+2028 or U+3000 on either side makes a word, and
+// so does a code fence; U+FEFF and U+2060 don't. JavaScript's \s isn't that
+// set (it has U+FEFF and not U+0085), so GO_SPACE spells it out.
+// DEFAULT_SLASH_COMMANDS are the commands a fresh session lists
+// (available_commands_update, 11-26 and 11-27); the session's own list is
+// added to them as it comes (a skill of the user's is a command too).
+export const DEFAULT_SLASH_COMMANDS = [
+  "goal", "compact", "schedule", "browser", "plan", "grill-me", "teamwork", "learn", "boost",
+  "agy-customizations", "antigravity-guide", "run-workflow", "swarm",
+]
+
+const GO_SPACE = "[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
+const GO_SPACE_RE = new RegExp(GO_SPACE)
+const JOINER = "\u2060"
+const slashCommandReCache = new Map()
+
+function slashCommandRe(commands) {
+  const names = [...new Set(Array.from(commands || [], (c) => (typeof c === "string" ? c : "")).filter((c) => c && !GO_SPACE_RE.test(c)))]
+    .sort((a, b) => b.length - a.length)
+  if (!names.length) return null
+  const key = names.join("\0")
+  let re = slashCommandReCache.get(key)
+  if (!re) {
+    const alt = names.map(escape).join("|")
+    re = {
+      defuse: new RegExp(`(^|${GO_SPACE})\\/(${alt})(?=$|${GO_SPACE})`, "g"),
+      restore: new RegExp(`(^|${GO_SPACE})\\/${JOINER}(${alt})(?=$|${GO_SPACE})`, "g"),
+    }
+    if (slashCommandReCache.size > 64) slashCommandReCache.clear()
+    slashCommandReCache.set(key, re)
+  }
+  return re
+}
+
+// defuseSlashCommands is text with a word joiner after the "/" of each run
+// agy would read as one of commands
+export function defuseSlashCommands(text, commands = DEFAULT_SLASH_COMMANDS) {
+  if (typeof text !== "string" || !text.includes("/")) return text
+  const re = slashCommandRe(commands)?.defuse
+  if (!re) return text
+  re.lastIndex = 0
+  return text.replace(re, `$1/${JOINER}$2`)
+}
+
+// restoreSlashCommands is value (a tool call's arguments) with the word
+// joiner defuseSlashCommands puts in taken out of every string in it: a
+// model that copies "/\u2060plan" out of a replayed file or command into an
+// edit's old_string or a command means the "/plan" the file has.
+export function restoreSlashCommands(value, commands = DEFAULT_SLASH_COMMANDS) {
+  const re = slashCommandRe(commands)?.restore
+  if (!re) return value
+  const walk = (v) => {
+    if (typeof v === "string") {
+      if (!v.includes(JOINER)) return v
+      re.lastIndex = 0
+      return v.replace(re, "$1/$2")
+    }
+    if (Array.isArray(v)) {
+      let changed = false
+      const out = v.map((item) => {
+        const next = walk(item)
+        if (next !== item) changed = true
+        return next
+      })
+      return changed ? out : v
+    }
+    if (v && typeof v === "object") {
+      let out = null
+      for (const [k, item] of Object.entries(v)) {
+        const next = walk(item)
+        if (next !== item) (out ??= { ...v })[k] = next
+      }
+      return out ?? v
+    }
+    return v
+  }
+  return walk(value)
+}
+
 // outgoing is system text as agy is handed it: each turned-away line and
 // each paragraph of REWORDED reworded
 export const outgoing = (system) => reword(cloak(system))

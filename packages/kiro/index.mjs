@@ -193,6 +193,7 @@ async function readCLI() {
         c.method = "external-idp"
         c.clientId = m.client_id ?? ""
         c.tokenURL = m.token_endpoint || (m.issuer_url ? m.issuer_url.replace(/\/$/, "") + "/v1/token" : "")
+        c.scope = scopeOf(m.scopes ?? m.scope)
       }
       return c
     }
@@ -202,6 +203,9 @@ async function readCLI() {
   }
   return null
 }
+
+// scopeOf is an OAuth scope parameter from a list of scopes or one string.
+const scopeOf = (s) => (Array.isArray(s) ? s.filter((x) => typeof x === "string" && x).join(" ") : typeof s === "string" ? s.trim() : "")
 
 // readIDE reads the Kiro IDE's sign-in.
 async function readIDE() {
@@ -213,6 +217,7 @@ async function readIDE() {
     return null
   }
   if (!t?.accessToken) return null
+  const authMethod = String(t.authMethod ?? t.provider ?? "").toLowerCase().replace(/[^a-z]/g, "")
   const c = { access: t.accessToken, refresh: t.refreshToken ?? "", expires: time(t.expiresAt), region: t.region || "us-east-1",
     profile: arnOf(t.profileArn), method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
   if (t.clientIdHash) {
@@ -221,7 +226,15 @@ async function readIDE() {
       ;[c.clientId, c.clientSecret] = [reg.clientId ?? "", reg.clientSecret ?? ""]
     } catch {}
   }
-  if (String(t.authMethod).toLowerCase() === "social" || !c.clientId) c.method = "social"
+  if (authMethod === "externalidp") {
+    // renewed by the company's own identity provider, with what the IDE
+    // keeps for it; the IdP (Entra ID) asks for the scopes it granted
+    c.method = "external-idp"
+    c.clientId = typeof t.clientId === "string" ? t.clientId : c.clientId ?? ""
+    c.tokenURL = typeof t.tokenEndpoint === "string" ? t.tokenEndpoint : ""
+    c.scope = scopeOf(t.scopes ?? t.scope)
+  } else if (authMethod === "machinetoken") c.method = "machine-token"
+  else if (authMethod === "social" || !c.clientId) c.method = "social"
   return c
 }
 
@@ -327,6 +340,7 @@ async function refresh(c) {
     case "external-idp": {
       if (!c.tokenURL) throw gone(EXPIRED + " with `kiro-cli login`")
       const form = new URLSearchParams({ grant_type: "refresh_token", client_id: c.clientId ?? "", refresh_token: c.refresh })
+      if (c.scope) form.set("scope", c.scope)
       const r = await post(c.tokenURL, "application/x-www-form-urlencoded", form.toString())
       out = { access: r.access_token, refresh: r.refresh_token, expiresIn: r.expires_in }
       break
@@ -347,7 +361,10 @@ function authHeaders(a) {
   if (a.tokenType) h.tokentype = a.tokenType
   return h
 }
-const tokenType = (c) => (c.method === "apikey" ? "API_KEY" : c.method === "external-idp" ? "EXTERNAL_IDP" : "")
+const tokenType = (c) => c.method === "apikey" ? "API_KEY"
+  : c.method === "external-idp" ? "EXTERNAL_IDP"
+    : c.method === "machine-token" ? "KIRO_MACHINE_TOKEN"
+      : ""
 
 // region is where the account's API is: the region its profile is in, else
 // the nearer of Kiro's two to where it signed in. It goes into the API's host

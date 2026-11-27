@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-agnes-code-auth",
-  "version": "0.1.2",
-  "description": "Agnes Code desktop sign-in as an OpenCode/magpie provider: OpenAI-compatible chat gateway, live model catalog, daily check-in and points balance",
+  "version": "0.3.0",
+  "description": "Agnes Code sign-in (browser loopback and the desktop session) as an OpenCode/magpie provider, for both the international and the China site: OpenAI-compatible chat gateway, live model catalog, daily check-in and points balance",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { ".": "./opencode2.mjs" },
@@ -17,7 +17,8 @@
     "opencode-plugin",
     "magpie",
     "agnes",
-    "agnes-code"
+    "agnes-code",
+    "agnes-code-cn"
   ],
   "license": "MIT",
   "scripts": {

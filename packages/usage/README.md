@@ -6,7 +6,7 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 
 ## What it reads
 
-Only `usage:summary`, the one permission its `package.json` declares (`magpie.permissions`). That is magpie's totals for a period, and the top models in it. magpie refuses any other read the page asks for.
+Only `usage:summary`, the one permission its `package.json` declares (`magpie.permissions`). That is magpie's totals for a period, and the top models in it. A model that went through more than one provider is one row, their calls, tokens and cost summed. magpie refuses any other read the page asks for.
 
 Like every plugin page, it runs in a sandboxed frame. It has no network (`connect-src 'none'`), no inline scripts, and no access to magpie's API except through `_magpie/bridge.js`.
 

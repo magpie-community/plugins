@@ -45,7 +45,7 @@ test("Codex's real request for a Gemini model reaches Factory with its prompt ad
   expect(url).toBe("https://api.factory.ai/api/llm/g/v1/generate")
   expect(body.model).toBe("gemini-4-hydrogen")
   const si = body.systemInstruction.parts[0].text
-  expect(si.startsWith(droid + "\nYou are a coding agent running in the Codex CLI")).toBe(true)
+  expect(si.startsWith(droid + "\nYou are a coding agent running in a terminal-based coding assistant.")).toBe(true)
   expect(si).toContain("context provided by the runtime, such as files in the workspace.")
   expect(JSON.stringify(body)).not.toMatch(/\bharness\b/)
   // the user's turn and the tools go on as Codex sent them otherwise

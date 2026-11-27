@@ -34,7 +34,10 @@ const STEPS = 4
 
 // mask(text, step) is what masking makes of the client's text on request
 // step; speak(name, step) is the text the model writes before its call.
-async function run({ conversations = 1, steer = false, mask, speak, edit, canon }) {
+// opening adds to each conversation's first message; extra(messages, i)
+// is what something between the client and magpie makes of request i's
+// messages, which the client never stores.
+async function run({ conversations = 1, steer = false, mask, speak, edit, canon, opening = "", extra }) {
   const stderr = captureStderr()
   const kit = await createBridgeKit({})
   try {
@@ -65,7 +68,7 @@ async function run({ conversations = 1, steer = false, mask, speak, edit, canon 
     const convs = ["A", "B"].slice(0, conversations).map((name) => ({
       name,
       // as the client keeps it: values as written
-      messages: [{ role: "user", content: `TASK-${name} read everything for Alice Johnson, then mail alice@example.org with key sk_w3axCByTQgK1Px9zQ at commit 4f2a9c1e7b3d5a6f` }],
+      messages: [{ role: "user", content: `TASK-${name} read everything for Alice Johnson, then mail alice@example.org with key sk_w3axCByTQgK1Px9zQ at commit 4f2a9c1e7b3d5a6f${opening}` }],
       parsed: null,
     }))
     for (const conv of convs) {
@@ -89,6 +92,7 @@ async function run({ conversations = 1, steer = false, mask, speak, edit, canon 
         ]
         let messages = masked(conv.messages, i + 1)
         if (edit && i >= 1) messages = [{ ...messages[0], content: messages[0].content.replace("read everything", "read nothing") }, ...messages.slice(1)]
+        if (extra) messages = extra(messages, i)
         conv.parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "dsh-main" }, messages })))
       }
     }
@@ -211,3 +215,247 @@ for (const [name, mask] of Object.entries(EDITS)) {
     assert.equal(drops[0].first_diff.masked, false, JSON.stringify(drops[0].first_diff))
   })
 }
+
+
+// yetone/magpie#7223 on 0.1.108 (sevenqcx): a value masked where it is
+// glued to other text (CJK, or a '_', '-' or '.') is one word as written
+// and a placeholder and the rest as masked, and that drift dropped the
+// session. The text beside the placeholder is the same on both sides.
+const GLUED = " 张三的电话 alice123-project alice123.local Secret_v4lu3xq9"
+const GLUED_DRIFTS = {
+  "a value glued to CJK text masked later": (text, step) =>
+    swap(text, step >= 2 ? [["张三", "{{PERSON_k5zq3wae}}"]] : []),
+  "a value glued to '-' and '.' masked later": (text, step) =>
+    swap(text, step >= 2 ? [["alice123", "{{USER_mfrgg2lq}}"]] : []),
+  "a value glued after '_' masked later": (text, step) =>
+    swap(text, step >= 2 ? [["v4lu3xq9", "{{SECRET_nb2hi4dt}}"]] : []),
+  "a glued value under another placeholder later": (text, step) =>
+    swap(text, [["张三", step >= 2 ? "{{NAME_mfrgg2lq}}" : "{{PERSON_k5zq3wae}}"]]),
+}
+for (const [name, mask] of Object.entries(GLUED_DRIFTS)) {
+  for (const steer of [false, true]) {
+    test(`${name} keeps the live session${steer ? " (steered)" : ""}`, async () => {
+      const { drops, opened, stops } = await run({ steer, mask, opening: GLUED })
+      assert.deepEqual(drops, [], JSON.stringify(drops))
+      assert.equal(opened.length, 1, JSON.stringify(opened))
+      assert.deepEqual(stops, ["end_turn"])
+    })
+  }
+}
+
+// What 0.1.108 held stays: text beside a placeholder that changed is a
+// real edit, glued or not.
+const GLUED_EDITS = {
+  "a CJK word changed beside a glued placeholder": (text, step) =>
+    swap(text, step >= 2 ? [["张三的电话", "{{PERSON_k5zq3wae}}的手机"]] : []),
+  "a word changed after a glued placeholder's '-'": (text, step) =>
+    swap(text, step >= 2 ? [["alice123-project", "{{USER_mfrgg2lq}}-product"]] : []),
+  "a word changed before a glued placeholder's '_'": (text, step) =>
+    swap(text, step >= 2 ? [["Secret_v4lu3xq9", "Token_{{SECRET_nb2hi4dt}}"]] : []),
+}
+for (const [name, mask] of Object.entries(GLUED_EDITS)) {
+  test(`${name} still starts a new session`, async () => {
+    const { drops } = await run({ mask, opening: GLUED })
+    assert.deepEqual(drops.map((row) => row.reason), ["history_mismatch"], JSON.stringify(drops))
+    assert.equal(drops[0].first_diff.masked, false, JSON.stringify(drops[0].first_diff))
+  })
+}
+
+// yetone/magpie#7223 on 0.1.108: a proxy between DSH and magpie
+// (billion-context's nudge) added text after one step's tool result, for
+// that request only. The step read as steered, and the next request, whose
+// history goes on without the text, as history_mismatch (block_count 2 to
+// 1). Nothing here keys on the proxy's words.
+const NUDGE = "[some-proxy] Your previous response ended without a tool call. Continue now."
+const NUDGES = {
+  "in the tool result's message": (messages) => [...messages.slice(0, -1),
+    { ...messages.at(-1), content: [...messages.at(-1).content, { type: "text", text: NUDGE }] }],
+  "as a user message of its own": (messages) => [...messages, { role: "user", content: NUDGE }],
+}
+for (const [where, add] of Object.entries(NUDGES)) {
+  for (const steer of [false, true]) {
+    test(`text a proxy added for one request ${where} keeps the live session${steer ? " (steered)" : ""}`, async () => {
+      const { drops, opened, stops } = await run({
+        steer,
+        mask: (text) => text,
+        extra: (messages, i) => i === 1 ? add(messages) : messages,
+      })
+      assert.deepEqual(drops, [], JSON.stringify(drops))
+      assert.equal(opened.length, 1, JSON.stringify(opened))
+      assert.deepEqual(stops, ["end_turn"])
+    })
+  }
+}
+
+// Only text that is gone: a step's text the client later sends changed
+// (not cut short), or text cut from an earlier step than the newest, is a
+// changed history.
+test("text after a step's result that comes back changed still starts a new session", async () => {
+  const { drops } = await run({
+    mask: (text) => text,
+    extra: (messages, i) => {
+      if (i !== 1 && i !== 2) return messages
+      const text = i === 1 ? "look at part two first" : "look at part three first"
+      const at = i === 1 ? messages.length - 1 : messages.length - 3
+      return messages.map((message, index) => index !== at ? message
+        : { ...message, content: [...message.content, { type: "text", text }] })
+    },
+  })
+  assert.ok(drops.length >= 1, JSON.stringify(drops))
+  assert.equal(drops[0].first_diff.masked, false, JSON.stringify(drops[0].first_diff))
+})
+
+test("text cut from an earlier step than the newest still starts a new session", async () => {
+  const { drops } = await run({
+    steer: true,
+    mask: (text) => text,
+    // the steer of step 0 is gone from the history from step 2 on
+    extra: (messages, i) => i < 2 ? messages : messages.map((message, index) => index !== 2 ? message
+      : { ...message, content: message.content.filter((block) => block.type !== "text") }),
+  })
+  assert.ok(drops.length >= 1, JSON.stringify(drops))
+})
+
+// yetone/magpie#7223 on 0.1.108: a new session for a changed history
+// between turns (session_new, reason history) said nothing of where, and
+// first_diff compared messages as sent while the history key reads a run of
+// one role's messages as one row, its texts joined. A user message sent as
+// two that read the same was reported as the difference.
+test("session_new for a changed history says where, as the history key reads it, with no text", async () => {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("REPLY-TEXT here")
+      return { stopReason: "end_turn" }
+    }
+    const body = (messages) => baseBody({ metadata: { user_id: "dsh-main" }, messages })
+    const u0 = { role: "user", content: "TASK-H open the notes" }
+    const first = await readSse(await kit.request(body([u0])))
+    const a0 = { role: "assistant", content: [{ type: "text", text: first.content.map((block) => block.text || "").join("") }] }
+    const u1 = { role: "user", content: "TASK-H now the second part" }
+    const second = await readSse(await kit.request(body([u0, a0, u1])))
+    const a1 = { role: "assistant", content: [{ type: "text", text: second.content.map((block) => block.text || "").join("") }] }
+    // the client sends its second message as two that read the same, and
+    // its second reply changed
+    const split = [{ role: "user", content: "TASK-H now the " }, { role: "user", content: "second part" }]
+    const edited = { role: "assistant", content: [{ type: "text", text: "REPLY-EDITED" }] }
+    await readSse(await kit.request(body([u0, a0, ...split, edited, { role: "user", content: "TASK-H third" }])))
+    const rows = stderr.lines.filter((row) => row.action === "session_new")
+    assert.equal(rows.length, 2, JSON.stringify(rows))
+    const row = rows[1]
+    assert.equal(row.reason, "history")
+    assert.ok(a1.content[0].text.includes("REPLY-TEXT"))
+    assert.deepEqual(
+      { index: row.first_diff?.index, from_end: row.first_diff?.from_end, role: row.first_diff?.role, field: row.first_diff?.field, masked: row.first_diff?.masked, differing: row.first_diff?.differing_messages },
+      { index: 3, from_end: 0, role: "assistant", field: "text", masked: false, differing: 1 },
+      JSON.stringify(row.first_diff))
+    for (const text of ["TASK-H", "REPLY", "second part"]) {
+      assert.ok(!JSON.stringify(row).includes(text), `${text} in ${JSON.stringify(row)}`)
+    }
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+})
+
+const PLACEHOLDER_NOTE = "Values written like {{NAME_ab12cd34}} are placeholders for real values. Use them exactly as written, in replies and in tool calls alike: they are filled in with the real values before anything runs. Don't ask to verify them, and don't replace them with examples."
+const WRAPPED_PLACEHOLDER_NOTE = `<system-reminder>\n${PLACEHOLDER_NOTE}\n</system-reminder>`
+
+test("wrapped <system-reminder> placeholder note appearing and disappearing keeps the live session", async () => {
+  // Simulates Responses -> Anthropic translation of Magpie's developer placeholder note:
+  // steps 0..1 unmasked; step 2 masking starts and appends the wrapped note to message[2];
+  // step 3 masking turns off and the wrapped note disappears.
+  const { drops } = await run({
+    mask: (text, step) => step === 2 ? text.replaceAll("Alice Johnson", "{{NAME_a2b3c4d5}}") : text,
+    extra: (messages, i) => i !== 2 ? messages : messages.map((message, index) => index !== 2 ? message
+      : { ...message, content: [...message.content, { type: "text", text: WRAPPED_PLACEHOLDER_NOTE }] }),
+  })
+  assert.deepEqual(drops, [], JSON.stringify(drops))
+})
+
+test("placeholder note appearing and disappearing in system prompt keeps the live session", async () => {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      await agent.tool("Read", { path: "/repo/a.txt" })
+      await agent.tool("Read", { path: "/repo/b.txt" })
+      await agent.text("all done")
+      return { stopReason: "end_turn" }
+    }
+    const baseSystem = "You are a test agent."
+    const opening = baseBody({ system: baseSystem, messages: [{ role: "user", content: "read a and b" }] })
+    const step1 = await readSse(await kit.request(opening))
+    assert.equal(step1.stopReason, "tool_use")
+    const call1 = step1.content.find((b) => b.type === "tool_use")
+
+    // Step 2: masking adds the placeholder note to system.
+    const req1 = baseBody({
+      system: `${baseSystem}\n\n${PLACEHOLDER_NOTE}`,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: step1.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call1.id, content: "ok" }] },
+      ],
+    })
+    const step2 = await readSse(await kit.request(req1))
+    assert.equal(step2.stopReason, "tool_use")
+    const call2 = step2.content.find((b) => b.type === "tool_use")
+
+    // Step 3: masking turns off and the note disappears from system.
+    const req2 = baseBody({
+      system: baseSystem,
+      messages: [
+        ...req1.messages,
+        { role: "assistant", content: step2.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call2.id, content: "ok2" }] },
+      ],
+    })
+    const done = await readSse(await kit.request(req2))
+    assert.equal(done.stopReason, "end_turn")
+    const drops = stderr.lines.filter((row) => row.action === "drop_live")
+    assert.deepEqual(drops, [], JSON.stringify(drops))
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/new").length, 1)
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+})
+
+test("wrapped <system-reminder> placeholder note before tool_result does not trigger user steer", async () => {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      await agent.tool("Read", { path: "/repo/a.txt" })
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    }
+    const opening = baseBody({ messages: [{ role: "user", content: "read a" }] })
+    const step1 = await readSse(await kit.request(opening))
+    assert.equal(step1.stopReason, "tool_use")
+    const call1 = step1.content.find((b) => b.type === "tool_use")
+
+    const req1 = baseBody({
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: step1.content },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: WRAPPED_PLACEHOLDER_NOTE },
+            { type: "tool_result", tool_use_id: call1.id, content: "ok" },
+          ],
+        },
+      ],
+    })
+    const done = await readSse(await kit.request(req1))
+    assert.equal(done.stopReason, "end_turn")
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/new").length, 1)
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/prompt").length, 1)
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+})

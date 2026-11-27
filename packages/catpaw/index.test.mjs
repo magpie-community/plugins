@@ -720,6 +720,30 @@ describe("chat", () => {
     expect(fake.state.conversations[0].token).toBe("acct-A-token")
   })
 
+  test("a desktop account the client no longer holds neither reads nor spends the one it holds", async () => {
+    // two desktop accounts saved (u0, then the client switched to u1 and
+    // it was saved again): the file holds u1's token only
+    const u0 = { type: "oauth", access: "old-u0", refresh: "", expires: 0, source: "desktop", accountId: "Old", uid: "u0" }
+    const u1 = { type: "oauth", access: fake.state.token, refresh: "", expires: 0, source: "desktop", accountId: "Tester", uid: "u1" }
+    const usage = await plugin.auth.usage(async () => u0)
+    expect(usage.signIn).toBe("expired")
+    expect(usage.windows).toBeUndefined()
+    expect(usage.error).toMatch(/另一个账号，不是 Old/)
+    expect(fake.state.balanceCalls).toBe(0)
+    const refused = await (await plugin.auth.loader(async () => u0)).fetch("https://ai.catpaw.meituan.com/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "longcat-2.0", stream: false, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(refused.status).toBe(401)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    expect(fake.state.conversations.length).toBe(0)
+    // the held one, and one saved before uids were kept, read the file
+    expect((await plugin.auth.usage(async () => u1)).error).toBeUndefined()
+    const { uid, ...noUid } = u0
+    expect((await plugin.auth.usage(async () => noUid)).error).toBeUndefined()
+    expect(fake.state.balanceCalls).toBe(2)
+  })
+
   test("a refused token says 401", async () => {
     saved = { type: "oauth", access: "gone", expires: 0, source: "manual" }
     const loader = await plugin.auth.loader(getAuth)

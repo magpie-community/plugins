@@ -972,6 +972,141 @@ test("loader refreshes on 401, strips x-api-key, rewrites split SSE stream, and 
   expect(res402.headers.get("x-magpie-sign-in")).toBe("kept")
 })
 
+test("loader names the conversation and turn as the desktop client does", async () => {
+  const tok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const seen = []
+  startServer({
+    "POST /api/web/llm/v2/chat/completions": (req) => {
+      seen.push({
+        session: req.headers.get("x-raccoon-session-id"),
+        turn: req.headers.get("x-raccoon-turn-id"),
+        kind: req.headers.get("x-raccoon-call-kind"),
+        private: req.headers.get("x-magpie-raccoon-session"),
+      })
+      return Response.json({ id: "1", choices: [{ message: { content: "ok" } }] })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const loaded = await hooks.auth.loader(async () => ({
+    type: "oauth",
+    access: tok,
+    refresh: "",
+    expires: Date.now() + 3600_000,
+    accountId: "Mason",
+  }))
+
+  const out = { headers: {} }
+  await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID: "sess-1" }, out)
+  expect(out.headers["x-magpie-raccoon-session"]).toBe("sess-1")
+
+  const send = (body) =>
+    loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify(body),
+    })
+
+  const first = { model: "sn-kimi-k3", messages: [{ role: "user", content: "hello there" }] }
+  await send(first)
+  // the tool steps answering one message repeat its user messages
+  const withTool = {
+    model: first.model,
+    messages: [
+      ...first.messages,
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "Read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "c1", content: "result" },
+    ],
+  }
+  await send(withTool)
+  const next = {
+    model: first.model,
+    messages: [
+      ...withTool.messages,
+      { role: "assistant", content: "answer" },
+      { role: "user", content: "second question" },
+    ],
+  }
+  await send(next)
+
+  expect(seen[0].session).toBe("sess-1")
+  expect(seen[0].kind).toBe("session_turn")
+  expect(seen[0].private).toBe(null)
+  expect(seen[0].turn).toMatch(/-turn-\d+$/)
+  expect(seen[1].turn).toBe(seen[0].turn)
+  expect(seen[2].turn).not.toBe(seen[0].turn)
+
+  // no session header: the first user message names the conversation
+  await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "sn-kimi-k3", messages: [{ role: "user", content: "a longer first message" }] }),
+  })
+  expect(seen[3].session).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+})
+
+test("two host sessions with the same first user message stay apart", async () => {
+  const tok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const seen = []
+  startServer({
+    "POST /api/web/llm/v2/chat/completions": (req) => {
+      seen.push({
+        session: req.headers.get("x-raccoon-session-id"),
+        turn: req.headers.get("x-raccoon-turn-id"),
+      })
+      return Response.json({ id: "1", choices: [{ message: { content: "ok" } }] })
+    },
+  })
+
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const loaded = await hooks.auth.loader(async () => ({
+    type: "oauth",
+    access: tok,
+    refresh: "",
+    expires: Date.now() + 3600_000,
+    accountId: "Mason",
+  }))
+
+  // Codex opens every conversation with the same first user message (# AGENTS.md
+  // instructions for the repo): the host's own session id keeps them apart.
+  const agents = "# AGENTS.md instructions for /home/u/repo\n\n<INSTRUCTIONS>be brief</INSTRUCTIONS>"
+  for (const [sessionID, ask] of [["codex-conv-1", "fix the parser"], ["codex-conv-2", "write the README"]]) {
+    const out = { headers: {} }
+    await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID }, out)
+    await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify({ model: "m", messages: [{ role: "user", content: agents }, { role: "user", content: ask }] }),
+    })
+  }
+  expect(seen.map((s) => s.session)).toEqual(["codex-conv-1", "codex-conv-2"])
+  expect(seen.map((s) => s.turn)).toEqual(["codex-conv-1-turn-2", "codex-conv-2-turn-2"])
+
+  // no host session: derived from the first user message, so the same first
+  // message yields the same id on every send and a different one differs
+  const derive = async (sessionID, first) => {
+    const out = { headers: {} }
+    await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID }, out)
+    await loaded.fetch(`${loaded.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: out.headers,
+      body: JSON.stringify({ model: "m", messages: [{ role: "user", content: first }] }),
+    })
+    return seen.at(-1).session
+  }
+  const one = await derive(undefined, "hello there")
+  const again = await derive(undefined, "hello there")
+  const other = await derive(undefined, "a different first message")
+  expect(one).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  expect(again).toBe(one)
+  expect(other).not.toBe(one)
+
+  // magpie's synthetic session names no conversation: it is ignored, and the
+  // id derived from the first user message is used instead
+  const out = { headers: {} }
+  await hooks["chat.headers"]({ model: { providerID: "raccoon" }, sessionID: "magpie-" + "0123456789abcdef01234567" }, out)
+  expect(out.headers["x-magpie-raccoon-session"]).toBeUndefined()
+})
+
 test("desktop sign-in marks expired when desktop app switches to another account", async () => {
   tempDir = mkdtempSync(join(tmpdir(), "raccoon-test-"))
   process.env.RACCOON_BOX_AGENT_CONFIG_DIR = tempDir
