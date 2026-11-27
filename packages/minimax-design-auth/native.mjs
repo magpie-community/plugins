@@ -1,8 +1,8 @@
-// Magpie-native image and video generation for MiniMax Design (China & Global).
+// Magpie-native image, video, and audio (TTS/ASR) for MiniMax Design (China & Global).
 //
-// MiniMax Design exposes its live image/video model catalog at
+// MiniMax Design exposes its live image/video/audio model catalog at
 //   GET <cloud>/api/v1/models/config
-// and executes generation through Cloud Gateway async task endpoints:
+// and executes generation through Cloud Gateway endpoints:
 //   - Images:
 //       minimax_image: POST /api/v2/image/minimax/generate      -> GET /api/v2/image/minimax/tasks/:id
 //       openai:        POST /api/v2/image/openai/generate       -> GET /api/v2/image/openai/tasks/:id
@@ -17,6 +17,10 @@
 //       kling:         POST /api/v1/video/kling/generate        -> GET /api/v1/video/kling/tasks/:id
 //       kling_avatar:  POST /api/v1/video/kling/avatar          -> GET /api/v1/video/kling/avatar/:id
 //       veo3:          POST /api/v1/video/veo3/generate         -> GET /api/v1/video/veo3/tasks/:id
+//   - Audio (TTS & ASR):
+//       minimax_tts:   POST /api/v2/audio/tts                   -> GET /api/v2/audio/tts/tasks/:id
+//       seedaudio:     POST /api/v2/audio/seedaudio/tts         -> GET /api/v2/audio/seedaudio/tts/tasks/:id
+//       minimax_asr:   POST /api/v1/audio/asr
 //   - Reference uploads:
 //       POST /api/v1/files/upload  { file_data: "data:<mime>;base64,...", file_prefix: "image"|"video"|"audio" }
 //
@@ -28,6 +32,9 @@ const MEDIA_NPM = "@ai-sdk/openai-compatible"
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 const IMAGE_POLL_INTERVAL_MS = 2000
 const IMAGE_POLL_MAX_WAIT_MS = 5 * 60 * 1000
+const AUDIO_POLL_INTERVAL_MS = 1500
+const AUDIO_POLL_MAX_WAIT_MS = 165_000
+const ASR_TIMEOUT_MS = 165_000
 const UPLOAD_TIMEOUT_MS = 120_000
 const SUBMIT_TIMEOUT_MS = 60_000
 const POLL_TIMEOUT_MS = 30_000
@@ -35,8 +42,31 @@ const DOWNLOAD_TIMEOUT_MS = 120_000
 
 const SUPPORTED_IMAGE_BACKENDS = new Set(["minimax_image", "openai", "nano_banana", "seedream", "midjourney"])
 const SUPPORTED_VIDEO_BACKENDS = new Set(["minimax_v3", "seedance", "wan_i2v", "kling", "kling_avatar", "veo3"])
+const SUPPORTED_AUDIO_BACKENDS = new Set(["minimax_tts", "seedaudio"])
 const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "image/gif"])
-const AUDIO_MIMES = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aac", "audio/mp4", "audio/ogg", "audio/flac", "audio/opus"])
+const AUDIO_MIMES = new Set([
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/aac",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/m4a",
+  "audio/ogg",
+  "audio/flac",
+  "audio/opus",
+  "audio/webm",
+])
+const ASR_RESPONSE_FORMATS = new Set(["json", "text", "verbose_json", "srt", "vtt"])
+const SEEDAUDIO_FORMATS = {
+  mp3: { format: "mp3", contentType: "audio/mpeg" },
+  wav: { format: "wav", contentType: "audio/wav" },
+  pcm: { format: "pcm", contentType: "audio/pcm" },
+  opus: { format: "ogg_opus", contentType: "audio/ogg" },
+  ogg_opus: { format: "ogg_opus", contentType: "audio/ogg" },
+}
+const DEFAULT_TTS_VOICE = "Friendly_Person"
 
 const GPT_IMAGE_2_SIZE_MAP = {
   "1k": {
@@ -130,6 +160,11 @@ const VIDEO_MODEL_ALIASES = {
   "beta_fast": { id: "veo-3.1-fast", name: "Veo 3.1 Fast", modelName: "veo-3.1-fast-generate-001" },
 }
 
+const AUDIO_MODEL_ALIASES = {
+  "speech-2.8-hd": { id: "speech-2.8-hd", name: "MiniMax Speech 2.8 HD", modelName: "speech-2.8-hd" },
+  "seed-audio-1.0": { id: "seed-audio-1.0", name: "Seed Audio 1.0", modelName: "seed-audio-1.0" },
+}
+
 // Verified snapshots from GET /api/v1/models/config on both sites.
 // Used before sign-in or when /api/v1/models/config is temporarily unreachable;
 // live /api/v1/models/config replaces these in provider.models().
@@ -162,6 +197,10 @@ const BOOTSTRAP_MEDIA = [
   { id: "kling-avatar", upstreamId: "kling-avatar", modelName: "kling-avatar", name: "Kling Avatar", kind: "video", backend: "kling_avatar", regions: ["domestic", "overseas"], defaultMode: "std" },
   { id: "veo-3.1", upstreamId: "veo-3.1-generate-001", modelName: "veo-3.1-generate-001", name: "Veo 3.1", kind: "video", backend: "veo3", regions: ["overseas"], durations: [8], defaultDuration: 8, aspectRatios: ["16:9", "9:16"], resolutions: ["720p", "1080p"], defaultResolution: "720p" },
   { id: "veo-3.1-fast", upstreamId: "veo-3.1-fast-generate-001", modelName: "veo-3.1-fast-generate-001", name: "Veo 3.1 Fast", kind: "video", backend: "veo3", regions: ["overseas"], durations: [8], defaultDuration: 8, aspectRatios: ["16:9", "9:16"], resolutions: ["720p", "1080p"], defaultResolution: "720p" },
+  // Audio (TTS & ASR)
+  { id: "speech-2.8-hd", upstreamId: "speech-2.8-hd", modelName: "speech-2.8-hd", name: "MiniMax Speech 2.8 HD", kind: "audio", backend: "minimax_tts", regions: ["domestic", "overseas"] },
+  { id: "seed-audio-1.0", upstreamId: "seed-audio-1.0", modelName: "seed-audio-1.0", name: "Seed Audio 1.0", kind: "audio", backend: "seedaudio", regions: ["domestic", "overseas"] },
+  { id: "minimax-asr", upstreamId: "minimax-asr", modelName: "minimax-asr", name: "MiniMax Design ASR", kind: "transcription", backend: "minimax_asr", regions: ["domestic", "overseas"] },
 ]
 
 // ---- small helpers -----------------------------------------------------------
@@ -335,9 +374,10 @@ function normalizeMediaEntry(raw, kind) {
   if (!upstreamId || !backend) return null
   if (kind === "image" && !SUPPORTED_IMAGE_BACKENDS.has(backend)) return null
   if (kind === "video" && !SUPPORTED_VIDEO_BACKENDS.has(backend)) return null
+  if (kind === "audio" && !SUPPORTED_AUDIO_BACKENDS.has(backend)) return null
 
   const rawModelName = trimStr(raw.model_name) || upstreamId
-  const aliases = kind === "image" ? IMAGE_MODEL_ALIASES : VIDEO_MODEL_ALIASES
+  const aliases = kind === "image" ? IMAGE_MODEL_ALIASES : kind === "video" ? VIDEO_MODEL_ALIASES : AUDIO_MODEL_ALIASES
   const alias = aliases[upstreamId] ?? aliases[rawModelName]
   let id = alias?.id ?? upstreamId
   if (!alias && backend === "openai" && /^g-image-/i.test(upstreamId) && /^gpt-image-/i.test(rawModelName)) {
@@ -382,12 +422,13 @@ function normalizeMediaEntry(raw, kind) {
 
 export function parseModelsConfig(body) {
   if (!isRecord(body)) return null
-  if (!Array.isArray(body.imageModels) && !Array.isArray(body.videoModels)) return null
+  if (!Array.isArray(body.imageModels) && !Array.isArray(body.videoModels) && !Array.isArray(body.audioModels)) return null
   const specs = []
   const seen = new Set()
   for (const [key, kind] of [
     ["imageModels", "image"],
     ["videoModels", "video"],
+    ["audioModels", "audio"],
   ]) {
     const list = Array.isArray(body[key]) ? body[key] : []
     for (const raw of list) {
@@ -406,16 +447,26 @@ export function bootstrapMediaSpecs(site) {
 }
 
 export function mediaConfigEntry(site, spec) {
-  const output = [spec.kind]
+  const isTranscription = spec.kind === "transcription"
+  const isAudio = spec.kind === "audio"
+  const input = isTranscription
+    ? ["audio"]
+    : isAudio
+      ? spec.backend === "seedaudio"
+        ? ["text", "image", "audio"]
+        : ["text"]
+      : ["text", "image"]
+  // Transcription leaves output empty so magpie's pluginTalks does not add it to chat pickers.
+  const output = isTranscription ? [] : [spec.kind]
   return {
     id: spec.id,
     name: spec.name,
     provider: { npm: MEDIA_NPM, api: site.defaultLlmBase },
     reasoning: false,
-    attachment: true,
+    attachment: isTranscription || !isAudio || spec.backend === "seedaudio",
     tool_call: false,
     temperature: false,
-    modalities: { input: ["text", "image"], output },
+    modalities: { input, output },
     limit: { context: 0, output: 0 },
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
     variants: {},
@@ -424,6 +475,10 @@ export function mediaConfigEntry(site, spec) {
 
 export function mediaInternalModel(site, providerID, spec) {
   const isImage = spec.kind === "image"
+  const isVideo = spec.kind === "video"
+  const isAudio = spec.kind === "audio"
+  const isTranscription = spec.kind === "transcription"
+  const seedAudio = isAudio && spec.backend === "seedaudio"
   return {
     id: spec.id,
     providerID,
@@ -437,10 +492,16 @@ export function mediaInternalModel(site, providerID, spec) {
     capabilities: {
       temperature: false,
       reasoning: false,
-      attachment: true,
+      attachment: isImage || isVideo || isTranscription || seedAudio,
       toolcall: false,
-      input: { text: true, image: true, audio: false, video: false, pdf: false },
-      output: { text: false, image: isImage, audio: false, video: !isImage, pdf: false },
+      input: {
+        text: !isTranscription,
+        image: isImage || isVideo || seedAudio,
+        audio: isTranscription || seedAudio,
+        video: false,
+        pdf: false,
+      },
+      output: { text: false, image: isImage, audio: isAudio, video: isVideo, pdf: false },
       interleaved: false,
     },
     release_date: "",
@@ -452,7 +513,7 @@ export function mediaBootstrapConfigModels(site) {
   return Object.fromEntries(bootstrapMediaSpecs(site).map((spec) => [spec.id, mediaConfigEntry(site, spec)]))
 }
 
-// ---- OpenAI Images / Videos route detection ----------------------------------
+// ---- OpenAI Images / Videos / Audio route detection --------------------------
 
 export function mediaPath(url) {
   let pathname
@@ -463,6 +524,8 @@ export function mediaPath(url) {
   }
   if (/\/images\/generations$/.test(pathname)) return { kind: "image.generations" }
   if (/\/images\/edits$/.test(pathname)) return { kind: "image.edits" }
+  if (/\/audio\/speech$/.test(pathname)) return { kind: "audio.speech" }
+  if (/\/audio\/transcriptions$/.test(pathname)) return { kind: "audio.transcriptions" }
   if (/\/videos$/.test(pathname)) return { kind: "video.create" }
   const m = /\/videos\/([^/]+)(?:\/(content))?$/.exec(pathname)
   if (!m) return null
@@ -592,7 +655,30 @@ export function mediaRef(value) {
   return undefined
 }
 
-function parseDataUrl(url, kind = "image") {
+function sniffAudioMime(bytes, filename = "") {
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) return "audio/mpeg"
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) return "audio/mpeg"
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x41 && bytes[10] === 0x56 && bytes[11] === 0x45) return "audio/wav"
+  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) return "audio/ogg"
+  if (bytes.length >= 4 && bytes[0] === 0x66 && bytes[1] === 0x4c && bytes[2] === 0x61 && bytes[3] === 0x43) return "audio/flac"
+  if (bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) return "audio/mp4"
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return "audio/webm"
+  const ext = /\.([a-z0-9]+)$/i.exec(trimStr(filename))?.[1]?.toLowerCase()
+  const byExt = {
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    opus: "audio/opus",
+    flac: "audio/flac",
+    m4a: "audio/mp4",
+    mp4: "audio/mp4",
+    aac: "audio/aac",
+    webm: "audio/webm",
+  }
+  return (ext && byExt[ext]) || ""
+}
+
+function parseDataUrl(url, kind = "image", { oversizeStatus = 400 } = {}) {
   const m = /^data:([^,]*),(.*)$/s.exec(url)
   if (!m) throw fail(400, "media data: URL is malformed")
   const meta = m[1]
@@ -612,8 +698,8 @@ function parseDataUrl(url, kind = "image") {
     throw fail(400, "media data: URL is invalid")
   }
   if (!bytes.length) throw fail(400, "reference media is empty")
-  if (bytes.length > MAX_UPLOAD_BYTES) throw fail(400, "reference media exceeds 64 MB limit")
-  const mime = rawMime || (kind === "image" ? sniffMime(bytes) : "application/octet-stream")
+  if (bytes.length > MAX_UPLOAD_BYTES) throw fail(oversizeStatus, "reference media exceeds 64 MB limit")
+  const mime = rawMime || (kind === "image" ? sniffMime(bytes) : kind === "audio" ? sniffAudioMime(bytes) || "audio/mpeg" : "application/octet-stream")
   const b64 = Buffer.from(bytes).toString("base64")
   return { bytes: new Uint8Array(bytes), mime, base64: b64, dataUri: `data:${mime};base64,${b64}` }
 }
@@ -1191,6 +1277,280 @@ async function resolveVideoDownloadUrl(spec, polled, { cloudGet, signal }) {
   return ""
 }
 
+// ---- audio (TTS & ASR) backends ----------------------------------------------
+
+function mapMultiplierToRate(raw) {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  const x = Number(raw)
+  if (!Number.isFinite(x) || x <= 0) throw fail(400, "speed/volume must be a positive number")
+  const rate = Math.round((x - 1) * 100)
+  return rate === 0 ? undefined : Math.min(100, Math.max(-50, rate))
+}
+
+function parseJsonObjectOpt(raw, name) {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  if (isRecord(raw)) return raw
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      if (isRecord(parsed)) return parsed
+    } catch {}
+  }
+  throw fail(400, `${name} must be a JSON object`)
+}
+
+async function pollCloudV2Audio(submitPath, queryPath, payload, label, { cloudPost, cloudGet, signal, sleep, nowMs, pollIntervalMs, maxWaitMs }) {
+  const sub = await cloudPost(submitPath, payload, { signal, timeoutMs: SUBMIT_TIMEOUT_MS, label: `${label} submit` })
+  const taskId = trimStr(sub?.task_id)
+  if (!taskId) throw fail(502, `MiniMax Design ${label}: missing task_id`)
+
+  const deadline = nowMs() + maxWaitMs
+  while (true) {
+    if (signal?.aborted) throw signal.reason ?? new Error("aborted")
+    const q = await cloudGet(`${queryPath}/${encodeURIComponent(taskId)}`, { signal, timeoutMs: POLL_TIMEOUT_MS, label: `${label} poll` })
+    const st = trimStr(q?.status).toLowerCase()
+    if (st === "success" || st === "completed" || st === "succeeded") {
+      const url = trimStr(q?.audio_url)
+      if (!url || !/^https:\/\//i.test(url)) throw fail(502, `MiniMax Design ${label}: completed without HTTPS audio_url`)
+      return { url, duration: typeof q?.duration === "number" ? q.duration : undefined }
+    }
+    if (st === "failed" || st === "cancelled" || st === "canceled") {
+      throw fail(502, trimStr(q?.base?.user_message) || trimStr(q?.base?.message) || trimStr(q?.message) || `${label} ${st}`)
+    }
+    if (nowMs() >= deadline) throw fail(504, `MiniMax Design ${label} timed out`)
+    await sleep(pollIntervalMs)
+  }
+}
+
+async function runSpeechSynthesis(spec, fields, { cloudPost, cloudGet, externalFetch, signal, sleep, nowMs, pollIntervalMs, maxWaitMs }) {
+  const input = trimStr(fields.input)
+  if (!input) throw fail(400, "input text is required")
+
+  const extra = isRecord(fields.extra) ? fields.extra : {}
+  const opt = (k) => extra[k] ?? fields[k]
+  let submitPath
+  let queryPath
+  let payload
+  let expectedContentType = "audio/mpeg"
+
+  if (spec.backend === "minimax_tts") {
+    submitPath = "/api/v2/audio/tts"
+    queryPath = "/api/v2/audio/tts/tasks"
+    const rawSpeed = opt("speed")
+    let speed = 1
+    if (rawSpeed !== undefined && rawSpeed !== null && rawSpeed !== "") {
+      speed = Number(rawSpeed)
+      if (!Number.isFinite(speed) || speed <= 0) throw fail(400, "speed must be a positive number")
+    }
+    payload = {
+      model: spec.modelName || spec.id,
+      text: input,
+      voice_id: trimStr(opt("voice_id") ?? fields.voice) || DEFAULT_TTS_VOICE,
+      speed,
+      language_boost: trimStr(opt("language_boost")) || "auto",
+      subtitle_enable: Boolean(opt("subtitle_enable")),
+    }
+    const emotion = trimStr(opt("emotion"))
+    if (emotion) payload.emotion = emotion
+    const vol = opt("vol") ?? opt("volume")
+    if (vol !== undefined && vol !== null && vol !== "") {
+      const n = Number(vol)
+      if (!Number.isFinite(n)) throw fail(400, "vol must be a finite number")
+      payload.vol = n
+    }
+    const pitch = opt("pitch")
+    if (pitch !== undefined && pitch !== null && pitch !== "") {
+      const n = Number(pitch)
+      if (!Number.isFinite(n)) throw fail(400, "pitch must be a finite number")
+      payload.pitch = n
+    }
+    const pronunciation = parseJsonObjectOpt(opt("pronunciation_dict"), "pronunciation_dict")
+    if (pronunciation) payload.pronunciation_dict = pronunciation
+    const voiceModify = parseJsonObjectOpt(opt("voice_modify"), "voice_modify")
+    if (voiceModify) payload.voice_modify = voiceModify
+  } else if (spec.backend === "seedaudio") {
+    submitPath = "/api/v2/audio/seedaudio/tts"
+    queryPath = "/api/v2/audio/seedaudio/tts/tasks"
+    const instructions = trimStr(fields.instructions)
+    payload = {
+      model: spec.modelName || spec.id,
+      text_prompt: instructions ? `${instructions}\n${input}` : input,
+    }
+    const speechRate = mapMultiplierToRate(opt("speed"))
+    if (speechRate !== undefined) payload.speech_rate = speechRate
+    const loudnessRate = mapMultiplierToRate(opt("volume"))
+    if (loudnessRate !== undefined) payload.loudness_rate = loudnessRate
+    const rawPitch = opt("pitch")
+    if (rawPitch !== undefined && rawPitch !== null && rawPitch !== "") {
+      const n = Number(rawPitch)
+      if (!Number.isFinite(n)) throw fail(400, "pitch must be a finite number")
+      payload.pitch_rate = Math.trunc(n)
+    }
+    const rawFmt = trimStr(opt("format") ?? fields.response_format).toLowerCase()
+    if (rawFmt) {
+      const mapped = SEEDAUDIO_FORMATS[rawFmt]
+      if (!mapped) throw fail(400, `Unsupported SeedAudio format ${JSON.stringify(rawFmt)}; expected mp3, wav, pcm, or opus`)
+      payload.format = mapped.format
+      expectedContentType = mapped.contentType
+    } else {
+      expectedContentType = "audio/wav"
+    }
+    const rawSampleRate = opt("sample_rate")
+    if (rawSampleRate !== undefined && rawSampleRate !== null && rawSampleRate !== "") {
+      const sr = Math.trunc(Number(rawSampleRate))
+      if (!Number.isFinite(sr) || sr <= 0) throw fail(400, "sample_rate must be a positive integer")
+      if (payload.format === "ogg_opus" && sr !== 48000) {
+        throw fail(400, "ogg_opus requires sample_rate 48000")
+      }
+      payload.sample_rate = sr
+    } else if (payload.format === "ogg_opus") {
+      payload.sample_rate = 48000
+    }
+
+    const audioRefs = Array.isArray(opt("audio_urls")) ? opt("audio_urls") : []
+    const imageRefs = Array.isArray(opt("image_urls")) ? opt("image_urls") : []
+    if (audioRefs.length && imageRefs.length) {
+      throw fail(400, "seed-audio-1.0 cannot mix audio_urls and image_urls references")
+    }
+    if (audioRefs.length > 3) throw fail(400, "seed-audio-1.0 accepts at most 3 audio_urls")
+    if (imageRefs.length > 1) throw fail(400, "seed-audio-1.0 accepts at most 1 image_urls")
+    const references = []
+    for (const rawRef of audioRefs) {
+      const u = await resolveSingleMediaUrl(cloudPost, rawRef, "audio", signal)
+      if (u) references.push({ audio_url: u })
+    }
+    for (const rawRef of imageRefs) {
+      const u = await resolveSingleMediaUrl(cloudPost, rawRef, "image", signal)
+      if (u) references.push({ image_url: u })
+    }
+    if (references.length) payload.references = references
+  } else {
+    throw fail(400, `Unsupported audio backend ${spec.backend}`)
+  }
+
+  const { url } = await pollCloudV2Audio(submitPath, queryPath, payload, spec.backend, {
+    cloudPost,
+    cloudGet,
+    signal,
+    sleep,
+    nowMs,
+    pollIntervalMs,
+    maxWaitMs,
+  })
+  const dlRes = await fetchHttpsExternal(externalFetch, url, { signal, timeoutMs: DOWNLOAD_TIMEOUT_MS, label: "audio download" })
+  const outHeaders = new Headers(dlRes.headers)
+  outHeaders.delete("content-encoding")
+  outHeaders.delete("content-length")
+  if (!outHeaders.get("content-type") || outHeaders.get("content-type").startsWith("application/octet-stream")) {
+    outHeaders.set("content-type", expectedContentType)
+  }
+  return { body: dlRes.body, headers: outHeaders }
+}
+
+function formatTimestamp(sec, sep) {
+  const totalMs = Math.max(0, Math.round(Number(sec || 0) * 1000))
+  const ms = totalMs % 1000
+  const totalSec = Math.floor(totalMs / 1000)
+  const s = totalSec % 60
+  const m = Math.floor(totalSec / 60) % 60
+  const h = Math.floor(totalSec / 3600)
+  const pad2 = (n) => String(n).padStart(2, "0")
+  return `${pad2(h)}:${pad2(m)}:${pad2(s)}${sep}${String(ms).padStart(3, "0")}`
+}
+
+function formatSubtitles(segments, kind) {
+  const sep = kind === "srt" ? "," : "."
+  const blocks = segments.map((seg, i) => {
+    const line = `${formatTimestamp(seg.start, sep)} --> ${formatTimestamp(seg.end, sep)}\n${seg.text}`
+    return kind === "srt" ? `${i + 1}\n${line}` : line
+  })
+  return kind === "vtt" ? `WEBVTT\n\n${blocks.join("\n\n")}\n` : `${blocks.join("\n\n")}\n`
+}
+
+async function runAudioTranscription(fields, files, { cloudPost, signal }) {
+  const format = trimStr(fields.response_format).toLowerCase() || "json"
+  if (!ASR_RESPONSE_FORMATS.has(format)) {
+    throw fail(400, `Unsupported response_format ${JSON.stringify(format)}; expected json, text, verbose_json, srt, or vtt`)
+  }
+
+  let audioUrl = ""
+  const filePart = (files ?? []).find((f) => f.field === "file")
+  if (filePart) {
+    if (!filePart.bytes?.length) throw fail(400, "audio file is empty")
+    if (filePart.bytes.length > MAX_UPLOAD_BYTES) throw fail(413, "audio file exceeds 64 MB limit")
+    const mime = normalizeMime(filePart.mime) || sniffAudioMime(filePart.bytes, filePart.filename)
+    if (!mime || !AUDIO_MIMES.has(mime)) {
+      throw fail(400, `Unsupported audio media type ${JSON.stringify(mime || "unknown")}`)
+    }
+    const dataUri = `data:${mime};base64,${Buffer.from(filePart.bytes).toString("base64")}`
+    audioUrl = await uploadDataUri(cloudPost, dataUri, "audio", signal)
+  } else if (fields.audio_url) {
+    const ref = mediaRef(fields.audio_url)
+    if (!ref) throw fail(400, "audio file or audio_url is required")
+    if (ref.url.startsWith("data:")) {
+      const parsed = parseDataUrl(ref.url, "audio", { oversizeStatus: 413 })
+      audioUrl = await uploadDataUri(cloudPost, parsed.dataUri, "audio", signal)
+    } else {
+      audioUrl = ref.url
+    }
+  } else {
+    throw fail(400, "audio file or audio_url is required")
+  }
+
+  const language = trimStr(fields.language) || "auto"
+  const totalDuration = Number(fields.total_duration)
+  const payload = {
+    audio_url: audioUrl,
+    language,
+    total_duration: Number.isFinite(totalDuration) && totalDuration > 0 ? totalDuration : 0,
+  }
+  const resp = await cloudPost("/api/v1/audio/asr", payload, { signal, timeoutMs: ASR_TIMEOUT_MS, label: "audio/asr" })
+
+  const rawSegments = Array.isArray(resp.segments) ? resp.segments : []
+  const segments = rawSegments
+    .filter((seg) => isRecord(seg) && typeof seg.start === "number" && typeof seg.end === "number")
+    .map((seg, id) => ({
+      id,
+      start: seg.start,
+      end: seg.end,
+      text: typeof seg.text === "string" ? seg.text : "",
+      ...(Array.isArray(seg.words)
+        ? {
+            words: seg.words
+              .filter((w) => isRecord(w) && typeof w.start === "number" && typeof w.end === "number")
+              .map((w) => ({ word: String(w.word ?? ""), start: w.start, end: w.end })),
+          }
+        : {}),
+    }))
+  const text = typeof resp.text === "string" ? resp.text : segments.map((s) => s.text).join(" ").trim()
+
+  if (format === "text") {
+    return { body: text, contentType: "text/plain; charset=utf-8" }
+  }
+  if (format === "srt") {
+    return { body: formatSubtitles(segments, "srt"), contentType: "text/plain; charset=utf-8" }
+  }
+  if (format === "vtt") {
+    return { body: formatSubtitles(segments, "vtt"), contentType: "text/vtt; charset=utf-8" }
+  }
+  if (format === "verbose_json") {
+    const duration = segments.length ? segments[segments.length - 1].end : 0
+    const words = segments.flatMap((s) => s.words ?? [])
+    return {
+      body: JSON.stringify({
+        task: "transcribe",
+        language: trimStr(resp.language) || (language === "auto" ? "" : language),
+        duration,
+        text,
+        segments: segments.map(({ id, start, end, text: segText }) => ({ id, start, end, text: segText })),
+        ...(words.length ? { words } : {}),
+      }),
+      contentType: "application/json",
+    }
+  }
+  return { body: JSON.stringify({ text }), contentType: "application/json" }
+}
+
 // ---- top-level media fetch handler -------------------------------------------
 
 function jsonResp(body, status = 200, signIn = "kept") {
@@ -1270,6 +1630,35 @@ export async function handleMediaFetch(
       return jsonResp(out, 200, lastSignIn)
     }
 
+    if (route.kind === "audio.speech") {
+      if (verb !== "POST") return jsonResp({ error: { message: "use POST for speech synthesis", type: "invalid_request_error" } }, 405)
+      const fields = jsonBody(body)
+      const spec = lookupMediaModel(specs, site.id, fields.model, "audio")
+      const { body: audioBody, headers: outHeaders } = await runSpeechSynthesis(spec, fields, {
+        cloudPost,
+        cloudGet,
+        externalFetch,
+        signal,
+        sleep,
+        nowMs,
+        pollIntervalMs: Math.min(pollIntervalMs, AUDIO_POLL_INTERVAL_MS),
+        maxWaitMs: Math.min(maxWaitMs, AUDIO_POLL_MAX_WAIT_MS),
+      })
+      outHeaders.set("X-Magpie-Sign-In", lastSignIn)
+      return new Response(audioBody, { status: 200, headers: outHeaders })
+    }
+
+    if (route.kind === "audio.transcriptions") {
+      if (verb !== "POST") return jsonResp({ error: { message: "use POST for audio transcription", type: "invalid_request_error" } }, 405)
+      const { fields, files } = await parseMediaInput(body, headers)
+      lookupMediaModel(specs, site.id, fields.model, "transcription")
+      const { body: outBody, contentType } = await runAudioTranscription(fields, files, { cloudPost, signal })
+      return new Response(outBody, {
+        status: 200,
+        headers: { "content-type": contentType, "X-Magpie-Sign-In": lastSignIn },
+      })
+    }
+
     if (route.kind === "video.create") {
       if (verb !== "POST") return jsonResp({ error: { message: "use POST to start a video", type: "invalid_request_error" } }, 405)
       const { fields } = await parseMediaInput(body, headers)
@@ -1330,10 +1719,12 @@ export async function handleMediaFetch(
 export const _mediaInternal = {
   IMAGE_MODEL_ALIASES,
   VIDEO_MODEL_ALIASES,
+  AUDIO_MODEL_ALIASES,
   BOOTSTRAP_MEDIA,
   IMAGE_PATHS,
   GPT_IMAGE_2_SIZE_MAP,
   AUDIO_MIMES,
+  MAX_UPLOAD_BYTES,
   parseModelsConfig,
   bootstrapMediaSpecs,
   normalizeMediaEntry,
@@ -1347,4 +1738,6 @@ export const _mediaInternal = {
   tierFromSizeOrQuality,
   pickVideoResolution,
   pickDuration,
+  sniffAudioMime,
+  formatSubtitles,
 }

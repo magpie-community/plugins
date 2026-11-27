@@ -1257,6 +1257,11 @@ const SAMPLE_MODELS_CONFIG = {
     { id: "kling-avatar", model_name: "kling-avatar", name: "Kling Avatar", backend: "kling_avatar", params: { mode: { default: "std", options: ["std", "pro"] } } },
     { id: "veo-3.1-generate-001", model_name: "veo-3.1-generate-001", name: "Veo3.1", backend: "veo3", params: { duration: { default: "8", options: ["8"] }, resolution: { default: "720p", options: ["720p", "1080p"] }, aspect_ratio: { default: "16:9", options: ["16:9", "9:16"] } } },
   ],
+  audioModels: [
+    { id: "speech-2.8-hd", model_name: "speech-2.8-hd", name: "Speech-2.8-HD", backend: "minimax_tts" },
+    { id: "seed-audio-1.0", model_name: "seed-audio-1.0", name: "Seed Audio 1.0", backend: "seedaudio" },
+    { id: "music-3.0", model_name: "music-3.0", name: "Music-3.0", backend: "minimax_music" },
+  ],
 }
 
 describe("native image & video models + canonical naming", () => {
@@ -1289,9 +1294,15 @@ describe("native image & video models + canonical naming", () => {
 
     // MiniMax-H3-Image defaults to 2K (not 4K) so callers omitting size don't burn 4K credits
     assert.equal(byId["MiniMax-H3-Image"].defaultResolution, "2K")
-    // Hidden and unsupported backends are omitted
+    // Hidden and unsupported backends (including music backends without native gateway route) are omitted
     assert.equal(byId["hidden-img"], undefined)
     assert.equal(byId["unsupported-img"], undefined)
+    assert.equal(byId["music-3.0"], undefined)
+    // Supported TTS audio models are discovered with kind="audio"
+    assert.equal(byId["speech-2.8-hd"].kind, "audio")
+    assert.equal(byId["speech-2.8-hd"].backend, "minimax_tts")
+    assert.equal(byId["seed-audio-1.0"].kind, "audio")
+    assert.equal(byId["seed-audio-1.0"].backend, "seedaudio")
   })
 
   test("provider.models merges live chat models with live image & video models using magpie native capabilities", async () => {
@@ -1336,6 +1347,13 @@ describe("native image & video models + canonical naming", () => {
     assert.equal(models["seedance-2.5"].capabilities.output.video, true)
     assert.equal(models["MiniMax-H3"].capabilities.output.video, true)
     assert.equal(models["veo-3.1"].capabilities.output.video, true)
+    // TTS audio models declare output.audio=true, output.text=false so pluginTalks keeps them out of chat pickers
+    assert.equal(models["speech-2.8-hd"].capabilities.output.audio, true)
+    assert.equal(models["speech-2.8-hd"].capabilities.output.text, false)
+    assert.equal(models["seed-audio-1.0"].capabilities.output.audio, true)
+    assert.equal(models["seed-audio-1.0"].capabilities.input.audio, true)
+    // Bootstrap transcription entry leaves output=[] so pluginTalks keeps it out of chat pickers too
+    assert.deepEqual(cfg.provider["minimax-design"].models["minimax-asr"].modalities, { input: ["audio"], output: [] })
   })
 
   test("POST /images/generations and /images/edits route all 5 image backends, upload multipart refs, refuse mask/local paths, and isolate CDN headers", async () => {
@@ -1711,5 +1729,241 @@ describe("native image & video models + canonical naming", () => {
     })
     assert.equal(resB.status, 400)
     assert.equal(sent.length, sentBeforeB)
+  })
+
+  test("POST /audio/speech routes speech-2.8-hd and seed-audio-1.0, validates params/refs, and isolates CDN headers", async () => {
+    const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const mp3Bytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfb])
+    const oggBytes = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00])
+    const sent = []
+    let ttsPolls = 0
+
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url)
+      const h = new Headers(init.headers)
+      const bodyObj = typeof init.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) : null
+      sent.push({ url: u, method: init.method ?? "GET", token: h.get("token"), body: bodyObj })
+
+      if (u.endsWith("/api/v1/files/upload")) {
+        return new Response(JSON.stringify({ url: "https://cdn.example.test/ref-voice.mp3" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/audio/tts")) return new Response(JSON.stringify({ task_id: "tts-1" }), { status: 200 })
+      if (u.endsWith("/api/v2/audio/tts/tasks/tts-1")) {
+        ttsPolls++
+        if (ttsPolls === 1) return new Response(JSON.stringify({ status: "processing" }), { status: 200 })
+        return new Response(JSON.stringify({ status: "success", audio_url: "https://cdn.example.test/speech.mp3", duration: 2.4 }), { status: 200 })
+      }
+      if (u.endsWith("/api/v2/audio/seedaudio/tts")) return new Response(JSON.stringify({ task_id: "seed-1" }), { status: 200 })
+      if (u.endsWith("/api/v2/audio/seedaudio/tts/tasks/seed-1")) {
+        return new Response(JSON.stringify({ status: "success", audio_url: "https://cdn.example.test/seed.ogg", duration: 3.1 }), { status: 200 })
+      }
+      if (u === "https://cdn.example.test/speech.mp3") {
+        assert.equal(h.get("token"), null)
+        return new Response(mp3Bytes, { status: 200, headers: { "content-type": "audio/mpeg" } })
+      }
+      if (u === "https://cdn.example.test/seed.ogg") {
+        assert.equal(h.get("token"), null)
+        return new Response(oggBytes, { status: 200, headers: { "content-type": "application/octet-stream" } })
+      }
+      return new Response("not found", { status: 404 })
+    }
+
+    const hooks = createPlugin(SITES["minimax-design"], {
+      fetchImpl: fakeFetch,
+      versionCode: TEST_VERSION,
+      sleepImpl: async () => {},
+      pollIntervalMs: 1,
+    })
+    const loaded = await hooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const base = "https://hub.minimaxi.com/api/v1"
+
+    // 1. MiniMax speech-2.8-hd with voice, speed, emotion, vol, pitch, pronunciation_dict
+    const r1 = await loaded.fetch(`${base}/audio/speech`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "minimax-design/speech-2.8-hd",
+        input: "Hello MiniMax",
+        voice: "Calm_Woman",
+        speed: 1.2,
+        emotion: "happy",
+        vol: 1.1,
+        pitch: 2,
+        pronunciation_dict: { tone: ["MiniMax/mi3 ni3"] },
+      }),
+    })
+    assert.equal(r1.status, 200)
+    assert.equal(r1.headers.get("content-type"), "audio/mpeg")
+    assert.equal(r1.headers.get("X-Magpie-Sign-In"), "kept")
+    assert.deepEqual(Buffer.from(await r1.arrayBuffer()), mp3Bytes)
+    const ttsSub = sent.find((s) => s.url.endsWith("/api/v2/audio/tts"))
+    assert.deepEqual(ttsSub.body, {
+      model: "speech-2.8-hd",
+      text: "Hello MiniMax",
+      voice_id: "Calm_Woman",
+      speed: 1.2,
+      language_boost: "auto",
+      subtitle_enable: false,
+      emotion: "happy",
+      vol: 1.1,
+      pitch: 2,
+      pronunciation_dict: { tone: ["MiniMax/mi3 ni3"] },
+    })
+
+    // 2. SeedAudio 1.0 with instructions, speed/volume multipliers, opus format -> 48000Hz + audio reference upload
+    const r2 = await loaded.fetch(`${base}/audio/speech`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "seed-audio-1.0",
+        input: "Good evening.",
+        instructions: "Warm radio host voice",
+        speed: 1.25,
+        response_format: "opus",
+        extra: { volume: 0.8, pitch: -2, audio_urls: [`data:audio/mpeg;base64,${mp3Bytes.toString("base64")}`] },
+      }),
+    })
+    assert.equal(r2.status, 200)
+    assert.equal(r2.headers.get("content-type"), "audio/ogg")
+    assert.deepEqual(Buffer.from(await r2.arrayBuffer()), oggBytes)
+    const seedSub = sent.find((s) => s.url.endsWith("/api/v2/audio/seedaudio/tts"))
+    assert.deepEqual(seedSub.body, {
+      model: "seed-audio-1.0",
+      text_prompt: "Warm radio host voice\nGood evening.",
+      speech_rate: 25,
+      loudness_rate: -20,
+      pitch_rate: -2,
+      format: "ogg_opus",
+      sample_rate: 48000,
+      references: [{ audio_url: "https://cdn.example.test/ref-voice.mp3" }],
+    })
+
+    // 3. Validation guards: empty input, unsupported SeedAudio format/sample_rate, mixed refs -> 400 with no upstream calls
+    const sentBeforeBad = sent.length
+    assert.equal((await loaded.fetch(`${base}/audio/speech`, { method: "POST", body: JSON.stringify({ model: "speech-2.8-hd", input: "   " }) })).status, 400)
+    assert.equal((await loaded.fetch(`${base}/audio/speech`, { method: "POST", body: JSON.stringify({ model: "seed-audio-1.0", input: "hi", response_format: "flac" }) })).status, 400)
+    assert.equal((await loaded.fetch(`${base}/audio/speech`, { method: "POST", body: JSON.stringify({ model: "seed-audio-1.0", input: "hi", response_format: "opus", sample_rate: 24000 }) })).status, 400)
+    assert.equal(
+      (
+        await loaded.fetch(`${base}/audio/speech`, {
+          method: "POST",
+          body: JSON.stringify({
+            model: "seed-audio-1.0",
+            input: "hi",
+            audio_urls: ["https://cdn.example.test/a.mp3"],
+            image_urls: ["https://cdn.example.test/b.png"],
+          }),
+        })
+      ).status,
+      400,
+    )
+    assert.equal((await loaded.fetch(`${base}/audio/speech`, { method: "POST", body: JSON.stringify({ model: "unknown-tts", input: "hi" }) })).status, 400)
+    assert.equal(sent.length, sentBeforeBad)
+  })
+
+  test("POST /audio/transcriptions uploads audio, supports json/text/verbose_json/srt/vtt, enforces 413 size limit, and rejects unsafe URLs", async () => {
+    const validJwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    const mp3Bytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfb])
+    const sent = []
+
+    const fakeFetch = async (url, init = {}) => {
+      const u = String(url)
+      const bodyObj = typeof init.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) : null
+      sent.push({ url: u, method: init.method ?? "GET", body: bodyObj })
+
+      if (u.endsWith("/api/v1/files/upload")) {
+        assert.equal(bodyObj.file_prefix, "audio")
+        assert.match(bodyObj.file_data, /^data:audio\/mpeg;base64,/)
+        return new Response(JSON.stringify({ url: "https://cdn.example.test/clip.mp3" }), { status: 200 })
+      }
+      if (u.endsWith("/api/v1/audio/asr")) {
+        return new Response(
+          JSON.stringify({
+            text: "Hello world. Second line.",
+            language: "en",
+            segments: [
+              { start: 0, end: 1.25, text: "Hello world.", words: [{ word: "Hello", start: 0, end: 0.5 }, { word: "world.", start: 0.5, end: 1.25 }] },
+              { start: 1.5, end: 3.0, text: "Second line." },
+            ],
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response("not found", { status: 404 })
+    }
+
+    const hooks = createPlugin(SITES["minimax-design"], { fetchImpl: fakeFetch, versionCode: TEST_VERSION })
+    const loaded = await hooks.auth.loader(async () => ({ type: "api", key: validJwt }))
+    const base = "https://hub.minimaxi.com/api/v1"
+
+    // 1. Multipart upload with generic octet-stream MIME sniffed via ID3 header -> json
+    const f1 = new FormData()
+    f1.append("model", "minimax-design/minimax-asr")
+    f1.append("language", "en")
+    f1.append("file", new Blob([mp3Bytes], { type: "application/octet-stream" }), "clip.mp3")
+    const rJson = await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: f1 })
+    assert.equal(rJson.status, 200)
+    assert.equal(rJson.headers.get("X-Magpie-Sign-In"), "kept")
+    assert.deepEqual(await rJson.json(), { text: "Hello world. Second line." })
+    assert.deepEqual(sent.find((s) => s.url.endsWith("/api/v1/audio/asr")).body, {
+      audio_url: "https://cdn.example.test/clip.mp3",
+      language: "en",
+      total_duration: 0,
+    })
+
+    // 2. HTTPS audio_url skips upload and formats text, verbose_json, srt, vtt
+    const sendFmt = async (fmt) => {
+      const f = new FormData()
+      f.append("model", "minimax-asr")
+      f.append("audio_url", "https://cdn.example.test/direct.mp3")
+      f.append("response_format", fmt)
+      return loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: f })
+    }
+    const rText = await sendFmt("text")
+    assert.equal(rText.status, 200)
+    assert.equal(await rText.text(), "Hello world. Second line.")
+
+    const rVerbose = await sendFmt("verbose_json")
+    const jVerbose = await rVerbose.json()
+    assert.equal(jVerbose.task, "transcribe")
+    assert.equal(jVerbose.duration, 3)
+    assert.equal(jVerbose.segments.length, 2)
+    assert.equal(jVerbose.words.length, 2)
+
+    const rSrt = await sendFmt("srt")
+    assert.match(await rSrt.text(), /1\n00:00:00,000 --> 00:00:01,250\nHello world\./)
+
+    const rVtt = await sendFmt("vtt")
+    assert.match(await rVtt.text(), /^WEBVTT\n\n00:00:00\.000 --> 00:00:01\.250\nHello world\./)
+
+    // 3. Guards: missing audio -> 400, local file:// -> 400, bad format -> 400, non-audio file -> 400, >64MB upload -> 413
+    const sentBeforeGuards = sent.length
+    const fEmpty = new FormData()
+    fEmpty.append("model", "minimax-asr")
+    assert.equal((await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: fEmpty })).status, 400)
+
+    const fLocal = new FormData()
+    fLocal.append("model", "minimax-asr")
+    fLocal.append("audio_url", "file:///etc/passwd")
+    assert.equal((await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: fLocal })).status, 400)
+
+    const fBadFmt = new FormData()
+    fBadFmt.append("model", "minimax-asr")
+    fBadFmt.append("audio_url", "https://cdn.example.test/a.mp3")
+    fBadFmt.append("response_format", "xml")
+    assert.equal((await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: fBadFmt })).status, 400)
+
+    const fNonAudio = new FormData()
+    fNonAudio.append("model", "minimax-asr")
+    fNonAudio.append("file", new Blob([Buffer.from("not audio text")], { type: "text/plain" }), "note.txt")
+    assert.equal((await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: fNonAudio })).status, 400)
+
+    const oversized = new Uint8Array(_mediaInternal.MAX_UPLOAD_BYTES + 1)
+    oversized[0] = 0x49
+    oversized[1] = 0x44
+    oversized[2] = 0x33
+    const fBig = new FormData()
+    fBig.append("model", "minimax-asr")
+    fBig.append("file", new Blob([oversized], { type: "audio/mpeg" }), "huge.mp3")
+    assert.equal((await loaded.fetch(`${base}/audio/transcriptions`, { method: "POST", body: fBig })).status, 413)
+    assert.equal(sent.length, sentBeforeGuards)
   })
 })

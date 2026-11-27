@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-minimax-design-auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenCode and magpie provider plugins for local MiniMax Design desktop subscriptions: China (minimax-design) and Global (minimax-design-global), with read-only AES-256-GCM session reuse, canonical model names, live chat + native image/video generation, and credit wallet usage",
   "type": "module",
   "main": "./opencode.mjs",
