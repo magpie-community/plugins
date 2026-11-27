@@ -4075,6 +4075,52 @@ async function fetchOfficeAceMaasInfo(cred, fetcher = fetch) {
   }
 }
 
+/**
+ * Ask OfficeAce to link a model gateway to this account — the step the client's
+ * 「接入华为云 MaaS 模型」 performs. This is a write (it creates the
+ * subscription), so it only runs when the `autoMaasSubscribe` option is on and
+ * the permission check answered no pair. Credits post later; an empty balance
+ * right after this call is normal. Returns the pair, or null when the account
+ * has nothing to grant or the call fails — never a reason to fail a sign-in.
+ */
+const OA_CLIENT_SUBSCRIPTION_PATH = "/v1/claw/client-subscription"
+
+async function subscribeOfficeAceMaas(cred, fetcher = fetch) {
+  const url = `${OA_CLAW_BASE}${OA_CLIENT_SUBSCRIPTION_PATH}`
+  const body = "{}"
+  const signed = await signRequestHuawei(
+    cred.access_key_id,
+    cred.secret_access_key,
+    cred.security_token,
+    "POST",
+    url,
+    utf8(body),
+    { "x-subscription-type": "v2" },
+  ).catch(() => null)
+  if (!signed) return null
+  const headers = new Headers()
+  signed.forEach((value, key) => {
+    if (key !== "host") headers.set(key, value)
+  })
+  const res = await fetcher(url, {
+    method: "POST",
+    headers,
+    body,
+    redirect: "error",
+    signal: AbortSignal.timeout(OA_TOKEN_TIMEOUT_MS),
+  }).catch(() => null)
+  if (!res?.ok) return null
+  const j = await res.json().catch(() => null)
+  const info = j?.model_info ?? j?.subscription?.model_info
+  const auth = info?.model_auth_info
+  if (typeof auth?.model_app_key !== "string" || typeof auth.model_app_secret !== "string") return null
+  return {
+    model_app_key: auth.model_app_key,
+    model_app_secret: auth.model_app_secret,
+    maas_base_url: typeof info?.model_api_url_base === "string" ? info.model_api_url_base : "",
+  }
+}
+
 /** The MaaS fields of one account, read at most once per process (best effort). */
 const oaMaasCache = new Map() // identity → { at, info }
 
@@ -4645,11 +4691,19 @@ function recordKeyFor(provider, identity) {
 }
 
 /** Give the credential the MaaS fields OfficeAce needs (one read per account). */
-async function withOfficeAceMaas(cred, fetcher = fetch) {
+async function withOfficeAceMaas(cred, fetcher = fetch, { subscribe = null } = {}) {
   if (cred.model_app_key) return cred
-  const info = await officeAceMaasInfo(cred, fetcher).catch(() => null)
+  let info = await officeAceMaasInfo(cred, fetcher).catch(() => null)
   // An answer without a pair means "MaaS is not opened for this account": it is
-  // not a reason to take a pair the credential already has away.
+  // not a reason to take a pair the credential already has away. The opt-in
+  // subscription runs here, once, and only when the caller asked for it.
+  if (!info?.model_app_key && subscribe) {
+    info = await subscribe(cred).catch(() => null)
+    if (info?.model_app_key) {
+      const identity = accountIdentityOf(cred).id || cred.session_id || cred.access_key_id
+      if (identity) oaMaasCache.set(identity, { at: Date.now(), info })
+    }
+  }
   if (!info?.model_app_key) return cred
   return { ...cred, ...info }
 }
@@ -4806,6 +4860,12 @@ async function persistOfficeAceRecord(client, cred, prev) {
  */
 export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
   const fetcher = typeof options?.fetch === "function" ? options.fetch : fetch
+  // Linking the MaaS gateway is a write (it creates the subscription), so it is
+  // opt-in. The default keeps a sign-in from changing account state.
+  const autoMaasSubscribe = options?.autoMaasSubscribe === true
+  const ensureMaas = (cred) => withOfficeAceMaas(cred, fetcher, {
+    subscribe: autoMaasSubscribe ? (c) => subscribeOfficeAceMaas(c, fetcher) : null,
+  })
   const log = (message, level = "info") => {
     try {
       client?.app?.log?.({ service: "officeace", level, message })
@@ -4845,7 +4905,7 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
         if (identity) noteProviderAccount(OFFICEACE_PROVIDER, identity)
 
         if (!cred.model_app_key) {
-          const healed = await withOfficeAceMaas(cred, fetcher)
+          const healed = await ensureMaas(cred)
           if (healed.model_app_key) cred = healed
         }
         // The catalog and chat are behind the MaaS appKey; without it the
@@ -4923,7 +4983,7 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
                   }
                   // The card's name (its phone), and OfficeAce's MaaS credentials.
                   const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
-                  const withMaas = await withOfficeAceMaas(identified, fetcher)
+                  const withMaas = await ensureMaas(identified)
                   // This sign-in writes this card's record only — the two cards
                   // never share a refresh token, which is spent once.
                   await writeProviderRecord(client, OFFICEACE_PROVIDER, withMaas, fetcher)
@@ -4968,7 +5028,7 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
         if (identity) noteProviderAccount(OFFICEACE_PROVIDER, identity)
 
         if (!cred.model_app_key) {
-          const healed = await withOfficeAceMaas(cred, fetcher)
+          const healed = await ensureMaas(cred)
           if (healed.model_app_key) {
             cred = healed
             await persistOfficeAceRecord(client, cred, stored)

@@ -235,6 +235,11 @@ put the un-callable ids back in front of the user. Before a sign-in a built-in t
 in. Names carry the account's multiplier (`GLM-5.3 · x0.18`), and the vendor's trailing newline in
 `model_name` is trimmed.
 
+**An account that never opened MaaS.** With `autoMaasSubscribe` on, a sign-in that finds no pair
+asks the client's own `POST {claw}/v1/claw/client-subscription` once and keeps the pair it
+answers. The write is off by default, a failure never fails the sign-in, and the credits it
+creates post later — an empty balance right after the call is normal.
+
 **Requests.** MaaS wants `Authorization: Basic base64(appKey:appSecret)`; the plugin rewrites the
 SDK's Bearer header, strips the `officeace/` model prefix, and sends the request to the MaaS base
 the account's own credential names (official direct when it names none). A `401` (or a `4xx`
@@ -274,6 +279,7 @@ under **Settings → Usage → Plugins**.
 | `retryDelays` | `[2000,4000,6000,8000,10000]` | retry waits in ms (the last repeats) |
 | `queueBudgetMs` | `300000` | how long to wait in the gateway's queue |
 | `thinking` | `true` | `false` stops adding `thinking: { type: "enabled" }` |
+| `autoMaasSubscribe` | `false` | on the OfficeAce card, link the MaaS model gateway for an account that never opened MaaS (a write: it creates the subscription; credits post later) |
 
 ## Credits
 
