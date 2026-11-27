@@ -303,9 +303,18 @@ body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
 put them under `user_message_context.model_info`, and an enterprise seat got
 4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
 config, where Trae's list doesn't carry it, sent no `model_name`, and got
-4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
-the model, the functions tried and the host, and says when the account's
-list doesn't have the model. Context is the list's
+4023 "something went wrong") — **not verified with a real enterprise seat**.
+An enterprise model whose `config_name` a Trae preset has too (Trae CN lists
+`kimi-k3.1-pro` as both, the tenant's one on `aliyuncs`) is listed as
+`<provider>//<config_name>`, as the enterprise console writes it
+(`aliyuncs//kimi-k3.1-pro`), and is still asked by its bare `config_name`
+with `config_source` 2; the preset keeps the bare id. Before 0.2.59 both
+went under the bare id, the preset's entry won, and the enterprise model
+couldn't be asked (#1605). An enterprise model no preset shares a name with
+keeps its `config_name` as its id, and answers to `<provider>//<config_name>`
+too. A refused chat's error names
+the model, the functions tried and the host, says when the account's
+list doesn't have the model, and names a preset's enterprise twin. Context is the list's
 `context_window_tokens.max` for a model measured to serve a prompt past its
 `dev` budget on the base entry (yetone/magpie#5809 and the measurements in
 its follow-up, all on Trae CN; the models are listed in `WIDENED`, and

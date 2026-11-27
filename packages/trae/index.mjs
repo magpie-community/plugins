@@ -1670,7 +1670,10 @@ function sessionOf(headers) {
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
 function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
-  const config = max?.base ?? req.model
+  // an enterprise model is asked by its own config_name, as Trae's client
+  // asks it: the id it is listed under can be its twin id (twinId), which
+  // Trae doesn't know
+  const config = enterpriseModel(entry) && entry.config_name != null ? String(entry.config_name) : max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
     function: fn,
@@ -3894,6 +3897,20 @@ const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
 // enterpriseDetail is the model detail an enterprise model is asked by: its
 // __dev one when it names one, else the first that names a model
 const enterpriseDetail = (m) => devModel(m) ?? (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => d?.model_name)
+// twinId is the id an enterprise model is listed under when a Trae preset
+// has its config_name too: its provider, TWIN, then the name, as the
+// enterprise console writes it (aliyuncs//kimi-k3.1-pro). Trae CN's lists
+// can give one config_name twice, a preset (config_source 1) and the
+// tenant's own model (config_source 2) with a provider of its own, and
+// Trae's client tells them apart by config_source; keyed by the name alone,
+// the preset's __dev entry won the tie and the enterprise one could not be
+// asked at all (plugins#1605, shex816: kimi-k3.1-pro, the preset 4222 on
+// that seat and its aliyuncs twin served in Trae's client). Only a twin is
+// renamed: an enterprise model no preset shares a name with keeps its
+// config_name as its id (AI/deekseek-v4.1-flash, #1258), and the preset
+// keeps the bare name, which is what a request for it asked before.
+const TWIN = "//"
+const twinId = (m) => (String(m?.provider || enterpriseDetail(m)?.provider || "").trim() || "enterprise") + TWIN + String(m?.config_name ?? "")
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
   if (!id) return false
@@ -4302,6 +4319,12 @@ const makePlugin = (site) => async ({ client }) => {
   // the reasoning levels it takes (reasoning_effort_config)
   const liveEntry = new Map()
   const liveEntryOf = (id) => liveEntry.get(String(id)) ?? site.models?.[String(id)]?.entry ?? null
+  // the id each entry of the last read is listed under (idOf): its
+  // config_name, or an enterprise twin's twinId; and each preset that has
+  // an enterprise twin, by its id, so a refusal of the preset names the twin
+  const listedAs = new WeakMap()
+  const idOf = (m) => listedAs.get(m) ?? String(m.config_name)
+  const twins = new Map()
   // when each account's list was last read, and what that read returned:
   // {at, p, done, expired}. A read that answered, failed or hung all leave
   // their stamp, so a list that fails or leaves the model out costs one read
@@ -4411,6 +4434,7 @@ const makePlugin = (site) => async ({ client }) => {
     const kind = enterpriseModel(entry) ? "enterprise built-in model" : "model"
     let out = `${kind} ${id} asked through ${fns.join(", ")} on ${host.replace(/^https?:\/\//, "")}`
     if (!listed && liveEntry.size) out += `; this account's model list doesn't have ${id}, so Trae may not serve it under that id`
+    else if (!enterpriseModel(entry) && twins.has(id)) out += `; this account's enterprise has a model of its own named ${id}, listed as ${twins.get(id)}`
     return out
   }
 
@@ -4799,11 +4823,16 @@ const makePlugin = (site) => async ({ client }) => {
     // entry is misnamed: its name is another model's in the same list, and
     // other lists name it otherwise.
     const nameOf = (m) => String(m.display_config?.display_name || m.display_name || m.display_model_name || m.config_name)
+    // an enterprise model a preset shares its config_name with is its twin,
+    // listed under twinId; every other entry under its config_name
+    const presets = new Set()
+    for (const fn of site.functions) for (const m of lists[fn] ?? []) if (chatModel(m, site) && !enterpriseModel(m)) presets.add(String(m.config_name))
+    const keyOf = (m) => (enterpriseModel(m) && presets.has(String(m.config_name)) ? twinId(m) : String(m.config_name))
     const names = new Map() // id → the names its lists give it, and how many give each
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m, site)) continue
-        const id = String(m.config_name), name = nameOf(m)
+        const id = keyOf(m), name = nameOf(m)
         const by = names.get(id) ?? new Map()
         by.set(name, (by.get(name) ?? 0) + 1)
         names.set(id, by)
@@ -4822,8 +4851,8 @@ const makePlugin = (site) => async ({ client }) => {
       agreed.set(id, most.length === 1 ? most[0][0] : "")
     }
     const misnamed = (fn, m) => {
-      const id = String(m.config_name), name = nameOf(m)
-      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && String(o.config_name) !== id && nameOf(o) === name)
+      const id = keyOf(m), name = nameOf(m)
+      return names.get(id).size > 1 && (lists[fn] ?? []).some((o) => chatModel(o, site) && keyOf(o) !== id && nameOf(o) === name)
     }
     // a function's entry is worth more when it names a __dev model, then
     // when it isn't misnamed, then when it carries the name its lists agree
@@ -4836,17 +4865,20 @@ const makePlugin = (site) => async ({ client }) => {
     // entry that names none while a sibling names some would leave the model
     // with no level to pick although Trae serves it with levels — doubling
     // the three keeps them decisive and lets this only break a tie.
-    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(String(m.config_name)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
+    const worth = (fn, m) => ((devModel(m) ? 2 : 0) + (misnamed(fn, m) ? 0 : 1) + (nameOf(m) === agreed.get(keyOf(m)) ? 1 : 0)) * 2 + (levelsOf(m)?.length ? 1 : 0)
     const out = new Map()
     for (const fn of site.functions) {
       for (const m of lists[fn] ?? []) {
         if (!chatModel(m, site)) continue
-        const id = String(m.config_name)
+        const id = keyOf(m)
         const was = out.get(id)
         if (!was || worth(fn, m) > was.worth) out.set(id, { m, fn, worth: worth(fn, m) })
       }
     }
+    twins.clear()
     for (const [id, { m, fn }] of out) {
+      listedAs.set(m, id)
+      if (id !== String(m.config_name)) twins.set(String(m.config_name), id)
       listedBy.set(id, fn)
       liveEntry.set(id, m)
       const sees = seesOf(m)
@@ -4860,7 +4892,7 @@ const makePlugin = (site) => async ({ client }) => {
       // model, the entries carrying the agreed name first: Trae books the
       // Max under that name too
       const plain = (e) => (nameOf(e.m) === agreed.get(id) ? 0 : 1)
-      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && String(o.config_name) === id).map((o) => ({ m: o, fn: f })))].sort((a, b) => plain(a) - plain(b))
+      const entries = [{ m, fn }, ...site.functions.flatMap((f) => (lists[f] ?? []).filter((o) => o !== m && chatModel(o, site) && keyOf(o) === id).map((o) => ({ m: o, fn: f })))].sort((a, b) => plain(a) - plain(b))
       const max = maxModel(...entries.map((e) => e.m))
       maxes.set(id, max)
       if (max) {
@@ -4870,6 +4902,18 @@ const makePlugin = (site) => async ({ client }) => {
       } else {
         listedBy.delete(id + MAX)
         modelNames.delete(id + MAX)
+      }
+    }
+    // an enterprise model listed under its config_name answers to its twin id
+    // as well, so an id saved while a preset shared its name keeps reaching it
+    // once Trae lists the preset no more
+    for (const [id, { m }] of out) {
+      if (!enterpriseModel(m)) continue
+      const alias = twinId(m)
+      if (alias === id || out.has(alias)) continue
+      for (const [map, from, to] of [[listedBy, id, alias], [liveEntry, id, alias], [sight, id, alias], [modelNames, id, alias], [listedBy, id + MAX, alias + MAX], [modelNames, id + MAX, alias + MAX]]) {
+        if (map.has(from)) map.set(to, map.get(from))
+        else map.delete(to)
       }
     }
     // this account's list has just answered: recorded, so a request that wants
@@ -4893,7 +4937,7 @@ const makePlugin = (site) => async ({ client }) => {
   // reads capabilities.reasoning alone, host.js). The fallback list stays
   // the authority where it has an entry.
   const modelOf = (provider, m) => {
-    const id = String(m.config_name)
+    const id = idOf(m)
     const was = provider.models?.[id] ?? {}
     // context_window_tokens: dev is the budget Trae's own agent asks with;
     // the model's window is its Max one, put on the entry by provider.models
@@ -4971,9 +5015,9 @@ const makePlugin = (site) => async ({ client }) => {
           // re-throwing that same object carries its unhandled state with it
           if (expired) throw new Expired(expired.message)
           if (!ms.length) return provider.models
-          const ids = new Set(ms.map((m) => String(m.config_name)))
+          const ids = new Set(ms.map(idOf))
           return Object.fromEntries(ms.flatMap((m) => {
-            const id = String(m.config_name)
+            const id = idOf(m)
             const own = modelOf(provider, m)
             const max = maxes.get(id)
             // the window the model takes, not the budget Trae's own agent asks
@@ -5025,6 +5069,13 @@ const makePlugin = (site) => async ({ client }) => {
             }
             const signIn = a.renewed ? "renewed" : "kept"
             const who = a.uid || a.name
+            // a twin id asked before the list was read here: Trae knows it by
+            // no name, so the list is read (once per REREAD_MS) for its entry
+            {
+              const asked = String(req.model)
+              const base = asked.endsWith(MAX) ? asked.slice(0, -MAX.length) : asked
+              if (base.includes(TWIN) && !liveEntry.has(base)) await readList(a)
+            }
             // the function that lists the model first, then the one that
             // served this account last, then the rest
             const fns = [...new Set([listedBy.get(String(req.model)), fnOf.get(who), ...site.functions].filter(Boolean))]
@@ -5228,4 +5279,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling }
+export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling, twinId }
