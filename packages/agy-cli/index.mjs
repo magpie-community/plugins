@@ -72,7 +72,7 @@ function maxProcs() {
 function detachedEvictMs() {
   return positiveTimeout(process.env.AGY_BRIDGE_DETACHED_EVICT_MS, 30_000)
 }
-const MAX_PARKED = 32
+const MAX_PARKED = 256
 const DEFAULT_PROC_START_TIMEOUT_MS = 60_000
 const TURN_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_TURN_TIMEOUT_MS, 5 * 60 * 1000)
 const TOOL_RESULT_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_TOOL_TIMEOUT_MS, 30 * 60 * 1000)
@@ -4039,10 +4039,10 @@ function validEntry(entry) {
     Number.isFinite(entry.at) && Date.now() - entry.at <= RESUME_TTL_MS
 }
 
-function loadParked() {
+function loadParked(entries) {
   if (parkedLoaded) return
   parkedLoaded = true
-  for (const entry of readStateFile().filter(validEntry).sort((a, b) => a.at - b.at)) {
+  for (const entry of (entries ?? readStateFile().filter(validEntry)).sort((a, b) => a.at - b.at)) {
     if (!parked.has(entry.key)) parked.set(entry.key, entry)
   }
 }
@@ -4177,7 +4177,15 @@ function resumeWorkspace(workspace) {
 // Why no parked session was taken goes in `miss.reason`: counts and names
 // only, never content (plugins#1495).
 function takeParked(convKey, opts, miss = {}) {
-  loadParked()
+  // The old host can finish parking a turn after this host has loaded the index.
+  const entries = readStateFile().filter(validEntry)
+  loadParked(entries)
+  const lookupKeys = opts.legacyConvKey ? [convKey, opts.legacyConvKey] : [convKey]
+  for (const entry of entries) {
+    if (!lookupKeys.includes(entry.key) || unparked.has(entry.key)) continue
+    const cached = parked.get(entry.key)
+    if (!cached || entry.at > cached.at) parked.set(entry.key, entry)
+  }
   let key = convKey
   let legacy = false
   if (!parked.has(key) && opts.legacyConvKey && parked.has(opts.legacyConvKey)) {
