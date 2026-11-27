@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, expect, test } from "bun:test"
 import { chromiumMicros, cookieBaseline, hostMatches, profileHasNewCookie } from "./lib/cookieProbe.mjs"
-import { waitForConsoleWindow } from "./lib/browser.mjs"
+import { consoleCookieDomain, waitForConsoleWindow } from "./lib/browser.mjs"
 
 let dir = ""
 afterEach(() => {
@@ -104,6 +104,30 @@ test("the probe copy lives in the profile (0700), not the system temp (N6)", () 
   })
   expect(sawPath.startsWith(profile)).toBe(true)
   expect(sawPath.includes("inkstone-cookie-probe")).toBe(true)
+})
+
+test("the production domain is the console's registrable domain, not the public suffix", () => {
+  // 早期实现取最后两段，控制台主机 discovery.intern-ai.org.cn 会得到
+  // org.cn（公共后缀）——库里任何 .org.cn 的 uaa-token 都会被当成控制台
+  // 会话。这里走生产函数，再用它去探针里验一遍。
+  const domain = consoleCookieDomain()
+  expect(domain).toBe("intern-ai.org.cn")
+  const profile = fakeProfileWith([
+    // 同一枚 cookie、未过期、刚写入，但在别的 org.cn 站点上
+    { name: "uaa-token", host_key: ".other.org.cn" },
+  ])
+  expect(profileHasNewCookie(profile, "uaa-token", [], domain)).toBe(false)
+  // 控制台自己的行才算数（对照：同样的行、换成控制台域）
+  rmSync(join(profile, "Default", "Cookies"), { force: true })
+  const { Database } = require("bun:sqlite")
+  const db = new Database(join(profile, "Default", "Cookies"))
+  db.query("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)").run()
+  const now = chromiumMicros()
+  db.query(
+    "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.discovery.intern-ai.org.cn', 'uaa-token', 'ciphertext', ?, ?, ?)",
+  ).run(now, now, chromiumMicros(Date.now() + 86400_000))
+  db.close()
+  expect(profileHasNewCookie(profile, "uaa-token", [], domain)).toBe(true)
 })
 
 test("hostMatches takes the console root, its dot form and its subdomains", () => {
