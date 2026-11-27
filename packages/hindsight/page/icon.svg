@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" role="img" aria-label="Hindsight Memory">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#13202F"/>
+      <stop offset="1" stop-color="#0A111B"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0.15" y1="0.05" x2="0.85" y2="0.95">
+      <stop offset="0" stop-color="#7FF3DD"/>
+      <stop offset="1" stop-color="#3FBFAE"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="17" fill="url(#plate)"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="16.5" stroke="#2B4759" stroke-opacity=".85"/>
+  <path d="M19.47 21.11A16.6 16.6 0 1 0 44.53 21.11" stroke="url(#mark)" stroke-width="4.9" stroke-linecap="round"/>
+  <path d="M47.55 18.49L41.97 18.17L41.51 23.73Z" fill="url(#mark)" stroke="url(#mark)" stroke-width="1.1" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="5" fill="url(#mark)"/>
+</svg>
