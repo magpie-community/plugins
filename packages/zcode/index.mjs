@@ -33,12 +33,6 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
-// APP_VERSION is the ZCode this signs in and asks as, on every call. ZCode
-// gates by it: its marketing feed answers empty to an older one (#678),
-// and its Start Plan balance "judges capability by the real app_version"
-// (zaiStartPlanBilling.ts in zai-org/ZCode@a9fe401, 3.17.2).
-const APP_VERSION = "3.17.2"
-const UA = "ZCode/" + APP_VERSION
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
 const MODELS = [
@@ -324,16 +318,52 @@ function spentUp(text, status) {
   return c1 === "1113" || c1 === "1005" || c2 === "1113" || c2 === "1005"
 }
 
+// refusedEnvelope is ZCode answering a client version it will not serve
+// (plugins#1639): a 200 whose whole body is {"code":0,"msg":"","logid":"…"} —
+// no error and no content, no frames — which magpie took for a reply that
+// did not stream and an agent took for a stream that ended without a stop
+// reason (plugins#1635). What answers a request carries content, choices or
+// data; a stream's body opens with a frame's event: line, and is no JSON.
+function refusedEnvelope(text) {
+  if (text.length > 1024) return false
+  let b
+  try {
+    b = JSON.parse(text)
+  } catch {
+    return false
+  }
+  if (!b || typeof b !== "object") return false
+  if (String(b.code ?? "") !== "0" || b.msg) return false
+  return !["data", "error", "content", "choices", "result", "usage", "parts", "candidates"].some((k) => k in b)
+}
+
+// versionRefused says that as the 400 it is: a version to settle, which
+// magpie neither rests an account for nor asks again eight times, as it did
+// a thrown error's 502 (plugins#1020). The words name both versions, so the
+// way out — update this plugin, or say the version to ask as — is in the
+// error the user sees.
+function versionRefused() {
+  const installed = installedAppVersion()
+  const message =
+    `ZCode answered this request with an empty {"code":0,"msg":""} rather than a reply: the client version asked as (${APP_VERSION}) is one it no longer serves` +
+    (installed ? `, while the client installed here is ${installed}` : `, and no ZCode client is installed here to take one from`) +
+    ". Update this plugin, or set ZCODE_APP_VERSION to the client's version, and ask again."
+  const error = { type: "invalid_request_error", message }
+  return new Response(JSON.stringify({ type: "error", error }), { status: 400, statusText: STATUS_TEXT[400], headers: { "content-type": "application/json" } })
+}
+
 // spentSaid is an answer that carries spentUp's code inside a 200, as a
 // spent bucket's can, said as the 429 it is (plugins#817: a Start Plan
 // account's GLM-5.3 out for the day answered 200 "exceed quota limit",
 // which magpie took for a reply that did not stream and rested the whole
-// account, GLM-5.3-Flash's own bucket with it). Any other answer goes on
-// as it came; a stream's body is never read here.
+// account, GLM-5.3-Flash's own bucket with it), and one that carries nothing
+// at all (refusedEnvelope), said as versionRefused does. Any other answer
+// goes on as it came; a stream's body is never read here.
 async function spentSaid(res) {
   if (res.status >= 400 || !(res.headers.get("content-type") ?? "").includes("application/json")) return res
   const text = await res.text()
   const status = spentUp(text, res.status) ? 429 : res.status
+  if (status === 200 && refusedEnvelope(text)) return versionRefused()
   return new Response(text, { status, statusText: status === 429 ? "Too Many Requests" : res.statusText, headers: res.headers })
 }
 
@@ -1639,6 +1669,71 @@ function dataIn() {
 
 // zcodeDir is where ZCode keeps credentials.json and runtime/provider.
 const zcodeDir = () => join(dataIn(), ".zcode", "v2")
+
+// ---- the version asked as (plugins#1639) ---------------------------------------------
+// APP_VERSION is the ZCode this signs in and asks as, on every call. ZCode
+// gates by it: its marketing feed answers empty to an older one (#678), and
+// its Start Plan balance "judges capability by the real app_version"
+// (zaiStartPlanBilling.ts in zai-org/ZCode@a9fe401, 3.17.2). Asked as a
+// version it has moved past, the plan's endpoint stops answering with an
+// error: it sends 200 {"code":0,"msg":"","logid":"…"} — no error, no frames —
+// which magpie took for a reply that did not stream, rested the account and
+// said 502, and an agent took for a stream that ended without a stop reason
+// (plugins#1635). So what is asked as is the version of the client installed
+// here, and FALLBACK_APP_VERSION only when none is found.
+const FALLBACK_APP_VERSION = "3.17.2"
+
+// SEMVER is a folder ZCode unpacks one engine into, a version of its own: it
+// keeps one per version it can fall back to, under runtime/provider.
+const SEMVER = /^\d+\.\d+\.\d+$/
+
+// ENGINE names the platform folder as ZCode's Rust runtime does, which is not
+// how platform() names a machine: windows-x86_64, mac-arm64, linux-x86_64.
+const ENGINE = {
+  "win32-x64": "windows-x86_64",
+  "darwin-x64": "mac-x86_64",
+  "darwin-arm64": "mac-arm64",
+  "linux-x64": "linux-x86_64",
+  "linux-arm64": "linux-aarch64",
+}
+
+const dirNames = (dir) => {
+  try {
+    return readdirSync(dir)
+  } catch {
+    return []
+  }
+}
+
+// installedAppVersion is the ZCode client installed here: the highest engine
+// version it unpacked, which is the one it starts. "" when it has none — not
+// installed, not yet started, or unpacked under a platform folder named
+// otherwise than ENGINE guesses, the whole place read then — and root is
+// where the engines are, for a test that has no ZCode of its own.
+function installedAppVersion(root = join(zcodeDir(), "runtime", "provider")) {
+  const ours = ENGINE[platform()]
+  let names = ours ? dirNames(join(root, ours)) : []
+  if (!names.length) for (const d of dirNames(root)) names = names.concat(dirNames(join(root, d)))
+  const num = (v) => v.split(".").map(Number)
+  return names
+    .filter((n) => SEMVER.test(n))
+    .sort((a, b) => {
+      const [x, y] = [num(a), num(b)]
+      return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
+    })
+    .pop() ?? ""
+}
+
+// appVersion is the version to ask as: ZCODE_APP_VERSION when it names one
+// (a client ZCode gates too, before the next release reads it from here),
+// else the client installed, else the one this plugin was written against.
+const appVersion = (root) => {
+  const forced = (process.env.ZCODE_APP_VERSION ?? "").trim()
+  if (SEMVER.test(forced)) return forced
+  return installedAppVersion(root) || FALLBACK_APP_VERSION
+}
+const APP_VERSION = appVersion()
+const UA = "ZCode/" + APP_VERSION
 
 // secret is the key ZCode encrypts its credentials with.
 function secret() {
@@ -4107,4 +4202,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, osKeys, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, spentSaid, refusedEnvelope, versionRefused, APP_VERSION, FALLBACK_APP_VERSION, appVersion, installedAppVersion, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, osKeys, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }
