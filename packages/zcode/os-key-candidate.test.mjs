@@ -1,38 +1,56 @@
-import { expect, mock, test } from "bun:test"
+import { afterAll, expect, mock, test } from "bun:test"
+import * as cp from "node:child_process"
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import * as os from "node:os"
 import { join } from "node:path"
 
 const oldKey = randomBytes(32).toString("base64url")
 const activeKey = randomBytes(32).toString("base64url")
 let credentialReads = 0
 
-// both store readers share the read counter, so whichever platform runs the
+// bun test runs every package's files in one process, and a module mock
+// stays for the whole run: a mock that answered every execFileSync with a
+// key broke inkstone's fake browser, doubao-work's process list and agy's
+// smoke test in the root run. So both mocks pass through to the real
+// functions, and fake only while this file's test runs (`faking`).
+//
+// Both store readers share the read counter, so whichever platform runs the
 // test sees the home entry first and the moved folder's second: a store CLI
 // (secret-tool, security) prints the password itself, Windows' CredReadW
-// wrapper prints the blob as base64 (the password UTF-16LE within)
-mock.module("node:child_process", () => ({
-  execFileSync() {
-    const key = credentialReads++ === 0 ? oldKey : activeKey
-    return key
-  },
-  execSync() {
-    const key = credentialReads++ === 0 ? oldKey : activeKey
-    return Buffer.from(key, "utf16le").toString("base64")
-  },
-}))
+// wrapper prints the blob as base64 (the password UTF-16LE within).
+let faking = false
+const { execFileSync: realExecFileSync, execSync: realExecSync } = cp
+function execFileSync(...args) {
+  if (!faking) return realExecFileSync(...args)
+  return credentialReads++ === 0 ? oldKey : activeKey
+}
+function execSync(...args) {
+  if (!faking) return realExecSync(...args)
+  const key = credentialReads++ === 0 ? oldKey : activeKey
+  return Buffer.from(key, "utf16le").toString("base64")
+}
+mock.module("node:child_process", () => ({ ...cp, default: { ...cp, execFileSync, execSync }, execFileSync, execSync }))
 
-const home = mkdtempSync(join(tmpdir(), "zcode-home-"))
-const moved = mkdtempSync(join(tmpdir(), "zcode-moved-"))
+// bun's os.homedir() keeps the home the process started with, so the plugin
+// would read the real ~/.zcode and never the store this test writes. homedir
+// reads HOME (USERPROFILE) when called, as Node's does, so other packages see
+// the started home again once the environment is put back.
+const started = os.homedir()
+const homedir = () => (process.platform === "win32" ? process.env.USERPROFILE : process.env.HOME) || started
+mock.module("node:os", () => ({ ...os, default: { ...os, homedir }, homedir }))
+
+const outside = { ...process.env }
+afterAll(() => {
+  for (const key of Object.keys(process.env)) if (!(key in outside)) delete process.env[key]
+  Object.assign(process.env, outside)
+})
+
+const home = mkdtempSync(join(os.tmpdir(), "zcode-home-"))
+const moved = mkdtempSync(join(os.tmpdir(), "zcode-moved-"))
 process.env.HOME = home
 process.env.USERPROFILE = home
 process.env.LOCALAPPDATA = join(home, "LocalAppData")
-// bun's os.homedir() keeps the account's own home from before the line
-// above, so the plugin would read the real ~/.zcode and never the store
-// this test writes.
-const realOs = await import("node:os")
-mock.module("node:os", () => ({ ...realOs, homedir: () => home, default: { ...realOs, homedir: () => home } }))
 delete process.env.ZCODE_CREDENTIAL_SECRET
 delete process.env.ZCODE_CREDENTIAL_SECRET_FILE
 
@@ -61,10 +79,16 @@ test("a moved ZCode data folder uses the matching credential-store entry", async
   }
   writeFileSync(join(activeStore, "credentials.json"), JSON.stringify(credentials))
 
-  const { ZCodeAuthPlugin } = await import("./index.mjs")
-  const hooks = await ZCodeAuthPlugin({ client: {} })
-  const method = hooks.auth.methods.find((item) => item.label === "ZCode app's sign-in")
-  const result = await (await method.authorize()).callback()
+  faking = true
+  let result
+  try {
+    const { ZCodeAuthPlugin } = await import("./index.mjs")
+    const hooks = await ZCodeAuthPlugin({ client: {} })
+    const method = hooks.auth.methods.find((item) => item.label === "ZCode app's sign-in")
+    result = await (await method.authorize()).callback()
+  } finally {
+    faking = false
+  }
 
   expect(result.type).toBe("success")
   expect(result.accountId).toBe("Bo")
