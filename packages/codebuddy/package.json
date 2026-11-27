@@ -1,0 +1,35 @@
+{
+  "name": "@magpie-community/opencode-codebuddy-auth",
+  "version": "0.1.0",
+  "description": "Tencent CodeBuddy (copilot.tencent.com) as an OpenCode/magpie provider, signed in with the local CodeBuddy desktop login — no browser",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "codebuddy",
+    "tencent"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
+  "magpie": {
+    "icon": "https://download.codebuddy.cn/web/website/46f66813590b297a89220cdb11f02726dfcc3e26/assets/logo.svg",
+    "maxConcurrency": 2
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/codebuddy"
+  }
+}
