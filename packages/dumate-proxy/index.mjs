@@ -340,7 +340,7 @@ export const DuMateProxyPlugin = async (input = {}) => {
       icon: ICON,
       importFrom: "从文件导入账号：选 auth.json 和 cookie-key.txt；文件框只接受 .json/.txt，可用 export-dumate-auth.ps1 生成这两个可导入文件",
       importFroms: {
-        zh: "文件框只显示 .json/.txt。先在本机运行 tools/export-dumate-auth.ps1，再在导入窗口选 auth.json 和 cookie-key.txt；也可选 dumate-import.json。",
+        zh: "文件框只显示 .json/.txt。运行 export-dumate-auth.ps1 -OutDir 后，在导入窗口选 auth.json 和 cookie-key.txt，或只选 dumate-import.json。",
         en: "Run tools/export-dumate-auth.ps1 locally, then choose auth.json and cookie-key.txt, or dumate-import.json.",
       },
       async import(texts) {
