@@ -1,59 +1,43 @@
 import { configuration } from "../lib/config.mjs";
+import { ApiError, Hindsight } from "../lib/hindsight.mjs";
 
 const HEALTHY = new Set(["healthy", "ok", "ready", "up"]);
-const MAX_HEALTH_BYTES = 65536;
-
-async function readHealth(response) {
-  if (!response.body) return null;
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let size = 0;
-  let text = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_HEALTH_BYTES) {
-        await reader.cancel();
-        return null;
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    const data = JSON.parse(text);
-    if (!data || typeof data !== "object" || typeof data.status !== "string") return "invalid";
-    if (!HEALTHY.has(data.status)) return "invalid";
-    return data.database === undefined || data.database === "connected" ? "connected" : "unavailable";
-  } catch {
-    try { await reader.cancel(); } catch { /* The response is already closed. */ }
-    return null;
-  }
-}
+const numeric = value => Number.isFinite(value) && value >= 0 ? value : null;
 
 export async function testConnection(options = {}, fetcher = fetch) {
-  const started = Date.now();
-  const raw = options && typeof options === "object" && !Array.isArray(options) ? options : {};
-  const timeoutMs = Number.isInteger(raw.gatewayTimeoutMs) ? raw.gatewayTimeoutMs : 5000;
+  const start = Date.now();
   let config;
-  try { config = configuration({ ...raw, gatewayTimeoutMs: timeoutMs }); }
-  catch { return { ok: false, code: "invalid-options", ms: Date.now() - started, bank: typeof raw.bank === "string" ? raw.bank : "" }; }
+  try { config = configuration(options); }
+  catch (error) { return { api: "invalid-options", bankStatus: "unverified", field: error.message.split(": ").at(-1), checkedAt: start }; }
 
-  let response;
+  const client = new Hindsight(config, fetcher);
+  const result = { api: "unavailable", database: "unverified", bank: config.bank, bankStatus: "unverified", checkedAt: start };
+  const errorCode = error => error instanceof ApiError ? error.code : "unavailable";
+  const elapsed = () => Date.now() - start;
   try {
-    response = await fetcher(`${config.hindsight_api}/health`, {
-      method: "GET",
-      headers: { "Accept": "application/json", "User-Agent": "magpie-hindsight-page/0.1.0" },
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-  } catch {
-    return { ok: false, code: "unavailable", ms: Date.now() - started, bank: config.bank };
+    const health = await client.request("/health", undefined, { timeoutMs: 2500 });
+    if (!HEALTHY.has(health?.status)) return { ...result, api: "invalid", ms: elapsed() };
+    result.api = "connected";
+    result.database = health.database === undefined ? "unverified" : health.database === "connected" ? "connected" : "unavailable";
+  } catch (error) {
+    return { ...result, api: errorCode(error), ms: elapsed() };
   }
-  if (!response.ok) {
-    try { await response.body?.cancel(); } catch { /* Ignore cleanup failures. */ }
-    return { ok: false, code: [401, 403].includes(response.status) ? "unauthorized" : response.status === 404 ? "invalid" : "unavailable", ms: Date.now() - started, bank: config.bank };
+  if (result.database === "unavailable") return { ...result, ms: elapsed() };
+
+  try {
+    const data = await client.request("/v1/default/banks?q=" + encodeURIComponent(config.bank) + "&limit=100", undefined, { timeoutMs: 2500 });
+    if (!Array.isArray(data?.banks)) throw new ApiError("invalid");
+    if (!data.banks.some(bank => bank?.bank_id === config.bank)) {
+      return { ...result, bankStatus: Number(data.total) > data.banks.length ? "unverified" : "not-listed", ms: elapsed() };
+    }
+    result.bankStatus = "listed";
+    const stats = await client.request(client.bankPath("/stats"), undefined, { timeoutMs: 2500 });
+    if (stats?.bank_id !== config.bank || !Number.isFinite(stats.total_documents)) throw new ApiError("invalid");
+    result.bankStatus = "accessible";
+    result.stats = { documents: numeric(stats.total_documents), memories: numeric(stats.total_nodes),
+      pending: numeric(stats.pending_operations), failed: numeric(stats.failed_operations) };
+  } catch (error) {
+    result.bankStatus = errorCode(error);
   }
-  const code = await readHealth(response) ?? "invalid";
-  return { ok: code === "connected", code, ms: Date.now() - started, bank: config.bank };
+  return { ...result, ms: elapsed() };
 }

@@ -1,133 +1,174 @@
-// Magpie pages have no network access. This loopback service checks only the
-// saved plugin options; the page cannot supply a URL, bank or request payload.
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { activity } from "../lib/activity.mjs";
+import { inventory } from "../lib/agents.mjs";
+import { agentId, agentPolicy, configuration, DEFAULTS } from "../lib/config.mjs";
+import { hash } from "../lib/turns.mjs";
 import { testConnection } from "./probe.mjs";
 
-const DEFAULT_PORT = 3482;
-const TOKEN = randomBytes(32).toString("hex");
 const TOKEN_HEADER = "x-hindsight-token";
-let running;
-let pluginOptions = {};
+const MAX_BODY = 32768;
+const UI = ["workbench.html", "style.css", "workbench.js"];
+const PERIODS = new Set([24, 168, 720]);
 
-function page(port) {
-  return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="hindsight-token" content="${TOKEN}"><title>Hindsight · 连接测试</title>
-<style>
-:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;background:#0b1016;color:#e6edf3}
-body{max-width:620px;margin:0 auto;padding:32px 20px}main{padding:22px;border:1px solid #263442;border-radius:12px;background:#111922}
-h1{margin:0 0 8px;font-size:20px}p{color:#8b9aaa;line-height:1.6}strong{color:#e6edf3}code{color:#5eead4}
-button{margin:8px 8px 0 0;padding:7px 14px;border:1px solid #5eead4;border-radius:7px;background:#5eead4;color:#062622;font:inherit;cursor:pointer}
-button.secondary{border-color:#263442;background:transparent;color:#e6edf3}button:disabled{opacity:.45}
-#state{min-height:48px;margin:16px 0;padding:12px;border:1px solid #263442;border-radius:8px;background:#0e151d;white-space:pre-wrap}
-</style></head><body><main>
-<h1>Hindsight API 连接测试</h1>
-<p>使用插件已保存的配置调用 <code>GET /health</code>。测试不会读取记忆内容，也不会传递或显示密钥。</p>
-<div id="state" role="status" aria-live="polite">点击下方“开始测试”检查 API 与数据库可达性。</div>
-<button id="run" type="button">开始测试</button><button id="back" class="secondary" type="button">返回设置</button>
-</main><script>
-(() => {
-  const state = document.getElementById("state");
-  const run = document.getElementById("run");
-  const token = document.querySelector('meta[name="hindsight-token"]').content;
-  const messages = {
-    connected: "连接正常：Hindsight API 可达，数据库已连接。",
-    unavailable: "连接失败：API 不可达、数据库未就绪或请求超时。",
-    unauthorized: "连接失败：API 拒绝了健康检查请求。",
-    invalid: "连接失败：响应不是可识别的 Hindsight 健康状态，请检查 API 地址。",
-    "invalid-options": "无法测试：已保存的插件配置无效，请返回设置检查。"
-  };
-  run.addEventListener("click", async () => {
-    run.disabled = true;
-    state.textContent = "正在测试连接…";
-    try {
-      const response = await fetch(location.href, {
-        method: "POST",
-        credentials: "omit",
-        headers: { "x-hindsight-token": token, "Accept": "application/json" }
-      });
-      const result = await response.json();
-      state.textContent = result.ok
-        ? "连接成功：API 与数据库可用。\\nbank：" + (result.bank || "hermes") + "\\n耗时：" + (result.ms ?? "—") + " ms"
-        : (messages[result.code] || "连接失败：测试服务返回了未知状态。") + "\\nbank：" + (result.bank || "hermes") + "\\n耗时：" + (result.ms ?? "—") + " ms";
-    } catch {
-      state.textContent = "连接失败：本地测试服务没有响应。";
-    } finally {
-      run.disabled = false;
+async function readBody(req) {
+  const contentLength = Number(req.headers.get("content-length"));
+  if (contentLength > MAX_BODY) return undefined;
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_BODY) return undefined;
+    chunks.push(Buffer.from(chunk));
+  }
+  try { return size ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}; }
+  catch { return undefined; }
+}
+
+function authorized(req, token) {
+  const value = req.headers.get(TOKEN_HEADER) || "";
+  return value.length === token.length && Buffer.byteLength(value) === token.length &&
+    timingSafeEqual(Buffer.from(value), Buffer.from(token));
+}
+
+function configView(options, snapshot, rows, hints) {
+  const config = configuration(options);
+  const agents = new Map(snapshot.agents.map(agent => [agent.id, agent]));
+  for (const name of [...config.agents, ...Object.keys(config.agent_policies), ...hints, ...rows.map(row => row.agent)]) {
+    const id = agentId(name);
+    if (id && agents.size < 192 && !agents.has(id))
+      agents.set(id, { id, name: id === "unknown" ? "未识别调用方" : id });
+  }
+  const data = [...agents.values()].map(agent => {
+    const native = agent.native ?? snapshot.native[agent.id] ?? {};
+    return { ...agent, native,
+      fromUsage: hints.includes(agent.id),
+      legacySelected: config.agents.includes(agent.id),
+      policy: agentPolicy(config, agent.id === "unknown" ? "" : agent.id, native)
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  return { agents: data, mode: config.agent_mode, revision: hash(config).slice(0, 12) };
+}
+
+export function createService({ fetcher = fetch, readInventory = inventory, stats = activity } = {}) {
+  const token = randomBytes(32).toString("hex");
+  const nonce = randomBytes(24).toString("base64");
+  let templates;
+  let options = {};
+  let checked;
+  let probe;
+  let lastProbeAt = 0;
+
+  async function page(port) {
+    templates ??= Promise.all(UI.map(name => readFile(new URL(name, import.meta.url), "utf8")));
+    const [html, css, script] = await templates;
+    const body = html.replaceAll("%%NONCE%%", nonce).replace("%%TOKEN%%", token)
+      .replace("/* %%STYLE%% */", () => css).replace("/* %%SCRIPT%% */", () => script);
+    return new Response(body, { headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; " +
+        "script-src 'nonce-" + nonce + "'; style-src 'nonce-" + nonce + "'; connect-src 'self' http://127.0.0.1:" + port + " http://localhost:" + port
+    } });
+  }
+
+  async function handle(req, server) {
+    const hosts = ["127.0.0.1:" + server.port, "localhost:" + server.port];
+    const headerHost = req.headers.get("host")?.toLowerCase();
+    if (!hosts.includes(headerHost)) return new Response("Forbidden", { status: 403 });
+    const path = new URL(req.url).pathname;
+    if (req.method === "GET" && ["/", "/workbench", "/test"].includes(path)) return page(server.port);
+    if (!["/api/status", "/api/preview", "/api/check", "/test"].includes(path)) return new Response("Not found", { status: 404 });
+    const origin = req.headers.get("origin");
+    if (origin !== null && origin !== "null" && !hosts.some(host => origin === "http://" + host))
+      return new Response("Forbidden", { status: 403 });
+    const headers = { "Cache-Control": "no-store" };
+    if (origin === "null") {
+      headers["Access-Control-Allow-Origin"] = "null";
+      headers["Access-Control-Allow-Headers"] = TOKEN_HEADER + ", content-type";
+      headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+      headers.Vary = "Origin";
     }
-  });
-  document.getElementById("back").addEventListener("click", () => {
-    if (history.length > 1) history.back();
-    else state.textContent = "请关闭此测试页并重新打开插件设置。";
-  });
-})();
-</script></body></html>`;
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+    if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers });
+    if (!authorized(req, token)) return Response.json({ error: "forbidden" }, { status: 403, headers });
+    const input = await readBody(req);
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      return Response.json({ error: "invalid-input" }, { status: 400, headers });
+    }
+    const reply = data => Response.json(data, { headers });
+    try {
+      if (path === "/api/check" || path === "/test") {
+        const candidate = input.options ?? options;
+        if (probe || Date.now() - lastProbeAt < 1000) return reply({ error: "check-busy" });
+        const saved = input.options === undefined;
+        lastProbeAt = Date.now();
+        probe = testConnection(candidate, fetcher);
+        try {
+          const result = await probe;
+          if (saved && candidate === options) checked = result;
+          return reply(result);
+        } finally { probe = undefined; }
+      }
+      const hours = PERIODS.has(input.hours) ? input.hours : 24;
+      const hints = Array.isArray(input.hints) ? input.hints.slice(0, 40).map(agentId).filter(Boolean) : [];
+      const [native, events] = await Promise.all([readInventory(input.refresh === true), stats.summary(hours)]);
+      if (path === "/api/preview") return reply(configView(input.options, native, events.rows, hints));
+      let config;
+      try { config = configuration(options); } catch { /* The settings page can recover invalid saved options. */ }
+      if (config) void stats.poll(config).catch(() => {});
+      return reply({
+        ...(config ? configView(options, native, events.rows, hints) : { agents: native.agents, invalid: true }),
+        activity: events,
+        connection: checked ?? null,
+        nativeLogs: native.nativeLogs,
+        discoveredAt: native.checkedAt
+      });
+    } catch (error) {
+      const invalid = error.message?.startsWith("invalid plugin option:");
+      return reply(invalid ? { error: "invalid-options", field: error.message.split(": ").at(-1) } : { error: "service-unavailable" });
+    }
+  }
+
+  return {
+    handle,
+    options(next) {
+      if (hash(next ?? {}) !== hash(options)) checked = undefined;
+      options = next ?? {};
+    },
+    poll() {
+      let config;
+      try { config = configuration(options); } catch { return; }
+      void stats.poll(config).catch(() => {});
+    }
+  };
 }
 
-function html(port) {
-  return new Response(page(port), { headers: {
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' http://127.0.0.1:${port} http://localhost:${port}`
-  } });
-}
-
-function cors(origin) {
-  return origin === "null" ? {
-    "Access-Control-Allow-Origin": "null",
-    "Access-Control-Allow-Headers": TOKEN_HEADER,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    Vary: "Origin"
-  } : {};
-}
-
-async function handle(req, server) {
-  const hosts = [`127.0.0.1:${server.port}`, `localhost:${server.port}`];
-  if (!hosts.includes(req.headers.get("host")?.toLowerCase()))
-    return new Response("Forbidden", { status: 403 });
-  if (new URL(req.url).pathname !== "/test")
-    return new Response("Not found", { status: 404 });
-  if (req.method === "GET") return html(server.port);
-  if (req.method !== "POST" && req.method !== "OPTIONS")
-    return new Response("Method not allowed", { status: 405 });
-  const origin = req.headers.get("origin");
-  if (origin !== null && origin !== "null" && !hosts.some(host => origin === `http://${host}`))
-    return new Response("Forbidden", { status: 403 });
-  const headers = { ...cors(origin), "Cache-Control": "no-store" };
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
-
-  const supplied = Buffer.from(req.headers.get(TOKEN_HEADER) || "");
-  const expected = Buffer.from(TOKEN);
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
-    return Response.json({ ok: false, code: "forbidden" }, { status: 403, headers });
-  return Response.json(await testConnection(pluginOptions), { headers });
-}
-
+const service = createService();
+let running;
+let timer;
 export default {
   id: "magpie-hindsight",
   async server(_input, options) {
-    const port = options?.port ?? DEFAULT_PORT;
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      console.warn("[magpie-hindsight] Invalid connection test port. Choose a port from 1024 to 65535 in plugin settings.");
-      return {};
-    }
-    if (running?.port === port) {
-      pluginOptions = options ?? {};
-      return {};
-    }
+    const port = options?.port ?? DEFAULTS.port;
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) return {};
+    service.options(options);
+    if (running?.port === port) return {};
     let server;
-    try {
-      server = Bun.serve({ hostname: "127.0.0.1", port, fetch: handle });
-    } catch {
-      console.warn(`[magpie-hindsight] Connection test could not listen on port ${port}. Choose a free port in plugin settings.`);
+    try { server = Bun.serve({ hostname: "127.0.0.1", port, fetch: service.handle }); }
+    catch {
+      console.warn("[magpie-hindsight] Workbench could not listen on its local port.");
       return {};
     }
     running?.stop(true);
+    clearInterval(timer);
     running = server;
-    pluginOptions = options ?? {};
+    timer = setInterval(service.poll, 15000);
+    timer.unref?.();
     return { close() {
       if (running !== server) return;
+      clearInterval(timer);
       server.stop(true);
       running = undefined;
     } };

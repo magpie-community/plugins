@@ -2,143 +2,156 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
+import { createService } from "./service.mjs";
 import { testConnection } from "./probe.mjs";
 
-const read = name => readFile(new URL(`./${name}`, import.meta.url), "utf8");
+const load = file => readFile(new URL(file, import.meta.url), "utf8");
+const fixturePort = 3482;
+const base = "http://127.0.0.1:" + fixturePort;
 
-function pageCalls(source) {
-  return [...source.matchAll(/\bmagpie\s*(?:\?\.|\.)\s*([\w$]+(?:\s*(?:\?\.|\.)\s*[\w$]+)*)/g)]
-    .map(([, call]) => call.replace(/\s/g, "").replaceAll("?.", "."));
+function server(call) {
+  const used = [];
+  const factory = createService({
+    fetcher: async (url, init) => {
+      used.push({ url, init });
+      return await call?.(url, init) ?? backend(url);
+    },
+    readInventory: async () => ({
+      agents: [{ id: "dsh", name: "DeepSeek Harness", installed: true, native: { recall: "active", capture: "inactive" } }],
+      native: {}, checkedAt: 1
+    }),
+    stats: { summary: async () => ({ rows: [], recent: [] }), poll: async () => {} }
+  });
+  const handle = (path, args = {}) => factory.handle(new Request(base + path, {
+    ...args, headers: { host: "127.0.0.1:" + fixturePort, ...args.headers }
+  }), { port: fixturePort });
+  return { ...factory, handle, used };
 }
 
-test("settings HTML exposes plugin option fields and status regions", async () => {
-  const html = await read("settings.html");
-  const ids = [
-    "form", "hindsight_api", "bank", "recall_max_tokens", "capture", "agents",
-    "gatewayTimeoutMs", "port", "allowRemote", "allowInsecureHttp", "save", "test-connection",
-    "status", "status-bank", "status-api", "status-agents"
-  ];
-  for (const id of ids) assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
-  assert.match(html, /<script src=["']_magpie\/bridge\.js["'] defer><\/script>/);
-  assert.doesNotMatch(html, /<script(?![^>]*src=)[^>]*>/);
-  assert.doesNotMatch(html, /\stype=["']password["']/);
-  assert.match(html, /hermes \/ dsh/);
-});
+function backend(url) {
+  if (url.endsWith("/health")) return Response.json({ status: "healthy", database: "connected" });
+  if (url.includes("/banks?q=")) return Response.json({ banks: [{ bank_id: "hermes" }], total: 1 });
+  if (url.endsWith("/banks/hermes/stats")) return Response.json({ bank_id: "hermes", total_documents: 4, total_nodes: 5, content: "private" });
+  return new Response("no", { status: 404 });
+}
 
-test("settings script parses and uses only the released options/service bridge", async () => {
-  const source = await read("settings.js");
-  new Script(source, { filename: "settings.js" });
-  assert.doesNotMatch(source, /\b(fetch|XMLHttpRequest|WebSocket|EventSource)\b/);
-  assert.doesNotMatch(source, /\bmagpie\s*\[|\b(?:window|globalThis)\s*\[\s*["']magpie["']\s*\]/);
-  const allowed = ["service", "options.get", "options.set", "ready.then"];
-  assert.deepEqual([...new Set(pageCalls(source))].sort(), [...allowed].sort());
-  assert.ok(pageCalls(source).every(call => allowed.includes(call)));
-  for (const key of ["hindsight_api", "bank", "recall_max_tokens", "capture", "agents", "gatewayTimeoutMs", "allowRemote", "allowInsecureHttp"])
-    assert.match(source, new RegExp(`\\b${key}\\b`));
-  assert.match(source, /location\.assign/);
-});
+async function tokenFor(handle) {
+  const response = await handle("/workbench");
+  const html = await response.text();
+  return html.match(/name="hindsight-token" content="([a-f0-9]+)"/)?.[1];
+}
 
-test("save uses the Magpie bridge even when the sandbox blocks form submission", async () => {
+test("settings launcher keeps a sandbox-safe options bridge and port recovery", async () => {
+  const html = await load("settings.html");
+  assert.match(html, /_magpie\/bridge\.js/);
+  const script = await load("settings.js");
   const fields = new Map();
   const field = id => {
-    if (!fields.has(id)) fields.set(id, {
-      dataset: {}, events: {}, checked: false,
-      addEventListener(name, callback) { this.events[name] = callback; }
-    });
+    if (!fields.has(id)) fields.set(id, { dataset: {}, events: {}, addEventListener(name, callback) { this.events[name] = callback; } });
     return fields.get(id);
   };
-  let options = { bank: "hermes", agents: ["claude", "codex", "opencode"], gatewayTimeoutMs: 8000, custom: true };
-  const ready = Promise.resolve();
-  new Script(await read("settings.js")).runInNewContext({
-    document: { getElementById: field }, window: { addEventListener() {} }, URL,
-    magpie: { ready, options: { get: async () => options, set: async next => { options = next; return options; } } }
+  const opened = [];
+  let options = { bank: "hermes", agents: ["claude"], unrelated: true };
+  const magpie = { ready: Promise.resolve(), service: "", options: { get: async () => options, set: async next => { options = next; } } };
+  new Script(script).runInNewContext({
+    document: { getElementById: field }, window: { magpie }, magpie,
+    URLSearchParams, location: { search: "?recovery=1", assign: url => opened.push(url) }
   });
   await new Promise(resolve => setImmediate(resolve));
-  field("agents").value = "claude,opencode";
-  field("form").events.input();
-  await field("save").events.click?.();
-  assert.deepEqual(Array.from(options.agents), ["claude", "opencode"]);
-  assert.equal(options.gatewayTimeoutMs, 8000);
-  assert.equal(options.custom, true);
-  assert.match(field("status").textContent, /配置已保存/);
-  assert.match(field("save-status").textContent, /配置已保存/);
+  field("port").valueAsNumber = 4382;
+  await field("save-port").events.click();
+  assert.deepEqual(opened, ["http://127.0.0.1:4382/workbench"]);
+  assert.equal(options.port, 4382);
+  assert.equal(options.unrelated, true);
 });
 
-test("health probe performs a minimal GET without reading memories", async () => {
-  let seen;
-  const result = await testConnection({ hindsight_api: "http://127.0.0.1:8888", bank: "hermes" }, async (url, init) => {
-    seen = { url, init };
-    return new Response(JSON.stringify({ status: "healthy", database: "connected", ignored: "not returned" }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" }
-    });
+test("workbench response has scoped CSP, a nonce and no unresolved assets", async () => {
+  const { handle } = server();
+  const response = await handle("/workbench");
+  assert.equal(response.status, 200);
+  const csp = response.headers.get("content-security-policy");
+  assert.match(csp, /default-src 'none'/);
+  assert.doesNotMatch(csp, /unsafe-inline/);
+  const html = await response.text();
+  assert.doesNotMatch(html, /%%/);
+  for (const id of ["bank-state", "agent-rows", "activity-totals", "check-draft", "mode-help", "save"]) assert.ok(html.includes('id="' + id + '"'));
+  assert.doesNotThrow(() => new Script(html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1]));
+});
+
+test("draft probe distinguishes API, database and the exact existing bank without a recall", async () => {
+  const calls = [];
+  const result = await testConnection({ bank: "hermes" }, async (url, init) => {
+    calls.push({ url, method: init.method, body: init.body, redirect: init.redirect });
+    return backend(url);
   });
-  assert.equal(result.ok, true);
-  assert.equal(result.code, "connected");
-  assert.equal(result.bank, "hermes");
-  assert.ok(Number.isInteger(result.ms));
-  assert.equal(seen.url, "http://127.0.0.1:8888/health");
-  assert.equal(seen.init.method, "GET");
-  assert.equal(seen.init.body, undefined);
-  assert.equal(seen.init.redirect, "error");
-  assert.equal(JSON.stringify(result).includes("ignored"), false);
+  assert.equal(result.api, "connected");
+  assert.equal(result.database, "connected");
+  assert.equal(result.bankStatus, "accessible");
+  assert.equal(result.stats.documents, 4);
+  assert.ok(!JSON.stringify(result).includes("private"));
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(call => call.method === "GET" && call.body === undefined && call.redirect === "error"));
+  const missing = await testConnection({ bank: "other" }, backend);
+  assert.equal(missing.api, "connected");
+  assert.equal(missing.bankStatus, "not-listed");
+  assert.equal((await testConnection({}, () => Response.json({}, { status: 403 }))).api, "unauthorized");
 });
 
-test("health probe rejects unavailable and non-Hindsight responses", async () => {
-  const unavailable = await testConnection({}, async () => new Response("{}", { status: 503 }));
-  assert.equal(unavailable.ok, false);
-  assert.equal(unavailable.code, "unavailable");
-  assert.equal(unavailable.bank, "hermes");
-  const invalid = await testConnection({}, async () => new Response(JSON.stringify({ status: "unknown" }), { status: 200 }));
-  assert.equal(invalid.ok, false);
-  assert.equal(invalid.code, "invalid");
+test("status and preview share effective policy, while draft checks do not replace saved status", async () => {
+  const { options, handle, used } = server();
+  options({ bank: "hermes", agents: ["claude"] });
+  const token = await tokenFor(handle);
+  const post = (path, input = {}) => handle(path, {
+    method: "POST", headers: { "x-hindsight-token": token, origin: "null" }, body: JSON.stringify(input)
+  }).then(response => response.json());
+  const saved = await post("/api/status", { hints: ["Codex"] });
+  assert.equal(saved.mode, "legacy");
+  assert.equal(saved.agents.find(agent => agent.id === "dsh").policy.recall.owner, "off");
+  assert.ok(saved.agents.some(agent => agent.id === "codex"));
+  const draft = await post("/api/preview", { options: { capture: true, agent_mode: "auto" } });
+  const dsh = draft.agents.find(agent => agent.id === "dsh");
+  assert.equal(dsh.policy.recall.owner, "native");
+  assert.equal(dsh.policy.capture.owner, "gateway");
+  assert.equal((await post("/api/check", { options: { bank: "other" } })).bankStatus, "not-listed");
+  assert.equal((await post("/api/status")).connection, null);
+  assert.equal(used.filter(call => call.url.endsWith("/health")).length, 1);
 });
 
-test("loopback service has the Magpie host entry point without starting on import", async () => {
-  const { default: service } = await import("./service.mjs");
-  assert.equal(service.id, "magpie-hindsight");
-  assert.equal(typeof service.server, "function");
+test("loopback bridge denies foreign sites, stale tokens and arbitrary URLs", async () => {
+  const { handle, used } = server();
+  const token = await tokenFor(handle);
+  const post = (headers, input) => handle("/api/check", { method: "POST", headers, body: JSON.stringify(input ?? {}) });
+  assert.equal((await post({ origin: "https://foreign.example", "x-hindsight-token": token })).status, 403);
+  assert.equal((await post({ origin: "null", "x-hindsight-token": "invalid" })).status, 403);
+  assert.equal((await post({ host: "elsewhere.example", "x-hindsight-token": token })).status, 403);
+  const invalid = await post({ origin: "null", "x-hindsight-token": token }, { options: { hindsight_api: "https://unexpected.example" } });
+  assert.equal((await invalid.json()).api, "invalid-options");
+  assert.equal(used.length, 0);
+  const options = await handle("/api/check", { method: "OPTIONS", headers: { origin: "null" } });
+  assert.equal(options.status, 204);
+  assert.equal(options.headers.get("access-control-allow-origin"), "null");
 });
 
-test("connection service can load beside a busy port and responds to the sandboxed test page", async t => {
-  const { default: service } = await import("./service.mjs");
-  let handler;
-  const server = { hostname: "127.0.0.1", port: 3483, stop() {} };
+test("service startup binds loopback and can recover from an unavailable port", async t => {
+  const service = (await import("./service.mjs")).default;
+  let failure = true;
+  let stopCalls = 0;
   t.mock.method(console, "warn", () => {});
-  t.mock.method(console, "error", () => {});
-  const bun = { serve({ hostname, port, fetch }) {
-    assert.equal(hostname, "127.0.0.1");
-    if (port === 3482) throw Object.assign(new Error("port busy"), { code: "EADDRINUSE" });
-    handler = fetch;
-    return server;
-  } };
-  const previousBun = globalThis.Bun;
-  globalThis.Bun = bun;
-  t.after(() => { if (previousBun) globalThis.Bun = previousBun; else delete globalThis.Bun; });
-  t.mock.method(globalThis, "fetch", async () => Response.json({ status: "healthy", database: "connected" }));
-
-  await assert.doesNotReject(() => service.server({}, { port: 3482 }));
-  const running = await service.server({}, { port: 3483, bank: "hermes" });
-  t.after(() => running.close());
-  const send = (method, headers = {}) => handler(new Request("http://127.0.0.1:3483/test", {
-    method, headers: { host: "127.0.0.1:3483", ...headers }
-  }), server);
-  const markup = await (await send("GET")).text();
-  const token = markup.match(/name="hindsight-token" content="([a-f0-9]+)"/)[1];
-  new Script(markup.match(/<script>([\s\S]+)<\/script>/)[1]);
-  const preflight = await send("OPTIONS", {
-    origin: "null", "access-control-request-method": "POST", "access-control-request-headers": "x-hindsight-token"
-  });
-  assert.equal(preflight.status, 204);
-  assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
-  for (const headers of [{ origin: "https://example.com", "x-hindsight-token": token }, { origin: "null" }]) {
-    assert.equal((await send("POST", headers)).status, 403);
+  const prior = globalThis.Bun;
+  globalThis.Bun = { serve(options) {
+    assert.equal(options.hostname, "127.0.0.1");
+    if (failure) throw new Error("test port busy");
+    return { port: options.port, stop: () => stopCalls++ };
+  }};
+  try {
+    assert.deepEqual(await service.server({}, { port: 3482 }), {});
+    failure = false;
+    const run = await service.server({}, { port: 4382 });
+    assert.equal(typeof run.close, "function");
+    run.close();
+    assert.equal(stopCalls, 1);
+  } finally {
+    if (prior === undefined) delete globalThis.Bun;
+    else globalThis.Bun = prior;
   }
-  const response = await send("POST", { origin: "null", "x-hindsight-token": token });
-  assert.equal(response.headers.get("access-control-allow-origin"), "null");
-  const result = await response.json();
-  assert.equal(result.ok, true);
-  assert.equal(result.code, "connected");
-  assert.equal(result.bank, "hermes");
-  assert.ok(Number.isInteger(result.ms));
 });
