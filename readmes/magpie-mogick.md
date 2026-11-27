@@ -24,5 +24,6 @@ magpie plugin login mogick
   - `fold_reasoning_effort`：折叠 `minimal`/`medium`/`xhigh`/`ultra` 为 `low`/`high`/`max`
   - `strip_mogick_args`：剥离 `_mogick_*` 工具参数
   - `strip_reasoning`：剥离 `reasoning_content`
-  - `claim_daily_reward`：每个账号每个 UTC 日首次对话前自动触发余额查询以结算每日登录奖励
-- **用量与签到**：支持 `auth.usage`（展示可用/套餐/赠送/冻结 credits 余额）与 `auth.checkin`（触发每日登录奖励查询）。
+- **用量与签到**：
+  - 支持 `auth.usage`（展示可用/套餐/赠送/冻结 credits 余额）与 Magpie 原生 `auth.checkin`（可在提供商编辑页「高级 → 每日签到」中开启）。
+  - 在 OpenCode 等非 Magpie 宿主中（无 `auth.checkin`），默认仍会在每个账号每个 UTC 日首次对话前自动触发一次余额查询以结算每日登录奖励（可在插件选项中传入 `claim_daily_reward: false` 关闭）。

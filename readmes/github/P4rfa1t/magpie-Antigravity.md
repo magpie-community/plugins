@@ -1,12 +1,12 @@
-# <img src="docs/logo.svg" width="28" height="28" align="top" alt="" /> magpie-gemini-web
+# <img src="docs/logo.svg" width="28" height="28" align="top" alt="" /> magpie-Antigravity
 
-[![Test Suite](https://github.com/P4rfa1t/magpie-gemini-web/actions/workflows/test.yml/badge.svg)](https://github.com/P4rfa1t/magpie-gemini-web/actions/workflows/test.yml) [![UA & Protocol Sync](https://github.com/P4rfa1t/magpie-gemini-web/actions/workflows/antigravity-ua-sync.yml/badge.svg)](https://github.com/P4rfa1t/magpie-gemini-web/actions/workflows/antigravity-ua-sync.yml) [![Magpie Plugin](https://img.shields.io/badge/Magpie-Plugin-3b82f6?style=flat-square)](https://usemagpie.ai/) [![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-8b5cf6?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/) [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6366f1?style=flat-square)](https://github.com/P4rfa1t/magpie-gemini-web) [![License: MIT](https://img.shields.io/badge/license-MIT-10b981?style=flat-square)](LICENSE)
+[![Test Suite](https://github.com/P4rfa1t/magpie-Antigravity/actions/workflows/test.yml/badge.svg)](https://github.com/P4rfa1t/magpie-Antigravity/actions/workflows/test.yml) [![UA & Protocol Sync](https://github.com/P4rfa1t/magpie-Antigravity/actions/workflows/antigravity-ua-sync.yml/badge.svg)](https://github.com/P4rfa1t/magpie-Antigravity/actions/workflows/antigravity-ua-sync.yml) [![Magpie Plugin](https://img.shields.io/badge/Magpie-Plugin-3b82f6?style=flat-square)](https://usemagpie.ai/) [![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-8b5cf6?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/) [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6366f1?style=flat-square)](https://github.com/P4rfa1t/magpie-Antigravity) [![License: MIT](https://img.shields.io/badge/license-MIT-10b981?style=flat-square)](LICENSE)
 
 中文 | [English](README.en.md) | [贡献与反馈指南](CONTRIBUTING.md) | [技术架构与交接文档](HANDOFF.md)
 
-面向 [Magpie](https://usemagpie.ai/) 与 **OpenCode** 的独立、零外部依赖 Google 模型插件。以 **Antigravity (RT)**（`antigravity-rt`）为核心——纯 JS 通过 Google OAuth Refresh Token 直连 Cloud Code `v1internal` 接口，免本地二进制与 `agy` CLI 额外系统提示词开销，开箱提供 **Gemini 4**、**Claude 5.5**、**GPT-OSS**、原生工具调用、图像生成、高命中率隐式前缀缓存与每日零凭据官方协议/UA 自动同步；同时保留 **Gemini Web**（`gemini-web`）作为网页版 Cookie 补充通道。
+面向 [Magpie](https://usemagpie.ai/) 与 **OpenCode** 的独立、零外部依赖 Google 模型插件（npm 包名 `magpie-antigravity`）。以 **Antigravity**（`antigravity-rt`）为核心——纯 JS 通过 Google OAuth 浏览器授权与 Refresh Token 直连 Cloud Code `v1internal` 接口，免本地二进制与 `agy` CLI 额外系统提示词开销，开箱提供 **Gemini 4**、**Claude 5.5**、**GPT-OSS**、原生工具调用、图像生成、高命中率隐式前缀缓存与每日零凭据官方协议/UA 自动同步；同时保留 **Gemini Web**（`gemini-web`）作为网页版 Cookie 补充通道。
 
-> **独立仓库说明**：本项目已由 `P4rfa1t/magpie-gemini-web` 作为独立项目维护（不再作为分支运行），并已移除原 AI Studio (`ai-studio`) 模块，全面聚焦 **Antigravity (RT)** 直连稳定性、协议一致性与 **Gemini Web** 兼容支持。
+> **独立仓库说明**：本项目已由 `P4rfa1t/magpie-Antigravity` 作为独立项目维护（不再作为分支运行），并已移除原 AI Studio (`ai-studio`) 模块，全面聚焦 **Antigravity** 直连稳定性、协议一致性与 **Gemini Web** 兼容支持。
 
 ---
 
@@ -14,7 +14,7 @@
 
 插件导出两个相互独立、可同时启用的 Provider：
 
-| 对比项 | Antigravity (RT) (`antigravity-rt`) — **主力推荐** | Gemini Web (`gemini-web`) — 网页补充通道 |
+| 对比项 | Antigravity (`antigravity-rt`) — **主力推荐** | Gemini Web (`gemini-web`) — 网页补充通道 |
 | :--- | :--- | :--- |
 | **适用场景** | **主力对话、Coding Agent、多模型统一调度（免下载本地二进制）** | 日常对话、复用 Gemini 网页版订阅额度 |
 | **主要模型** | `gemini-4-neon`、`gemini-4-hydrogen`、`gemini-4-argon`、`gemini-3.8-flash`、`claude-opus-5-5`、`claude-sonnet-5-5`、`gpt-oss-120b-medium` 等（动态同步上游目录） | `gemini-4-hydrogen`（含免费登录账号）、`gemini-4-carbon` / `gemini-4-neon`（付费 / Ultra）、`gemini-3.6-flash`、`gemini-3.5-flash-lite` |
@@ -22,7 +22,7 @@
 | **思考档位** | `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（按模型变体自动折叠与映射） | `low`（普通）/ `medium`（`-thinking-medium`，仅 `gemini-4-argon`）/ `high`（`-thinking` 扩展思考） |
 | **图片输入** | 默认开启，支持多模态对话与 PDF `inlineData` | 默认开启，对话模型可以读图（需登录态 Cookie） |
 | **图片生成** | `gemini-3.1-flash-image`（OpenAI 与 Gemini Native 双入口） | 不支持 |
-| **登录方式** | **粘贴 Google OAuth Refresh Token**（支持单个 `1//...`、JSON 数组、任意文本批量提取） | 在无痕窗口登录 `gemini.google.com` 并复制 `cookie` |
+| **登录方式** | **Google OAuth 浏览器授权**（自动回环回调 / 手动粘贴回调链接）与 **Refresh Token 导入**（单个 / JSON 批量） | 在无痕窗口登录 `gemini.google.com` 并复制 `cookie` |
 | **额度卡片** | 同步 **5 小时** 与 **每周** 配额（Gemini / Claude & GPT / Argon，仅展示不锁死路由） | 同步网页版 **5 小时** 与 **每周** 用量及重置时间 |
 | **本地依赖** | **无需下载本地二进制**（纯 Node/Bun 直连 `v1internal`，支持 ALPN `h2` 代理复用） | `gemini-web2api-go`（Go 本地守护进程，支持官方上游版或自建优化版） |
 
@@ -35,28 +35,27 @@
 将本仓库克隆到本地后，在 Magpie 中从本地目录添加插件（或直接通过 Git 仓库地址添加）：
 
 ```bash
-git clone https://github.com/P4rfa1t/magpie-gemini-web.git
-magpie plugin add ./magpie-gemini-web
+git clone https://github.com/P4rfa1t/magpie-Antigravity.git
+magpie plugin add ./magpie-Antigravity
 ```
 
 > 也可直接使用导出入口：`GeminiWebPlugin`（默认导出）与 `AntigravityPlugin`（命名导出）。插件保持 **零运行时 npm 依赖**，支持 Node.js >= 22 与 Magpie 内置 Bun 运行时。
 
 ---
 
-### 方式一：Antigravity (RT) (`antigravity-rt` — 推荐主力)
+### 方式一：Antigravity (`antigravity-rt` — 推荐主力)
 
-1. 在 Magpie 的 **「来自插件」** 区域找到 **Antigravity (RT)**（使用独立 ID，不与 Magpie 内置订阅 `Antigravity` 冲突），选择 **「通过 Refresh Token 登录（支持批量）」**。
-2. 选择账号类型：**个人账号 (Personal)**（常规 Gmail 账号）或 **企业 / GCP (Vertex AI)**，按需填写代理地址（也可通过 `ANTIGRAVITY_PROXY` 或插件选项 `antigravity.proxy` 设置）。
+1. 在 Magpie 的 **「来自插件」** 区域找到 **Antigravity**（使用独立 ID `antigravity-rt`，不与 Magpie 内置订阅 `Antigravity` 冲突），任选以下登录方式：
+   - **「通过 Google OAuth 浏览器授权登录（推荐）」**：自动拉起本地 `http://localhost:<端口>/oauth-callback` 监听，在浏览器登录 Google 并点击允许授权后自动换取 Refresh Token 并保存账号；
+   - **「通过 Google OAuth 授权（手动粘贴回调链接 / Code）」**（容器或远程环境会自动置顶）：在任意本地浏览器完成 Google 授权后，将地址栏跳转后的完整回调链接（或其中的 `code`）粘贴回 Magpie 提交；
+   - **「通过 Refresh Token 登录（支持批量）」**：直接粘贴单个 `1//03...`、JSON 数组 `[{"refresh_token":"1//03..."}, ...]` 或任意含 Token 文本（兼容 Antigravity Tools / Antigravity-Manager 导出格式）。
+2. 选择账号类型：**个人账号 (Personal)**（常规 Gmail 账号）或 **企业 / GCP (Vertex AI)**，按需填写代理地址（浏览器 OAuth 页面直连 Google；换取 Token 与后续请求走你配置的代理，也可通过 `ANTIGRAVITY_PROXY` 或插件选项 `antigravity.proxy` 设置）。
 3. **提供匹配的 Google OAuth 客户端凭据**（仓库内零硬编码 `client_id` / `client_secret`），任选以下一种方式即可：
-   - 在首次登录交互提示中直接填写（验证通过后自动保存到 `~/.local/share/magpie-antigravity/oauth-clients.json`，后续免填）；
+   - 在首次登录交互提示中直接填写（验证通过后按账号类型自动保存到 `~/.local/share/magpie-antigravity/oauth-clients.json`，后续免填）；
    - 设置环境变量 `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET`（企业版可选 `ANTIGRAVITY_GCP_CLIENT_ID` / `ANTIGRAVITY_GCP_CLIENT_SECRET`，或使用 `ANTIGRAVITY_OAUTH_CLIENTS="antigravity_enterprise|id|secret"`）；
    - 运行命令行预置：`npm run antigravity:oauth -- --client-id <id> --client-secret <secret>`；
-   - 或在粘贴导入 JSON 时附带 `client_id` 与 `client_secret` 字段。
-4. 粘贴 Refresh Token（与 Antigravity Tools / Antigravity-Manager 兼容），支持：
-   - 单个 Token：`1//03...`
-   - JSON 数组：`[{"refresh_token":"1//03..."}, ...]`
-   - 包含 `1//...` Token 的任意文本（自动提取并去重）
-5. 插件会自动换取短期 `access_token`、通过 `:loadCodeAssist` / `:onboardUser` 开通或绑定 `cloudaicompanionProject`、校验可用模型并将账号加密级权限保存至本机 `~/.local/share/magpie-antigravity/accounts.json`（可通过 `ANTIGRAVITY_DATA_DIR` 修改）。
+   - 或在 Refresh Token 方式粘贴 JSON 时附带 `client_id` 与 `client_secret` 字段。
+4. 插件会自动换取短期 `access_token`、通过 `:loadCodeAssist` / `:onboardUser` 开通或绑定 `cloudaicompanionProject`、校验可用模型并将账号以 `0o700`/`0o600` 权限保存至本机 `~/.local/share/magpie-antigravity/accounts.json`（可通过 `ANTIGRAVITY_DATA_DIR` 修改）。
 
 #### 核心特性与稳定性机制
 
@@ -69,6 +68,7 @@ magpie plugin add ./magpie-gemini-web
 ```bash
 npm run antigravity:status                                     # 查看数据目录、有效 Egress/OAuth UA、缓存与已保存账号
 npm run antigravity:oauth -- --client-id <ID> --client-secret <SECRET>
+npm run antigravity:oauth-login -- --proxy http://127.0.0.1:7890 # 打开浏览器完成 Google OAuth 授权（支持 --no-browser / --code）
 npm run antigravity:login -- "1//03..." --proxy http://127.0.0.1:7890
 npm run antigravity:models                                     # 查看聚合后的模型与思考变体列表
 npm run antigravity:quota                                      # 查看实时 5h / 每周配额桶与模型余量
@@ -101,17 +101,17 @@ npm run antigravity:sync-protocol                              # 零凭据本地
 ## 配置与进阶
 
 <details>
-<summary><b>⚙️ Antigravity (RT) 插件选项与环境变量</b>（全部 28 项 `antigravity.*` 配置）</summary>
+<summary><b>⚙️ Antigravity 插件选项与环境变量</b>（全部 28 项 `antigravity.*` 配置）</summary>
 
 <br>
 
-可通过 `magpie plugin options magpie-gemini-web '{"antigravity":{...}}'` 或环境变量配置：
+可通过 `magpie plugin options magpie-antigravity '{"antigravity":{...}}'` 或环境变量配置：
 
 | 插件选项 (`antigravity.*`) | 对应环境变量 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `proxy` | `ANTIGRAVITY_PROXY` | `""` | 访问 Google 的 HTTP/HTTPS 代理（容器内用 `http://host.docker.internal:<port>`） |
 | `dataDir` | `ANTIGRAVITY_DATA_DIR` | `~/.local/share/magpie-antigravity` | 存储 `accounts.json`、`oauth-clients.json`、`signature-cache.json`、`hub-version.json` |
-| `uaManifestUrl` | `ANTIGRAVITY_UA_MANIFEST_URL` | `https://raw.githubusercontent.com/P4rfa1t/magpie-gemini-web/main/lib/antigravity-ua.json` | 远端成对 UA 清单地址；设为 `off`/`false`/`0` 关闭运行期热同步 |
+| `uaManifestUrl` | `ANTIGRAVITY_UA_MANIFEST_URL` | `https://raw.githubusercontent.com/P4rfa1t/magpie-Antigravity/main/lib/antigravity-ua.json` | 远端成对 UA 清单地址；设为 `off`/`false`/`0` 关闭运行期热同步 |
 | `detectLocal` | `ANTIGRAVITY_DETECT_LOCAL` | `false` | 设为 `true`/`1` 时在运行期扫描本机 Antigravity 客户端探测成对 UA |
 | `clientId` / `clientSecret` | `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET` | — | Personal Google OAuth 客户端凭据 |
 | `gcpClientId` / `gcpClientSecret` | `ANTIGRAVITY_GCP_CLIENT_ID` / `ANTIGRAVITY_GCP_CLIENT_SECRET` | — | Enterprise / GCP OAuth 客户端凭据 |
@@ -157,7 +157,7 @@ npm run antigravity:sync-protocol                              # 零凭据本地
 
 <br>
 
-1. **推荐优先使用 Antigravity (RT)**：纯无头 OAuth Refresh Token 认证，不依赖本地浏览器、`127.0.0.1` 页面或外部二进制，天然适配无桌面容器与远程服务器。
+1. **推荐优先使用 Antigravity**：纯无头 OAuth Refresh Token 认证，不依赖本地浏览器、`127.0.0.1` 页面或外部二进制，天然适配无桌面容器与远程服务器。
 2. **容器内的代理地址**：bridge 网络中 `127.0.0.1` 指向容器自身而非宿主机。macOS / Windows Docker Desktop 请填 `http://host.docker.internal:<端口>`；Linux Docker 请附加 `--add-host=host.docker.internal:host-gateway` 或使用 `--network host`。
 3. **持久化与僵尸进程清理**：挂载卷并固定 `ANTIGRAVITY_DATA_DIR` 与 `GEMINI_WEB_DATA_DIR`；如运行 `gemini-web` 且 Magpie 作为容器 PID 1 启动，建议启用 Docker `--init`（Compose 设 `init: true`），插件内置 `lib/proc.mjs` 的 `Z`/`X` 僵尸进程识别也会自动兜底。
 
@@ -189,11 +189,11 @@ MIT（见 [LICENSE](LICENSE)）。上游 `gemini-web2api-go` 同为 MIT（见 [L
 ## Star 趋势
 
 <p align="center">
-  <a href="https://www.star-history.com/#P4rfa1t/magpie-gemini-web&amp;Date">
+  <a href="https://www.star-history.com/#P4rfa1t/magpie-Antigravity&amp;Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=P4rfa1t/magpie-gemini-web&amp;type=Date&amp;theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=P4rfa1t/magpie-gemini-web&amp;type=Date" />
-      <img alt="magpie-gemini-web 的 GitHub Star 增长趋势" src="https://api.star-history.com/svg?repos=P4rfa1t/magpie-gemini-web&amp;type=Date" width="800" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=P4rfa1t/magpie-Antigravity&amp;type=Date&amp;theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=P4rfa1t/magpie-Antigravity&amp;type=Date" />
+      <img alt="magpie-Antigravity 的 GitHub Star 增长趋势" src="https://api.star-history.com/svg?repos=P4rfa1t/magpie-Antigravity&amp;type=Date" width="800" />
     </picture>
   </a>
 </p>

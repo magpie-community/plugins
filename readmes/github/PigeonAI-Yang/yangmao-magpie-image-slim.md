@@ -85,3 +85,10 @@ magpie plugin add github:PigeonAI-Yang/yangmao-magpie-image-slim
 基于 Euan Guo 的 [magpie-middleware-image-slim](https://github.com/euanguo/magpie-middleware-image-slim)。原作者的版权声明和 [MIT 许可证](LICENSE)随项目保留。
 
 [羊毛团官网 · ymtuan.live](https://ymtuan.live/) · [English README](README.en.md)
+
+## 羊毛团开源项目
+
+[项目总览与源码入口](https://github.com/PigeonAI-Yang/yangmao-skill/blob/main/OPEN-SOURCE.md) · [羊毛团官网](https://ymtuan.live/)
+
+- 内容工具与 Skills：[免费 AI 额度 Skill](https://github.com/PigeonAI-Yang/yangmao-skill) · [X 长文写作 Skill](https://github.com/PigeonAI-Yang/x-article-creator) · [发布助手](https://github.com/PigeonAI-Yang/yangmao-publisher)
+- Magpie 插件：**Codex 图片瘦身** · [Devin 图片缓存](https://github.com/PigeonAI-Yang/yangmao-magpie-devin-image-history)
