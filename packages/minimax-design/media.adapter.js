@@ -13,6 +13,11 @@ export function buildSubmit(request) {
     if (request.images.length < capability.references.min || request.images.length > capability.references.max) {
       throw new Error(`参考图数量应为 ${capability.references.min}–${capability.references.max} 张。`)
     }
+    const audio = capability.audioReferences ?? { min: 0, max: 0 }
+    const audioCount = request.audios?.length ?? 0
+    if (request.videos?.length || audioCount < audio.min || audioCount > audio.max) {
+      throw new Error(request.videos?.length || !audio.max ? "该模型不接受参考媒体。" : `参考音频数量应为 ${audio.min}–${audio.max}。`)
+    }
     if (capability.promptMax && request.prompt.length > capability.promptMax) throw new Error("提示词超过模型长度限制。")
     for (const [key, value] of Object.entries(params)) {
       const rule = capability.params.find((parameter) => parameter.key === key)
@@ -32,11 +37,11 @@ export function buildSubmit(request) {
     }
     if (capability.transport === "speech") {
       if (request.type !== "speech") throw new Error("该模型只支持语音合成。")
-      if (request.images.length || request.videos?.length || request.audios?.length) throw new Error("该语音接口不接受参考媒体。")
       const speech = { ...capability.defaults, ...params }
       if (Object.values(speech).some((value) => typeof value === "string" && !value.trim())) throw new Error("语音参数不能为空。")
-      if (capability.ming && speech.voice !== "default" && speech.instructions) throw new Error("Ming 音色和声音描述只能选择一项。")
-      if (capability.ming && speech.voice !== "default" &&
+      if (capability.requiredVoice && (!speech.voice || speech.voice === "default")) throw new Error("请填写有效的音色。")
+      if (capability.ming && speech.voice && speech.voice !== "default" && speech.instructions) throw new Error("Ming 音色和声音描述只能选择一项。")
+      if (capability.ming && speech.voice && speech.voice !== "default" &&
           !/^(?:US|UK)_[A-Z][a-z]+$|^[\u4e00-\u9fff][\u4e00-\u9fff_]*$/.test(speech.voice)) {
         throw new Error("Ming 音色名格式不正确；留为 default 可自动选择。")
       }
@@ -50,6 +55,7 @@ export function buildSubmit(request) {
     }
     if (params.image_mode === "reference") mode = "主体参考"
     if (params.image_mode === "first-last-frame") mode = request.images.length > 1 ? "首尾帧" : "首帧"
+    if (params.image_mode === "last-frame") mode = "尾帧"
     if (request.images.length && mode !== "主体参考" &&
         (capability.transport === "minimax-video" || capability.frameRatio === "auto") && !explicit.has("aspect_ratio")) {
       delete params.aspect_ratio
@@ -86,6 +92,7 @@ export function buildSubmit(request) {
     if (params.quality) body.quality = params.quality
     if (params.background) body.background = params.background
     if (params.output_format) body.output_format = params.output_format
+    if (params.complexity) body.complexity = params.complexity
     if (params.generate_audio !== undefined) body.generate_audio = params.generate_audio
     if (capability.transport === "image-size" && (params.ratio || params.resolution)) {
       body.size = `${params.ratio ?? "auto"}@${params.resolution ?? "auto"}`
@@ -103,6 +110,7 @@ export function buildSubmit(request) {
       } else body.size = params.ratio
     }
     if (request.images.length && !capability.modes.includes(mode) && request.type === "video") throw new Error("模型不支持该参考图用途。")
+    if (mode === "尾帧" && request.images.length !== 1) throw new Error("尾帧模式需要一张参考图。")
     if (request.type === "video" && ((mode === "首帧" && request.images.length > 1) || (mode === "首尾帧" && request.images.length !== 2))) {
       throw new Error(mode === "首尾帧" ? "首尾帧需要按顺序提供两张图。" : "首帧模式只接受一张图。")
     }
@@ -121,9 +129,23 @@ export function buildSubmit(request) {
       if (params.ratio) body.size = params.ratio
       if (params.resolution) body.quality = { "1K": "low", "2K": "medium", "4K": "high" }[params.resolution]
     }
+    if (capability.transport === "minimax-h3-image") {
+      if (params.ratio && params.resolution) {
+        const [width, height] = params.ratio.split(":").map(Number)
+        const scale = Math.round(Number.parseInt(params.resolution, 10) * 1024 / Math.sqrt(width * height))
+        body.size = `${width * scale}x${height * scale}`
+      } else if (params.ratio || params.resolution) body.size = params.ratio ?? params.resolution
+    }
+    if (capability.transport === "minimax-legacy-image") {
+      if (params.ratio) body.size = params.ratio
+      for (const key of ["seed", "prompt_optimizer", "aigc_watermark"]) {
+        if (params[key] !== undefined) body[key] = params[key]
+      }
+    }
     if (capability.transport === "minimax-video") {
-      if (params.resolution) body.size = params.resolution
+      if (params.resolution) body[capability.minimaxKey ? "resolution" : "size"] = params.resolution
       if (params.ratio) body.ratio = params.ratio
+      if (params.prompt_expansion_mode) body.extra = { prompt_expansion_mode: params.prompt_expansion_mode }
     }
     if (capability.transport === "grok-video") {
       if (params.resolution) {
@@ -137,7 +159,7 @@ export function buildSubmit(request) {
   }
   if (params.size) body.size = params.size
   if (request.type === "image") {
-    body.n = 1
+    body.n = capability?.outputsPerTask ?? 1
     body.response_format = "b64_json"
     if (request.images.length) body.images = request.images.map((image) => ({ image_url: image.dataUrl }))
     return { method: "POST", path: request.images.length ? "/images/edits" : "/images/generations", body }
@@ -147,8 +169,25 @@ export function buildSubmit(request) {
   if (capability?.hailuo && body.size === "1080P" && body.seconds !== undefined && body.seconds !== "6") {
     throw new Error("Hailuo 1080P 只支持 6 秒。")
   }
+  if (capability?.ark) {
+    const content = (request.audios ?? []).map((reference) =>
+      ({ type: "audio_url", audio_url: { url: reference.dataUrl }, role: "reference_audio" }))
+    if (params.reference_video_url) {
+      const url = params.reference_video_url.trim()
+      if (!/^(?:https?:\/\/[^/\s]+(?:\/\S*)?|asset:\/\/[^\s/]+)$/.test(url)) {
+        throw new Error("参考视频需使用公网 HTTP(S) 地址或方舟素材 ID。")
+      }
+      content.push({ type: "video_url", video_url: { url }, role: "reference_video" })
+    }
+    if (capability.promptUse === "optional" && !request.prompt?.trim() && !request.images.length && !content.length) {
+      throw new Error("请填写提示词或提供参考媒体。")
+    }
+    if (content.length) body.content = content
+    for (const key of ["watermark", "seed"]) if (params[key] !== undefined) body[key] = params[key]
+  }
   if (request.images.length) {
     if (mode === "主体参考") body.reference_images = request.images.map((image) => image.dataUrl)
+    else if (mode === "尾帧") body.last_frame = request.images[0].dataUrl
     else {
       body.input_reference = request.images[0].dataUrl
       if (mode === "首尾帧") body.last_frame = request.images[1].dataUrl
@@ -158,7 +197,10 @@ export function buildSubmit(request) {
 }
 
 export function parseSubmit(response, request) {
-  if (response.body?.error) return { error: response.body.error.message || "Magpie rejected the request." }
+  if (response.body?.error) {
+    const { message, ...refusal } = parseError(response)
+    return { error: message, ...refusal }
+  }
   if (request.type === "speech") {
     const mime = response.headers?.["content-type"]?.split(";")[0]?.trim()
     if (response.body?.$binary !== true || response.body.size <= 0 ||
@@ -176,9 +218,14 @@ export function parseSubmit(response, request) {
   if (!Array.isArray(images) || !images.length) return { error: "Magpie returned no image." }
   const outputs = []
   for (const image of images) {
-    if (typeof image.b64_json === "string" && image.b64_json) outputs.push({ base64: image.b64_json })
+    const base64 = image.b64_json
+    if (typeof base64 === "string" && base64) outputs.push({ base64,
+      ...(typeof image.mime_type === "string" && image.mime_type.startsWith("image/") ? { mime: image.mime_type } : {}) })
     else if (typeof image.url === "string" && image.url) outputs.push({ url: image.url })
     else return { error: "Magpie returned an unreadable image." }
+  }
+  if (capability?.outputsPerTask > 1 && outputs.length !== capability.outputsPerTask) {
+    return { error: `Magpie returned ${outputs.length} images; ${capability.outputsPerTask} were expected.` }
   }
   return { outputs }
 }
@@ -189,7 +236,10 @@ export function buildPoll(task) {
 
 export function parsePoll(response, task) {
   const body = response.body
-  if (body?.error) return { status: "failed", message: body.error.message || "Magpie video generation failed." }
+  if (body?.error) {
+    const { message, code } = parseError(response)
+    return { status: "failed", message, ...(code ? { code } : {}) }
+  }
   if (body?.status === "queued" || body?.status === "in_progress") {
     return { status: "running", ...(typeof body.progress === "number" ? { progress: body.progress / 100 } : {}) }
   }
@@ -200,5 +250,18 @@ export function parsePoll(response, task) {
 }
 
 export function parseError(response) {
-  return { message: response.body?.error?.message || `Magpie returned HTTP ${response.status}.` }
+  const error = response.body?.error
+  const detail = response.body?.detail
+  const message = [error?.message, error, detail?.message, detail, response.body?.message]
+    .find((value) => typeof value === "string" && value.trim()) || `Magpie returned HTTP ${response.status}.`
+  const rawCode = error?.code ?? error?.type ?? detail?.code
+  const legacyCode = capability?.minimaxErrors && (rawCode == null || rawCode === "api_error")
+    ? message.split(" (tried first:", 1)[0].match(/\((\d{3,5})\)\s*$/)?.[1] : undefined
+  const code = legacyCode ?? (typeof rawCode === "string" || typeof rawCode === "number" ? String(rawCode).slice(0, 64) : undefined)
+  const quota = (code === "1008" && capability?.minimaxErrors) || [code, error?.type].some((value) =>
+    ["insufficient_quota", "insufficient_balance", "insufficient_balance_error", "quota_exceeded", "2061", "2068"].includes(value))
+  const status = response.status
+  const kind = quota || status === 402 ? "noQuota" : status === 401 || status === 403 ? "unauthorized" :
+    status === 408 || status === 429 || status >= 500 ? "retry" : "rejected"
+  return { message, ...(code ? { code } : {}), kind }
 }

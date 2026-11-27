@@ -156,6 +156,34 @@ const fakeFetch = async (url, init) => {
   throw new Error("Unexpected fixture URL: " + address.pathname);
 };
 const common = { bundle: imageBundle, endpoint, fetch: fakeFetch };
+await assert.rejects(submitOnce({ ...common,
+  fetch: async () => Response.json({ error: { message: "quota", code: 2068 } }),
+  job: { type: "image", model: "minimax-code/MiniMax-Image", prompt: "quota fixture", params: {}, references: {} }
+}), { kind: "noQuota", serviceCode: "2068", status: 200 });
+console.log("PASS: Design's executor preserves quota category and provider code on HTTP 200");
+for (const [bundle, type, model, kind] of [
+  [imageBundle, "image", "minimax-code/MiniMax-Image", "noQuota"],
+  [videoBundle, "video", "minimax-code/MiniMax-Hailuo-2.3", "noQuota"],
+  [geminiBundle, "image", "rightimage/gemini-nano-banana-2.1", "fail"],
+]) {
+  const submitted = submitOnce({ ...common, bundle,
+    fetch: async () => Response.json({ error: { message: "insufficient balance", code: 1008 } }),
+    job: { type, model, prompt: "quota fixture", params: {}, references: {} }
+  });
+  if (kind === "noQuota") await assert.rejects(submitted, { kind, serviceCode: "1008", status: 200 });
+  else {
+    const result = await submitted;
+    assert.equal(result.kind, kind);
+    assert.equal(result.serviceCode, "1008");
+  }
+}
+for (const status of [402, 502]) {
+  await assert.rejects(submitOnce({ ...common, bundle: videoBundle,
+    fetch: async () => Response.json({ error: { message: "MiniMax: insufficient balance (1008) (tried first: other account (502))", code: "api_error" } }, { status }),
+    job: { type: "video", model: "minimax-code/MiniMax-Hailuo-2.3", prompt: "quota fixture", params: {}, references: {} }
+  }), { kind: "noQuota", serviceCode: "1008", status });
+}
+console.log("PASS: older MiniMax gateway balance messages retain the original code and category");
 const constrainedSpec = parseMediaSpec(${JSON.stringify(mediaSpec(constrainedCapability))});
 assert.equal(constrainedSpec.params.find(param => param.key === "resolution").default, "2K");
 assert.equal(constrainedSpec.params.find(param => param.key === "quality").default, "high");

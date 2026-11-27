@@ -12,14 +12,89 @@ async function configured(ref, type, extra = {}) {
   const capability = mediaCapability(model)
   const generated = source.replace("const capability = null", () => `const capability = ${JSON.stringify(capability)}`)
   const adapter = await import(`data:text/javascript;base64,${Buffer.from(generated).toString("base64")}`)
-  return { capability, submit: (params = {}, images = []) => adapter.buildSubmit({ type, model: ref, prompt: "test",
+  return { capability, adapter, submit: (params = {}, images = [], request = {}) => adapter.buildSubmit({ type, model: ref, prompt: "test",
     params: Object.fromEntries(Object.entries(params).map(([key, value]) => {
       if (key === "ratio") return ["aspect_ratio", value]
       if (key === "seconds") return ["duration", String(value)]
       if (key === "referenceMode") return ["image_mode", { "首帧": "first-last-frame", "首尾帧": "first-last-frame", "主体参考": "reference" }[value] ?? value]
       return [key, value]
-    })), images }) }
+    })), images, ...request }) }
 }
+
+test("API-key H3 media uses the native gateway mappings", async () => {
+  const highspeed = await configured("minimax/MiniMax-H3-Highspeed", "video")
+  assert.equal(highspeed.submit({ resolution: "768P" }).body.resolution, "768P")
+  assert.throws(() => highspeed.submit({ resolution: "2K" }), /不支持参数/)
+  const h3 = await configured("minimax-cn/MiniMax-H3", "video")
+  assert.equal(h3.submit({ resolution: "2K" }).body.resolution, "2K")
+  assert.equal(h3.submit({ resolution: "2K" }).body.size, undefined)
+  const lite = await configured("minimax/MiniMax-H3-Lite", "video")
+  const tail = lite.submit({ image_mode: "last-frame", resolution: "480P" }, [image]).body
+  assert.equal(tail.resolution, "480P")
+  assert.equal(tail.input_reference, undefined)
+  assert.equal(tail.last_frame, image.dataUrl)
+  const max = await configured("minimax/MiniMax-H3-Max", "video")
+  assert.deepEqual(max.submit({ prompt_expansion_mode: "quality" }, [image, image, image]).body.extra,
+    { prompt_expansion_mode: "quality" })
+  assert.throws(() => max.submit({ prompt_expansion_mode: "balance" }), /不支持参数/)
+  const h3Image = await configured("minimax/MiniMax-H3-Image-Highspeed", "image")
+  assert.equal(h3Image.submit({ resolution: "2K" }).body.size, "2K")
+  const request = h3Image.submit({ ratio: "16:9", resolution: "4K", output_format: "webp" }, Array(16).fill(image))
+  const [width, height] = request.body.size.split("x").map(Number)
+  assert.equal(width / height, 16 / 9)
+  assert.ok(width * height > 16000000 && width * height < 20000000)
+  assert.equal(request.body.output_format, "webp")
+  assert.equal(request.body.images.length, 16)
+  const legacy = await configured("minimax/image-01", "image")
+  assert.deepEqual(legacy.submit({ seed: 0, prompt_optimizer: false, aigc_watermark: true }).body, {
+    model: "minimax/image-01", prompt: "test", seed: 0, prompt_optimizer: false, aigc_watermark: true, n: 1, response_format: "b64_json",
+  })
+  const relay = await configured("remote-magpie/minimax/image-01", "image")
+  assert.throws(() => relay.submit({ seed: 0 }), /不支持参数/)
+})
+
+test("declared image batches and complexity reach Magpie and retain output MIME", async () => {
+  const { capability, adapter, submit } = await configured("vendor/image", "image", {
+    mediaRequest: { outputs_per_task: 2 },
+    parameters: { complexity: { type: "enum", values: ["low", "high"], description: "Inference complexity" } },
+  })
+  assert.equal(mediaSpec(capability).params[0].description, "Inference complexity")
+  assert.equal(submit({ complexity: "high" }).body.complexity, "high")
+  assert.equal(submit().body.n, 2)
+  const inline = { b64_json: "AA==", mime_type: "image/webp" }
+  const response = adapter.parseSubmit({ body: { data: [inline, { url: "https://fixture.invalid/image" }] } }, { type: "image" })
+  assert.deepEqual(response.outputs[0], { base64: "AA==", mime: "image/webp" })
+  assert.match(adapter.parseSubmit({ body: { data: [inline] } }, { type: "image" }).error, /2 were expected/)
+})
+
+test("Ark declarations use the video gateway for promptless and multimodal requests", async () => {
+  const { capability, submit } = await configured("ark/seedance", "video", {
+    mediaRequest: { video: "ark", prompt: "optional", reference_modes: ["reference"] },
+    parameters: {
+      seconds: { type: "enum", values: [-1, 5, 10] },
+      watermark: { type: "boolean" }, seed: { type: "range", min: -1, max: 10, default: 0 },
+      input_references: { type: "range", min: 0, max: 9 },
+      input_audios: { type: "range", min: 0, max: 3 },
+      reference_video_url: { type: "string" },
+    },
+  })
+  assert.deepEqual(mediaSpec(capability).prompt, { use: "optional" })
+  assert.deepEqual(mediaSpec(capability).references.audio, { min: 0, max: 3 })
+  const audio = { dataUrl: "data:audio/wav;base64,AA==" }
+  const request = submit({ duration: "-1", watermark: false, reference_video_url: "asset://video-id" },
+    [image], { prompt: "", audios: [audio] })
+  assert.deepEqual(request.body, {
+    model: "ark/seedance", prompt: "", seconds: "-1", seed: 0, watermark: false,
+    reference_images: [image.dataUrl],
+    content: [
+      { type: "audio_url", audio_url: { url: audio.dataUrl }, role: "reference_audio" },
+      { type: "video_url", video_url: { url: "asset://video-id" }, role: "reference_video" },
+    ],
+  })
+  assert.throws(() => submit({}, [], { prompt: "" }), /提示词或提供/)
+  assert.throws(() => submit({ reference_video_url: "file:///video.mp4" }), /公网/)
+  assert.throws(() => submit({}, [], { audios: Array(4).fill(audio) }), /参考音频数量/)
+})
 
 test("known image settings use gateway fields, automatic omits overrides and supports sixteen references", async () => {
   const { submit, capability } = await configured("minimax-code/MiniMax-Image", "image")

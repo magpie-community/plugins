@@ -105,14 +105,14 @@ fs.writeFileSync(path.join(config, "plugins.json"), JSON.stringify({ plugins: [{
 }] }))
 fs.mkdirSync(path.dirname(paths.control), { recursive: true })
 fs.writeFileSync(paths.control, JSON.stringify({ config: { customModels: {
-  "user-custom-magpie": { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "magpie-minimax-design" },
+  "user-custom-magpie": { magpieAgent: "minimax-design", baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "magpie-minimax-design" },
 } } }))
 fs.writeFileSync(path.join(config, "plugin-auth.json"), JSON.stringify({
   "image-models/rightimage": { type: "api", key: "fixture-only" },
 }))
 const log = fs.openSync(path.join(root, "gateway.log"), "w")
 const processHandle = spawn(binary, ["serve"], {
-  env: { ...process.env, HOME: root, XDG_CONFIG_HOME: path.join(root, ".config"),
+  env: { ...process.env, HOME: root, T3CODE_HOME: path.join(root, ".t3"), XDG_CONFIG_HOME: path.join(root, ".config"),
     MAGPIE_BUN: process.env.MAGPIE_BUN ?? execFileSync("which", ["bun"], { encoding: "utf8" }).trim(),
     MAGPIE_ADDR: `127.0.0.1:${port}`, NO_PROXY: "localhost,127.0.0.1,::1" },
   stdio: ["ignore", log, log],

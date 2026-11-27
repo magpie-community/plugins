@@ -13,17 +13,27 @@ export default async function MiniMaxDesignMediaPlugin(_input, options = {}) {
   let lastConnection
   let lastRefresh = 0
   const errors = new Map()
+  const status = { path: "pending", skills: "pending", mcp: "pending", media: "pending" }
+  let mediaModels = 0
   let config
   async function run(name, sync) {
     try {
       const result = await sync()
-      if (result?.pending) throw new Error("MCP changes pending: quit MiniMax Design once to save them locally.")
+      if (result?.pending) {
+        const message = "MCP changes pending: quit MiniMax Design once to save them locally."
+        if (message !== errors.get(name)) console.error(`[minimax-design:${name}] ${message}`)
+        errors.set(name, message)
+        status[name] = "waiting_for_design_to_quit"
+        return result
+      }
       errors.delete(name)
+      if (name !== "media") status[name] = name === "path" && !result ? "not_initialized" : "synced"
       return result
     } catch (error) {
       const message = error.code === "EEXIST" ? "Design is updating its media store; waiting." : error.message
       if (message !== errors.get(name)) console.error(`[minimax-design:${name}] ${message}`)
       errors.set(name, message)
+      status[name] = error.code === "EEXIST" && name === "media" ? "waiting_for_design_store" : "error"
     }
   }
   async function tick() {
@@ -36,13 +46,18 @@ export default async function MiniMaxDesignMediaPlugin(_input, options = {}) {
         target: path.join(os.homedir(), "Movies/Hub/skills"),
       }))
       await run("mcp", () => syncMcpStore(paths))
-      await run("media", async () => {
-        const current = JSON.stringify(connection(paths))
-        if (current === lastConnection && Date.now() - lastRefresh < 60000) return
-        await syncMedia(paths, options, config?.provider)
-        lastConnection = current
+      const current = await run("media", async () => {
+        const gateway = JSON.stringify(connection(paths))
+        if (gateway === lastConnection && Date.now() - lastRefresh < 60000) return
+        const result = await syncMedia(paths, options, config?.provider)
+        lastConnection = gateway
         lastRefresh = Date.now()
+        return result
       })
+      if (current) {
+        status.media = current.connected ? "synced" : "disconnected"
+        mediaModels = current.models
+      }
     } finally { running = false }
   }
   const timer = setInterval(tick, 5000)
@@ -53,5 +68,14 @@ export default async function MiniMaxDesignMediaPlugin(_input, options = {}) {
     catch { console.error("[minimax-design] Media cleanup pending; ownership record retained.") }
   })
   await tick()
-  return { config(value) { config = value; lastRefresh = 0 } }
+  return {
+    config(value) { config = value; lastRefresh = 0 },
+    tool: {
+      status: {
+        description: "Read MiniMax Design's Magpie media and Library sync status.",
+        args: { type: "object", properties: {}, additionalProperties: false },
+        execute() { return { ...status, mediaModels } },
+      },
+    },
+  }
 }

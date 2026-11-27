@@ -1,6 +1,16 @@
 # Compatibility record
 
-## Current acceptance — November 14, 2026
+## Speech error handling — November 28, 2026
+
+With plugin 0.4.4, the macOS Design executor rejects a JSON response to a
+binary speech request. If Magpie forwards an upstream refusal as HTTP 200,
+the adapter sees only the binary descriptor and reports an unplayable audio
+response. Preserving the provider's message and code requires the gateway
+to forward that refusal as an HTTP error. The native `speech-native.mjs`
+fixture verified this with a local Magpie source build for both Qwen3 and
+MiMo, including `insufficient_quota` and `voice_not_found`.
+
+## Acceptance — November 14, 2026
 
 0.4.3 adds source-declared speech discovery and native Windows/macOS regression
 jobs. Local Node and Bun suites each pass 37 tests. The installed Design media

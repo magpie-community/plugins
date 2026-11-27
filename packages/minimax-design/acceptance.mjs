@@ -15,7 +15,7 @@ const magpie = process.env.MAGPIE_BIN
 const app = process.env.MINIMAX_APP
 if (!magpie || !app) throw new Error("Set MAGPIE_BIN and MINIMAX_APP for native macOS acceptance.")
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "minimax-design-acceptance-"))
-const packageDir = process.env.MINIMAX_PLUGIN_DIR ?? fileURLToPath(new URL(".", import.meta.url))
+const packageDir = path.resolve(process.env.MINIMAX_PLUGIN_DIR ?? fileURLToPath(new URL(".", import.meta.url)))
 const resources = path.join(app, "Contents/Resources")
 const data = path.join(root, "Library/Application Support/@hilo/desktop")
 const settings = path.join(root, ".config/magpie")
@@ -26,6 +26,7 @@ const skillName = "magpie-native-probe"
 const skill = path.join(root, "Movies/Hub/skills", skillName, "SKILL.md")
 const env = {
   ...process.env, HOME: root, USERPROFILE: root,
+  T3CODE_HOME: path.join(root, ".t3"),
   XDG_CONFIG_HOME: path.join(root, ".config"), XDG_CACHE_HOME: path.join(root, ".cache"),
   XDG_STATE_HOME: path.join(root, ".state"), MAGPIE_NO_ACCOUNTS: "1",
   HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "", NO_PROXY: "localhost,127.0.0.1",
@@ -125,7 +126,7 @@ try {
   const original = {
     _version: 33, config: { theme: "native-fixture", customModels: {
       "user-custom-mine": { untouched: true },
-      "user-custom-magpie": { restore: "existing provider" },
+      "user-custom-magpie": { providerName: "Magpie", baseUrl: `${fixtureURL}/restored`, apiKey: "user-key" },
     } },
     customMcpVault: "",
   }
@@ -144,6 +145,7 @@ try {
   await run(magpie, ["plugin", "add", packageDir])
   const listing = await run(magpie, ["minimax-design"])
   assert.match(listing.stdout, /MiniMax Design/)
+  assert.match((await run(magpie, ["hilo"])).stdout, /MiniMax Design/)
   await run(magpie, ["minimax-design", "provider", "magpie"])
   const connected = JSON.parse(fs.readFileSync(configFile))
   assert.deepEqual(connected.config.customModels["user-custom-mine"], { untouched: true })
@@ -192,7 +194,7 @@ try {
   const filteredProvider = filtered["config.customModels.user-custom-magpie"]
   assert.equal(filteredProvider.models.length, 1)
   assert.deepEqual(Object.keys(validate(filteredProvider)), [])
-  console.log("PASS: Design 4.0.10's own model validator accepts Magpie's generated configuration")
+  console.log("PASS: the installed Design model validator accepts Magpie's generated configuration")
 
   writeJSON(mcpFile, { mcp: { mine: { type: "remote", url: `${fixtureURL}/mine`, enabled: false } }, instructions: [] })
   await run(magpie, ["library", "sync"])
@@ -271,6 +273,27 @@ try {
 
   const gateway = start(magpie, ["serve"])
   await ready(`http://127.0.0.1:${gatewayPort}/v1/models`, gateway)
+  const toolsRequest = async (method, params = {}) => {
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/mcp/magpie/tools`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: AbortSignal.timeout(15000),
+    })
+    assert.equal(response.status, 200)
+    const result = await response.json()
+    assert.equal(result.error, undefined, JSON.stringify(result.error))
+    return result.result
+  }
+  const tools = await toolsRequest("tools/list")
+  const statusTool = `${path.basename(packageDir)}_status`
+  assert.ok(tools.tools.some((tool) => tool.name === statusTool))
+  const health = await toolsRequest("tools/call", { name: statusTool, arguments: {} })
+  assert.equal(health.isError, false)
+  const toolStatus = JSON.parse(health.content[0].text)
+  const mediaStore = JSON.parse(fs.readFileSync(path.join(data, "media-models/config.json")))
+  assert.equal(toolStatus.media, "synced")
+  assert.equal(toolStatus.mediaModels, mediaStore.models.length)
+  console.log("PASS: the live Magpie plugin tools endpoint lists and runs MiniMax Design status")
   const completion = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
     method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
     body: JSON.stringify({ model: provider.models[0].id, messages: [{ role: "user", content: "native acceptance" }] }),
@@ -313,6 +336,15 @@ try {
   const disconnected = JSON.parse(fs.readFileSync(configFile))
   assert.deepEqual(disconnected.config.customModels, original.config.customModels)
   assert.equal(disconnected.config.theme, original.config.theme)
+  const disconnectDeadline = Date.now() + 15000
+  let mediaStatus
+  do {
+    const health = await toolsRequest("tools/call", { name: statusTool, arguments: {} })
+    mediaStatus = JSON.parse(health.content[0].text).media
+    if (mediaStatus === "disconnected") break
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  } while (Date.now() < disconnectDeadline)
+  assert.equal(mediaStatus, "disconnected")
   console.log("PASS: disabling Library items and disconnecting removes only Magpie's entries")
 
   const catalog = Array.from({ length: 101 }, (_, index) => `fixture/model-${index}`)

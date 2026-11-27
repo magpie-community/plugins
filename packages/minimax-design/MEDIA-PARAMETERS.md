@@ -21,8 +21,12 @@ remain unset. No inference is performed during sync.
    models absent from the authenticated gateway list. An explicit gateway
    reference limit of zero remains authoritative.
 3. Exact routes with verified provider and gateway contracts use bundled
-   profiles. A remote-magpie mirror of a known direct route can reuse the
-   profile; routing groups and arbitrary aliases cannot.
+   profiles. Magpie relays reuse known source declarations and profiles
+   using `magpie_via` or the literal `remote-magpie/` prefix. If a relay's
+history is incomplete, the longest matching path declared by a source plugin
+can identify the model beyond the recorded hops.
+   `mediaParameters` and `mediaRequests` can target the full routed ID while
+   retaining that source profile. Submission always uses the full routed ID.
 4. Plugin option `mediaParameters` supplies missing fields using the same
    enum/range schema. Explicit source and gateway fields take precedence.
 5. Unidentified routes retain provider defaults and expose only declared,
@@ -98,6 +102,9 @@ are not blindly passed through.
 | minimax-code/MiniMax-H3 | Six ratios; 768P/2K; 4–15 seconds; first/last frames or up to 9 subject images | resolution → size, ratio → ratio, duration → seconds |
 | minimax-code/MiniMax-H3-Max | Six ratios; 480P/768P; 5–15 seconds; up to 2 ordered frames | Same mapping; no subject collections |
 | minimax-code/MiniMax-Hailuo-2.3 | 768P/1080P; 6s/10s; one first frame | Separate resolution/duration; 1080P with 10s rejected before HTTP |
+| minimax or minimax-cn / MiniMax-H3-Image and Highspeed | 1K/2K/4K output area; PNG/JPEG/WebP; up to 16 images | Tier or ratio goes in `size`; choosing both produces a pixel size with the selected ratio and target area |
+| minimax or minimax-cn / image-01 and image-01-live | Ratio; one portrait reference | Direct routes also forward `seed`, `prompt_optimizer` and `aigc_watermark`. The generic remote image relay drops these fields. |
+| minimax or minimax-cn / H3, Highspeed, Lite and Max | Model-specific resolution and duration; first/last frames or up to nine subject images | `resolution` is an explicit field. Max maps the prompt expansion control to `extra.prompt_expansion_mode`. |
 | grok/grok-imagine-video | Seven ratios; 480p/720p; 1–15 seconds; up to 7 subject images | ratio/resolution → pixel size; subjects limited to 10 seconds |
 | grok/grok-imagine-video-1.5 | Seven ratios; 480p/720p/1080p; 1–15 seconds; up to 14 subject images | Subjects limited to 720p; no tail-frame control |
 | grok image / quality; xai/grok-imagine-image | Thirteen ratios | size → aspect_ratio; catalogue decides reference support |
@@ -108,7 +115,6 @@ are not blindly passed through.
 
 For image models with declared image input but no verified count, the bridge
 retains its existing one-image bridge budget; this is not a vendor maximum.
-Unsupported video/audio references remain outside this bridge.
 Video reference counts are capped by the verified frame/subject mapping.
 Count metadata alone does not establish a new multi-image mode; unknown video
 routes accept at most one first frame. A minimum above the mapped maximum
@@ -122,6 +128,19 @@ budgets still come from `input_references` and are capped at 16 by the bridge,
 or two for frames alone. An empty mode list disables references.
 `media_request.frame_ratio: "auto"` rejects a manual ratio with frame input.
 This contract is independent of provider IDs and model names.
+
+Per-route `mediaRequests` fills missing `media_request` fields using the same
+precedence as `mediaParameters`. Image routes can set `outputs_per_task` to
+1–4 where the gateway provider produces that many images in one request.
+The native store and the outgoing `n` use the same value.
+
+For an Ark-compatible video route, declare `video: "ark"` in `mediaRequests`
+or source `media_request`. This enables the declared `seed`, `watermark`,
+`seconds: -1` and `input_audios` controls. `prompt: "optional"` requires media
+when the prompt is empty. A declared `reference_video_url` string accepts a
+public HTTP(S) URL or an Ark `asset://` ID. These fields go to `/v1/videos`.
+Apply this mapping only to routes that accept Ark `content`. Inline
+references have a 20 MiB per-file limit in Design.
 
 ## Automatic reference modes and preflight
 
@@ -158,7 +177,7 @@ sends `size: "16:9@2K"` (or `auto@2K` / `16:9@auto`); the source plugin must
 decode it before calling its vendor. This is an explicit plugin contract,
 not an upstream provider size format. Pixel routes can declare `"pixels"`.
 
-Declared image `quality`, `background` and `output_format` enums are passed through generic
+Declared image `quality`, `complexity`, `background` and `output_format` enums are passed through generic
 image routes. An optional nonempty `title` preserves source terminology such
 as inference effort without conflating it with resolution. A generic video route can declare `generate_audio` with
 `type: "boolean"` and an optional boolean `default`; a declared default gives

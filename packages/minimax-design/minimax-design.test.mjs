@@ -22,6 +22,7 @@ test("agent loads without host globals and uses the shared native-data entry", (
   const { agent } = load()
   assert.equal(agent.config, "~/.minimax-design/hub-config.json")
   assert.equal(agent.dir, "~/.minimax-design")
+  assert.deepEqual(agent.aliases, ["hilo"])
   assert.deepEqual(agent.library, {
     skills: "~/.minimax-design/library-skills",
     mcp: "~/.minimax-design/library-mcp.json",
@@ -59,7 +60,7 @@ test("models always contain valid limits and an array of supported reasoning lev
   const { result } = load()
   assert.deepEqual(result, {
     "config.customModels.user-custom-magpie": {
-      protocol: "openai-compatible", providerName: "Magpie",
+      protocol: "openai-compatible", providerName: "Magpie", magpieAgent: "minimax-design",
       baseUrl: "http://127.0.0.1:3425/v1", apiKey: "test-key",
       models: [{ id: "vendor/model", contextWindow: 128000, maxOutputTokens: 16000, reasoningLevels: ["high"] }],
     },
@@ -79,6 +80,29 @@ test("Design's 50-model limit splits a large catalog without truncation", () => 
   assert.deepEqual(Object.values(result).map((entry) => entry.models.length), [50, 50, 1])
   assert.deepEqual(Object.values(result).flatMap((entry) => entry.models.map((model) => model.id)),
     models.map((model) => model.id))
+})
+
+test("native endpoint declarations choose stable protocol-specific providers", () => {
+  const endpoints = {
+    messages: ["/v1/messages"], responses: ["/v1/responses"],
+    multi: ["/v1/messages", "/v1/chat/completions"], translated: [],
+  }
+  const context = vm.createContext({
+    input: {
+      gateway: { v1: "http://localhost/v1", key: "fixture" },
+      models: Object.entries(endpoints).map(([id, native_endpoints]) =>
+        ({ id, native_endpoints, context: 1000, output: 100 })),
+    },
+  })
+  const result = JSON.parse(vm.runInContext(
+    source.replaceAll("export ", "") + "\nJSON.stringify(connect(input))", context,
+  ))
+  assert.deepEqual(Object.values(result).map((entry) => [entry.protocol, entry.models.map((model) => model.id)]), [
+    ["openai-compatible", ["multi", "translated"]],
+    ["openai-responses", ["responses"]],
+    ["anthropic", ["messages"]],
+  ])
+  assert.ok(result["config.customModels.user-custom-magpie-anthropic"])
 })
 
 test("missing limits are omitted and an empty eligible catalog is refused", () => {

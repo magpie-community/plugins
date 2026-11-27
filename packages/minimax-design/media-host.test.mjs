@@ -14,6 +14,7 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
   const appData = path.join(home, "AppData", "Roaming")
   const paths = mediaPaths(home, process.platform, appData)
   const server = http.createServer((request, response) => {
+    assert.equal(request.url, "/v1/models")
     assert.equal(request.headers["x-magpie-drawers"], "1")
     assert.equal(request.headers["x-magpie-videomakers"], "1")
     response.setHeader("content-type", "application/json")
@@ -27,7 +28,7 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
     version: 1, servers: { conflict: { name: "conflict", enabled: true,
       config: { transport: "http", url: "https://user.invalid/mcp" } } },
   }), config: { customModels: {
-    "user-custom-magpie": { baseUrl: address, apiKey: "magpie-minimax-design" },
+    "user-custom-magpie": { magpieAgent: "minimax-design", baseUrl: address, apiKey: "magpie-minimax-design" },
   } } }))
   fs.writeFileSync(path.join(path.dirname(paths.control), "library-mcp.json"), JSON.stringify({
     mcp: { conflict: { type: "remote", url: "https://library.invalid/mcp" } },
@@ -53,14 +54,21 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
     } } } };
     const config = ${JSON.stringify(path.join(paths.store, "config.json"))};
     assert.equal(JSON.parse(fs.readFileSync(config)).models.length, 2);
+    assert.deepEqual(hooks.tool.status.execute(), {
+      path: "synced", skills: "error", mcp: "error", media: "synced", mediaModels: 2
+    });
     await new Promise(resolve => setTimeout(resolve, 5500));
     const entry = JSON.parse(fs.readFileSync(config)).models.find(model => model.type === "image");
     const folder = ${JSON.stringify(path.join(paths.store, "models"))} + "/" + entry.id;
     assert.equal(JSON.parse(fs.readFileSync(folder + "/spec.json")).references.image.max, 6);
     assert.ok(fs.readFileSync(folder + "/adapter.js", "utf8").includes("replacement/new-image"));
-    fs.writeFileSync(${JSON.stringify(paths.control)}, "{}");
+    fs.writeFileSync(${JSON.stringify(paths.control)}, JSON.stringify({ config: { customModels: {
+      "user-custom-magpie": { providerName: "Magpie", baseUrl: ${JSON.stringify(address + "/restored")}, apiKey: "user-key" },
+    } } }));
     await new Promise(resolve => setTimeout(resolve, 5500));
     assert.equal(JSON.parse(fs.readFileSync(config)).models.length, 0);
+    assert.equal(hooks.tool.status.execute().media, "disconnected");
+    assert.equal(hooks.tool.status.execute().mediaModels, 0);
     clearInterval(globalThis[Symbol.for("magpie.minimax-design.media.v1")]);
     console.log("host remains alive after disconnect");
   `

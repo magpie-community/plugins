@@ -55,6 +55,25 @@ test("Ming automatically sends defaults and validates voice, instructions, forma
   assert.throws(() => submit({}, { audios: [{}] }), /不接受参考/)
 })
 
+test("LoomVox speech models use their individual voice and instruction contracts", async () => {
+  const provider = "mlx-audio-tools"
+  const customID = `remote-magpie/remote-magpie/${provider}/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`
+  assert.equal(speechModel({ id: customID }), true)
+  const custom = await configured({ ref: customID, type: "speech" })
+  assert.throws(() => custom.submit(), /音色/)
+  assert.throws(() => custom.submit({ voice: "default" }), /音色/)
+  assert.equal(custom.submit({ voice: "Vivian" }).body.model, customID)
+  for (const id of ["mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit", "mimo-v2.5-tts-voicedesign"]) {
+    const design = await configured({ ref: `${provider}/${id}`, type: "speech" })
+    assert.throws(() => design.submit(), /声音描述/)
+    assert.equal(design.submit({ instructions: "warm" }).body.voice, undefined)
+  }
+  const seed = await configured({ ref: `${provider}/seed-audio-1.0-multilingual`, type: "speech" })
+  assert.equal(seed.submit().body.response_format, "wav")
+  assert.throws(() => seed.submit({ instructions: "warm" }), /不支持参数/)
+  assert.equal(speechModel({ id: `${provider}/mimo-v2.5-tts-voiceclone` }), false)
+})
+
 test("explicit speech metadata supplies automatic voice and valid defaults without unverified controls", async () => {
   const model = { ref: "vendor/new-speech", type: "speech", parameters: {
     voice: { type: "enum", values: ["a", "b"], default: "b" },
@@ -72,6 +91,16 @@ test("explicit speech metadata supplies automatic voice and valid defaults witho
   const generic = await configured({ ref: "vendor/speech", type: "speech" })
   assert.throws(() => generic.submit(), /请填写音色/)
   assert.equal(generic.submit({ voice: "provided" }).body.voice, "provided")
+})
+
+test("partial Voice Design metadata keeps the description mandatory", async () => {
+  for (const id of ["mimo-v2.5-tts-voicedesign", "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit"]) {
+    const { capability, submit } = await configured({ ref: `mlx-audio-tools/${id}`, type: "speech",
+      parameters: { instructions: { type: "string", description: "Describe the voice" } } })
+    assert.equal(capability.params.find((param) => param.key === "instructions").required, true)
+    assert.throws(() => submit(), /声音描述/)
+    assert.equal(submit({ instructions: "warm" }).body.instructions, "warm")
+  }
 })
 
 test("speech accepts binary audio and refuses JSON errors, empty and non-audio success bodies", async () => {
@@ -113,4 +142,3 @@ test("source speech declarations discover renamed models and supply automatic pa
     })
   } finally { globalThis.fetch = original }
 })
-

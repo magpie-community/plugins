@@ -17,6 +17,18 @@ Quit MiniMax Design, switch the agent on in Magpie's Agents page, then
 start Design and pick a model under **Magpie**. Disconnecting restores the
 provider entries Magpie replaced and leaves other settings intact.
 
+Magpie's `native_endpoints` declarations determine which text models use
+Anthropic Messages or OpenAI Responses. Chat Completions stays preferred
+when also declared, and serves models without native endpoint metadata.
+`magpie hilo` is an alias for `magpie minimax-design`.
+
+Run `magpie tools` to find the read-only `<plugin>_status` tool. Magpie uses
+the directory name as the prefix for local installs. The tool reports model count and
+the companion's path, media, Skills and MCP sync states through Magpie's
+`/mcp/magpie/tools` server. An MCP change that still needs Design to quit
+reports `waiting_for_design_to_quit`. Sync state reflects local writes
+and does not indicate that the Design UI has reloaded them.
+
 ## Library
 
 Design becomes a target for **Skills** and **MCP servers**, using the same
@@ -44,7 +56,7 @@ Library controls as other agents:
 
 ## Native image and video models
 
-With Design 4.0.10, connecting the Agent also synchronizes Magpie's image
+Connecting the Agent also synchronizes Magpie's image
 and video catalogue into Design's native media model store. These are
 native model choices, independent of MCP. A companion Bun plugin checks
 connection changes every five seconds and refreshes the catalogue every
@@ -58,13 +70,13 @@ the automated test covers its native media loader and executor.
 
 The bridge uses explicit image/video kinds from Magpie's authenticated model
 list. It automatically builds model-specific dropdowns and reference budgets
-from explicit parameter metadata, OpenRouter's public endpoint schemas, or
+from explicit gateway and source plugin metadata or
 verified route profiles. `自动` applies a validated source default when
 declared, otherwise it retains the selected route's defaults.
 Source plugins can publish reference limits in Magpie's shared provider
 configuration; the bridge reads these without requiring a model-name match.
-Optional `imageRoutes` and `mediaParameters` plugin settings provide explicit
-route replacements and missing schemas; both default to empty objects.
+Optional `imageRoutes`, `mediaParameters` and `mediaRequests` settings provide
+explicit route replacements, parameter schemas and request mappings.
 MiniMax, Grok, Qwen and verified RightAPI routes have presets; unidentified
 routes retain optional manual size/duration controls.
 
@@ -105,7 +117,8 @@ switching to the shared entry.
 ## Native speech models — 0.4.0
 
 The media bridge synchronizes speech models whose catalogue explicitly
-advertises `/v1/audio/speech`, plus the verified LoomVox Ming route.
+advertises `/v1/audio/speech`, plus the LoomVox speech routes for Ming, Qwen3,
+OmniVoice, MiMo, Qwen Cloud and Seed Audio when present in Magpie's catalogue.
 Requests use Magpie's gateway. Direct LoomVox discovery and a separate manual
 audio catalogue are not enabled. Audio expansion belongs in Magpie's source
 providers before models are synchronized into Design.
@@ -130,6 +143,7 @@ at `config.customModels.<id>`:
 {
   "protocol": "openai-compatible",
   "providerName": "Magpie",
+  "magpieAgent": "minimax-design",
   "baseUrl": "http://127.0.0.1:3425/v1",
   "apiKey": "magpie-minimax-design",
   "models": [{ "id": "...", "contextWindow": 1000000, "maxOutputTokens": 65536, "reasoningLevels": ["low", "high"] }]

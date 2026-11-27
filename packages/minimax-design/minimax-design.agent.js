@@ -5,9 +5,7 @@
 // under config.customModels.<entry-id>, each entry shaped like:
 //   { protocol, providerName, baseUrl, apiKey, models: [{ id, contextWindow, maxOutputTokens, reasoningLevels }] }
 // protocols Design understands: "openai-compatible" | "openai-responses" | "anthropic"
-// magpie's gateway serves all three, so this plugin writes one entry pointing
-// at magpie's OpenAI-compatible endpoint, and refreshes the model list
-// automatically whenever magpie's models change (magpie re-calls connect).
+// Magpie refreshes these providers when its model catalogue changes.
 //
 // Design picks its model in its own UI, so this agent has no `model` key:
 // the row is a switch, and connect is called without a model.
@@ -17,6 +15,7 @@ const dataDir = "~/.minimax-design"
 export const agent = {
   id: "minimax-design",
   name: "MiniMax Design",
+  aliases: ["hilo"],
   icon: "https://design.minimax.io/favicon.ico",
   config: `${dataDir}/hub-config.json`,
   format: "json",
@@ -50,24 +49,34 @@ function toDesignModel(m) {
 }
 
 export function connect({ gateway, models }) {
-  const list = []
+  const groups = { "openai-compatible": [], "openai-responses": [], anthropic: [] }
   const seen = new Set()
-  for (const m of models || []) {
-    const d = toDesignModel(m)
-    if (!d || seen.has(d.id)) continue
-    seen.add(d.id)
-    list.push(d)
+  for (const model of models || []) {
+    const design = toDesignModel(model)
+    if (!design || seen.has(design.id)) continue
+    seen.add(design.id)
+    const endpoints = model.native_endpoints ?? []
+    let protocol = "openai-compatible"
+    if (!endpoints.includes("/v1/chat/completions")) {
+      if (endpoints.includes("/v1/messages")) protocol = "anthropic"
+      else if (endpoints.includes("/v1/responses")) protocol = "openai-responses"
+    }
+    groups[protocol].push(design)
   }
-  if (!list.length) throw new Error("MiniMax Design needs a model with a valid ID and valid context and output limits.")
+  if (!seen.size) throw new Error("MiniMax Design needs a model with a valid ID and valid context and output limits.")
   const entries = {}
-  for (let offset = 0; offset < list.length; offset += 50) {
-    const suffix = offset === 0 ? "" : `-${offset / 50 + 1}`
-    entries[`config.customModels.user-custom-magpie${suffix}`] = {
-      protocol: "openai-compatible",
-      providerName: "Magpie",
-      baseUrl: gateway.v1,
-      apiKey: gateway.key,
-      models: list.slice(offset, offset + 50),
+  for (const [protocol, list] of Object.entries(groups)) {
+    const family = protocol === "openai-compatible" ? "" : `-${protocol}`
+    for (let offset = 0; offset < list.length; offset += 50) {
+      const batch = offset === 0 ? "" : `-${offset / 50 + 1}`
+      entries[`config.customModels.user-custom-magpie${family}${batch}`] = {
+        protocol,
+        providerName: "Magpie",
+        magpieAgent: "minimax-design",
+        baseUrl: gateway.v1,
+        apiKey: gateway.key,
+        models: list.slice(offset, offset + 50),
+      }
     }
   }
   return entries

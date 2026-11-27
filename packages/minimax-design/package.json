@@ -9,5 +9,5 @@
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax-design" },
   "magpie": { "agent": "./minimax-design.agent.js", "icon": "https://design.minimax.io/favicon.ico",
-    "options": { "imageRoutes": {}, "mediaParameters": {} } }
+    "options": { "imageRoutes": {}, "mediaParameters": {}, "mediaRequests": {} } }
 }

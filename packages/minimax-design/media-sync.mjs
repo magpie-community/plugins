@@ -2,7 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
-import { mediaCapability, mediaSpec } from "./media-capabilities.mjs"
+import { bundledMediaProfile, mediaCapability, mediaSpec } from "./media-capabilities.mjs"
 import { speechModel } from "./speech.mjs"
 
 const providerID = "provider-magpiedesign"
@@ -17,7 +17,9 @@ export function mediaPaths(home = os.homedir(), platform = process.platform, app
   const data = platform === "darwin"
     ? path.join(home, "Library/Application Support/@hilo/desktop")
     : path.join(appData, "@hilo/desktop")
+  const configHome = path.isAbsolute(process.env.XDG_CONFIG_HOME ?? "") ? process.env.XDG_CONFIG_HOME : path.join(home, ".config")
   return { control: path.join(data, "hub-config.json"), store: path.join(data, "media-models"),
+    stash: path.join(configHome, "magpie", "stash.json"), agentControl: path.join(home, ".minimax-design", "hub-config.json"),
     state: path.join(data, ".magpie-media", "ownership.json") }
 }
 
@@ -51,8 +53,25 @@ function atomic(file, text) {
 }
 
 export function connection(paths) {
-  const entry = readJSON(paths.control)?.config?.customModels?.["user-custom-magpie"]
-  if (entry?.apiKey !== "magpie-minimax-design") return null
+  const providers = readJSON(paths.control)?.config?.customModels ?? {}
+  const candidates = Object.entries(providers).filter(([id, entry]) =>
+    /^user-custom-magpie(?:-openai-responses|-anthropic)?(?:-\d+)?$/.test(id) &&
+    typeof entry?.apiKey === "string" && entry.apiKey)
+  let stash, saved
+  if (candidates.some(([, entry]) => entry.magpieAgent !== "minimax-design")) {
+    // Older connectors have no marker. Magpie records their assigned key and the exact paths it owns.
+    stash = readJSON(paths.stash)
+    const record = stash?.[`plugin:minimax-design:${paths.agentControl}`]
+    if (record) saved = JSON.parse(record)
+  }
+  const managed = candidates.filter(([id, entry]) => entry.magpieAgent === "minimax-design" ||
+    (saved?.value === entry.apiKey && Object.hasOwn(saved.had, `config.customModels.${id}`)) ||
+    (stash === null && id === "user-custom-magpie" && entry.apiKey === "magpie-minimax-design"))
+  if (!managed.length) return null
+  const entry = managed[0][1]
+  if (managed.some(([, candidate]) => candidate.baseUrl !== entry.baseUrl || candidate.apiKey !== entry.apiKey)) {
+    throw new Error("MiniMax Design Magpie providers disagree on the gateway connection.")
+  }
   const url = new URL(entry.baseUrl)
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("Invalid MiniMax Design gateway URL.")
@@ -60,13 +79,49 @@ export function connection(paths) {
   return { baseURL: url.href.replace(/\/$/, ""), key: entry.apiKey }
 }
 
+function sourceRoute(model, sourceModels, parameters, requests) {
+  if (typeof model.id !== "string") return model.id
+  const id = model.id.replace(/^(?:remote-magpie\/)+/, "")
+  const matches = (route) => sourceModels.has(route) || speechModel({ id: route }) ||
+    bundledMediaProfile({ type: model.kind }, route).source !== "unknown"
+  const configured = (route) => Object.hasOwn(parameters, route) || Object.hasOwn(requests, route)
+  if (!Array.isArray(model.magpie_via) || !model.magpie_via.length) {
+    if (matches(id)) return id
+    // A one-hop relay often keeps its provider as owned_by. Without via,
+    // known profiles and speech models still identify that source.
+    const withoutOwner = id.slice(id.indexOf("/") + 1)
+    return !model.owned_by || !id.startsWith(`${model.owned_by}/`) || !matches(withoutOwner) ? id : withoutOwner
+  }
+  const depth = model.magpie_via.length
+  if (typeof model.owned_by !== "string" || !model.id.startsWith(`${model.owned_by}/`)) return id
+  // Local and relayed routes differ by one prefix. Match only candidates
+  // whose source declarations or profiles actually recognize them.
+  const parts = model.id.split("/")
+  const withOrigin = parts.slice(depth - 1).join("/")
+  const withoutOrigin = parts.slice(depth).join("/")
+  for (const route of [withOrigin, withoutOrigin]) {
+    if (matches(route)) return route
+  }
+  for (let offset = depth + 1; offset < parts.length - 1; offset++) {
+    const route = parts.slice(offset).join("/")
+    if (sourceModels.has(route)) return route
+  }
+  for (const route of [withOrigin, withoutOrigin]) {
+    if (configured(route)) return route
+  }
+  return withOrigin
+}
+
 export async function discoverMedia(gateway, options = {}, providers = {}) {
   const routes = options.imageRoutes ?? {}
   const parameters = options.mediaParameters ?? {}
-  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters) ||
-      Object.entries(parameters).some(([ref, value]) => !validModelID(ref) || !value ||
-        typeof value !== "object" || Array.isArray(value))) {
-    throw new Error("mediaParameters must map model IDs to parameter schemas.")
+  const requests = options.mediaRequests ?? {}
+  for (const [name, entries] of [["mediaParameters", parameters], ["mediaRequests", requests]]) {
+    if (typeof entries !== "object" || Array.isArray(entries) ||
+        Object.entries(entries).some(([ref, value]) => !validModelID(ref) || !value ||
+          typeof value !== "object" || Array.isArray(value))) {
+      throw new Error(`${name} must map model IDs to objects.`)
+    }
   }
   if (!routes || typeof routes !== "object" || Array.isArray(routes) ||
       Object.entries(routes).some(([from, to]) => !validModelID(from) || !validModelID(to) || from === to) ||
@@ -85,9 +140,11 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
     Object.entries(provider.models ?? {}).map(([modelID, model]) => [`${id}/${modelID}`, model])))
   const models = new Map()
   for (const model of body.data) {
+    const route = sourceRoute(model, sourceModels, parameters, requests)
     let type = model.kind
     if (!["image", "video"].includes(type)) {
-      if (!speechModel(model) && !speechModel(sourceModels.get(model.id) ?? {})) continue
+      if (!speechModel({ ...model, id: route }) &&
+          !speechModel(sourceModels.get(model.id) ?? sourceModels.get(route) ?? {})) continue
       type = "speech"
     }
     if (!validModelID(model.id)) {
@@ -95,7 +152,7 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
     }
     const name = model.magpie_label ?? model.display_name ?? model.id
     if (typeof name !== "string" || !name.trim()) throw new Error("Media discovery returned an invalid model name.")
-    models.set(`${type}:${model.id}`, { ref: model.id, type, name: name.slice(0, 60),
+    models.set(`${type}:${model.id}`, { ref: model.id, route, type, name: name.slice(0, 60),
       images: model.modalities?.input?.includes("image") === true ||
         model.supported_endpoint_types?.includes("image-edit") === true, owner: model.owned_by,
       imageOnly: model.modalities?.output?.includes("image") === true && !model.modalities.output.includes("text"),
@@ -113,12 +170,21 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
   }
   for (const model of models.values()) {
     const ref = model.requestModel ?? model.ref
-    const source = sourceModels.get(ref)
+    const source = sourceModels.get(ref) ?? sourceModels.get(model.route)
     if (!source) continue
     model.sourceCapabilities = { ...source.capabilities, ...model.sourceCapabilities }
-    model.mediaRequest ??= source.media_request
+    if (source.media_request !== undefined && model.mediaRequest !== undefined) {
+      for (const mapping of [source.media_request, model.mediaRequest]) {
+        if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) throw new Error("Invalid media_request mapping.")
+      }
+      model.mediaRequest = { ...source.media_request, ...model.mediaRequest }
+    } else model.mediaRequest ??= source.media_request
     if (source.modalities?.input?.includes("image")) model.images = true
     const declared = { ...source.supported_parameters }
+    const formats = source.capabilities?.outputFormats
+    if (model.type === "image" && declared.output_format === undefined && formats?.length) {
+      declared.output_format = { type: "enum", values: formats }
+    }
     const limit = source.capabilities?.maxReferences
     if (declared.input_references === undefined && limit !== undefined && limit !== null) {
       declared.input_references = { type: "range", min: source.capabilities?.generate === false ? 1 : 0, max: limit }
@@ -131,7 +197,10 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
   }
   const catalogue = [...models.values()]
   for (const model of catalogue) {
-    const manual = parameters[model.requestModel ?? model.ref]
+    const ref = model.requestModel ?? model.ref
+    const manualRequest = Object.hasOwn(requests, ref) ? requests[ref] : Object.hasOwn(requests, model.route) ? requests[model.route] : undefined
+    if (manualRequest) model.mediaRequest = { ...manualRequest, ...model.mediaRequest }
+    const manual = Object.hasOwn(parameters, ref) ? parameters[ref] : Object.hasOwn(parameters, model.route) ? parameters[model.route] : undefined
     if (!manual) continue
     if (model.parameters === undefined) model.parameterSource = "plugin-options"
     model.parameters = { ...manual, ...model.parameters }
@@ -166,7 +235,7 @@ export function applyMedia(paths, gateway, catalogue) {
     const others = current.models.filter((model) => !owned.has(model.id))
     const providers = current.providers.filter((provider) => provider.id !== providerID)
     const now = Date.now()
-    const entries = gateway ? catalogue.map((model) => {
+    const entries = gateway ? catalogue.map((model, index) => {
       const id = `custom-${digest(`${model.type}:${model.ref}`)}`
       if (others.some((existing) => existing.id === id)) throw new Error("A media model ID is already in use.")
       if (!owned.has(id) && fs.existsSync(path.join(paths.store, "models", id))) throw new Error("An unmanaged media model directory is already in use.")
@@ -175,7 +244,7 @@ export function applyMedia(paths, gateway, catalogue) {
         id, name: model.name, type: model.type, provider: providerID, upstreamModel: model.ref,
         spec: { kind: "own" }, adapter: { kind: "own" }, enabled: previous?.enabled ?? true,
         createdAt: previous?.createdAt ?? now, updatedAt: previous?.name === model.name ? previous.updatedAt : now,
-        pollIntervalSec: 5, timeoutMin: 30, outputsPerTask: 1,
+        pollIntervalSec: 5, timeoutMin: 30, outputsPerTask: capabilities[index].outputsPerTask ?? 1,
       }
     }) : []
     if (others.length + entries.length > 200 || providers.length + (gateway ? 1 : 0) > 50) {

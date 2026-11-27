@@ -17,7 +17,7 @@ function sandbox() {
   const paths = mediaPaths(home, "darwin")
   fs.mkdirSync(path.dirname(paths.control), { recursive: true })
   fs.writeFileSync(paths.control, JSON.stringify({ config: { customModels: {
-    "user-custom-magpie": { baseUrl: gateway.baseURL, apiKey: gateway.key },
+    "user-custom-magpie": { magpieAgent: "minimax-design", baseUrl: gateway.baseURL, apiKey: gateway.key },
   } } }))
   return { home, paths, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) }
 }
@@ -40,6 +40,202 @@ test("native adapters use images and authenticated video polling", () => {
   assert.equal(done.outputs[0].fetch.path, "/videos/video-task/content")
   assert.equal(done.outputs[0].fetch.response, undefined)
   assert.equal(adapter.parsePoll({ body: { status: "failed" } }, submitted).status, "failed")
+})
+
+test("generated protocol providers use the configured Magpie gateway with its assigned key", (t) => {
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  const write = (customModels) => fs.writeFileSync(paths.control, JSON.stringify({ config: { customModels } }))
+  const managed = { magpieAgent: "minimax-design", providerName: "Magpie", baseUrl: "https://gateway.example/v1", apiKey: "fixture-key" }
+  write({ "user-custom-magpie-anthropic": managed })
+  assert.deepEqual(connection(paths), { baseURL: managed.baseUrl, key: managed.apiKey })
+  write({ "user-custom-magpie": managed, "user-custom-magpie-anthropic": { ...managed, baseUrl: "https://different.example/v1" } })
+  assert.throws(() => connection(paths), /disagree/)
+  write({ "user-custom-magpie": { providerName: "Magpie", baseUrl: "https://restored.example/v1", apiKey: "user-key" } })
+  assert.equal(connection(paths), null)
+  const legacy = { providerName: "Magpie", baseUrl: managed.baseUrl, apiKey: managed.apiKey }
+  paths.stash = path.join(path.dirname(paths.control), "test-stash.json")
+  fs.writeFileSync(paths.stash, JSON.stringify({ [`plugin:minimax-design:${paths.agentControl}`]: JSON.stringify({
+    had: { "config.customModels.user-custom-magpie-anthropic": "\u0000" }, value: managed.apiKey,
+  }) }))
+  write({ "user-custom-magpie-anthropic": legacy, "user-custom-magpie": { ...legacy, baseUrl: "https://mine.example/v1" } })
+  assert.deepEqual(connection(paths), { baseURL: managed.baseUrl, key: managed.apiKey })
+  fs.writeFileSync(paths.stash, "{}")
+  assert.equal(connection(paths), null)
+  write({ "user-custom-sibling": managed })
+  assert.equal(connection(paths), null)
+})
+
+test("multi-hop media discovery uses source metadata and preserves the routed model ID", async (t) => {
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  const local = "image-models/rightimage/gemini-nano-banana-2.1"
+  const routed = `studio-mini/remote-magpie/${local}`
+  t.mock.method(globalThis, "fetch", async () => ({ ok: true, json: async () => ({ data: [
+    { id: routed, owned_by: "studio-mini", magpie_via: ["source", "relay", "local"], kind: "image",
+      modalities: { input: ["image"] } },
+  ] }) }))
+  const providers = { "image-models/rightimage": { models: { "gemini-nano-banana-2.1": {
+    supported_parameters: {
+      aspect_ratio: { type: "enum", values: ["16:9"] },
+      resolution: { type: "enum", values: ["2K"] },
+    },
+    capabilities: { maxReferences: 14 },
+    media_request: { size: "aspect-resolution" },
+  } } } }
+  const catalogue = await discoverMedia(gateway, {}, providers)
+  assert.equal(catalogue[0].route, local)
+  assert.equal(catalogue[0].ref, routed)
+  applyMedia(paths, gateway, catalogue)
+  const config = JSON.parse(fs.readFileSync(path.join(paths.store, "config.json")))
+  const [model] = config.models
+  const folder = path.join(paths.store, "models", model.id)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(folder, "spec.json"))).references.image.max, 14)
+  const generated = await import(`data:text/javascript;base64,${fs.readFileSync(path.join(folder, "adapter.js")).toString("base64")}`)
+  const request = generated.buildSubmit({ type: "image", model: model.upstreamModel, prompt: "edit", images: [],
+    params: { aspect_ratio: "16:9", resolution: "2K" } })
+  assert.equal(request.body.model, routed)
+  assert.equal(request.body.size, "16:9@2K")
+})
+
+test("source plugin GPT presets keep the remote ID and external H3 stays on its declared transport", async (t) => {
+  const remote = "remote-magpie/image-models/rightimage/gpt-image-2.6-flare"
+  const legacyRelay = "studio/office/old/image-models/rightimage/gpt-image-2.6-flare"
+  const local = "rightimage/gpt-image-2.6-flare"
+  const external = "external/minimax/MiniMax-H3"
+  const providers = {
+    "image-models/rightimage": { models: { "gpt-image-2.6-flare": {} } },
+    external: { models: { "minimax/MiniMax-H3": { media_request: { video: "ark" } } } },
+  }
+  const data = [
+    { id: remote, kind: "image" },
+    { id: legacyRelay, owned_by: "studio", magpie_via: ["office", "studio"], kind: "image" },
+    { id: local, kind: "image" },
+    { id: external, owned_by: "external", magpie_via: ["local"], kind: "video" },
+  ]
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data }))
+  const models = await discoverMedia(gateway, {}, providers)
+  const source = remote.slice("remote-magpie/".length)
+  assert.deepEqual(models.map((model) => model.route), [source, source, local, external])
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  applyMedia(paths, gateway, models)
+  const config = JSON.parse(fs.readFileSync(path.join(paths.store, "config.json")))
+  assert.equal(config.models.length, data.length)
+  for (const entry of config.models) {
+    const spec = JSON.parse(fs.readFileSync(path.join(paths.store, "models", entry.id, "spec.json")))
+    if (entry.type === "video") assert.equal(spec.params.find(param => param.key === "aspect_ratio"), undefined)
+    else assert.ok(spec.params.some(param => param.key === "resolution"))
+    const generated = await import(`data:text/javascript;base64,${fs.readFileSync(path.join(paths.store, "models", entry.id, "adapter.js")).toString("base64")}`)
+    if (entry.type === "image") {
+      const { body } = generated.buildSubmit({ type: entry.type, model: entry.upstreamModel, prompt: "hello", params: { aspect_ratio: "16:9", resolution: "2K" }, images: [] })
+      assert.equal(body.size, "2048x1152")
+      assert.equal(body.model, entry.upstreamModel)
+      const refusal = generated.parseError({ status: 200, body: { error: { message: "balance", code: 1008 } } })
+      assert.equal(refusal.kind, "rejected")
+    } else {
+      assert.equal(generated.parseError({ status: 200, body: { error: { message: "balance", code: 1008 } } }).kind, "rejected")
+    }
+  }
+})
+
+test("incomplete relay history still identifies known H3, speech and declared source routes", async (t) => {
+  const routes = ["minimax-code/MiniMax-H3", "mlx-audio-tools/mlx-community/Ming-3.0-tts-0.5B-8bit", "vendor/nested/image"]
+  const histories = [["office"], ["studio", "office"], []]
+  const data = histories.flatMap((relays) => routes.map((route, i) => ({
+    id: [...relays, route].join("/"), owned_by: relays[0], magpie_via: relays.map((_, n) => `node-${n}`),
+    kind: ["video", "model", "image"][i],
+  })))
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data }))
+  const options = { mediaParameters: {}, mediaRequests: {} }
+  for (const { id, kind } of data) {
+    if (kind === "video") options.mediaParameters[id] = { seconds: { type: "enum", values: [6] } }
+    if (kind === "model") options.mediaParameters[id] = { instructions: { type: "string", default: "calm" } }
+    if (kind === "image") options.mediaRequests[id] = { outputs_per_task: 3 }
+  }
+  const models = await discoverMedia(gateway, options, { vendor: { models: { "nested/image": {} } } })
+  assert.deepEqual(models.map((model) => model.route), [...routes, ...routes, ...routes])
+  assert.deepEqual(models.map((model) => model.ref), data.map((model) => model.id))
+  const { mediaCapability } = await import("./media-capabilities.mjs")
+  for (const start of [0, 3, 6]) {
+    assert.equal(mediaCapability(models[start]).transport, "minimax-video")
+    assert.equal(mediaCapability(models[start + 1]).ming, true)
+    assert.equal(mediaCapability(models[start + 2]).outputsPerTask, 3)
+    assert.deepEqual(mediaCapability(models[start]).params.find(p => p.key === "duration").enum, ["6"])
+  }
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  applyMedia(paths, gateway, models)
+  for (const entry of JSON.parse(fs.readFileSync(path.join(paths.store, "config.json"))).models) {
+    const file = path.join(paths.store, "models", entry.id, "adapter.js")
+    const generated = await import(`data:text/javascript;base64,${fs.readFileSync(file).toString("base64")}`)
+    const params = entry.type === "video" ? { duration: "6" } : {}
+    const { body } = generated.buildSubmit({ type: entry.type, model: entry.upstreamModel, prompt: "hello", params, images: [] })
+    assert.ok(data.some(({ id }) => id === body.model))
+    if (entry.type === "video") assert.equal(body.seconds, "6")
+    if (entry.type === "speech") assert.equal(body.instructions, "calm")
+    if (entry.type === "image") assert.equal(body.n, 3)
+  }
+})
+
+test("one-hop relay options preserve source metadata without via history", async (t) => {
+  const id = "office/vendor/nested/image"
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ id, owned_by: "office", kind: "image" }] }))
+  const options = { mediaRequests: { [id]: { outputs_per_task: 3 } } }
+  const providers = { vendor: { models: { "nested/image": { media_request: { size: "aspect-resolution" },
+    supported_parameters: { aspect_ratio: { type: "enum", values: ["16:9"] }, resolution: { type: "enum", values: ["2K"] } } } } } }
+  const [model] = await discoverMedia(gateway, options, providers)
+  assert.equal(model.route, "vendor/nested/image")
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  applyMedia(paths, gateway, [model])
+  const [entry] = JSON.parse(fs.readFileSync(path.join(paths.store, "config.json"))).models
+  const file = path.join(paths.store, "models", entry.id, "adapter.js")
+  const generated = await import(`data:text/javascript;base64,${fs.readFileSync(file).toString("base64")}`)
+  const { body } = generated.buildSubmit({ type: "image", model: entry.upstreamModel, prompt: "hello", images: [],
+    params: { aspect_ratio: "16:9", resolution: "2K" } })
+  assert.deepEqual([body.model, body.size, body.n], [id, "16:9@2K", 3])
+})
+
+test("partial gateway request mappings preserve source batch size", async (t) => {
+  const data = [{ id: "studio/image", kind: "image", media_request: { size: "pixels" } }]
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data }))
+  const [model] = await discoverMedia(gateway, { mediaRequests: { "studio/image": { outputs_per_task: 1 } } }, { studio: { models: {
+    image: { media_request: { outputs_per_task: 3, size: "aspect-resolution" } },
+  } } })
+  assert.deepEqual(model.mediaRequest, { outputs_per_task: 3, size: "pixels" })
+  const { paths, cleanup } = sandbox()
+  t.after(cleanup)
+  applyMedia(paths, gateway, [model])
+  const [entry] = JSON.parse(fs.readFileSync(path.join(paths.store, "config.json"))).models
+  assert.equal(entry.outputsPerTask, 3)
+  const file = path.join(paths.store, "models", entry.id, "adapter.js")
+  const generated = await import(`data:text/javascript;base64,${fs.readFileSync(file).toString("base64")}`)
+  assert.equal(generated.buildSubmit({ type: "image", model: model.ref, prompt: "", params: {}, images: [] }).body.n, 3)
+})
+
+test("HTTP 200 submit refusals preserve the provider code and quota category", () => {
+  for (const type of ["image", "video", "speech"]) {
+    assert.deepEqual(adapter.parseSubmit({ status: 200, body: { error: { message: "quota", code: 2068 } } }, { type }),
+      { error: "quota", code: "2068", kind: "noQuota" })
+  }
+})
+
+test("media errors retain provider codes and distinguish quota, credentials and retry", () => {
+  for (const [status, body, kind, code] of [
+    [429, { error: { message: "quota", type: "insufficient_quota" } }, "noQuota", "insufficient_quota"],
+    [503, { error: { message: "busy" } }, "retry", undefined],
+    [429, { error: { message: "rate", code: "rate_limit_exceeded" } }, "retry", "rate_limit_exceeded"],
+    [401, { error: { message: "unauthorized" } }, "unauthorized", undefined],
+    [400, { detail: { message: "invalid", code: 4001 } }, "rejected", "4001"],
+  ]) {
+    const result = adapter.parseError({ status, body })
+    assert.equal(result.kind, kind)
+    assert.equal(result.code, code)
+    assert.equal(result.message, body.error?.message ?? body.detail.message)
+  }
+  assert.deepEqual(adapter.parsePoll({ body: { status: "failed", error: { code: "task_failed", message: "Failed" } } }, {}),
+    { status: "failed", message: "Failed", code: "task_failed" })
 })
 
 test("incremental sync preserves user models, enabled state and timestamps", () => {

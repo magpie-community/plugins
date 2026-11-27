@@ -3,6 +3,7 @@ import { speechCapability } from "./speech.mjs"
 
 const auto = "自动"
 const designReferenceLimit = 16
+const inlineReferenceMB = 20
 const commonRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]
 const grokRatios = [...commonRatios, "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"]
 function select(key, title, values) {
@@ -18,11 +19,12 @@ function pixelTier(size) {
   return `${Math.round(longEdge / 1024 * 2) / 2}K`
 }
 
-export function mediaCapability(model) {
-  if (model.type === "speech") return speechCapability(model)
-  const imageInput = model.images || model.parameters?.input_references?.max > 0
-  let route = (model.requestModel ?? model.ref).replace(/^(?:remote-magpie\/)+/, "")
-  if (model.requestModel && model.mediaRequest?.size === "pixels") route = model.ref.replace(/^(?:remote-magpie\/)+/, "")
+export function bundledMediaProfile(model, route, imageInput) {
+  if (route.startsWith("image-models/rightimage/")) route = route.slice("image-models/".length)
+  const separator = route.indexOf("/")
+  const provider = route.slice(0, separator)
+  const modelID = route.slice(separator + 1)
+  const minimaxKey = ["minimax", "minimax-cn"].includes(provider)
   const capability = { source: "unknown", transport: "generic",
     params: [],
     references: { min: 0, max: imageInput ? 1 : 0 }, modes: model.type === "video" ? ["首帧"] : [],
@@ -32,19 +34,48 @@ export function mediaCapability(model) {
       params: [select("ratio", "比例", [...commonRatios, "21:9", "9:21", "3:1", "1:3"]),
         select("resolution", "分辨率", ["1K", "2K", "4K"])],
       references: { min: 0, max: imageInput ? 16 : 0 }, maxMB: 64 })
-  } else if (["minimax-code/MiniMax-H3", "minimax-code/MiniMax-H3-Max", "minimax-code/MiniMax-Hailuo-2.3"].includes(route) && model.type === "video") {
-    const hailuo = route.endsWith("Hailuo-2.3")
-    const max = route.endsWith("H3-Max")
+  } else if (minimaxKey && model.type === "image" && ["MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed"].includes(modelID)) {
+    Object.assign(capability, { source: "magpie-minimax-api", transport: "minimax-h3-image",
+      params: [select("ratio", "比例", [...commonRatios, "21:9", "9:21", "3:1", "1:3"]),
+        select("resolution", "清晰度", ["1K", "2K", "4K"]),
+        select("output_format", "输出格式", ["png", "jpeg", "webp"])],
+      references: { min: 0, max: imageInput ? 16 : 0 } })
+  } else if (minimaxKey && model.type === "image" && ["image-01", "image-01-live"].includes(modelID)) {
+    const live = modelID === "image-01-live"
+    Object.assign(capability, { source: "magpie-minimax-api", transport: "minimax-legacy-image",
+      params: [select("ratio", "比例", live ? commonRatios : [...commonRatios, "21:9"])],
+      references: { min: 0, max: imageInput ? 1 : 0 } })
+    if (model.ref === route) {
+      capability.params.push(range("seed", "随机种子", 0, 4294967295),
+        { key: "prompt_optimizer", title: "提示词优化", type: "boolean" },
+        { key: "aigc_watermark", title: "生成水印", type: "boolean" })
+    }
+  } else if (model.type === "video" && (
+    (provider === "minimax-code" && ["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-Hailuo-2.3"].includes(modelID)) ||
+    (minimaxKey && ["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-H3-Highspeed", "MiniMax-H3-Lite"].includes(modelID))
+  )) {
+    const hailuo = modelID === "MiniMax-Hailuo-2.3"
+    const max = modelID === "MiniMax-H3-Max"
+    const resolutions = {
+      "MiniMax-H3": minimaxKey ? ["480P", "768P", "2K"] : ["768P", "2K"], "MiniMax-H3-Max": ["480P", "768P"],
+      "MiniMax-H3-Highspeed": ["480P", "768P"], "MiniMax-H3-Lite": ["768P", "480P"],
+    }
+    const subjects = !hailuo && (!max || minimaxKey)
     Object.assign(capability, { source: "minimax-matrix-2026-11-03", transport: "minimax-video",
       params: hailuo ? [select("resolution", "清晰度", ["768P", "1080P"]),
         { key: "seconds", title: "时长", type: "integer", enum: [6, 10] }] : [
         select("ratio", "比例", ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
-        select("resolution", "分辨率", max ? ["480P", "768P"] : ["768P", "2K"]),
+        select("resolution", "分辨率", resolutions[modelID]),
         range("seconds", "时长（秒）", max ? 5 : 4, 15)],
-      hailuo,
-      references: { min: 0, max: imageInput ? (hailuo ? 1 : max ? 2 : 9) : 0 },
-      modes: hailuo ? ["首帧"] : max ? ["首帧", "首尾帧"] : ["首帧", "首尾帧", "主体参考"],
-      defaultMode: max ? "首尾帧" : "主体参考", maxMB: 30, promptMax: hailuo ? 3000 : 7000 })
+      hailuo, minimaxKey,
+      references: { min: 0, max: imageInput ? (hailuo ? 1 : subjects ? 9 : 2) : 0 },
+      modes: hailuo ? ["首帧"] : ["首帧", "首尾帧"],
+      defaultMode: subjects ? "主体参考" : "首尾帧", maxMB: 30, promptMax: hailuo ? 3000 : 7000 })
+    if (subjects) capability.modes.push("主体参考")
+    if (minimaxKey) capability.modes.push("尾帧")
+    if (minimaxKey && max) {
+      capability.params.push(select("prompt_expansion_mode", "提示词扩展", ["disabled", "balanced", "quality"]))
+    }
   } else if (["grok/grok-imagine-video", "grok/grok-imagine-video-1.5"].includes(route) && model.type === "video") {
     const newer = route.endsWith("-1.5")
     Object.assign(capability, { source: "magpie-grok-2026-11-13", transport: "grok-video",
@@ -56,7 +87,7 @@ export function mediaCapability(model) {
       referenceResolutions: ["480p", "720p"] })
   } else if (["grok/grok-imagine-image", "grok/grok-imagine-image-quality", "xai/grok-imagine-image"].includes(route) && model.type === "image") {
     Object.assign(capability, { source: "magpie-grok-2026-11-13", params: [select("ratio", "比例", grokRatios)] })
-  } else if (["qwen-cn/qwen-image-3.0-pro", "bailian-token-plan/qwen-image-3.0-pro"].includes(route) && model.type === "image") {
+  } else if (["qwen-cn", "bailian-token-plan"].includes(provider) && /^(?:qwen-image|wan2\.7-image)/.test(modelID ?? "") && model.type === "image") {
     Object.assign(capability, { source: "qwencloud-2026-11-13",
       params: [select("size", "尺寸", ["1328x1328", "1664x928", "928x1664", "1472x1104", "1104x1472", "1584x1056", "1056x1584", "2048x2048"])] })
   } else if (["rightimage/gpt-image-2", "rightimage/gpt-image-2.5-flare", "rightimage/gpt-image-2.5-sunburst",
@@ -66,16 +97,34 @@ export function mediaCapability(model) {
     capability.source = "gateway-default-only"
     capability.params = []
   }
+  return capability
+}
+
+export function mediaCapability(model) {
+  if (model.type === "speech") return speechCapability(model)
+  const imageInput = model.images || model.parameters?.input_references?.max > 0
+  let route = model.route ?? (model.requestModel ?? model.ref).replace(/^(?:remote-magpie\/)+/, "")
+  if (model.requestModel && model.mediaRequest?.size === "pixels") route = model.ref.replace(/^(?:remote-magpie\/)+/, "")
+  const capability = bundledMediaProfile(model, route, imageInput)
+  if (/^(?:minimax|minimax-cn|minimax-code)\//.test(route)) capability.minimaxErrors = true
+  const ark = model.type === "video" && model.mediaRequest?.video === "ark"
   const metadata = model.parameters
   if (model.mediaRequest !== undefined) {
     const mapping = model.mediaRequest
     if (!mapping || typeof mapping !== "object" || Array.isArray(mapping) ||
         (mapping.size !== undefined && !["pixels", "aspect-resolution"].includes(mapping.size)) ||
+        (mapping.video !== undefined && !ark) ||
+        (mapping.prompt !== undefined && !["required", "optional"].includes(mapping.prompt)) ||
+        (mapping.prompt === "optional" && !ark) ||
+        (mapping.outputs_per_task !== undefined && (model.type !== "image" ||
+          !Number.isSafeInteger(mapping.outputs_per_task) || mapping.outputs_per_task < 1 || mapping.outputs_per_task > 4)) ||
         (mapping.frame_ratio !== undefined && mapping.frame_ratio !== "auto") ||
         (mapping.reference_modes !== undefined && (model.type !== "video" || !Array.isArray(mapping.reference_modes) ||
           mapping.reference_modes.some((mode) => !["first-frame", "first-last-frame", "reference"].includes(mode))))) {
       throw new Error("Invalid media_request mapping.")
     }
+    capability.promptUse = mapping.prompt ?? "required"
+    if (mapping.outputs_per_task !== undefined) capability.outputsPerTask = mapping.outputs_per_task
     if (mapping.reference_modes !== undefined && capability.transport === "generic") {
       const modes = { "first-frame": "首帧", "first-last-frame": "首尾帧", reference: "主体参考" }
       capability.modes = [...new Set(mapping.reference_modes.map((mode) => modes[mode]))]
@@ -130,7 +179,7 @@ export function mediaCapability(model) {
         throw new Error("Invalid media aspect ratio.")
       }
       if (key === "resolution" && !["generic", "image-size"].includes(capability.transport)) {
-        const transferable = capability.transport === "minimax-image" ? ["1K", "2K", "4K"] :
+        const transferable = ["minimax-image", "minimax-h3-image"].includes(capability.transport) ? ["1K", "2K", "4K"] :
           capability.transport === "minimax-video" ? ["480P", "768P", "1080P", "2K"] : ["480p", "720p", "1080p"]
         if (parameter.values.some((value) => value !== "auto" && !transferable.includes(value))) throw new Error("Media resolution has no verified gateway mapping.")
       }
@@ -139,10 +188,12 @@ export function mediaCapability(model) {
       capability.source = model.parameterSource ?? "magpie"
     }
     for (const [key, title] of [["size", "尺寸"], ["seconds", "时长（秒）"], ["quality", "画质"],
-      ["background", "背景"], ["output_format", "输出格式"]]) {
+      ["background", "背景"], ["output_format", "输出格式"], ["complexity", "推理强度"]]) {
       if (metadata[key] === undefined) continue
-      if (["quality", "background", "output_format"].includes(key) &&
+      if (["quality", "background", "complexity"].includes(key) &&
           (model.type !== "image" || !["generic", "image-size"].includes(capability.transport))) continue
+      if (key === "output_format" && (model.type !== "image" ||
+          !["generic", "image-size", "minimax-h3-image"].includes(capability.transport))) continue
       const parameter = metadata[key]
       if (parameter?.title !== undefined && (typeof parameter.title !== "string" || !parameter.title.trim())) {
         throw new Error(`Invalid media parameter title: ${key}.`)
@@ -151,9 +202,9 @@ export function mediaCapability(model) {
       if (key === "seconds" && parameter?.type === "enum") {
         if (!Array.isArray(parameter.values) || !parameter.values.length ||
             !parameter.values.every((value) => {
-              if (typeof value === "string" && !/^[1-9]\d*$/.test(value)) return false
+              if (typeof value === "string" && !/^(?:-1|[1-9]\d*)$/.test(value)) return false
               if (typeof value !== "string" && typeof value !== "number") return false
-              return Number.isSafeInteger(Number(value)) && Number(value) >= 1
+              return Number.isSafeInteger(Number(value)) && (Number(value) >= 1 || (ark && Number(value) === -1))
             })) {
           throw new Error("Unsupported media parameter schema: seconds.")
         }
@@ -183,6 +234,30 @@ export function mediaCapability(model) {
         ...(parameter.default !== undefined ? { default: parameter.default } : {}) })
       capability.source = model.parameterSource ?? "magpie"
     }
+    if (ark) {
+      for (const [key, title] of [["watermark", "水印"], ["seed", "随机种子"]]) {
+        const parameter = metadata[key]
+        if (parameter === undefined) continue
+        if (key === "watermark" && parameter?.type === "boolean") {
+          capability.params.push({ key, title, type: "boolean" })
+        } else if (key === "seed" && parameter?.type === "range" && Number.isSafeInteger(parameter.min) &&
+            Number.isSafeInteger(parameter.max) && parameter.min <= parameter.max) {
+          capability.params.push(range(key, title, parameter.min, parameter.max))
+        } else throw new Error(`Unsupported Ark parameter schema: ${key}.`)
+      }
+      if (metadata.reference_video_url !== undefined) {
+        if (metadata.reference_video_url?.type !== "string") throw new Error("Invalid Ark reference_video_url schema.")
+        capability.params.push({ key: "reference_video_url", title: "参考视频地址", type: "string" })
+      }
+      const rule = metadata.input_audios
+      if (rule !== undefined) {
+        if (rule?.type !== "range" || !Number.isSafeInteger(rule.min) || !Number.isSafeInteger(rule.max) ||
+            rule.min < 0 || rule.max < rule.min || rule.max > designReferenceLimit) {
+          throw new Error("Invalid Ark input_audios limits.")
+        }
+        capability.audioReferences = { min: rule.min, max: rule.max }
+      }
+    }
     const references = metadata.input_references
     if (references !== undefined) {
       if (references?.type !== "range" || !Number.isSafeInteger(references.min) || !Number.isSafeInteger(references.max) ||
@@ -198,6 +273,7 @@ export function mediaCapability(model) {
       capability.source = model.parameterSource ?? "magpie"
     }
   }
+  if (ark) capability.ark = true
   const totalLimit = model.sourceCapabilities?.total_limit
   if (totalLimit !== undefined && totalLimit !== null) {
     if (!Number.isSafeInteger(totalLimit) || totalLimit < 0) throw new Error("Invalid media total reference limit.")
@@ -254,10 +330,10 @@ export function mediaCapability(model) {
       const values = parameter.enum ?? Array.from(
         { length: Math.floor((parameter.max - parameter.min) / step) + 1 },
         (_, index) => parameter.min + index * step)
-      return { key: "duration", title: "时长", type: "string", enum: values.map(String) }
+      return { key: "duration", title: parameter.title, type: "string", enum: values.map(String) }
     }
     if (parameter.key === "referenceMode") {
-      const modes = { "首帧": "first-last-frame", "首尾帧": "first-last-frame", "主体参考": "reference" }
+      const modes = { "首帧": "first-last-frame", "首尾帧": "first-last-frame", "主体参考": "reference", "尾帧": "last-frame" }
       return { ...parameter, key: "image_mode", enum: [...new Set(parameter.enum.map((value) => modes[value] ?? value))] }
     }
     return parameter
@@ -265,6 +341,8 @@ export function mediaCapability(model) {
   const defaults = {}
   for (const parameter of capability.params) {
     const schema = metadata?.[parameter.key === "duration" ? "seconds" : parameter.key]
+    if (typeof schema?.description === "string") parameter.description = schema.description
+    if (schema?.required === true) parameter.required = true
     if (schema?.default === undefined) continue
     const value = parameter.key === "duration" ? String(schema.default) : schema.default
     const automatic = value === "auto" || value === "adaptive"
@@ -272,7 +350,8 @@ export function mediaCapability(model) {
       if (!parameter.enum.includes(automatic ? auto : value) || (schema.values && !schema.values.includes(schema.default))) {
         throw new Error(`Invalid media default: ${parameter.key}.`)
       }
-    } else if (typeof value !== parameter.type) throw new Error(`Invalid media default: ${parameter.key}.`)
+    } else if (parameter.type === "integer" ? !Number.isSafeInteger(value) || value < parameter.min || value > parameter.max
+      : typeof value !== parameter.type) throw new Error(`Invalid media default: ${parameter.key}.`)
     parameter.default = automatic || (parameter.key === "aspect_ratio" && capability.frameRatio === "auto") ? auto : value
     if (value !== "auto" && !(model.type === "image" && value === "adaptive")) defaults[parameter.key] = value
   }
@@ -293,8 +372,11 @@ export function mediaCapability(model) {
 }
 
 export function mediaSpec(capability) {
-  return { version: 1, prompt: { use: "required", ...(capability.promptMax ? { maxLength: capability.promptMax } : {}) },
-    references: capability.references.max ? { image: capability.references,
-      ...(capability.maxMB ? { maxMB: capability.maxMB } : {}) } : {},
+  const references = {}
+  if (capability.references.max) references.image = capability.references
+  if (capability.audioReferences?.max) references.audio = capability.audioReferences
+  if (Object.keys(references).length) references.maxMB = Math.min(capability.maxMB ?? inlineReferenceMB, inlineReferenceMB)
+  return { version: 1, prompt: { use: capability.promptUse ?? "required",
+    ...(capability.promptMax ? { maxLength: capability.promptMax } : {}) }, references,
     params: capability.params }
 }
