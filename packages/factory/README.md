@@ -2,7 +2,7 @@
 
 Signs in to a [Factory](https://factory.ai) (Droid) subscription and sends
 model requests to Factory's API the way `droid` sends them. Provider id:
-`factory`.
+`factory`. To reuse a local Droid login and run inference through the CLI over ACP, see [factory-droid](../factory-droid). Both use the same Factory account quota.
 
 ## Sign-in
 

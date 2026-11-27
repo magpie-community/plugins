@@ -1,0 +1,13 @@
+{
+  "name": "@magpie-community/opencode-factory-droid-auth",
+  "version": "0.1.4",
+  "description": "Use a local Factory Droid CLI as a Magpie or OpenCode model provider over ACP",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["opencode.mjs", "opencode2.mjs", "acp.mjs", "catalog.mjs", "messages.mjs", "turns.mjs", "checkpoint.mjs", "native-tools.mjs", "images.mjs", "image-guard.mjs", "usage.mjs", "quota.mjs", "mailbox.mjs", "mcp-server.mjs", "README.md"],
+  "keywords": ["magpie", "opencode-plugin", "factory", "droid", "acp"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/factory-droid" },
+  "magpie": { "maxConcurrency": 4 }
+}

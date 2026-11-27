@@ -26,6 +26,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [cursor](packages/cursor) | Cursor subscriptions (Pro, Pro+, Ultra, Teams), on the API cursor-agent talks to | `cursor` |
 | [devin](packages/devin) | Devin subscription (the devin CLI's account) | `devin` |
 | [factory](packages/factory) | Factory (Droid) subscription | `factory` |
+| [factory-droid](packages/factory-droid) | Factory subscription through a local Droid CLI over ACP | `factory-droid` |
 | [gcp-ai](packages/gcp-ai) | Google Cloud Vertex AI with your own gcloud / ADC login (needs `gcloud` and Chrome), plus the project's promotional credits | `gcp-ai` |
 | [grok](packages/grok) | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in | `grok` |
 | [gumloop](packages/gumloop) | Gumloop API key and user ID, with account models and a local credit estimate | `gumloop` |
