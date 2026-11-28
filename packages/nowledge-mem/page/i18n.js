@@ -36,7 +36,7 @@ const messages = {
     "dataTitle": "What is sent",
     "recallDisclosure": "Recall sends the latest user turn to the configured Mem URL (NMEM_API_URL when Server URL is empty, else the local default), even when saving conversations is off.",
     "captureDisclosure": "Saving conversations is off by default. When enabled, completed user and assistant turns are imported to that Mem, plus client tool results unless captureTools is off.",
-    "scopeDisclosure": "By default, recall and saving apply to direct local requests and to the Magpie sharing key this computer writes into your own agents (magpie-key). Other gateway keys, a sharing key from another machine, and remote requests are not included. The recallRemote and captureRemote options let them in, each separately; saving does not grant recall.",
+    "scopeDisclosure": "By default, recall and saving apply to direct local requests and to the Magpie sharing key this computer writes into your own agents (magpie-key). Other gateway keys, a sharing key from another machine, and remote requests are not included. The recallRemote and captureRemote options let them in, each separately; saving does not grant recall. When keyPolicies is configured (even {}), remote and other gateway requests also need an authenticated ID and a matching policy with a Space. No released Magpie supplies IDs yet, so those requests are denied even if the remote switches are on.",
     "localDefault": "NMEM_API_URL if set, else http://127.0.0.1:14242",
     "defaultSpace": "Default Space",
     "on": "On",
@@ -94,7 +94,7 @@ const messages = {
     "dataTitle": "发送的内容",
     "recallDisclosure": "即使关闭对话保存，召回也会把最新用户消息发送到配置的 Mem 地址（Server URL 留空时用 NMEM_API_URL，否则用本机默认值）。",
     "captureDisclosure": "对话保存默认关闭。启用后，已完成的用户与助手消息会导入该 Mem；除非关闭 captureTools，客户端工具结果也会一并导入。",
-    "scopeDisclosure": "默认情况下，召回和保存适用于本机直连请求，以及 Magpie 写入你自己 agent 的本机共享密钥（magpie-key）。其他人的网关密钥、来自另一台机器的共享密钥和远端请求都不包含。选项 recallRemote 和 captureRemote 可分别让它们加入；允许保存不等于允许召回。",
+    "scopeDisclosure": "默认情况下，召回和保存适用于本机直连请求，以及 Magpie 写入你自己 agent 的本机共享密钥（magpie-key）。其他人的网关密钥、来自另一台机器的共享密钥和远端请求都不包含。选项 recallRemote 和 captureRemote 可分别让它们加入；允许保存不等于允许召回。 配置 keyPolicies（包括空对象 {}）后，远端和其他网关请求还必须有认证 ID 及带 Space 的匹配策略。目前没有已发布的 Magpie 提供 ID，因此即使远端开关已开启，这些请求也会被拒绝。",
     "localDefault": "已设置 NMEM_API_URL 时用它，否则 http://127.0.0.1:14242",
     "defaultSpace": "默认 Space",
     "on": "开",
@@ -152,7 +152,7 @@ const messages = {
     "dataTitle": "傳送的內容",
     "recallDisclosure": "即使關閉對話儲存，召回也會把最新使用者訊息傳送到設定的 Mem 位址（Server URL 留空時用 NMEM_API_URL，否則用本機預設值）。",
     "captureDisclosure": "對話儲存預設關閉。啟用後，已完成的用戶與助手訊息會匯入該 Mem；除非關閉 captureTools，用戶端工具結果也會一併匯入。",
-    "scopeDisclosure": "預設情況下，召回與儲存適用於本機直連請求，以及 Magpie 寫入你自己 agent 的本機共享金鑰（magpie-key）。其他人的閘道金鑰、來自另一台機器的共享金鑰和遠端請求都不包含。選項 recallRemote 和 captureRemote 可分別讓它們加入；允許儲存不等於允許召回。",
+    "scopeDisclosure": "預設情況下，召回與儲存適用於本機直連請求，以及 Magpie 寫入你自己 agent 的本機共享金鑰（magpie-key）。其他人的閘道金鑰、來自另一台機器的共享金鑰和遠端請求都不包含。選項 recallRemote 和 captureRemote 可分別讓它們加入；允許儲存不等於允許召回。 設定 keyPolicies（包括空物件 {}）後，遠端及其他閘道請求還必須有認證 ID 及含 Space 的相符策略。目前沒有已發行的 Magpie 提供 ID，因此即使遠端開關已開啟，這些請求也會被拒絕。",
     "localDefault": "已設定 NMEM_API_URL 時用它，否則 http://127.0.0.1:14242",
     "defaultSpace": "預設 Space",
     "on": "開",
@@ -210,7 +210,7 @@ const messages = {
     "dataTitle": "送信される内容",
     "recallDisclosure": "会話の保存がオフでも、呼び出しは最新のユーザーの発話を設定した Mem の URL（Server URL が空なら NMEM_API_URL、なければローカル既定値）に送ります。",
     "captureDisclosure": "会話の保存は既定でオフです。有効にすると、完了したユーザーとアシスタントの発話をその Mem に取り込みます。captureTools をオフにしない限り、クライアントのツール結果も含みます。",
-    "scopeDisclosure": "既定では、呼び出しと保存は直接のローカル要求と、Magpie があなた自身の agent に書き込むこのコンピューターの共有キー（magpie-key）に適用されます。他のゲートウェイキー、別のコンピューターからの共有キー、リモート要求は含まれません。オプション recallRemote と captureRemote で、それぞれ個別に含められます。保存の許可は呼び出しの許可を含みません。",
+    "scopeDisclosure": "既定では、呼び出しと保存は直接のローカル要求と、Magpie があなた自身の agent に書き込むこのコンピューターの共有キー（magpie-key）に適用されます。他のゲートウェイキー、別のコンピューターからの共有キー、リモート要求は含まれません。オプション recallRemote と captureRemote で、それぞれ個別に含められます。保存の許可は呼び出しの許可を含みません。 keyPolicies（空の {} を含む）を設定すると、リモートと他のゲートウェイ要求には認証済み ID と Space を持つ一致ポリシーも必要です。リリース済みの Magpie は ID を提供しないため、リモートスイッチがオンでもこれらの要求は拒否されます。",
     "localDefault": "NMEM_API_URL があればそれ、なければ http://127.0.0.1:14242",
     "defaultSpace": "既定の Space",
     "on": "オン",
@@ -268,7 +268,7 @@ const messages = {
     "dataTitle": "Was gesendet wird",
     "recallDisclosure": "Der Abruf sendet den letzten Benutzerbeitrag an die konfigurierte Mem-URL (NMEM_API_URL, wenn Server URL leer ist, sonst der lokale Standard), auch wenn das Speichern von Gesprächen aus ist.",
     "captureDisclosure": "Das Speichern von Gesprächen ist standardmäßig aus. Wenn aktiviert, werden abgeschlossene Benutzer- und Assistentenbeiträge an diese Mem importiert, dazu Tool-Ergebnisse des Clients, sofern captureTools nicht aus ist.",
-    "scopeDisclosure": "Standardmäßig gelten Abruf und Speichern für direkte lokale Anfragen und für den Magpie-Sharing-Schlüssel, den dieser Computer in deine eigenen Agenten schreibt (magpie-key). Andere Gateway-Schlüssel, ein Sharing-Schlüssel von einem anderen Computer und entfernte Anfragen sind nicht enthalten. Die Optionen recallRemote und captureRemote lassen sie jeweils einzeln zu; Speichern erlaubt keinen Abruf.",
+    "scopeDisclosure": "Standardmäßig gelten Abruf und Speichern für direkte lokale Anfragen und für den Magpie-Sharing-Schlüssel, den dieser Computer in deine eigenen Agenten schreibt (magpie-key). Andere Gateway-Schlüssel, ein Sharing-Schlüssel von einem anderen Computer und entfernte Anfragen sind nicht enthalten. Die Optionen recallRemote und captureRemote lassen sie jeweils einzeln zu; Speichern erlaubt keinen Abruf. Ist keyPolicies konfiguriert (auch als leeres {}), benötigen entfernte und andere Gateway-Anfragen zusätzlich eine authentifizierte ID und eine passende Regel mit Space. Keine veröffentlichte Magpie-Version liefert diese IDs; daher werden solche Anfragen trotz aktivierter Remote-Schalter abgelehnt.",
     "localDefault": "NMEM_API_URL, falls gesetzt, sonst http://127.0.0.1:14242",
     "defaultSpace": "Standard-Space",
     "on": "An",
@@ -344,11 +344,11 @@ Object.assign(messages.ja, {keySaved:"保存済み",keyNotSet:"保存したキ�
 Object.assign(messages.de, {keySaved:"Gespeichert",keyNotSet:"Kein gespeicherter Schlüssel",keyRemove:"Gespeicherten Schlüssel entfernen",keyUndo:"Entfernen rückgängig",humanOnly:"Nur menschlicher Dialog",filterHelp:"Tool-Ergebnisse aus gespeicherten Gesprächen ausschließen.",cindyHelp:"Nur verfügbar, wenn menschlicher Dialog aktiviert ist.",captureToolsHelp:"Gilt nur, wenn der Filter für menschlichen Dialog aus ist.",insecureHelp:"Nur in einem vertrauenswürdigen Netzwerk verwenden."});
 
 
-Object.assign(messages.en,{recallRemote:"Recall for remote and other gateway keys",recallRemoteHelp:"Requires recall. May share the configured Mem memories and Context Bundle with all such clients. This is not tenant isolation.",captureRemote:"Save remote and other gateway conversations",captureRemoteHelp:"Requires saving conversations. Saves conversations from all such clients to this Mem."});
-Object.assign(messages.zh,{recallRemote:"允许远端和其他网关密钥召回",recallRemoteHelp:"需要开启记忆召回。可能向所有此类客户端提供所配置 Mem 的记忆和 Context Bundle。这不是租户隔离。",captureRemote:"保存远端和其他网关密钥的对话",captureRemoteHelp:"需要开启保存对话。会将所有此类客户端的对话保存到此 Mem。"});
-Object.assign(messages["zh-TW"],{recallRemote:"允許遠端與其他閘道金鑰召回",recallRemoteHelp:"需要開啟記憶召回。可能向所有此類用戶端提供所設定 Mem 的記憶與 Context Bundle。這不是租戶隔離。",captureRemote:"儲存遠端與其他閘道金鑰的對話",captureRemoteHelp:"需要開啟儲存對話。會將所有此類用戶端的對話儲存到此 Mem。"});
-Object.assign(messages.ja,{recallRemote:"リモートと他のゲートウェイキーの検索を許可",recallRemoteHelp:"記憶の検索が必要です。設定した Mem の記憶と Context Bundle を該当する全クライアントに共有する可能性があります。テナント分離ではありません。",captureRemote:"リモートと他のゲートウェイキーの会話を保存",captureRemoteHelp:"会話の保存が必要です。該当する全クライアントの会話をこの Mem に保存します。"});
-Object.assign(messages.de,{recallRemote:"Abruf für entfernte und andere Gateway-Schlüssel",recallRemoteHelp:"Erfordert den Erinnerungsabruf. Kann Erinnerungen und Context Bundle des konfigurierten Mem mit allen solchen Clients teilen. Dies ist keine Mandantentrennung.",captureRemote:"Entfernte und andere Gateway-Gespräche speichern",captureRemoteHelp:"Erfordert das Speichern von Gesprächen. Speichert Gespräche aller solchen Clients in diesem Mem."});
+Object.assign(messages.en,{recallRemote:"Recall for remote and other gateway keys",recallRemoteHelp:"Requires recall. May share the configured Mem memories and Context Bundle with all such clients. This is not tenant isolation.",captureRemote:"Save remote and other gateway conversations",captureRemoteHelp:"Requires saving conversations. May save conversations from such clients to this Mem."});
+Object.assign(messages.zh,{recallRemote:"允许远端和其他网关密钥召回",recallRemoteHelp:"需要开启记忆召回。可能向所有此类客户端提供所配置 Mem 的记忆和 Context Bundle。这不是租户隔离。",captureRemote:"保存远端和其他网关密钥的对话",captureRemoteHelp:"需要开启保存对话。可能将此类客户端的对话保存到此 Mem。"});
+Object.assign(messages["zh-TW"],{recallRemote:"允許遠端與其他閘道金鑰召回",recallRemoteHelp:"需要開啟記憶召回。可能向所有此類用戶端提供所設定 Mem 的記憶與 Context Bundle。這不是租戶隔離。",captureRemote:"儲存遠端與其他閘道金鑰的對話",captureRemoteHelp:"需要開啟儲存對話。可能將此類用戶端的對話儲存到此 Mem。"});
+Object.assign(messages.ja,{recallRemote:"リモートと他のゲートウェイキーの検索を許可",recallRemoteHelp:"記憶の検索が必要です。設定した Mem の記憶と Context Bundle を該当する全クライアントに共有する可能性があります。テナント分離ではありません。",captureRemote:"リモートと他のゲートウェイキーの会話を保存",captureRemoteHelp:"会話の保存が必要です。該当するクライアントの会話をこの Mem に保存する場合があります。"});
+Object.assign(messages.de,{recallRemote:"Abruf für entfernte und andere Gateway-Schlüssel",recallRemoteHelp:"Erfordert den Erinnerungsabruf. Kann Erinnerungen und Context Bundle des konfigurierten Mem mit allen solchen Clients teilen. Dies ist keine Mandantentrennung.",captureRemote:"Entfernte und andere Gateway-Gespräche speichern",captureRemoteHelp:"Erfordert das Speichern von Gesprächen. Kann Gespräche solcher Clients in diesem Mem speichern."});
 
 const languageTags = {en: 'en', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', de: 'de-DE'};
 
@@ -365,6 +365,13 @@ function translate(language, key, parameters = {}) {
  const template = messages[language]?.[key] ?? messages.en[key] ?? key;
  return template.replace(/\{(\w+)\}/g, (match, name) => parameters[name] ?? match);
 }
+
+
+Object.assign(messages.en,{captureConflict:"Remote saving or key policies changed elsewhere. Review settings before enabling saving."});
+Object.assign(messages.zh,{captureConflict:"远端保存或密钥策略已在别处更改。请先检查设置，再开启保存。"});
+Object.assign(messages["zh-TW"],{captureConflict:"遠端儲存或金鑰策略已在別處變更。請先檢查設定，再開啟儲存。"});
+Object.assign(messages.ja,{captureConflict:"リモート保存またはキーポリシーが別の場所で変更されました。保存を有効にする前に設定を確認してください。"});
+Object.assign(messages.de,{captureConflict:"Remote-Speicherung oder Schlüsselregeln wurden andernorts geändert. Prüfe die Einstellungen, bevor du Speichern aktivierst."});
 
 return {messages, languageTags, languageFor, translate};
 })();

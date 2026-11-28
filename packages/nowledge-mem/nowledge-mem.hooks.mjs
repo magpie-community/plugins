@@ -65,17 +65,29 @@ export async function onRequest(body, ctx) {
     }
 }
 async function run(body, ctx) {
-    const o = resolveOptions(ctx.options);
-    // An app the user listed in skipAgents (a translator, say) gets neither
-    // recall nor capture: its requests go as they came, and Mem hears nothing.
-    const listed = o.skipAgents.has(agentKey(ctx.agent));
+    let o = resolveOptions(ctx.options);
+    // A skipped app never uses Mem, including when its key has a grant.
+    if (o.skipAgents.has(agentKey(ctx.agent))) {
+        ctx.report?.("skipped");
+        return;
+    }
     const own = ctx.origin === "local" || ctx.origin === "magpie-key";
-    // Another machine, or a gateway key other than this computer's own, gets
-    // in only by the user's opt-in, one for each: permission to capture does
-    // not grant recall of what Mem holds. A missing or unknown origin never does.
     const other = ctx.origin === "remote" || ctx.origin === "gateway-key";
-    const recall = o.recall && !listed && (own || (other && o.recallRemote));
-    const capture = o.capture && !listed && (own || (other && o.captureRemote));
+    const id = typeof ctx.callerKeyId === "string" && ctx.callerKeyId ? ctx.callerKeyId : "";
+    const policy = id && Object.hasOwn(o.keyPolicies, id) ? o.keyPolicies[id] : undefined;
+    // No keyPolicies option preserves main's broad remote opt-ins. Once the
+    // option is present (even {}), other origins require a trusted exact ID,
+    // an explicit Space, the per-key grant and the corresponding remote gate.
+    const allowed = other && o.enforceKeyPolicies && policy && typeof policy.spaceId === "string" && policy.spaceId.trim();
+    const keyRecall = !o.enforceKeyPolicies || Boolean(allowed && policy.recall);
+    const keyCapture = !o.enforceKeyPolicies || Boolean(allowed && policy.capture);
+    const recall = o.recall && (own ? policy ? policy.recall : true : other && o.recallRemote && keyRecall);
+    const capture = o.capture && (own ? policy ? policy.capture : true : other && o.captureRemote && keyCapture);
+    const scope = allowed ? id : "";
+    // Context Bundle and Working Memory can contain owner context outside the
+    // policy's Space; keyed requests never receive either.
+    if (scope)
+        o = { ...o, spaceId: policy.spaceId.trim(), contextBundle: false, capture };
     if (!recall && !capture) {
         ctx.report?.("skipped");
         return;
@@ -83,12 +95,12 @@ async function run(body, ctx) {
     // Capture is bound before recall changes the request, so the message
     // history saved is the client's own, without an injected block.
     if (capture && ctx.state)
-        ctx.state.nowledgeMem = bind(body, ctx, o);
+        ctx.state.nowledgeMem = bind(body, ctx, o, scope);
     if (!recall) {
         ctx.report?.("skipped");
         return;
     }
-    const key = serviceKey(o);
+    const key = cacheKey(o, scope);
     if ((unavailable.get(key) ?? 0) > Date.now()) {
         ctx.report?.("unavailable");
         return;
@@ -128,11 +140,11 @@ async function run(body, ctx) {
         ctx.report?.("skipped");
         return changed ? body : undefined;
     }
-    const send = client(o);
+    const send = client(o, scope);
     const first = !all.some((t) => t.role === "assistant");
     const [found, contextInfo] = await Promise.all([
-        search(send, o, query, ctx.signal),
-        first && o.contextBundle ? context(send, o, ctx.signal, hostAgentId) : null,
+        search(send, o, query, ctx.signal, Boolean(scope)),
+        first && o.contextBundle ? context(send, o, ctx.signal, hostAgentId, scope) : null,
     ]);
     ctx.signal.throwIfAborted();
     const b = block(contextInfo, found, o.maxBytes);
@@ -261,7 +273,10 @@ function escape(text) {
 // client sends to the configured server only, with the hook's short recall
 // deadline and its longer write deadline. A missing route is an outage for
 // recall and a bad request for a write; an unavailable recall backs off.
-function client(o) {
+function cacheKey(o, scope) {
+    return scope ? sha256(serviceKey(o), "gateway-key", scope) : serviceKey(o);
+}
+function client(o, scope = "") {
     return async (method, route, payload, signal, expected = []) => {
         const recallRoute = route === "memories/search";
         const bundleRoute = route.startsWith("context/bundle");
@@ -274,7 +289,7 @@ function client(o) {
                 ? new Failure(recallRoute ? "unavailable" : "invalid", error.status)
                 : error;
             if (failure instanceof Failure && failure.code === "unavailable" && recallRoute) {
-                const key = serviceKey(o);
+                const key = cacheKey(o, scope);
                 unavailable.delete(key);
                 lru(unavailable, key, () => Date.now() + o.recallBackoffMs, maxSessions);
             }
@@ -282,17 +297,17 @@ function client(o) {
         }
     };
 }
-async function search(send, o, query, signal) {
+async function search(send, o, query, signal, requireSpace = false) {
     const payload = { query: Array.from(query).slice(0, maxQuery).join(""), limit: o.maxMemories };
     if (o.spaceId)
         payload.space_id = o.spaceId;
-    return memories((await send("POST", "memories/search", payload, signal)).body, o.maxMemories);
+    return memories((await send("POST", "memories/search", payload, signal)).body, o.maxMemories, requireSpace ? o.spaceId : undefined);
 }
 // context is Mem's Context Bundle, rendered by the server for agents: owner
 // profile, rules and Working Memory. It is optional; a server without the
 // endpoint or a bundle with nothing in it simply starts the session without.
-async function context(send, o, signal, hostAgentId) {
-    const key = serviceKey(o);
+async function context(send, o, signal, hostAgentId, scope = "") {
+    const key = cacheKey(o, scope);
     if ((bundleUnavailable.get(key) ?? 0) <= Date.now()) {
         const query = new URLSearchParams({ source_app: "magpie", include_working_memory: "true" });
         if (o.agentId)
@@ -346,13 +361,17 @@ function hostAgentOf(o, ctx) {
 }
 // memories is a Mem search answer: each hit names a Memory with its text and,
 // when it has one, a relevance score.
-function memories(value, limit) {
+function memories(value, limit, requiredSpace) {
     if (!Array.isArray(value))
         throw new Failure("invalid");
     const out = [];
     for (const item of value.slice(0, limit)) {
         const memory = item?.memory;
         if (!memory || typeof memory !== "object" || typeof memory.id !== "string" || !memory.id || typeof memory.content !== "string")
+            continue;
+        // Do not trust a response that omitted or broadened the requested
+        // Space. The key policy must use Mem's exact returned Space ID.
+        if (requiredSpace && memory.space_id !== requiredSpace)
             continue;
         if (!memory.content.trim())
             continue;
@@ -364,7 +383,7 @@ function memories(value, limit) {
 }
 // --- capture ---
 // bind runs before recall, so the captured history is what the client sent.
-function bind(body, ctx, o) {
+function bind(body, ctx, o, scope = "") {
     const messages = history(body, ctx.protocol);
     const users = messages.filter((m) => m.role === "user");
     // The first user message names a session-less conversation: it is the same
@@ -372,9 +391,11 @@ function bind(body, ctx, o) {
     const first = users[0]?.content ?? "";
     // A session names its Thread; a client without one (curl, an SDK) gets a
     // Thread per conversation, identified by its opening message too.
-    const identity = sha256(o.server.href, o.apiKey ?? "", o.spaceId ?? "", ctx.session ?? "", ctx.cwd ?? "", ctx.protocol, ctx.session ? "" : first);
+    const identity = scope
+        ? sha256("gateway-key", scope, o.server.href, o.apiKey ?? "", o.spaceId ?? "", ctx.session ?? "", ctx.cwd ?? "", ctx.protocol, ctx.session ? "" : first)
+        : sha256(o.server.href, o.apiKey ?? "", o.spaceId ?? "", ctx.session ?? "", ctx.cwd ?? "", ctx.protocol, ctx.session ? "" : first);
     const safe = (ctx.session ?? "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-    const threadId = safe ? `magpie-${safe}-${identity.slice(0, 8)}` : `magpie-${identity.slice(0, 32)}`;
+    const threadId = scope ? `magpie-key-${identity.slice(0, 32)}` : safe ? `magpie-${safe}-${identity.slice(0, 8)}` : `magpie-${identity.slice(0, 32)}`;
     // A client's environment notice is a user message before the real prompt.
     // The title is the message Magpie read as the query, kept for the Thread.
     const query = (ctx.query ?? "").trim();
@@ -382,14 +403,16 @@ function bind(body, ctx, o) {
     // is a better title when Magpie has no query for this protocol.
     const opening = (query && users.find((m) => m.content.includes(query))?.content) || users.at(-1)?.content || first;
     return {
-        o, send: client(o), body: structuredClone(body), threadId,
-        hostAgentId: hostAgentOf(o, ctx),
+        o, send: client(o, scope), body: structuredClone(body), threadId, scope, origin: ctx.origin,
+        hostAgentId: scope ? `magpie:key:${sha256(scope, hostAgentOf(o, ctx)).slice(0, 24)}` : hostAgentOf(o, ctx),
         title: titles.get(threadId) ?? titleOf([{ role: "user", content: opening }]),
     };
 }
 export function onResponse(reply, ctx) {
     const state = ctx.state?.nowledgeMem;
     if (!state || ctx.success === false || !state.o.capture)
+        return;
+    if (state.scope && (ctx.origin !== state.origin || ctx.callerKeyId !== state.scope))
         return;
     // The host's notification is best-effort and not awaited: the import fails
     // open, and its outcome is reported, never thrown at the client.
@@ -423,7 +446,7 @@ async function capture(reply, ctx, state) {
     }
     const metadata = { source_app: "magpie", protocol: ctx.protocol };
     if (ctx.session)
-        metadata.session_id = sha256(ctx.session);
+        metadata.session_id = state.scope ? sha256("gateway-key", state.scope, ctx.session) : sha256(ctx.session);
     if (ctx.cwd)
         metadata.cwd = sha256(resolve(ctx.cwd));
     if (state.o.agentId)
