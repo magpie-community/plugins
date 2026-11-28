@@ -102,6 +102,14 @@ MCP server. The control port listens on loopback only, with a token per process.
   newer, because the ACP server has to advertise image support. An image a tool
   returns (a screenshot from `read`) goes to agy as a prompt image too: over MCP,
   agy would save it to a file the model can't open.
+- **Video and audio input** (Gemini models): inline base64. agy's ACP prompt
+  carries neither, so each is written to `attachments/<sha256>.<ext>` in the
+  session's folder and the model is asked to read it with agy's own
+  `view_file`, which hands Gemini the frames and the sound. Only a
+  conversation that carries one gets `view_file`; agy's tools stay off
+  otherwise. A video or audio URL, or one sent to a model other than Gemini,
+  gets HTTP 400. `count_tokens` counts a video or audio clip as one image, so
+  a long clip is undercounted.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.
@@ -413,7 +421,11 @@ since 11-14 Google's check reads past them. Reworded in the first user turn
 (the default), Claude Code's prompt is answered; in agy's session
 instructions (`AGY_BRIDGE_SYSTEM_APPEND=1`) it is still turned away. So a
 bare 429 there is reported as a 400 about the prompt, and in the user turn
-as a rate limit the client can retry or another account can take.
+as a rate limit the client can retry or another account can take. Either
+way it ends the turn on the first try that got it: since agy 1.5.13 retries
+it silently for minutes (eight tries over about two and a half), writing it
+only to its log, so the plugin reads that log while the prompt runs instead
+of waiting for agy to give up.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider

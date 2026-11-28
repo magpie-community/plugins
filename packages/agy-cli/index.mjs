@@ -184,7 +184,9 @@ const ATTEMPT_LINE = /^⚠ API error \(attempt \d+\): ?(.*)$/
 // quota is left. agy 1.5.9 retries it in the same turn with a banner each
 // time, and only ends the turn after its last retry: to the client the turn
 // hung (Lmohn39 on X, pi through agy-cli, 11-14). A banner with it ends the
-// turn at once, as the 429 ending would.
+// turn at once, as the 429 ending would. agy 1.5.13 and later retry it
+// silently, saying so only in their log, and the log's line ends it
+// (#watchRetries).
 const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail)
 // agy writes this into the reply when the model's first call came back with
 // neither text nor tool calls, then calls the model again in the same turn.
@@ -1899,14 +1901,19 @@ export function ideToolOf(toolCall) {
   return ""
 }
 
-function agentDefinition() {
+// media: the conversation carries a video or audio (stageMedia), which the
+// model reads with agy's own view_file. Otherwise agy's tools stay off.
+// view_file reads unasked what is under an --add-dir folder and agy's temp
+// folder (anywhere else it asks, and the bridge denies): so a media session
+// gets no --add-dir, and agy's temp folder is the session's workspace (#spawn).
+function agentDefinition(media) {
   const lines = [
     "---",
     `name: ${AGENT_NAME}`,
     "description: Bridges only client-declared tools",
     "mainAgent: true",
     "subagent: false",
-    "tools: []",
+    media ? "tools: [view_file]" : "tools: []",
     // Never expose the user's global MCP servers, skills or plugins.
     "inheritMcp: false",
     "inheritCustomizations: false",
@@ -2575,6 +2582,7 @@ class Proc {
     this.home = currentHome()
     this.#assign(convKey, opts)
     this.workDir = opts.workDir
+    this.media = !!opts.media
     this.spareKey = null
     this.token = randomUUID()
     this.sessionId = null
@@ -2701,7 +2709,7 @@ class Proc {
   }
 
   async #spawn() {
-    this.launchKey = await launchKey(this.agyPath, this.workDir)
+    this.launchKey = await launchKey(this.agyPath, this.workDir, this.media)
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
@@ -2716,7 +2724,7 @@ class Proc {
     }
     const agentDir = path.join(this.workspace, ".agents", "agents", AGENT_NAME)
     await fs.promises.mkdir(agentDir, { recursive: true })
-    await fs.promises.writeFile(path.join(agentDir, "agent.md"), agentDefinition(), { mode: 0o600 })
+    await fs.promises.writeFile(path.join(agentDir, "agent.md"), agentDefinition(this.media), { mode: 0o600 })
     this.logPath = path.join(this.workspace, "agy-acp.log")
 
     const args = [
@@ -2735,8 +2743,9 @@ class Proc {
     // never the home folder or one above it: agy loads what is in it as the
     // workspace's customizations, inside the same 20k budget as the
     // client's tools, and drops the biggest of those (Bash, Read) to fit
-    // (plugins#1405). The model is still told where the tools run.
-    if (this.workDir && !holdsHome(this.workDir)) args.push("--add-dir", this.workDir)
+    // (plugins#1405). The model is still told where the tools run. Nor with
+    // media: view_file would read everything in it unasked.
+    if (this.workDir && !this.media && !holdsHome(this.workDir)) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
     args.push(...await telemetryArgs(this.agyPath))
     const own = await geminiDirArgs(this.agyPath)
@@ -2766,6 +2775,9 @@ class Proc {
           PATH: bin + path.delimiter + inheritedPath,
           AGY_BRIDGE_CONTROL_PORT: String(controlServer.address().port),
           AGY_BRIDGE_TOKEN: this.token,
+          // view_file reads agy's temp folder unasked: the workspace, not
+          // the one every other session's workspace is in
+          ...this.media ? { TMPDIR: this.workspace, TMP: this.workspace, TEMP: this.workspace } : {},
         },
       })
     } catch (error) {
@@ -3319,7 +3331,7 @@ class Proc {
         this.sessionPrompts++
         if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
-        const capacityWatch = this.#watchCapacity(turn)
+        const retryWatch = this.#watchRetries(turn)
         try {
           result = await this.conn.request("session/prompt", {
             sessionId: this.sessionId,
@@ -3327,7 +3339,7 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
-          clearInterval(capacityWatch)
+          clearInterval(retryWatch)
         }
         if (promptNumber === 1) {
           // how long agy took to answer, beside the session row's start-up steps
@@ -3483,17 +3495,34 @@ class Proc {
   // A try Antigravity answered with the bare 429 ends the turn now, with the
   // same error as agy's own 429 ending, instead of after agy's retries: the
   // process goes, as on a timeout, since agy is still retrying in it.
-  // Reads agy's log while nothing has reached the client, for the retry of
-  // a "no capacity" 503 (noCapacity).
-  #watchCapacity(turn) {
+  // Reads the lines agy adds to its log while the prompt runs: since agy
+  // 1.5.13 its retries are silent (its changelog: "retries are now silent
+  // … the chat shows an error only when every retry fails"), so the bare 429
+  // is no longer an attempt banner in the reply (refusedDetail) but only a
+  // log line, "Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429):
+  // Resource has been exhausted (e.g. check quota).), retrying in 4s", and
+  // agy tried 8 times over ~155s before its 429 ending (#1151's log): to the
+  // client, Claude Code and pi through agy-cli sat silent for minutes, then
+  // failed (lanmao on linux.do, herryhengAI on X, 11-22). The retry of a "no
+  // capacity" 503 (noCapacity) ends the turn only while nothing has reached
+  // the client, so a reply is never cut off for it.
+  #watchRetries(turn) {
     let reading = false
+    let from = turn.logOffset
     const quiet = () => !turn.done && turn.firstOutputAt == null && !turn.calls.length
     const timer = setInterval(async () => {
-      if (reading || !quiet()) return
+      if (reading || turn.done) return
       reading = true
       try {
-        const detail = await lastAgentError(this.logPath, turn.logOffset)
-        if (noCapacity(detail) && quiet()) this.capacityTurn(turn, detail)
+        const read = await logLines(this.logPath, from)
+        from = read.next
+        const details = agentErrorsIn(read.text)
+        const refused = details.find((detail) => refused429(detail))
+        if (refused) this.refuseTurn(turn, refused)
+        else {
+          const busy = details.findLast((detail) => noCapacity(detail))
+          if (busy && quiet()) this.capacityTurn(turn, busy)
+        }
       } finally {
         reading = false
       }
@@ -4001,20 +4030,47 @@ async function logTail(file, offset) {
   }
 }
 
-// agy writes the real upstream error only to its log; read what this turn added.
-async function lastAgentError(file, offset) {
-  const text = await logTail(file, offset)
-  if (!text) return ""
-  let found = ""
-  for (const line of text.split("\n")) {
+// The whole lines agy logged from offset (its last LOG_TAIL_BYTES at most),
+// and the offset after them: a line still being written is read next time.
+async function logLines(file, offset) {
+  try {
+    if ((await fs.promises.stat(file)).size <= offset) return { text: "", next: offset }
+    const handle = await fs.promises.open(file, "r")
+    try {
+      const size = (await handle.stat()).size
+      const start = Math.max(offset, size - LOG_TAIL_BYTES)
+      const buffer = Buffer.alloc(Math.max(0, size - start))
+      await handle.read(buffer, 0, buffer.length, start)
+      const last = buffer.lastIndexOf(0x0a)
+      if (last < 0) return { text: "", next: offset }
+      return { text: buffer.subarray(0, last + 1).toString("utf8"), next: start + last + 1 }
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { text: "", next: offset }
+  }
+}
+
+// The upstream errors in text, agy's log, in the order agy logged them
+function agentErrorsIn(text) {
+  const out = []
+  for (const line of String(text || "").split("\n")) {
     const match = /\] (?:agent executor error|failed to construct executor|inference connection failed[^:]*): (.+)$/.exec(line) ||
       /\] (?:Run|CallWithRetry): attempt \d+ failed \((.+)\), retrying in /.exec(line)
-    if (match) found = match[1]
+    if (!match) continue
+    let found = match[1]
+    const cut = found.lastIndexOf("generating and executing: ")
+    if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
+    found = found.trim().slice(0, 1000)
+    if (found) out.push(found)
   }
-  if (!found) return ""
-  const cut = found.lastIndexOf("generating and executing: ")
-  if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
-  return found.trim().slice(0, 1000)
+  return out
+}
+
+// agy writes the real upstream error only to its log; read what this turn added.
+async function lastAgentError(file, offset) {
+  return agentErrorsIn(await logTail(file, offset)).at(-1) || ""
 }
 
 // Where agy's three-line notice (the output cap's, a malformed call's) ends,
@@ -4208,6 +4264,7 @@ function writeParked(proc, midTurn) {
     instructionsInSession: !!proc.instructionsInSession,
     workDir: proc.workDir,
     workspace: proc.workspace,
+    media: proc.media,
     ...midTurn ? { midTurn: true, count: proc.expectedMessages.length } : {},
     at: Date.now(),
   })
@@ -4252,6 +4309,9 @@ function takeParked(convKey, opts, miss = {}) {
   saveParked()
   miss.reason = Date.now() - entry.at > RESUME_TTL_MS ? "expired"
     : (entry.workDir ?? null) !== (opts.workDir ?? null) ? "work_dir"
+    // agy resumes a session with the tools it was opened with, whatever the
+    // agent it runs now says: one opened without view_file can't read a video
+    : !!entry.media !== !!opts.media ? "media"
     : entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions, legacy)) ? "instructions"
     : entry.userCloak !== USER_CLOAK ? "user_cloak"
     : entry.instructionsInSession !== (systemAppend() && !!opts.instructions) ? "instructions_place"
@@ -4397,11 +4457,11 @@ function sparesOn() {
 }
 
 // Everything that decides how Proc starts agy for the current work.
-async function launchKey(agyPath, workDir) {
+async function launchKey(agyPath, workDir, media = false) {
   let mtime = 0
   try { mtime = (await fs.promises.stat(agyPath)).mtimeMs } catch {}
   const own = await geminiDirArgs(agyPath)
-  return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "",
+  return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "", media,
     await noDefaultCustomizationsArgs(agyPath), await telemetryArgs(agyPath), own.args, childEnv(process.env)]))
 }
 
@@ -4410,9 +4470,9 @@ function dropSpare(spare) {
   return spare.stop().catch(() => {})
 }
 
-async function takeSpare(agyPath, workDir) {
+async function takeSpare(agyPath, workDir, media) {
   if (!spares.size || !sparesOn()) return null
-  const key = await launchKey(agyPath, workDir)
+  const key = await launchKey(agyPath, workDir, media)
   const spare = spares.get(key)
   if (!spare) return null
   spares.delete(key)
@@ -4488,8 +4548,9 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
   // the new key (sorted, to avoid deadlock), then pick again inside those
   // locks. A process is re-keyed only when its current key is already held.
   let extra = null
-  const launch = !forceNew && isFreshConversation && freshToolless(opts)
-    ? await launchKey(agyPath, opts.workDir).catch(() => null) : null
+  // never a media request: the agy's folder still holds the clips it was sent
+  const launch = !forceNew && isFreshConversation && freshToolless(opts) && !opts.media
+    ? await launchKey(agyPath, opts.workDir, opts.media).catch(() => null) : null
   for (let attempt = 0; ; attempt++) {
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
@@ -4593,7 +4654,8 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     // than the empty history, so matchesHistory turns the next one away.
     const retriedOpening = isFreshConversation && existing.failedOpening
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
-      existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
+      existing.workDir === opts.workDir && existing.media === opts.media &&
+      sameInstructions(existing.instructions, opts.instructions) &&
       (existing.matchesHistory(matchedHistory) || continuedFresh)
     if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh || retriedOpening)) {
       if (continuedFresh) {
@@ -4615,6 +4677,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         Array.isArray(matchedHistory) && !matchedHistory.length
       why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
         existing.workDir !== opts.workDir ? "work_dir" :
+        existing.media !== opts.media ? "media" :
         !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
         newOpening ? "fresh_after_first" :
         !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
@@ -4641,7 +4704,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   const parkMiss = { reason: isFreshConversation ? null : forceNew && !opts.resumeStep ? "forced" : null }
   const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts, parkMiss)
   // a spare runs in a folder of its own, and a resumed session needs its own
-  const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
+  const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir, opts.media)
   while (!spare && allProcs.size >= maxProcs()) {
     const idle = spares.values().next().value
     if (idle) {
@@ -6117,6 +6180,8 @@ function historyBlock(block, ids) {
   } else if (block.type === "image") {
     const image = parseUserImage(block)
     value = { type: "image", mimeType: image.mimeType, sha256: digest(image.data) }
+  } else if (isMedia(block)) {
+    value = { type: block.type, mediaType: block.source.media_type, sha256: digest(mediaData(block)) }
   } else if (block.type === "tool_use") {
     const ordinal = ids.size + 1
     ids.set(block.id, ordinal)
@@ -6544,6 +6609,30 @@ function appendSchemaHint(node, hint) {
   }
 }
 
+function plainSchemaMap(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+}
+
+// agy rejects every extra key on an object whose properties map is missing
+// or empty when additionalProperties is left out (plugins#1332). JSON Schema
+// allows those keys. An explicit additionalProperties, a restrictive
+// unevaluatedProperties, a non-empty properties map, and a non-empty
+// patternProperties map stay as declared.
+function emptyObjectIsOpen(node) {
+  const resolved = typeof node.type === "string"
+    ? node.type
+    : Array.isArray(node.type)
+      ? node.type.find((item) => item !== "null") || null
+      : null
+  const implicitObject = node.type === undefined && plainSchemaMap(node.properties)
+  if (resolved !== "object" && !implicitObject) return false
+  if (node.additionalProperties !== undefined) return false
+  if (node.unevaluatedProperties !== undefined && node.unevaluatedProperties !== true) return false
+  if (plainSchemaMap(node.patternProperties) && Object.keys(node.patternProperties).length > 0) return false
+  if (node.properties !== undefined && !plainSchemaMap(node.properties)) return false
+  if (plainSchemaMap(node.properties) && Object.keys(node.properties).length > 0) return false
+  return true
+}
 
 // Sanitize JSON Schema constructs that agy's ACP -> Google Code Assist translator
 // converts into invalid Schema protos (e.g. union types leaving stale array/object
@@ -6662,6 +6751,9 @@ function sanitizeInputSchema(schema) {
   // ECMA-262. Translate or drop those patterns here; tool-call arguments in
   // the response are plain JSON and do not need a reverse transform.
   sanitizePatternFields(out)
+  // After patterns: a map whose keys were all dropped is no longer a
+  // patternProperties object. Say the remaining empty object is open.
+  if (emptyObjectIsOpen(out)) out.additionalProperties = true
   return out
 }
 
@@ -6720,6 +6812,10 @@ function blockText(block) {
     parseUserImage(block)
     return "[image]"
   }
+  if (isMedia(block)) {
+    mediaData(block)
+    return `[${block.type}]`
+  }
   if (block.type === "tool_result") {
     const inner = Array.isArray(block.content)
       ? block.content.map((part) => {
@@ -6738,6 +6834,57 @@ function messageText(message) {
   if (typeof message.content === "string") return message.content
   if (Array.isArray(message.content)) return message.content.map(blockText).join("")
   return String(message.content ?? "")
+}
+
+// A user's video or audio: magpie's Messages video block, and audio in the
+// same shape. agy drops or refuses every way ACP has to attach one (an
+// audio block, a resource or resource_link, @path); only its own view_file
+// hands Gemini the media itself, so stageMedia leaves it in a file to read.
+function isMedia(block) {
+  return block?.type === "video" || block?.type === "audio"
+}
+
+function hasMedia(message) {
+  return Array.isArray(message.content) && message.content.some(isMedia)
+}
+
+// of agy's models, only Gemini takes a video or audio
+function takesMedia(modelId) {
+  return modelId.startsWith("gemini-")
+}
+
+function mediaData(block) {
+  const source = block.source
+  if (source?.type !== "base64" || typeof source.data !== "string" || !source.data) {
+    throw new UnsupportedContent(`a ${block.type} source other than base64; provide inline ${block.type} data instead of a URL`)
+  }
+  return source.data
+}
+
+// stageMedia is the message with each video or audio written to
+// dir/attachments, named by its sha256 so a history that sends it every turn
+// writes it once, and a note to read it in its place. Synchronous: an await
+// before the turn starts would leave the process idle, to be evicted.
+function stageMedia(message, dir) {
+  return hasMedia(message)
+    ? { ...message, content: message.content.map((block) => isMedia(block) ? stagedMedia(block, dir) : block) }
+    : message
+}
+
+function stagedMedia(block, dir) {
+  const bytes = Buffer.from(mediaData(block), "base64")
+  const type = String(block.source.media_type || "").toLowerCase().split(";")[0].trim()
+  const sub = /^(?:video|audio)\/(?:x-)?([a-z0-9]{1,16})$/.exec(type)?.[1]
+  const ext = type === "audio/mpeg" ? "mp3" : sub === "quicktime" ? "mov" : sub || (block.type === "audio" ? "mp3" : "mp4")
+  const file = path.join(dir, "attachments", `${digest(bytes)}.${ext}`)
+  if (!fs.existsSync(file)) {
+    // whole or not at all: one cut short by a failed write would pass for it
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const part = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.part`
+    fs.writeFileSync(part, bytes)
+    fs.renameSync(part, file)
+  }
+  return { type: "text", text: `[The user attached ${block.type === "video" ? "a video" : "an audio file"}: ${file}. Read it with your file reading tool before answering.]` }
 }
 
 function imageContent(block) {
@@ -8986,7 +9133,7 @@ function estimateInputTokens(body) {
       return
     }
     if (typeof value === "object") {
-      if (value.type === "image" && value.source?.type === "base64") {
+      if ((value.type === "image" || isMedia(value)) && value.source?.type === "base64") {
         images++
         return
       }
@@ -9222,18 +9369,22 @@ function withoutAnswered(messages, answered) {
 
 async function beginTurn(proc, history, body, callerWorkDir, model, selection, answered, grownTools = null) {
   const reminder = outputFormatReminder(body)
-  const flattened = proc.pendingFlattenedTurn
+  let flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
+  // the prompt names each video or audio by its file; the session is still
+  // matched by body.messages
+  const messages = body.messages.map((message) => stageMedia(message, proc.workspace))
+  if (flattened) flattened = stageMedia(flattened, proc.workspace)
   let baseParts
   let replay = null
   if (!isFirstTurn && proc.resumedStep) {
     proc.resumedStep = false
-    baseParts = renderResumedStepParts(body.messages.slice(history.length))
+    baseParts = renderResumedStepParts(messages.slice(history.length))
   } else if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
-      ? [flattened, ...body.messages.slice(1)]
-      : withoutAnswered(body.messages.slice(history.length), answered))
+      ? [flattened, ...messages.slice(1)]
+      : withoutAnswered(messages.slice(history.length), answered))
     // a step ended for tools loaded mid-turn: its results are in, so the
     // prompt says what can be called now and to go on
     if (grownTools?.length) baseParts = mergePromptParts([{ type: "text", text: grownToolsNote(grownTools) }], baseParts)
@@ -9241,7 +9392,7 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     // A history bigger than one prompt goes in over several (seedHistory),
     // up to the model's window, where agy can take them.
     const budget = seedsHistory(proc.agentVersion) ? Math.max(maxInitialPromptBytes(), maxReplayBytes(model, selection?.model)) : maxInitialPromptBytes()
-    const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
+    const initial = renderInitialPrompt({ ...body, messages }, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0, budget)
     baseParts = initial.parts
     if (initial.stats.messages_before) replay = { ...initial.stats, prompt_bytes: promptTextBytes(baseParts), budget_bytes: budget }
@@ -9279,14 +9430,14 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
   }
   if (isFirstTurn) {
-    const rawEstimate = estimateInputTokens(body)
+    const rawEstimate = estimateInputTokens({ ...body, messages })
     const sessionOverhead = (proc.instructionsInSession && body.system
       ? estimateInputTokens({ system: body.system, messages: [] })
       : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts) +
       seeds.reduce((sum, parts) => sum + estimatePromptPartsTokens(parts), 0))
     const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
-    const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
+    const promptClipped = utf8Bytes(JSON.stringify(messages)) > clipThreshold &&
       rawEstimate > sentEstimate + 64
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
   }
@@ -9736,6 +9887,11 @@ export const AntigravityBridgePlugin = async () => {
             if (missingHere && anotherAccountLists(agy, requestedModel)) {
               return jsonError(400, `agy bridge: model ${requestedModel} is unavailable to this agy account; another signed-in agy account lists it`)
             }
+            // agy runs the requested model when its session offers it (configModelSelection), else the resolved one
+            const media = body.messages.some(hasMedia)
+            if (media && !(takesMedia(requestedModel) && takesMedia(model))) {
+              return jsonError(400, `agy bridge: video or audio input to ${requestedModel} is not supported. Choose a Gemini model`, undefined, { noRetry: true })
+            }
             const selection = { model: requestedModel, effort: requestedEffort(body, saidEffort) }
             // the key before the model line left it (0.1.142 and older)
             const legacyConvKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope, callerWorkDir || "", true)
@@ -9771,7 +9927,8 @@ export const AntigravityBridgePlugin = async () => {
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
                 legacyConvKey: legacyConvKey !== convKey ? legacyConvKey : "",
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
+                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope,
+                media }
               let answeredIds = null
               // tools the steered prompt names as callable now (grown mid-turn)
               let grownTools = null
@@ -10043,6 +10200,7 @@ export const AntigravityBridgePlugin = async () => {
         }
         for (const model of catalog.models) {
           const imageModel = /^(?:gemini-|claude-)/.test(model.id)
+          const mediaModel = takesMedia(model.id)
           out[model.id] = {
             id: model.id,
             name: model.name,
@@ -10050,7 +10208,7 @@ export const AntigravityBridgePlugin = async () => {
             limit: modelLimits(model.id),
             api: { id: model.id, url: "agy://local", npm: NPM_ANTHROPIC },
             capabilities: {
-              ...(imageModel ? { attachment: true, input: { text: true, image: true }, output: { text: true } } : {}),
+              ...(imageModel ? { attachment: true, input: { text: true, image: true, ...(mediaModel ? { video: true, audio: true } : {}) }, output: { text: true } } : {}),
               ...(model.variants ? { reasoning: true } : {}),
             },
             ...(model.variants ? {

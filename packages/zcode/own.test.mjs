@@ -23,9 +23,19 @@ function enc(text) {
   const data = Buffer.concat([c.update(text, "utf8"), c.final()])
   return "enc:v1:" + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
 }
-function zcodeHas(store, setting = {}) {
+// ZCode 3.18 writes its values enc:v2 (#1196): the key by the source the
+// envelope names — env here, the test's ZCODE_CREDENTIAL_SECRET — hashed
+// into the envelope, checked before the payload is opened.
+function enc2(text, key = createHash("sha256").update("test-seed").digest()) {
+  const iv = randomBytes(12)
+  const c = createCipheriv("aes-256-gcm", key, iv)
+  const data = Buffer.concat([c.update(text, "utf8"), c.final()])
+  const payload = [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+  return `enc:v2:env:${createHash("sha256").update(key).digest("hex").slice(0, 24)}:${payload}`
+}
+function zcodeHas(store, setting = {}, E = enc) {
   mkdirSync(dir(), { recursive: true })
-  writeFileSync(join(dir(), "credentials.json"), JSON.stringify(Object.fromEntries(Object.entries(store).map(([k, v]) => [k, enc(v)]))))
+  writeFileSync(join(dir(), "credentials.json"), JSON.stringify(Object.fromEntries(Object.entries(store).map(([k, v]) => [k, E(v)]))))
   writeFileSync(join(dir(), "setting.json"), JSON.stringify(setting))
 }
 const KEY = "account-provider:coding-plan:account:zai-individual-coding-plan:account:u1:api-key"
@@ -62,6 +72,51 @@ test("with ZCode signed out, the sign-in says so", async () => {
   const got = await (await m.authorize()).callback()
   expect(got.type).toBe("failed")
   expect(got.error).toContain("ZCode isn't signed in")
+})
+
+// ZCode 3.18 writes its values enc:v2 (#1196); the key comes from the
+// source the envelope names, and its user_info keeps id/username/
+// displayName where 3.17 kept email/name/user_id.
+test("the sign-in reads ZCode 3.18's enc:v2 credentials, and follows ZCode after (#1196)", async () => {
+  const v2 = (store, setting) => zcodeHas(store, setting, enc2)
+  v2({ [KEY]: "id1.secret1", zcodejwttoken: "Bearer j1", "oauth:zai:user_info": JSON.stringify({ id: "u9", username: "bo", displayName: "Bo" }) })
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("success")
+  expect(got.accountId).toBe("Bo")
+  expect(got.uid).toBe("u9")
+  expect(got.access).toBe("id1.secret1")
+  const auth = { ...got, type: "oauth" }
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1" })
+
+  // ZCode renews its session, still enc:v2
+  v2({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": JSON.stringify({ id: "u9", displayName: "Bo" }) })
+  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+})
+
+// the envelope's hash tells the right key without opening the store: a
+// value keyed elsewhere is not opened with this machine's
+test("an enc:v2 value this machine's key doesn't open is not read as a sign-in", async () => {
+  zcodeHas({ zcodejwttoken: "Bearer j1" }, {}, (v) => enc2(v, createHash("sha256").update("another-seed").digest()))
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("failed")
+  expect(got.error).toContain("ZCode isn't signed in")
+})
+
+// a sign-in added while 3.18's form was unreadable was named by the
+// fallback alone ("ZCode", no uid of its own); with the form reading
+// again it follows ZCode's account — no other could it have been named
+// for. One that carried a uid still keeps to it.
+test("the app sign-in named by the fallback alone follows ZCode's 3.18 account", async () => {
+  zcodeHas({ [KEY]: "id1.secret1", zcodejwttoken: "j1", "oauth:zai:user_info": JSON.stringify({ id: "u9", displayName: "Bo" }) }, {}, enc2)
+  const legacy = { type: "oauth", accountId: "ZCode", access: "stale", refresh: JSON.stringify({ source: "zcode", device: "d1", site: "zai", base: "https://api.z.ai/api/anthropic", key: "", jwt: "stale" }) }
+  expect(_internal.stateOf(legacy)).toMatchObject({ key: "id1.secret1", jwt: "j1" })
+
+  const uid = { ...legacy, accountId: "Ada", uid: "u1" }
+  expect(_internal.stateOf(uid)).toMatchObject({ key: "", jwt: "stale" })
 })
 
 test("a sign-in not ZCode's keeps its own key", () => {

@@ -2516,13 +2516,13 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("request-path permissive items have a fixed depth of 8",
     bareDepth === 8,
     String(bareDepth))
-  check("request-path expandToolSchema resolves $defs/$ref, lifts root oneOf object unions, preserves boolean additionalProperties, and leaves schema-less ToolSearch empty",
+  check("request-path expandToolSchema resolves $defs/$ref, lifts root oneOf object unions, preserves boolean additionalProperties, and leaves schema-less ToolSearch with no declared properties",
     initRefUnion?.inputSchema?.$defs === undefined &&
     initRefUnion?.inputSchema?.oneOf === undefined &&
     initRefUnion?.inputSchema?.additionalProperties === false &&
     JSON.stringify(initRefUnion?.inputSchema?.properties?.method?.enum) === JSON.stringify(["click", "screenshot"]) &&
     JSON.stringify(initRefUnion?.inputSchema?.properties?.params?.required) === JSON.stringify(["x", "y"]) &&
-    JSON.stringify(initToolSearch?.inputSchema) === JSON.stringify({ type: "object", properties: {} }) &&
+    JSON.stringify(initToolSearch?.inputSchema) === JSON.stringify({ type: "object", properties: {}, additionalProperties: true }) &&
     !/gemini/i.test(JSON.stringify(initRefUnion?.inputSchema || {})),
     JSON.stringify({ refUnion: initRefUnion?.inputSchema, toolSearch: initToolSearch?.inputSchema }))
 

@@ -672,7 +672,7 @@ test("bridge request path delivers expanded schemas to MCP tools/list without in
     const cuaTool = mcpTools.find((t) => t.name === "cua_action")
 
     assert.ok(searchTool, "ToolSearch must be exposed over MCP tools/list")
-    assert.deepEqual(searchTool.inputSchema, { type: "object", properties: {} })
+    assert.deepEqual(searchTool.inputSchema, { type: "object", properties: {}, additionalProperties: true })
 
     assert.ok(cuaTool, "cua_action must be exposed over MCP tools/list")
     assert.equal(cuaTool.inputSchema.$defs, undefined)
@@ -728,4 +728,179 @@ test("bridge tools/list keeps every tool of a catalog over agy's budget, within 
   } finally {
     await kit.dispose()
   }
+})
+
+// plugins#1332: agy treats an object with `properties: {}` (or no properties)
+// and omitted additionalProperties as closed. JSON Schema allows those keys.
+test("plugins#1332 open objects with empty or missing properties allow additional keys", () => {
+  const issue = {
+    type: "object",
+    properties: {
+      tool: { type: "string" },
+      arguments: {
+        type: "object",
+        description: "Arguments matching the target tool schema",
+        properties: {},
+      },
+    },
+    required: ["tool", "arguments"],
+  }
+  const expectedIssue = {
+    type: "object",
+    properties: {
+      tool: { type: "string" },
+      arguments: {
+        type: "object",
+        description: "Arguments matching the target tool schema",
+        properties: {},
+        additionalProperties: true,
+      },
+    },
+    required: ["tool", "arguments"],
+  }
+  assert.deepEqual(sanitizeInputSchema(issue), expectedIssue)
+  assert.deepEqual(fullPipeline(issue), expectedIssue)
+  assert.deepEqual(sanitizeInputSchema(sanitizeInputSchema(issue)), expectedIssue)
+
+  const open = (schema) => sanitizeInputSchema(schema)
+  assert.deepEqual(open({ type: "object", properties: {} }), {
+    type: "object", properties: {}, additionalProperties: true,
+  })
+  assert.deepEqual(open({ type: "object" }), {
+    type: "object", additionalProperties: true,
+  })
+  assert.deepEqual(open({ properties: {} }), {
+    properties: {}, additionalProperties: true,
+  })
+  assert.deepEqual(open({ type: ["object", "null"], properties: {} }), {
+    type: ["object", "null"], properties: {}, additionalProperties: true,
+  })
+  assert.deepEqual(open({ type: ["object", "null"] }), {
+    type: ["object", "null"], additionalProperties: true,
+  })
+  // An empty patternProperties map is already dropped; it does not keep the object closed.
+  assert.deepEqual(open({ type: "object", properties: {}, patternProperties: {} }), {
+    type: "object", properties: {}, additionalProperties: true,
+  })
+
+  const nested = open({
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      bag: { type: "object", properties: {} },
+      list: { type: "array", items: { type: "object", properties: {} } },
+      tuple: { type: "array", prefixItems: [{ properties: {} }] },
+      either: { anyOf: [{ type: "object", properties: {} }, { type: "string" }] },
+      one: { oneOf: [{ type: ["object", "null"], properties: {} }, { type: "integer" }] },
+      all: { allOf: [{ type: "object", properties: {} }] },
+    },
+    $defs: { Bag: { type: "object", properties: {} } },
+  })
+  assert.equal(nested.additionalProperties, false)
+  assert.equal(nested.properties.bag.additionalProperties, true)
+  assert.equal(nested.properties.list.items.additionalProperties, true)
+  assert.equal(nested.properties.tuple.prefixItems[0].additionalProperties, true)
+  assert.equal(nested.properties.either.anyOf[0].additionalProperties, true)
+  assert.equal(nested.properties.either.anyOf[1].additionalProperties, undefined)
+  assert.equal(nested.properties.one.oneOf[0].additionalProperties, true)
+  assert.deepEqual(nested.properties.one.oneOf[0].type, ["object", "null"])
+  assert.equal(nested.properties.all.allOf[0].additionalProperties, true)
+  assert.equal(nested.$defs.Bag.additionalProperties, true)
+
+  const closed = open({
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  })
+  assert.equal(closed.additionalProperties, false)
+  // unevaluatedProperties: false or a schema constrains extra keys; stamping
+  // additionalProperties: true would mark every property evaluated and bypass it.
+  const unevalClosed = open({
+    type: "object",
+    properties: {},
+    unevaluatedProperties: false,
+  })
+  assert.equal(unevalClosed.additionalProperties, undefined)
+  assert.equal(unevalClosed.unevaluatedProperties, false)
+  assert.deepEqual(
+    fullPipeline({ type: "object", unevaluatedProperties: false }),
+    { type: "object", unevaluatedProperties: false },
+  )
+  const unevalSchema = open({
+    type: "object",
+    unevaluatedProperties: { type: "string" },
+  })
+  assert.equal(unevalSchema.additionalProperties, undefined)
+  assert.deepEqual(unevalSchema.unevaluatedProperties, { type: "string" })
+  const unevalOpen = open({
+    type: "object",
+    properties: {},
+    unevaluatedProperties: true,
+  })
+  assert.equal(unevalOpen.additionalProperties, true)
+  assert.equal(unevalOpen.unevaluatedProperties, true)
+  const dict = open({
+    type: "object",
+    properties: {},
+    additionalProperties: { type: "string", minLength: 1 },
+  })
+  assert.deepEqual(dict.additionalProperties, { type: "string", minLength: 1 })
+  const nestedDict = open({
+    type: "object",
+    additionalProperties: { type: "object", properties: {} },
+  })
+  assert.deepEqual(nestedDict.additionalProperties, {
+    type: "object", properties: {}, additionalProperties: true,
+  })
+
+  const declared = open({
+    type: "object",
+    properties: { command: { type: "string" } },
+    required: ["command"],
+  })
+  assert.equal(declared.additionalProperties, undefined)
+  assert.deepEqual(declared.required, ["command"])
+  const patterned = open({
+    type: "object",
+    patternProperties: { "^[a-z]+$": { type: "number" } },
+  })
+  assert.equal(patterned.additionalProperties, undefined)
+  assert.deepEqual(patterned.patternProperties, { "^[a-z]+$": { type: "number" } })
+  const both = open({
+    type: "object",
+    properties: { known: { type: "boolean" } },
+    patternProperties: { "^x": { type: "object", properties: {} } },
+  })
+  assert.equal(both.additionalProperties, undefined)
+  assert.equal(both.properties.known.additionalProperties, undefined)
+  assert.equal(both.patternProperties["^x"].additionalProperties, true)
+
+  // Every pattern key dropped: the object is no longer a pattern map.
+  // With no declared properties, the lifted `additionalProperties: false`
+  // would still be closed to agy, so the open-object rule applies.
+  const dropped = open({
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+    patternProperties: { "^(?!x)": { type: "string" } },
+  })
+  assert.equal(dropped.patternProperties, undefined)
+  assert.equal(dropped.additionalProperties, true)
+  assert.match(dropped.description, /dropped patternProperties/)
+  const droppedWithFields = open({
+    type: "object",
+    properties: { known: { type: "string" } },
+    additionalProperties: false,
+    patternProperties: { "^(?!x)": { type: "number" } },
+  })
+  assert.equal(droppedWithFields.patternProperties, undefined)
+  assert.equal(droppedWithFields.additionalProperties, undefined)
+  assert.equal(droppedWithFields.properties.known.type, "string")
+
+  assert.deepEqual(open({ type: "string" }), { type: "string" })
+  assert.deepEqual(open({ type: "null", properties: {} }), { type: "null" })
+  assert.deepEqual(open({ type: ["null"], properties: {} }), { type: ["null"], properties: {} })
+  assert.deepEqual(open({ description: "any" }), { description: "any" })
+  assert.equal(open(true), true)
+  assert.equal(open(false), false)
 })

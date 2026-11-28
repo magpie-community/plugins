@@ -341,6 +341,11 @@ export function dataDir(platform = process.platform, home = os.homedir()) {
 
 export const owns = (list) => list.some((t) => isChat(t.url))
 
+// NOT_QUERY_CODE is Doubao's answer to an /alice/ call that carries none of
+// the app's own query (see commonQuery). It is the app's "系统错误", not a
+// statement about the account.
+const NOT_QUERY_CODE = 710010702
+
 // Page-side helpers, run through Runtime.evaluate. They read the page and
 // press its controls the way a pointer does (Radix menus open on
 // pointerdown, not on click()).
@@ -365,6 +370,54 @@ const message = (el) => {
   let f = k && el[k];
   for (let d = 0; f && d < 40; d++, f = f.return) { const m = f.memoizedProps && f.memoizedProps.message; if (m && m.message_id !== undefined && m.content_blocks_v2) return m; }
   return null;
+};
+// commonQueryOwn is the query an /alice/ call of the app's own carried: the
+// app puts the same set on every /alice/, /samantha/ and /biz/ request it
+// makes, and it is the only place some of those values exist — the page keeps
+// no runtime_version anywhere (its localStorage, its <meta>s, its globals),
+// and Doubao answers the account's own campaign only to a request that has it.
+// "" when the page has made no such call yet, as a window that has only just
+// opened has not.
+const commonQueryOwn = () => {
+  const names = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/") && u.includes("?"));
+  // only a request that carries the app's own parameters is a source: the
+  // page signs a bare path too (msToken, a_bogus alone), and the plugin's own
+  // calls are such bare paths — taking one of those gave a query of nothing
+  const own = (u) => /[?&]device_id=/.test(u) && /[?&]aid=/.test(u);
+  const found = names.filter((u) => u.includes("/alice/") && own(u)).pop() || names.filter(own).pop();
+  if (!found) return "";
+  const q = new URL(found).searchParams;
+  q.delete("msToken"); q.delete("a_bogus");
+  return String(q);
+};
+// commonQuery is what ALICE and LIST send. The app's own query when the page
+// has made a call; otherwise only what the page really has about this
+// install — its device (client_device_info: device_id, aid, pc_version,
+// chromium_version), its build channel (client_brand_info) and the country it
+// signed in from (flow_user_country). Nothing is made up to fill the gaps:
+// version_code, runtime_version, fp, web_id and web_tab_id are not on the page
+// and are left out, so Doubao answers a request built here as it does a client
+// it can't place — an /alice/ call with no query at all is answered
+// ${NOT_QUERY_CODE} 系统错误 instead.
+const commonQuery = () => {
+  const own = commonQueryOwn();
+  if (own) return own;
+  const read = (k) => { try { return JSON.parse(localStorage.getItem(k) || "{}") } catch (e) { return {} } };
+  const info = read("client_device_info"), brand = read("client_brand_info");
+  const device = String(info.deviceId || info.deviceIdCustom || "");
+  const aid = String(info.appId || ""), version = String(info.appVersion || "");
+  const country = String(localStorage.getItem("flow_user_country") || "");
+  const q = {
+    language: "zh", device_platform: "web", doubao_device_platform: "desktop",
+    aid, real_aid: aid, pkg_type: "release_version", device_id: device,
+    pc_version: version, doubao_pc_version: version, tea_uuid: device,
+    samantha_web: "1", web_platform: "desktop", "use-olympus-account": "1",
+    runtime: "web", client_platform: "pc_client",
+    chromium_version: String(info.chromiumVersion || ""),
+    os: String(info.osName || ""), channel: String(brand.buildChannel || ""),
+    region: country, sys_region: country,
+  };
+  return String(new URLSearchParams(Object.entries(q).filter(([, v]) => v !== "")));
 };
 `
 
@@ -523,30 +576,43 @@ export const READ = js(`
     usage: ext.context_window_usage || "", error: r.error_details ? JSON.stringify(r.error_details) : "" };
 `)
 
+// OWN_QUERY says the page has made a call of its own that carries the app's
+// query (commonQueryOwn). A check-in read before that is a read whose query
+// the page could only partly build, and the campaign's answer to it is not
+// this account's (see checkinOf's complete).
+export const OWN_QUERY = js(`return !!commonQueryOwn();`)
+
 // QUOTA asks the app's own page for the plan's allowance, the way the
-// page's 订阅 view does (its cookies sign the call).
+// page's 订阅 view does (its cookies sign the call). The body is the app's
+// own (product_line membership); with the app's query beside it Doubao also
+// answers the amounts — used_amount / total_amount, quota_remaining_amount —
+// while the bare path answers the percentages alone, so the bare path is the
+// fallback for a query Doubao doesn't take.
 export const QUOTA = js(`
-  try {
-    const r = await fetch("https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: "{}" });
+  const read = async (url) => {
+    const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ product_line: "membership" }) });
     const t = await r.text();
     let j = null;
     try { j = JSON.parse(t); } catch {}
     return { status: r.status, body: j };
+  };
+  const query = commonQuery();
+  const path = "https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/";
+  try {
+    let got = query ? await read(path + "?" + query) : null;
+    if (!got || !got.body || got.body.code !== 0) got = await read(path);
+    return got;
   } catch (e) { return { error: String(e && e.message || e) }; }
 `)
 
 // ALICE posts a JSON body to one of Doubao's /alice/ paths the way the
-// page's own calls go: with its cookies and the query its other /alice/
-// calls carry (version_code, aid, device_id...; msToken and a_bogus left
-// out, as LIST leaves them). It answers {status, body} or, when nothing
-// answered, {error}.
+// page's own calls go: with its cookies and the query its other calls carry
+// (commonQuery; msToken and a_bogus left out, as LIST leaves them). It
+// answers {status, body} or, when nothing answered, {error}.
 export const ALICE = (path, body) => js(`
-  const urls = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/alice/") && u.includes("?"));
-  const q = new URL(urls.pop() || "https://www.doubao.com/alice/").searchParams;
-  q.delete("msToken"); q.delete("a_bogus");
-  const query = String(q);
+  const query = commonQuery();
   try {
-    const r = await fetch("https://www.doubao.com" + ${JSON.stringify(path)} + (query ? "?" + query : ""), { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: ${JSON.stringify(JSON.stringify(body))} });
+    const r = await fetch("https://www.doubao.com" + ${JSON.stringify(path)} + (query ? "?" + query : ""), { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: ${JSON.stringify(JSON.stringify(body ?? {}))} });
     const t = await r.text();
     let j = null;
     try { j = JSON.parse(t); } catch {}
@@ -554,14 +620,31 @@ export const ALICE = (path, body) => js(`
   } catch (e) { return { error: String(e && e.message || e) }; }
 `)
 
-// Doubao's daily check-in (签到) belongs to its growth campaign
-// (豆包探索计划), read from the app's own bundle (UgCampaignApiService): the page
-// asks landing/get what to show, and a 签到 button there reports the press
-// (landing/report) and checks in (landing/checkin). Doubao decides per
-// account whether it offers one; it has no make-up check-in (补签).
+// Doubao's daily check-in (签到) has two surfaces, both read from the app's
+// own bundle (UgCampaignApiService). Which one an account gets is Doubao's,
+// and it has no make-up check-in (补签):
+//
+//   1. the desktop app's own 每日签到 task (daily_signin) of its PC incentive
+//      campaign — what the app shows as 每日签到 / "每天签到领 200 额度". Its
+//      detail says whether today is already in (daily_checkin) and what the
+//      streak is; landing/checkin presses it. That press is idempotent: a
+//      second one the same day answers checked_in with idempotent true and the
+//      day's reward, so a check-in magpie isn't sure it made claims nothing
+//      twice.
+//   2. the landing page of the growth campaign (豆包探索计划), for the
+//      accounts Doubao still shows it to: landing/get says what to show, and a
+//      签到 button there reports the press (landing/report) and checks in.
+//
+// An account with neither gets no 签到 today — that is "inactive", not a
+// failure.
 export const LANDING = "/alice/ug/campaign/landing/get"
 export const CHECKIN = "/alice/ug/campaign/landing/checkin"
 export const REPORT = "/alice/ug/campaign/landing/report"
+export const DETAIL = "/alice/ug/campaign/v3/detail/"
+// CHECKIN_GROUP is the campaign the app's 每日签到 belongs to (its bundle's
+// own constant), SIGNIN the task inside it.
+export const CHECKIN_GROUP = "pc_incentive_task_mvp_v3"
+const SIGNIN = "daily_signin"
 
 // landing/get's chosen_type: 1 the check-in page, 2 the page after it (today
 // is in), 3 cards. A button's type: button_type on the pages, interaction_type
@@ -579,7 +662,13 @@ function refusal(read, what) {
   if (read?.status === 401 || read?.status === 403) return { outcome: "failed", message: "豆包登录已过期，请重新登录豆包工作窗口。" }
   const b = read?.body
   if (!b || typeof b !== "object") return { outcome: "failed", message: `${what}的回复不是 JSON（HTTP ${read?.status ?? "?"}）` }
-  if (b.code != null && !["0", "200"].includes(String(b.code))) return { outcome: "failed", message: `${what}失败：${b.msg || "code " + b.code}` }
+  if (b.code != null && !["0", "200"].includes(String(b.code))) {
+    // the app's own query missing is Doubao's 系统错误: said as what it is,
+    // not as the account having nothing
+    if (Number(b.code) === NOT_QUERY_CODE)
+      return { outcome: "failed", message: `${what}失败：豆包没有认这次请求（系统错误）。请在豆包工作窗口打开后重试。` }
+    return { outcome: "failed", message: `${what}失败：${b.msg || b.message || "code " + b.code}` }
+  }
   return null
 }
 
@@ -596,32 +685,107 @@ function offerOf(d) {
   return null
 }
 
-// checkinOf checks the account in as the page's 签到 button does, through
-// call(path, body) ({status, body} or {error}), and says it as magpie's
-// check-in outcome. A request nothing answered is thrown.
-export async function checkinOf(call, { newId = randomUUID } = {}) {
+// signinOf reads the 每日签到 task of the PC incentive campaign out of its
+// detail, as the app's own page does: {checked_in_today, continuous_days,
+// reward, reward_status, ...}, or null when that campaign offers this account
+// no 签到 at all.
+export function signinOf(read) {
+  const tasks = read?.body?.data?.tasks
+  const task = (Array.isArray(tasks) ? tasks : []).find((t) => t?.campaign_code === SIGNIN)
+  if (!task) return null
+  return task.daily_checkin && typeof task.daily_checkin === "object" ? task.daily_checkin : {}
+}
+
+// pressCheckIn presses the app's 签到 (landing/checkin) and says the reply as
+// magpie's outcome. The press report beside it (landing/report) is the landing
+// page's own instrumentation — event_type user_operate, biz_event_name
+// check_in, and the card the button sits on when it sits on one — so it goes
+// out only for a landing page's press: `report` is false for the campaign's
+// own 每日签到, which is not a landing page and whose press the app reports, if
+// at all, through the campaign's own calls.
+async function pressCheckIn(call, newId, { card, report = true } = {}) {
+  // the page reports the press beside the check-in and doesn't wait for it
+  const pressed = report
+    ? call(REPORT, { event_type: "user_operate", biz_event_name: "check_in", ...(card ? { card_event: { ...card, event_id: newId() } } : {}) }).catch(() => {})
+    : Promise.resolve()
+  let got
+  try {
+    got = await call(CHECKIN, {})
+  } finally {
+    await pressed
+  }
+  const refused = refusal(got, "豆包签到")
+  if (refused) return refused
+  const r = got.body.data ?? {}
+  if (!r.checked_in) return { outcome: "failed", message: got.body.msg || got.body.message || "豆包没有完成签到" }
+  const streak = Number(r.continuous_days)
+  const credit = Number(r.reward_amount)
+  const lost = Number(r.reward_status) === REWARD_FAILED
+  // idempotent: today's check-in was already in, and this press granted
+  // nothing new — the day's check-in is done, not one magpie just made
+  const already = r.idempotent === true
+  return {
+    outcome: already ? "done" : "claimed",
+    ...(streak > 0 ? { streak } : {}),
+    ...(credit > 0 && !lost ? { credit } : {}),
+    ...(lost ? { message: "已签到，但豆包这次没有发放签到奖励" } : already ? { message: "今日已签到" } : {}),
+  }
+}
+
+// checkinOf checks the account in the way the app's own 签到 button does,
+// through call(path, body) ({status, body} or {error}), and says it as
+// magpie's check-in outcome. `complete` says the query the calls carried was
+// the app's own (commonQueryOwn): the campaign detail answers for this account
+// only to one that has runtime_version, so a detail read with a query built
+// without it is not a "this account has no 签到" — it is a read that told
+// nothing, and it is said as a failure to try again rather than as `inactive`.
+// A request nothing answered is thrown.
+export async function checkinOf(call, { newId = randomUUID, complete = true } = {}) {
+  // the app's own 每日签到 task first: one read says whether Doubao gives this
+  // account one today and whether it is already in
+  const detail = await call(DETAIL, { campaign_group_code: CHECKIN_GROUP })
+  const trouble = refusal(detail, "读取豆包签到")
+  const signin = trouble ? null : signinOf(detail)
+  if (signin) {
+    const streak = Number(signin.continuous_days) > 0 ? Number(signin.continuous_days) : 0
+    const reward = Number(signin.reward?.reward_amount) > 0 ? Number(signin.reward.reward_amount) : 0
+    if (signin.checked_in_today) {
+      const said = [streak > 0 ? `已连续 ${streak} 天` : "", reward > 0 ? `今天领 ${reward} 额度` : ""].filter(Boolean)
+      return {
+        outcome: "done",
+        ...(streak > 0 ? { streak } : {}),
+        ...(reward > 0 ? { credit: reward } : {}),
+        message: "今日已签到" + (said.length ? `（${said.join("，")}）` : ""),
+      }
+    }
+    const got = await pressCheckIn(call, newId, { report: false })
+    // the reply of a press that landed names no amount when Doubao already
+    // handed the day's reward out: the task's own reward is the day's
+    if (got.outcome === "claimed") {
+      if (!(got.credit > 0) && reward > 0 && Number(signin.reward_status) !== REWARD_FAILED) got.credit = reward
+      if (!(got.streak > 0) && streak > 0) got.streak = streak
+    }
+    return got
+  }
+  // the accounts Doubao still shows the growth campaign's landing page to
   const landing = await call(LANDING, {})
   const no = refusal(landing, "读取豆包签到")
   if (no) return no
   const d = landing.body.data ?? {}
   if (Number(d.chosen_type) === CHECKED_IN) return { outcome: "done", ...(words(d.complete_page_info) ? { message: words(d.complete_page_info) } : {}) }
   const offer = offerOf(d)
-  if (!offer) return { outcome: "inactive", message: "豆包现在没有给这个账号签到入口（签到是豆包探索计划的活动，由豆包按账号推送）" }
-  // the page reports the press beside the check-in and doesn't wait for it
-  const report = call(REPORT, { event_type: "user_operate", biz_event_name: "check_in", ...(offer.card ? { card_event: { ...offer.card, event_id: newId() } } : {}) }).catch(() => {})
-  let got
-  try {
-    got = await call(CHECKIN, {})
-  } finally {
-    await report
+  if (!offer) {
+    // Doubao answered, and nothing of its is a 签到: the account has none
+    // today. A read that failed is said as it failed, not as this — and a
+    // query built without the app's own runtime_version makes even that
+    // answer not this account's, so it is asked again later instead.
+    if (trouble) return trouble
+    if (!complete) return { outcome: "failed", message: "豆包工作的页面还没有发出自己的请求，这次读到的可能不是这个账号的活动：稍后再试。" }
+    return { outcome: "inactive", message: "豆包今天没有给这个账号签到入口（签到由豆包按账号推送）。" }
   }
-  const refused = refusal(got, "豆包签到")
-  if (refused) return refused
-  const r = got.body.data ?? {}
-  if (!r.checked_in) return { outcome: "failed", message: got.body.msg || "豆包没有完成签到" }
-  const streak = Number(r.continuous_days)
-  const said = Number(r.reward_status) === REWARD_FAILED ? "已签到，但豆包这次没有发放签到奖励" : words(d.complete_page_info)
-  return { outcome: "claimed", ...(streak > 0 ? { streak } : {}), ...(said ? { message: said } : {}) }
+  const got = await pressCheckIn(call, newId, { card: offer.card })
+  if (got.outcome === "claimed" && !got.message && words(d.complete_page_info)) got.message = words(d.complete_page_info)
+  return got
 }
 
 // BOT_ID is the bot Doubao's page names when it asks for its action bar
@@ -631,20 +795,11 @@ export const BOT_ID = "7338286299411103781"
 
 // LIST asks Doubao for the action bar its own page builds the model menu
 // from (POST /alice/slot/action_bar_v3/brief_list), the way the page does:
-// with the page's cookies and the query the page sends (version_code, aid,
-// device_id...; the bare path answers 710010702). The query is taken from
-// the page's own brief_list call, or from any other /alice/ call it made.
+// with the page's cookies and the query its own calls carry (commonQuery).
 // It returns the deep-thinking entry's menu_conf_v2 with the icons left out.
 export const LIST = js(`
-  const urls = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/alice/"));
-  const own = urls.filter((u) => u.includes("/brief_list?")).pop();
-  let url = own;
-  if (!url) {
-    const any = urls.filter((u) => u.includes("?")).pop();
-    const q = new URL(any || "https://www.doubao.com/alice/?").searchParams;
-    q.delete("msToken"); q.delete("a_bogus");
-    url = "https://www.doubao.com/alice/slot/action_bar_v3/brief_list?" + q;
-  }
+  const query = commonQuery();
+  const url = "https://www.doubao.com/alice/slot/action_bar_v3/brief_list" + (query ? "?" + query : "");
   try {
     const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ bot_id: ${JSON.stringify(BOT_ID)}, language_code: "zh" }) });
     const j = await r.json().catch(() => null);
@@ -657,28 +812,66 @@ export const LIST = js(`
 `)
 
 const HOUR = 3600000
-// quotaOf turns quota/summary into magpie's usage: the plan's short name
-// and one window per limit, as a percent used. A window names its span when
-// the reply gives one; without times it is just 额度.
+
+// amountOf reads one of Doubao's own amounts ("1,400") as a number; 0 when it
+// says none.
+const amountOf = (v) => {
+  const n = Number(String(v ?? "").replace(/[,\s]/g, ""))
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// compact writes a number back as Doubao does ("1,400").
+const compact = (n) => n.toLocaleString("en-US")
+
+// quotaOf turns quota/summary into magpie's usage: the plan's short name and
+// one window per limit, as a percent used.
+//
+// Doubao splits an account's allowance into sections and any of them can be
+// the whole of it: a paid plan's limits are in window_limit_section, an
+// enterprise plan's in enterprise_window_limit_section, and the gift quotas
+// of its campaigns (活动赠送额度 — what a free account has) in
+// incentive_quota_section. Reading only the first two left a free account
+// with no quota at all ("当前套餐没有额度限制数据"), which is what
+// incentive_quota_section is read for here; every *_window_limit_section is
+// read, so a section Doubao adds later is not lost either.
+//
+// A window names its span when the reply gives one (a plan's 5 小时 / 每周 /
+// 本月); a campaign's quota has no start (start_time 0) and is named as
+// Doubao names the group (活动赠送额度). The amounts, when the reply carries
+// them, are shown as 已用 / 总量.
 export function quotaOf(read) {
   const d = read?.body?.data
   if (!d || typeof d !== "object") return null
-  const groups = [...(d.window_limit_section?.window_limit_groups ?? []), ...(d.enterprise_window_limit_section?.window_limit_groups ?? [])]
+  // every section that has window limits: the plan's own window_limit_section,
+  // an enterprise plan's, the campaigns' incentive_quota_section and any
+  // section Doubao adds later
+  const sections = Object.keys(d).filter((k) => Array.isArray(d[k]?.window_limit_groups))
+  // the plan's own section first, then the rest as Doubao lists them
+  sections.sort((a, b) => (a === "window_limit_section" ? -1 : b === "window_limit_section" ? 1 : 0))
   const windows = []
-  for (const g of groups)
-    for (const w of g?.window_limits ?? []) {
-      const pct = Number(w?.used_percent)
-      if (!Number.isFinite(pct)) continue
-      const span = Number(w.end_time) - Number(w.start_time)
-      let name = "额度"
-      if (w.start_time > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
-      const out = { name, used: Math.max(0, Math.min(100, pct)) }
-      if (w.less_than_one_percent && pct === 0) out.display = "不到 1%"
-      if (w.end_time > 0) out.resetsAt = Number(w.end_time)
-      windows.push(out)
+  for (const key of sections) {
+    const s = d[key] ?? {}
+    const exhausted = s.usage_exhausted === true
+    for (const g of s.window_limit_groups ?? []) {
+      const group = String(g?.feature_group_name ?? "").trim()
+      for (const w of g?.window_limits ?? []) {
+        const pct = Number(w?.used_percent)
+        if (!Number.isFinite(pct)) continue
+        const start = Number(w?.start_time) || 0
+        const end = Number(w?.end_time) || 0
+        const span = end - start
+        let name = group || "额度"
+        if (start > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
+        const out = { name, used: exhausted ? 100 : Math.max(0, Math.min(100, pct)) }
+        const used = amountOf(w?.used_amount)
+        const total = amountOf(w?.total_amount)
+        if (total > 0) Object.assign(out, { display: `${compact(used)} / ${compact(total)} 额度`, amount: used, limit: total, unit: "额度" })
+        else if (w?.less_than_one_percent && pct === 0) out.display = "不到 1%"
+        if (end > 0) out.resetsAt = new Date(end).toISOString()
+        windows.push(out)
+      }
     }
-  const exhausted = d.window_limit_section?.usage_exhausted === true || d.enterprise_window_limit_section?.usage_exhausted === true
-  if (exhausted) for (const w of windows) w.used = 100
+  }
   return { plan: String(d.current_subscription?.display?.short_name || d.current_subscription?.display?.product_name || ""), windows }
 }
 
@@ -791,13 +984,13 @@ export class DoubaoError extends Error {
 
 // Doubao drives the app. One request runs at a time: there is one window.
 export class Doubao {
-  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000 } = {}) {
+  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000, queryWait = 8000 } = {}) {
     if (!app) {
       const c = choose()
       app = new App({ binary: c.binary, dataDir: c.dataDir, owns })
     }
     this.app = app
-    Object.assign(this, { openPage, poll, idle, total, fresh })
+    Object.assign(this, { openPage, poll, idle, total, fresh, queryWait })
     this.missAt = 0
     this.readAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
@@ -942,7 +1135,23 @@ export class Doubao {
       if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
     }
     const page = await this.connect(signal, { launch: false })
-    return checkinOf((p, body) => page.eval(ALICE(p, body)))
+    // a window that has only just opened has made no call of its own yet, and
+    // the query the page can build alone lacks runtime_version, which the
+    // campaign's detail needs to answer for this account: wait a moment for
+    // the app's first call, and say `complete` when there was one
+    const complete = await this.#ownQuery(page, signal)
+    return checkinOf((p, body) => page.eval(ALICE(p, body)), { complete })
+  }
+
+  // #ownQuery waits up to queryWait for the page to make a call of its own
+  // (OWN_QUERY), and says whether it did. A document being replaced by a
+  // navigation is not an error here: the next look finds the new one.
+  async #ownQuery(page, signal) {
+    for (const until = Date.now() + this.queryWait; ; ) {
+      try { if (await page.eval(OWN_QUERY)) return true } catch {}
+      if (Date.now() >= until) return false
+      await sleep(Math.min(250, Math.max(0, until - Date.now())), signal)
+    }
   }
 
   // connect gives the page of the app's chat window, starting the app

@@ -76,27 +76,68 @@ served here: the plugin lists only what the app's model menu offers from
 Doubao's side, and a model that runs on your own key is a direct call to that
 vendor, not a Doubao task. Add that API to magpie as its own provider instead.
 
+## Plan allowance (额度)
+
+The plugin reads the account's allowance from the app's own page
+(`/alice/commerce/sale/subscription/quota/summary/`, the call its 订阅 view
+makes), so the Usage card shows what Doubao itself shows.
+
+Doubao splits an allowance into sections, and any of them can be the whole of
+it: a paid plan's limits are in `window_limit_section`, an enterprise plan's in
+`enterprise_window_limit_section`, and the gift quota of Doubao's campaigns
+(活动赠送额度 — what a free account has) in `incentive_quota_section`. The
+plugin reads every section with window limits, so a free account's allowance is
+listed too; a window names its span when the reply gives one (5 小时 / 每周 /
+本月) and is otherwise named as Doubao names the group (活动赠送额度). With the
+app's query beside the call Doubao also answers the amounts, so a window shows
+已用 / 总量 ("1,400 / 2,600 额度") and when it resets.
+
 ## Daily check-in (签到)
 
-Doubao's daily 签到 belongs to its growth campaign (豆包探索计划), and Doubao
-decides per account whether it offers one. The plugin presses it the way the
-app's own 签到 button does, through the app's page: it asks
-`/alice/ug/campaign/landing/get` what Doubao shows, and when that is the
-check-in page or a card with a 签到 button, reports the press
-(`landing/report`) and checks in (`landing/checkin`).
+Doubao decides per account whether it offers a 签到, and it has moved between
+two surfaces, so the plugin asks both:
+
+1. The desktop app's own **每日签到** task (`daily_signin`) of its PC incentive
+   campaign (`pc_incentive_task_mvp_v3`). One read of
+   `/alice/ug/campaign/v3/detail/` says whether today is already in
+   (`daily_checkin.checked_in_today`) and what the streak is; a press of
+   `/alice/ug/campaign/landing/checkin` claims it.
+2. The landing page of the growth campaign (豆包探索计划), for the accounts
+   Doubao still shows it to: `/alice/ug/campaign/landing/get` says what to show,
+   and a 签到 button there reports the press (`landing/report`) and checks in.
+   That report is the landing page's own instrumentation, so it goes out only
+   there; the campaign's 每日签到 is not a landing page and its press is the
+   check-in alone.
+
+A press is idempotent: a second one the same day answers `checked_in` with
+`idempotent: true` and the day's reward, so a check-in magpie isn't sure it made
+claims nothing twice, and magpie reports that answer as done rather than claimed.
 
 - Turn it on in magpie: Settings → Usage → Plugins → 豆包工作 → Daily check-in
   (off by default). magpie then checks each account in once a Beijing day;
   *Check in now* on the account's Usage card does it at once.
-- Answers: `claimed` with the streak (连续签到天数), `done` when Doubao already
-  shows today's check-in, `inactive` when Doubao offers this account no 签到
-  now, `failed` with Doubao's own words.
+- Answers: `claimed` with the streak (连续签到天数) and the reward Doubao says it
+  granted, `done` when today's check-in is already in (with the streak and what
+  it gave), `inactive` when Doubao offers this account no 签到 now, `failed`
+  with Doubao's own words.
 - Like usage, it runs only in a window already open: a check-in never starts
   the app. With the window closed it fails and magpie asks again later.
 - Doubao has no make-up check-in (补签): its app has no such request, so
   there is nothing to press for a missed day.
-- The reward is Doubao's to set (its incentive allowance, 激励额度); the
-  check-in's reply doesn't say how much, so magpie shows none.
+- Every `/alice/` call carries the common query the app puts on its own calls
+  (version_code, aid, device_id, runtime_version, fp…). The plugin sends the
+  app's own query, read off a call the page made. A window that has only just
+  opened has made none, and the page keeps no `runtime_version` anywhere, so
+  there is nothing truthful to build it from: the plugin waits a moment for
+  the app's first call, and a campaign detail read before that — Doubao
+  answers a request without `runtime_version` with a reduced task list, not
+  this account's — is reported as a failure to try again, never as `inactive`.
+  An `/alice/` call with no query at all is answered `系统错误`（the app's own
+  request-missing answer）.
+- The press on a day not yet checked in has not been seen against a real
+  account: the account this was written on was already checked in when it was
+  fixed, so only the idempotent answer was seen live, and the shapes a press
+  comes in are the tests'.
 
 ## What it costs
 

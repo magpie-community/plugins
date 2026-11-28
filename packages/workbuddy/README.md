@@ -177,6 +177,33 @@ model on Messages therefore lists `max` in its levels even where
 count_tokens as "no counter" (`unsupportedCount`) and answers with its own
 estimate.
 
+Since 0.2.44 a model asked on Messages that WorkBuddy serves on chat only
+(any but the Claude ones above on the China build, every model on WorkBuddy
+AI) is told so: its 400, 404 or 500 becomes a 400 `invalid_request_error`
+that says to send it as a chat completions request. Before, it came back as
+WorkBuddy's bare "not supported".
+
+**A chat's reasoning signature goes back with its turn (since 0.2.44).** A
+streamed chat chunk may carry `delta.extra_fields`, WorkBuddy's own field:
+`reasoning_detail` (`content_signature`, `text`) and `_meta`. WorkBuddy's
+client merges them across a turn's chunks (records one level deep, as its
+`mergeExtraFields` does) and sends them back next request on that assistant
+message, as `extra_fields` beside `reasoning`. An agent's SDK keeps neither
+(OpenCode's drops unknown delta fields), so the signature was lost (reported
+on X by @Anotiaww). The plugin now keeps each reply's merged `extra_fields`
+and its reasoning, and puts them back on the assistant message they came
+with: found by its tool call ids, or its text when it has none, within one
+conversation, account and model, never across them. A message that already
+has `extra_fields` goes as it is, and the agent's own reasoning text is kept
+when it sent one. A model that signs nothing (every free model, measured
+2026-11-27) sends `extra_fields: null`, so nothing is kept or added. The
+server's types, read off its errors that day: `extra_fields` is a
+`v2.ExtraFields`, `reasoning_detail` a `v2.ReasoningDetail` whose
+`content_signature` and `text` are strings, `_meta` a `v2.Meta`; other keys
+are ignored. A kept signature WorkBuddy refuses (11159) is dropped and the
+chat sent again without it. They are kept in memory (2048 turns, 64 MB), so
+a restart forgets them and the next turn goes without, as before.
+
 Each chat carries WorkBuddy's headers:
 - `Authorization`, `X-User-Id`, `X-Domain`, `X-Product: SaaS`, `X-IDE-Type: WorkBuddy`;
 - the desktop CLI's `User-Agent`, `WorkBuddy/<app> <appName>/<app> CLI/<cli>`:

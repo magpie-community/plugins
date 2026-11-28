@@ -44,11 +44,14 @@ const RETRY = 60 * 1000
 // Devin's list as `devin models list --format json` gave it (2026-11-05),
 // less Adaptive and Fusion, which route between models inside Devin's own
 // agent and aren't served by the API: family id, label, aliases, and each
-// variant's id, label, context and output. Models gone from that list —
+// variant's id, label, context and output. SWE-2.1 is from 2026-11-27's
+// GetCliModelConfigs (its model_info's window, as every window since:
+// limitsFrom). Models gone from that list —
 // Inkling, Claude Sonnet 4.5, SWE-1.7 Lightning and the rest at the end —
 // stay for the accounts still offered them. The account's own list, from
 // Devin (GetCliModelConfigs) or else the CLI, replaces it.
 const SNAPSHOT = [
+  ["swe-2-1","SWE-2.1",[],[["swe-2-1-medium","SWE-2.1 Medium",262144,65536],["swe-2-1","SWE-2.1",262144,65536],["swe-2-1-low","SWE-2.1 Low",262144,65536],["swe-2-1-high","SWE-2.1 High",262144,65536],["swe-2-1-xhigh","SWE-2.1 XHigh",262144,65536],["swe-2-1-max","SWE-2.1 Max",262144,65536]]],
   ["swe-2","SWE-2",["swe"],[["swe-2-high","SWE-2 High",262000,128000],["swe-2-medium","SWE-2 Medium",262000,128000],["swe-2-max","SWE-2 Max",262000,128000]]],
   ["swe-2-flash","SWE-2 Flash",[],[["swe-2-flash-medium","SWE-2 Flash Medium",262144,131072],["swe-2-flash-high","SWE-2 Flash High",262144,131072],["swe-2-flash-max","SWE-2 Flash Max",262144,131072]]],
   ["claude-fable-5-1","Claude Fable 5.1",["fable"],[["claude-fable-5-1-medium","Claude Fable 5.1 Medium",1000000,128000],["claude-fable-5-1-low","Claude Fable 5.1 Low",1000000,128000],["claude-fable-5-1-high","Claude Fable 5.1 High",1000000,128000],["claude-fable-5-1-xhigh","Claude Fable 5.1 XHigh",1000000,128000],["claude-fable-5-1-max","Claude Fable 5.1 Max",1000000,128000]]],
@@ -112,6 +115,22 @@ const SNAPSHOT = [
 const familiesOf = (rows) => rows.map(([uid, label, aliases, vs]) => ({ uid, label, aliases, models: vs.map(([id, name, context, output]) => ({ id, name, context, output })) }))
 const SNAPSHOT_FAMILIES = familiesOf(SNAPSHOT)
 
+// SNAPSHOT_LIMITS is each SNAPSHOT variant's [context, output].
+const SNAPSHOT_LIMITS = new Map(SNAPSHOT.flatMap(([, , , vs]) => vs.map(([id, , context, output]) => [id, [context, output]])))
+
+// limitsFrom fills a variant's context or output its list left out with
+// SNAPSHOT's for the same id. Since 2026-11 Devin leaves the config's own
+// max_context_tokens (18) out for all but two of its models, so `devin
+// models list` names no window for them (swe-2-1, swe-2-high, every
+// Claude); a 0 went to the client as the model's window, and magpie's
+// Ollama /api/show told 32768 for SWE-2.1, which Hermes turns away under
+// its 64K floor (@noting_ever on X). An id SNAPSHOT doesn't have stays
+// unknown (0): no window is made up.
+function limitsFrom(m) {
+  const [context, output] = SNAPSHOT_LIMITS.get(m.id) ?? [0, 0]
+  return { ...m, context: m.context || context, output: m.output || output }
+}
+
 // parseFamilies reads `devin models list --format json`.
 function parseFamilies(text) {
   let list
@@ -131,7 +150,7 @@ function parseFamilies(text) {
       aliases: f.aliases ?? [],
       models: (f.variants ?? [])
         .filter((v) => v?.model_uid)
-        .map((v) => ({ id: v.model_uid, name: v.label || v.model_uid, context: v.max_context_tokens || 0, output: v.max_output_tokens || 0 })),
+        .map((v) => limitsFrom({ id: v.model_uid, name: v.label || v.model_uid, context: v.max_context_tokens || 0, output: v.max_output_tokens || 0 })),
     })
   }
   return out
@@ -432,8 +451,11 @@ function parsePrices(b) {
 
 // parseConfigFamilies reads the same response as the families `devin
 // models list` makes of it, in its order: each config's label (1), context
-// (18), and model_info (23) with its output (13) and family uid (23); the
-// family's label is its family_metadata's (30) first field. A config that
+// (18), and model_info (23) with its window (4), output (13) and family uid
+// (23); the family's label is its family_metadata's (30) first field. The
+// context is the config's own, else model_info's window: Devin sent both,
+// always the same, until 2026-11, and now sends model_info's alone for
+// all but two of its 319 configs (2026-11-27: swe-2-1's is 262144). A config that
 // names no family is a family of its own under its label, as the CLI makes
 // MODEL_PRIVATE_11 "Claude Haiku 4.5". The aliases are the CLI's own, so
 // they are taken from SNAPSHOT's family of the same id.
@@ -444,6 +466,7 @@ function parseConfigFamilies(b) {
     let uid = ""
     let name = ""
     let context = 0
+    let window = 0
     let output = 0
     let fam = ""
     let famLabel = ""
@@ -454,6 +477,7 @@ function parseConfigFamilies(b) {
       else if (g.num === 23 && g.wire === 2) {
         for (const h of fields(g.data)) {
           if (h.num === 13 && h.wire === 0) output = h.n
+          else if (h.num === 4 && h.wire === 0) window = h.n
           else if (h.num === 23 && h.wire === 2) fam = dec.decode(h.data)
         }
       } else if (g.num === 30 && g.wire === 2) {
@@ -469,7 +493,7 @@ function parseConfigFamilies(b) {
       const known = SNAPSHOT.find(([u]) => u === id)
       fams.set(id, (e = { uid: id, label: famLabel || name || id, aliases: known ? known[2] : [], models: [] }))
     }
-    e.models.push({ id: uid, name: name || uid, context, output })
+    e.models.push(limitsFrom({ id: uid, name: name || uid, context: context || window, output }))
   }
   return [...fams.values()]
 }
