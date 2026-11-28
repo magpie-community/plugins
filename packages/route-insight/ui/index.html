@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 服务端在导航时把这一页的令牌写进来；app.js 用它给每个 /api 请求加头。 -->
+    <meta name="service-token" content="__SERVICE_TOKEN__" />
+    <title>路由洞察</title>
+    <link rel="icon" href="icon.svg" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="page" id="page">
+      <header class="top">
+        <div class="brand">
+          <h1 id="title" data-i18n="路由洞察">路由洞察</h1>
+          <span class="src" id="src" data-i18n="读取 usage.jsonl…">读取 usage.jsonl…</span>
+          <span class="meta build" id="build"></span>
+        </div>
+        <div class="top-actions">
+          <div class="seg" id="viewSeg"></div>
+          <div class="seg" id="seg"></div>
+          <button class="ghost" id="pause" type="button" data-i18n="暂停">暂停</button>
+          <button class="ghost" id="refresh" type="button" data-i18n="刷新">刷新</button>
+        </div>
+      </header>
+
+      <div class="filters" id="filters">
+        <div class="seg" id="statusSeg"></div>
+        <input class="search" id="q" type="search" data-i18n-ph="搜索 供应商 / 模型 / Agent / 停止原因 / 规则" placeholder="搜索 供应商 / 模型 / Agent / 停止原因 / 规则" />
+        <button class="ghost" id="clear" type="button" data-i18n="清空">清空</button>
+        <span class="spacer"></span>
+        <button class="ghost fold-btn" id="foldTop" type="button" data-i18n="收起指标">收起指标</button>
+      </div>
+
+      <section class="kpis" id="kpis"></section>
+      <section class="charts" id="charts"></section>
+
+      <div class="board">
+        <section class="card requests" id="cardRequests" data-foldable="1">
+          <div class="card-head">
+            <h2 data-i18n="请求明细">请求明细</h2>
+            <span class="meta" id="rowinfo"></span>
+            <span class="spacer"></span>
+            <span class="meta" id="updated"></span>
+            <button class="fold" type="button" data-fold="cardRequests" data-i18n-title="点击收起/展开这张卡片" title="点击收起/展开这张卡片"><span class="chev">▾</span><span class="flabel">收起</span></button>
+          </div>
+          <div class="table-wrap">
+            <table class="rows">
+              <thead>
+                <tr>
+                  <th data-i18n="时间">时间</th>
+                  <th data-i18n="供应商">供应商</th>
+                  <th class="col-model" data-i18n="模型">模型</th>
+                  <th class="col-effort" data-i18n-title="网关有记录就是官方 effort 档位（实线）；没记录就按本窗口思考 token 的分位派生 低/中/高/极高（虚线，后缀是思考 token 数）" title="网关有记录就是官方 effort 档位（实线）；没记录就按本窗口思考 token 的分位派生 低/中/高/极高（虚线，后缀是思考 token 数）" data-i18n="强度">强度</th>
+                  <th class="col-agent">Agent</th>
+                  <th data-i18n="状态">状态</th>
+                  <th class="num" data-i18n-title="下行输入 ↑ 上行输出 / 缓存读取（命中率）" title="下行输入 ↑ 上行输出 / 缓存读取（命中率）" data-i18n="⇅ tokens">⇅ tokens</th>
+                  <th class="num" data-i18n-title="首字耗时" title="首字耗时" data-i18n="⚡ 首字">⚡ 首字</th>
+                  <th class="num" data-i18n-title="输出速度（≥60 绿 / 25–60 黄 / &lt;25 红）" title="输出速度（≥60 绿 / 25–60 黄 / &lt;25 红）">⚡ tok/s</th>
+                  <th class="num" data-i18n-title="总耗时（≤8s 绿 / 8–22s 黄 / &gt;22s 红）" title="总耗时（≤8s 绿 / 8–22s 黄 / &gt;22s 红）" data-i18n="⏱ 总时">⏱ 总时</th>
+                  <th class="num" data-i18n-title="计费方式" title="计费方式" data-i18n="◎ 计费">◎ 计费</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="side">
+          <section class="card groups" id="cardGroups" data-foldable="1">
+            <div class="card-head">
+              <h2 data-i18n="分组统计">分组统计</h2>
+              <span class="spacer"></span>
+              <div class="tabs" id="tabs"></div>
+              <button class="fold" type="button" data-fold="cardGroups" data-i18n-title="点击收起/展开这张卡片" title="点击收起/展开这张卡片"><span class="chev">▾</span><span class="flabel">收起</span></button>
+            </div>
+            <div class="table-wrap">
+              <table class="dense">
+                <thead>
+                  <tr>
+                    <th data-i18n="名称">名称</th>
+                    <th class="num" data-i18n="次数">次数</th>
+                    <th class="num" data-i18n="失败">失败</th>
+                    <th class="num" data-i18n-title="首字 P50" title="首字 P50" data-i18n="首字">首字</th>
+                    <th class="num" data-i18n-title="缓存命中率" title="缓存命中率" data-i18n="命中">命中</th>
+                    <th class="num" data-i18n-title="输出速度" title="输出速度">tok/s</th>
+                    <th class="num" data-i18n-title="积分合计" title="积分合计" data-i18n="积分">积分</th>
+                  </tr>
+                </thead>
+                <tbody id="groups"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card billing-card" id="cardBilling" data-foldable="1">
+            <div class="card-head">
+              <h2 data-i18n="计费与额度">计费与额度</h2>
+              <span class="spacer"></span>
+              <span class="meta" id="billingat"></span>
+              <button class="fold" type="button" data-fold="cardBilling" data-i18n-title="点击收起/展开这张卡片" title="点击收起/展开这张卡片"><span class="chev">▾</span><span class="flabel">收起</span></button>
+            </div>
+            <div class="billing" id="billing"></div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="card providers" id="providersView" hidden>
+        <div class="card-head">
+          <h2 data-i18n="供应商状态">供应商状态</h2>
+          <span class="meta" id="provMeta">近 7 天</span>
+          <span class="spacer"></span>
+          <span class="meta" id="provAt"></span>
+          <button class="fold" type="button" data-fold="providersView" data-i18n-title="点击收起/展开这张卡片" title="点击收起/展开这张卡片"><span class="chev">▾</span><span class="flabel">收起</span></button>
+        </div>
+        <div class="prov-grid" id="provCards"><div class="empty" data-i18n="读取供应商…">读取供应商…</div></div>
+      </section>
+
+      <section class="card lab" id="labView" hidden>
+        <div class="card-head">
+          <h2 data-i18n="指纹与智商检测">指纹与智商检测</h2>
+          <span class="meta" id="labNote" data-i18n="选一个模型，勾上要跑的项就能一起测；每项各花各的请求">选一个模型，勾上要跑的项就能一起测；每项各花各的请求</span>
+          <span class="spacer"></span>
+          <span class="meta" id="labCost"></span>
+          <button class="ghost" id="labRun" type="button" data-i18n="开始检测">开始检测</button>
+        </div>
+        <div class="lab-body">
+          <div class="lab-form">
+            <div class="lab-field">
+              <span class="lab-label" data-i18n="模型">模型</span>
+              <div class="pick" id="labPick">
+                <button class="pick-btn" id="labPickBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="pick-ico-wrap" id="labPickIco"><span class="pick-ico ph">◇</span></span>
+                  <span class="pick-txt"><b id="labPickName">读取模型…</b><em id="labPickFam"></em></span>
+                  <span class="pick-car">▾</span>
+                </button>
+                <div class="pick-pop" id="labPickPop" hidden>
+                  <div class="pick-search">
+                    <input id="labPickQ" type="text" data-i18n-ph="搜索模型或供应商" placeholder="搜索模型或供应商" autocomplete="off" spellcheck="false" />
+                    <span class="pick-kbd" data-i18n="↑↓ 选 · ↵ 定 · Esc 关">↑↓ 选 · ↵ 定 · Esc 关</span>
+                  </div>
+                  <div class="pick-list" id="labPickList" role="listbox"></div>
+                </div>
+              </div>
+            </div>
+            <div class="lab-checks" id="labTests"></div>
+            <div class="lab-efforts">
+              <label class="lab-eff" data-i18n-title="数值指纹和协议审计都用这一档" title="数值指纹和协议审计都用这一档"><span data-i18n="文本强度">文本强度</span><select id="labEffFam"></select></label>
+              <label class="lab-eff"><span data-i18n="画图强度">画图强度</span><select id="labEffDraw"></select></label>
+              <span class="lab-eff-note" id="labEffNote"></span>
+              <span class="lab-eff-note" id="labNumNote"></span>
+            </div>
+            <div class="lab-prompt" id="labPromptBox">
+              <div class="lab-prompt-head">
+                <label class="lab-label" for="labPrompt" data-i18n="画图提示词">画图提示词</label>
+                <span class="lab-eff-note" id="labPromptHint"></span>
+                <span class="spacer"></span>
+                <button class="mini" type="button" id="labPromptReset" data-i18n="恢复默认">恢复默认</button>
+              </div>
+              <textarea id="labPrompt" rows="3" spellcheck="false" autocomplete="off"></textarea>
+            </div>
+          </div>
+          <div class="lab-results" id="labResults"><div class="empty" data-i18n="还没有检测结果">还没有检测结果</div></div>
+          <div class="lab-side">
+            <div class="lab-hist" id="labHistBox" data-foldable="1">
+            <div class="card-head lab-hist-head">
+              <h2 data-i18n="检测历史">检测历史</h2>
+              <span class="meta" id="labHistMeta"></span>
+              <span class="spacer"></span>
+              <button class="fold" type="button" data-fold="labHistBox" data-i18n-title="点击收起/展开检测历史" title="点击收起/展开检测历史"><span class="chev">▾</span><span class="flabel">收起</span></button>
+            </div>
+              <div class="lab-hist-rows" id="labHistory"><div class="empty" data-i18n="还没有记录">还没有记录</div></div>
+            </div>
+            <div class="lab-help">
+              <h4 data-i18n="怎么读这张卡">怎么读这张卡</h4>
+              <p><b>数值指纹</b>：让它连答 6 次「随机数 300 个（1–355）」（分两回合，每回合 3 次，概率按型号合并），用 <a href="https://github.com/Ikaleio/lm-detector" target="_blank" rel="noreferrer">lm-detector</a> 的参考库比统计纹理，直接落到<b>具体型号</b>给概率；还会给出与第二名的差距——差得越开越经得起看。<b>它挡不住</b>的东西：模型怎么自称、系统提示词怎么写，都改不了数数的手感。参考库约 3.6 MB，第一次要先下载（之后走本地缓存）。</p>
+              <p><b>协议审计</b>（检测维度参考 <a href="https://github.com/canarybyte/veridrop" target="_blank" rel="noreferrer">Veridrop</a>，按其公开方法用 JS 重写）：7 次探针查这条链路<b>是不是真的按 OpenAI 协议在干活</b>——同题三次看 <code>model</code> 与 <code>completion_tokens</code> 稳不稳、<code>usage</code> 里有没有混进 Anthropic 的记账字段、强制 <code>tool_choice</code> 看 <code>tool_calls</code> 的 id 前缀与枚举、<code>json_schema</code> 严格模式认不认、流式与非流式是不是同一个后端。<b>模型自己改不了这些</b>，只有真换了后端才会变。分数是这些细节的加权，不是概率。</p>
+              <p><b>HTML 动画</b>：要一份从 <code>&lt;!DOCTYPE&gt;</code> 开始的完整 HTML，里面用 CSS 关键帧画会动的鹈鹕骑车；脚本和外部链接会被洗掉，再放进 iframe 里真跑一遍。<b>提示词可以自己改</b>，留空就用默认那句；产物按一屏等比缩放显示，看不到滚动条。</p>
+              <p>候选排名只在候选之间归一化，是打分不是统计置信度；库外模型也可能得到相近候选。</p>
+              <p class="dim">检测会花真实积分，跑前先看右上角「预计 N 次请求」。历史只保留最近 6 次的完整结果，点一下能重新打开。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="i18n.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
