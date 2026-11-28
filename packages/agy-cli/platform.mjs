@@ -1,6 +1,16 @@
 import { spawn } from "node:child_process"
+import os from "node:os"
 import path from "node:path"
 import { accountEnv, currentHome } from "./account.mjs"
+
+// holdsHome says whether dir is the user's home folder or a folder above
+// it ("/", "C:\Users"); on Windows case aside, as the system ignores it.
+export function holdsHome(dir, home = os.homedir(), platform = process.platform) {
+  if (!dir || !home) return false
+  const paths = platform === "win32" ? path.win32 : path.posix
+  const rel = paths.relative(paths.resolve(dir), paths.resolve(home))
+  return rel === "" || (!rel.startsWith("..") && !paths.isAbsolute(rel))
+}
 
 export function agyCandidates(env, home, platform = process.platform) {
   const windows = platform === "win32"

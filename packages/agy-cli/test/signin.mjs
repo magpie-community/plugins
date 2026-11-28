@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { accountsDir, tokenFile } from "../account.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, heldByAnother, homeForOwn, isDead, keptOthers, noteDead, ownerUnknown, parseStored, readStoredSignIn, signedInEmail, storedEmail, storedSignIn, storedSignInNow, storedToken, whoOf } from "../signin.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -19,6 +23,80 @@ test("reads what agy's keyring value says, on macOS (base64) and Windows (raw JS
     assert.equal(cannotSignIn(s), "")
   }
   assert.notEqual(parseStored(renewable, NOW).fp, parseStored(stored({ refresh_token: "r2" }), NOW).fp)
+})
+
+test("an account of agy's own is held by another only when both emails are known and differ", () => {
+  const b = parseStored(b64(stored({ access_token: "a", refresh_token: "r" }, { id_token_email: "B@example.com" })), NOW)
+  assert.doesNotMatch(JSON.stringify(b), /example/)
+  assert.equal(heldByAnother(b, "a@example.com"), true)
+  assert.equal(heldByAnother(b, " b@EXAMPLE.com "), false)
+  assert.equal(heldByAnother(b, ""), false)
+  assert.equal(heldByAnother(parseStored(b64(stored({ access_token: "a" }, { id_token_email: "" })), NOW), "a@example.com"), false)
+  assert.equal(heldByAnother({ state: "unknown" }, "a@example.com"), false)
+  assert.equal(heldByAnother({ state: "missing" }, "a@example.com"), false)
+})
+
+// #1599: agy 1.5.18 stores id_token_email only when Google's answer had an
+// id token, so agy's sign-in may not say whose it is; that is unknown,
+// never "the account's own"
+test("agy's sign-in that names no account, or isn't read yet, has an unknown owner", () => {
+  const value = (extra) => b64(stored({ access_token: "a", refresh_token: "r" }, extra))
+  assert.equal(ownerUnknown(parseStored(value({ id_token_email: "" }), NOW)), true)
+  assert.equal(ownerUnknown(parseStored(value({ id_token_email: undefined }), NOW)), true)
+  assert.equal(ownerUnknown(parseStored(value({}), NOW)), false)
+  assert.equal(ownerUnknown(null), true)
+  assert.equal(ownerUnknown({ state: "unknown" }), true)
+  assert.equal(ownerUnknown({ state: "missing" }), false)
+  assert.equal(ownerUnknown({ state: "unreachable" }), false)
+})
+
+test("keptOthers finds a sign-in kept for another account, and only that", () => {
+  const env = { XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "agy-kept-")) }
+  try {
+    const keep = (id, email) => {
+      const file = tokenFile(path.join(accountsDir(env), id))
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, stored({ access_token: "a", refresh_token: "r" }, { id_token_email: email }))
+    }
+    assert.equal(keptOthers("a@example.com", env), false)
+    keep("own" + whoOf("a@example.com").slice(0, 24), "a@example.com")
+    // a home account's sign-in is not a kept one
+    keep("915399657c1c4d17", "banned@example.com")
+    assert.equal(keptOthers("A@example.com", env), false)
+    keep("own" + whoOf("b@example.com").slice(0, 24), "b@example.com")
+    assert.equal(keptOthers("a@example.com", env), true)
+    assert.equal(keptOthers("", env), true)
+  } finally {
+    fs.rmSync(env.XDG_STATE_HOME, { recursive: true, force: true })
+  }
+})
+
+test("homeForOwn copies agy's sign-in into a home of its own, and only the account's", async () => {
+  const env = { XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "agy-own-")) }
+  const mac = (raw) => async (file, args) => {
+    assert.equal(file, "/usr/bin/security")
+    assert.equal(args[0], "find-generic-password", "agy's keyring is only read")
+    return { code: 0, stdout: b64(raw) + "\n" }
+  }
+  try {
+    const named = stored({ access_token: "a", refresh_token: "r" }, { id_token_email: "b@example.com" })
+    const made = await homeForOwn("B@example.com", { platform: "darwin", exec: mac(named), env })
+    assert.match(made.id, /^[0-9a-f]{16}$/)
+    assert.equal(made.home, path.join(accountsDir(env), made.id))
+    assert.deepEqual(JSON.parse(fs.readFileSync(tokenFile(made.home), "utf8")), JSON.parse(named))
+    if (process.platform !== "win32") assert.equal(fs.statSync(tokenFile(made.home)).mode & 0o777, 0o600)
+    // an unnamed sign-in is the one just signed in
+    const unnamed = stored({ access_token: "a", refresh_token: "r" }, { id_token_email: "" })
+    assert.ok(await homeForOwn("b@example.com", { platform: "win32", exec: async () => ({ code: 0, stdout: "OK " + Buffer.from(unnamed).toString("base64") }), env }))
+    // another account's, one nothing renews, or none: no home
+    const before = fs.readdirSync(accountsDir(env)).length
+    assert.equal(await homeForOwn("a@example.com", { platform: "darwin", exec: mac(named), env }), null)
+    assert.equal(await homeForOwn("b@example.com", { platform: "darwin", exec: mac(stored({ access_token: "a", expiry: "2026-11-12T00:00:00Z" }, { id_token_email: "b@example.com" })), env }), null)
+    assert.equal(await homeForOwn("b@example.com", { platform: "darwin", exec: async () => ({ code: 44, stdout: "" }), env }), null)
+    assert.equal(fs.readdirSync(accountsDir(env)).length, before)
+  } finally {
+    fs.rmSync(env.XDG_STATE_HOME, { recursive: true, force: true })
+  }
 })
 
 test("an ended sign-in with nothing to renew it, or no token at all, can't sign agy in", () => {
@@ -40,6 +118,35 @@ test("a value of another shape, or an API key, concludes nothing", () => {
     const s = parseStored(raw, NOW)
     assert.equal(s.state, "unknown", raw)
     assert.equal(cannotSignIn(s), "")
+  }
+})
+
+test("macOS: a login keychain this process doesn't search (a LaunchDaemon) is out of reach, not a missing sign-in", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-kc-"))
+  try {
+    const dir = path.join(home, "Library", "Keychains")
+    const env = { HOME: home }
+    const mac = (find, list, listCode = 0) => async (_file, args) => args[0] === "list-keychains" ? { code: listCode, stdout: list } : { code: find, stdout: "" }
+    const system = '    "/Library/Keychains/System.keychain"\n'
+    const login = `    "${dir}/login.keychain-db"\n` + system
+    // no login keychain at all: nothing is out of reach
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, system), env })).state, "missing")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "login.keychain-db"), "")
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, login), env })).state, "missing")
+    for (const code of [44, 36]) {
+      const s = await readStoredSignIn({ platform: "darwin", exec: mac(code, system), env })
+      assert.equal(s.state, "unreachable", String(code))
+      assert.match(cannotSignIn(s), /LaunchDaemon[\s\S]*magpie daemon install[\s\S]*Add another Google account/)
+    }
+    // a search list it can't read concludes nothing new
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(44, "", 1), env })).state, "missing")
+    assert.equal((await readStoredSignIn({ platform: "darwin", exec: mac(51, ""), env })).state, "unknown")
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
   }
 })
 
@@ -139,4 +246,26 @@ test("storedEmail is the Google account agy's keyring is signed in to, on macOS 
   assert.equal(await storedEmail({ platform: "darwin", exec: async () => { throw new Error("no security") }, env: {} }), "")
   assert.equal(await storedEmail({ platform: "win32", exec: mac(0, "OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), "someone@example.com")
   assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value)), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), "")
+})
+
+test("Linux: agy's own sign-in is read from its token file, and no file concludes nothing (#1502)", async () => {
+  const fs = await import("node:fs")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-linux-"))
+  try {
+    const exec = async () => { throw new Error("no keyring tool is run on Linux") }
+    assert.equal((await readStoredSignIn({ platform: "linux", exec, env: { HOME: home } })).state, "unknown")
+    const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-12T00:00:00Z" })
+    const file = path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, value)
+    const s = await readStoredSignIn({ platform: "linux", exec, now: NOW, env: { HOME: home } })
+    assert.equal(s.state, "present")
+    assert.equal(s.canRenew, true)
+    assert.equal((await storedToken({ platform: "linux", exec, env: { HOME: home } }))?.token?.refresh_token, "r")
+    assert.equal(await storedEmail({ platform: "linux", exec, env: { HOME: home } }), "someone@example.com")
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })

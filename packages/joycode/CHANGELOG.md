@@ -1,5 +1,9 @@
 # 更新记录
 
+## 0.2.8
+
+- 从 JoyCode 账号目录同步每个模型的推理档位。支持思考开关的 Chat 模型使用「关闭」档关闭思考，选择模型支持的强度时开启思考。
+
 ## 0.2.7
 
 - Responses SSE 不再把空完成当成功：空 `response.completed` 转成 `empty_response`，缺少终止事件的 EOF 转成 `incomplete_response`，流内 JoyCode `FAILED_RESPONSE` 错误保留原始字段并转成标准错误事件。按事件增量处理，不缓存整段回复。

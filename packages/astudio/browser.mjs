@@ -6,11 +6,11 @@
 // 全新 profile（随机子目录），绝不复用旧登录态——换账号登录、会话被吊销后重登
 // 都不会捡到上一次的 Cookie；登录收尾后目录即删（会话已进账号 metadata.session，
 // 浏览器目录只是第二份凭据副本）。
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { createHash, randomBytes } from "node:crypto"
 import { homedir, tmpdir } from "node:os"
-import { join, dirname, resolve } from "node:path"
+import { join, dirname, resolve, win32 } from "node:path"
 import { processAlive } from "./proc.mjs"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -235,19 +235,69 @@ function launch(executable, args, { timeout = 30000 } = {}) {
 
 // ---------------------------------------------------------------- 浏览器定位
 
-export async function browserExecutable() {
-  const override = process.env.ASTUDIO_CHROME_PATH
-  if (override) return resolve(override.startsWith("~") ? join(homedir(), override.slice(2)) : override)
-  const candidates = process.platform === "win32"
+const windowsDefaultBrowserProbe = String.raw`
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$choice = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice' -ErrorAction SilentlyContinue
+if ($choice.ProgId) {
+  $key = 'Registry::HKEY_CLASSES_ROOT\' + $choice.ProgId + '\shell\open\command'
+  $command = Get-ItemProperty $key -ErrorAction SilentlyContinue
+  if ($command -and $command.'(default)') { $command.'(default)' }
+}
+`
+
+const runCommand = (command, args) => execFileSync(command, args, {
+  encoding: "utf8",
+  timeout: 15000,
+  windowsHide: true,
+  stdio: ["ignore", "pipe", "ignore"],
+})
+
+export function executableFromWindowsCommand(command) {
+  const text = String(command ?? "").trim()
+  const quoted = /^"([^"]+\.exe)"/i.exec(text)
+  if (quoted) return quoted[1]
+  const bare = /^(.+?\.exe)(?:\s|$)/i.exec(text)
+  return bare?.[1]?.trim() || null
+}
+
+function windowsDefaultBrowserCommand(run = runCommand) {
+  try {
+    const output = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsDefaultBrowserProbe])
+    return String(output ?? "").trim() || null
+  } catch {
+    return null
+  }
+}
+
+export async function browserExecutable({
+  platform = process.platform,
+  env = process.env,
+  accessImpl = access,
+  run = runCommand,
+} = {}) {
+  const pathJoin = platform === "win32" ? win32.join : join
+  const pathResolve = platform === "win32" ? win32.resolve : resolve
+  const expand = (value) => pathResolve(value.startsWith("~")
+    ? pathJoin(homedir(), value.slice(2))
+    : value)
+  const override = env.ASTUDIO_CHROME_PATH
+  if (override) return expand(override)
+  const defaultCommand = platform === "win32" ? windowsDefaultBrowserCommand(run) : null
+  const defaultBrowser = executableFromWindowsCommand(defaultCommand)
+  const chromiumDefault = defaultBrowser && /^(chrome|msedge|chromium)\.exe$/i.test(win32.basename(defaultBrowser))
+    ? defaultBrowser
+    : null
+  const candidates = platform === "win32"
     ? [
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] && join(process.env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
+      chromiumDefault,
+      env.PROGRAMFILES && pathJoin(env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+      env["PROGRAMFILES(X86)"] && pathJoin(env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+      env.LOCALAPPDATA && pathJoin(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+      env["PROGRAMFILES(X86)"] && pathJoin(env["PROGRAMFILES(X86)"], "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.PROGRAMFILES && pathJoin(env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
+      env.LOCALAPPDATA && pathJoin(env.LOCALAPPDATA, "Chromium", "Application", "chrome.exe"),
     ].filter(Boolean)
-    : process.platform === "darwin"
+    : platform === "darwin"
       ? [
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         join(homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
@@ -255,9 +305,25 @@ export async function browserExecutable() {
       ]
       : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"]
   for (const path of candidates) {
-    try { await access(path); return path } catch {}
+    try { await accessImpl(path); return path } catch {}
   }
   throw new Error("找不到 Chrome/Edge；请安装其中一个，或用 ASTUDIO_CHROME_PATH 指到可执行文件")
+}
+
+async function hasChromePlusPlusMarker(executable, { platform = process.platform, accessImpl = access } = {}) {
+  const dir = platform === "win32" ? win32.dirname(executable) : dirname(executable)
+  const pathJoin = platform === "win32" ? win32.join : join
+  for (const marker of ["chrome++.ini", "version.dll"]) {
+    try {
+      await accessImpl(pathJoin(dir, marker))
+      return true
+    } catch {}
+  }
+  return false
+}
+
+export async function browserLaunchArgs(executable, args, options = {}) {
+  return await hasChromePlusPlusMarker(executable, options) ? ["--portable", ...args] : args
 }
 
 // ---------------------------------------------------------------- 打开/收割
@@ -283,7 +349,8 @@ export async function openBrowser({ headless = false, startUrl = "about:blank", 
       "--crash-dumps-dir=" + tmpdir(),
       startUrl,
     ]
-    const started = await launch(await browserExecutable(), args)
+    const executable = await browserExecutable()
+    const started = await launch(executable, await browserLaunchArgs(executable, args))
     return { ...started, profilePath, release }
   } catch (error) {
     await release()

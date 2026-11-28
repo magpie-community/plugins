@@ -499,17 +499,35 @@ test("a merged plan's included usage is one Weekly window for every model, with 
 
 test("a merged plan whose period is a month says Monthly, and a numeric enum is read too", async () => {
   const { u } = await run(fresh(), (url) =>
-    url === PLAN ? Response.json({ ...mergedPlan, planInfo: { ...mergedPlan.planInfo, includedUsagePeriod: 1 } }) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json(mergedPeriod),
+    url === PLAN ? Response.json({ ...mergedPlan, planInfo: { ...mergedPlan.planInfo, includedUsagePeriod: 1 } }) : url === HARD ? Response.json({ noUsageBasedAllowed: true }) : Response.json({ ...mergedPeriod, billingCycleStart: String(1793683212396 - 30 * 86400_000) }),
   )
-  expect(u.windows).toEqual([{ name: "Monthly", used: 21.9, resetsAt: weekEnd }])
+  expect(u.windows).toEqual([{ name: "Monthly", used: 21.9, resetsAt: weekEnd, span: 30 * 86400 }])
 })
 
 test("a merged plan that may spend on-demand keeps its Weekly aside and shows the On-demand", async () => {
   const { u } = await run(fresh(), (url) => (url === PLAN ? Response.json(mergedPlan) : url === HARD ? Response.json({ hardLimit: 50 }) : Response.json({ ...mergedPeriod, spendLimitUsage: { limitType: "user", individualUsed: 1000 } })))
   expect(u.windows).toEqual([
     { name: "Weekly", used: 21.9, resetsAt: weekEnd, span: 604800, aside: true },
-    { name: "On-demand", used: 20, display: "$10.00 / $50.00", resetsAt: weekEnd },
+    { name: "On-demand", used: 20, display: "$10.00 / $50.00", resetsAt: weekEnd, span: 604800 },
   ])
+})
+
+// plugins#1499: magpie's Usage table puts a window in the column for its
+// span. Every window that resets at the billing cycle's end runs from its
+// start, which GetCurrentPeriodUsage (epoch ms) and usage-summary (ISO)
+// send beside the end.
+test("billing-cycle windows say the cycle's length as span, when its start is sent", async () => {
+  const end = 1792833042000, start = end - 31 * 86400_000
+  const period = { billingCycleStart: String(start), billingCycleEnd: String(end), planUsage: { autoPercentUsed: 10, apiPercentUsed: 20, totalPercentUsed: 15 } }
+  const { u } = await run(fresh(), (url) => (url === HARD ? Response.json({ hardLimit: 50 }) : Response.json({ ...period, spendLimitUsage: { limitType: "user", individualUsed: 1000 } })))
+  expect(u.windows.map((w) => [w.name, w.span])).toEqual([["Cursor Models", 31 * 86400], ["Other Models", 31 * 86400], ["On-demand", 31 * 86400], ["Total", 31 * 86400]])
+  const { billingCycleStart, ...noStart } = period
+  for (const p of [noStart, { ...period, billingCycleStart: String(end) }, { ...period, billingCycleStart: "soon" }]) {
+    const { u: v } = await run(fresh(), () => Response.json(p))
+    expect(v.windows.map((w) => w.span)).toEqual([undefined, undefined, undefined])
+  }
+  const { u: e } = await run(fresh(), (url) => (url === SUMMARY ? Response.json({ ...enterprise(), billingCycleStart: "2026-10-01T00:00:00.000Z" }) : Response.json({ spendLimitUsage: {} })))
+  expect(e.windows.map((w) => [w.name, w.span])).toEqual([["Enterprise", 31 * 86400], ["On-demand", 31 * 86400]])
 })
 
 test("a merged plan's Grok Bot goes after its Weekly", async () => {

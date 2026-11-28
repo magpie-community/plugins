@@ -17,6 +17,7 @@ beforeEach(() => (_internal.QUEUE.budget = 0))
 afterEach(() => {
   globalThis.fetch = real
   _internal.QUEUE.budget = budget
+  _internal.TASKS.clear()
 })
 
 const API_CHAT = "https://api3.qoder.sh/v1/chat/completions"
@@ -29,7 +30,13 @@ const sse = (v) => new Response(`data:${JSON.stringify(v)}\n\n`, { headers: { "C
 // the plugin wrote to the account
 async function chat(reply) {
   const auth = { type: "oauth", access: "jt", refresh: "rt", expires: Date.now() + 3_600_000, accountId: "one@x", uid: "u1", machineId: "m1" }
-  globalThis.fetch = async (url) => (new URL(String(url)).pathname.endsWith("/model/list") ? json(LISTING) : reply())
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith("/model/list")) return json(LISTING)
+    // a queued request given up tells the queue's finish (queue.test.mjs)
+    if (path.endsWith("/ask/finish")) return json({ success: true })
+    return reply()
+  }
   const sets = []
   const hooks = await QoderAuthPlugin({ client: { auth: { set: async ({ body }) => sets.push(body) } } })
   const l = await hooks.auth.loader(async () => auth)

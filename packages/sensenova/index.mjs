@@ -390,14 +390,15 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
            * opened:true with url:"" so magpie does not open a second page.
            */
           async authorize() {
-            if (!browserAvailable()) {
+            // through _internal so a test can stand in for the browser
+            if (!_internal.browserAvailable()) {
               throw new Error(
                 "No Chromium browser was found (or no display is available). Use the account password method or an API key instead.",
               );
             }
             const pkce = createPkce();
             const authorizeUrl = buildAuthorizeUrl(pkce);
-            const session = await startLoginCapture({
+            const session = await _internal.startLoginCapture({
               authorizeUrl,
               expectedState: pkce.state,
               timeoutMs: loginTimeoutMs,
@@ -413,8 +414,8 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
               method: "auto",
               async callback() {
                 try {
-                  const { code } = await session.result;
-                  const tokens = await exchangeCode({ code, verifier: pkce.verifier });
+                  const { code, state } = await session.result;
+                  const tokens = await exchangeCode({ code, verifier: pkce.verifier, state });
                   if (!tokens?.access_token) throw new Error("the token response has no access_token");
                   if (!tokens?.refresh_token) throw new Error("the token response has no refresh_token (offline scope missing)");
                   const { username, uid } = identityFromTokens(tokens);

@@ -668,15 +668,17 @@ async function handleRequest(req, res, url) {
     const keyInject = PAGE_KEY ? `<script>window.__KEY__=${JSON.stringify(PAGE_KEY).replace(/</g, '\\u003c')};</script>` : '';
     html = html.replace('<head>', () => '<head>' + keyInject + trap + inject);
     const boundPort = server.address()?.port || 0;
+    const loop = `http://127.0.0.1:${boundPort} http://localhost:${boundPort}`;
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
       // 页面脚本全是同源文件 + 少量内联（数据注入）；数据获取全部同源 /api/*。
-      // connect-src 除 'self' 外显式列出本机回环地址——WebKit 的沙盒 frame（opaque
-      // origin）会把 'self' 解析成 opaque，同源 fetch 被拦，显式地址实测可行。
+      // 除 'self' 外显式列出本机回环地址——WebKit 的沙盒 frame（opaque origin）会把
+      // 'self' 解析成 opaque：同源 fetch 被拦，echarts.min.js 也被 script-src 拦掉、整页
+      // 空白（#1500）。脚本、样式、图片、字体与 connect 都列，显式地址实测可行。
       // frame-ancestors：看板本来就是被 magpie 的框架嵌入的（桌面/webview/web 的宿主
       // origin 不固定，收不了紧）——显式写 * 表明「被宿主嵌入是设计意图」，而不是遗漏。
-      'Content-Security-Policy': `default-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:${boundPort} http://localhost:${boundPort}; object-src 'none'; base-uri 'none'; frame-ancestors *`,
+      'Content-Security-Policy': `default-src 'self' data:; script-src 'self' 'unsafe-inline' ${loop}; style-src 'self' 'unsafe-inline' ${loop}; img-src 'self' data: ${loop}; font-src 'self' data: ${loop}; connect-src 'self' ${loop}; object-src 'none'; base-uri 'none'; frame-ancestors *`,
     });
     return res.end(html);
   }
@@ -825,6 +827,7 @@ function main(resolve, reject) {
       const confirm = await new Promise((r2) => setTimeout(() => probe(`${URL_HOST}:${target}`).then(r2, () => r2(null)), 1500));
       if (confirm && confirm.build === BUILD_ID) {
         console.log(`[magpie-usage] port ${target} in use by the same build (${BUILD_ID}) — reusing it`);
+        takeOver(target);
         resolve(target);
         return;
       }
@@ -835,6 +838,20 @@ function main(resolve, reject) {
       : `port ${target} is in use and not by this board — free it or set PORT`));
   };
   attempt();
+
+  // 复用不是终局（#1500）：magpie 滚动自更新时，持有端口的正是要退出的上一个宿主——
+  // 它一走端口就空了。每秒试着绑一次：它还在，绑不上（EADDRINUSE）；它一松手就接过来。
+  function takeOver(p) {
+    const tick = async () => {
+      if (server.listening) return;
+      if (await bindOnce(p)) {
+        if (server.listening) console.log(`[magpie-usage] the instance holding port ${p} let go — took it over`);
+        return;
+      }
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  }
 
   function bindOnce(p) {
     return new Promise((res) => {

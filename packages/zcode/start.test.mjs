@@ -252,8 +252,8 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "anthropic-version": "2023-06-01",
     "content-type": "application/json",
     "http-referer": "https://zcode.z.ai",
-    "user-agent": "ZCode/3.17.2 ai-sdk/anthropic/3.0.81",
-    "x-zcode-app-version": "3.17.2",
+    "user-agent": "ZCode/4.0.0 ai-sdk/anthropic/3.0.81",
+    "x-zcode-app-version": "4.0.0",
     "x-title": "Z Code@electron",
     "x-release-channel": "production",
     "x-client-language": o.locale,
@@ -588,6 +588,32 @@ test("the Start Plan's 3012 says ZCode blocked the account, and a block page the
 // three minutes, process-wide, and answers with a 429 + Retry-After so
 // magpie still rests the account and asks the group's next provider. The
 // coding plan, on another host, is never held.
+// plugins#1635, #1639: zcode.z.ai answers a client version it no longer
+// serves with this 200, byte for byte as #1639 has it, on a stream too. The
+// request goes as 4.0.0, and the empty answer reaches magpie as a 400 that
+// says why, never a 200 that did not stream (magpie's 502, asked again).
+test("a Start Plan request asks as ZCode 4.0.0, and the empty envelope is a 400 that names the version (plugins#1639)", async () => {
+  const EMPTY = '{"code":0,"msg":"","logid":"20261127172322c360cb19f4fd74daf8fd"}'
+  for (const stream of [true, false]) {
+    answer = () => new Response(EMPTY, { status: 200, headers: { "content-type": "application/json" } })
+    routeToFake()
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const opts = await hooks.auth.loader(async () => start("zai"), { id: "zcode" })
+    const res = await opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: JSON.stringify({ ...agentBody, stream }) })
+    const m = got.filter((r) => r.path.endsWith("/messages"))
+    expect(m.length).toBe(1)
+    expect(m[0].path).toBe("/zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages")
+    expect(m[0].headers["x-zcode-app-version"]).toBe("4.0.0")
+    expect(m[0].headers["user-agent"]).toBe("ZCode/4.0.0 ai-sdk/anthropic/3.0.81")
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.type).toBe("invalid_request_error")
+    expect(body.error.message).toContain("(4.0.0)")
+    got.length = 0
+    _internal.startGate.lanes.clear()
+  }
+})
+
 test("a run of busy caps holds the Start Plan off before the IP is blocked, and nothing else", async () => {
   const waits = _internal.BUSY_WAITS.splice(0)
   _internal.BUSY_WAITS.push(1)
@@ -697,9 +723,13 @@ test("the busy hold reads its clock: a spread run holds nothing, caps during the
 // accounts, one each, so each cap is a lone request's, the kind that counts
 // (two or more of one account's narrow its gate instead, plugins#438) — and
 // answer them all 3008 after they
-// have all reached the fake. No first cap counts; the 1s re-asks are
-// refused again and the fifth of those arms the hold. With the guard gone,
-// the seven after it count toward a second hold.
+// have all reached the fake. No first cap counts; the re-asks are parked on
+// a second gate until all twelve have reached the fake too, then refused
+// again, and the fifth of those arms the hold. With the guard gone, the
+// seven after it count toward a second hold. (plugins#1036: with the re-asks
+// answered as they came, a request whose first answer came late found the
+// hold already armed by the others' re-asks and never asked again, 20 asks
+// and not 24.)
 test("caps that land after the hold armed change neither hits nor until (requests in flight)", async () => {
   const waits = _internal.BUSY_WAITS.splice(0)
   _internal.BUSY_WAITS.push(1)
@@ -717,11 +747,15 @@ test("caps that land after the hold armed change neither hits nor until (request
       return { type: "oauth", access: own, refresh: JSON.stringify(s), expires: 0 }
     })
     const loaders = await Promise.all(accounts.map((a) => hooks.auth.loader(async () => a, { id: "zcode" })))
-    // the fake parks every /messages request on one gate until the test opens it
+    // the fake parks the twelve first asks on one gate and the twelve
+    // re-asks on another, each until the test opens it
     let open = () => {}
+    let openAgain = () => {}
     const gate = new Promise((r) => (open = r))
+    const again = new Promise((r) => (openAgain = r))
+    let asked = 0
     answer = async () => {
-      await gate
+      await (++asked <= 12 ? gate : again)
       return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
     }
     const all = loaders.flatMap((opts) =>
@@ -732,6 +766,11 @@ test("caps that land after the hold armed change neither hits nor until (request
     expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
     clock += 1_000
     open()
+    // every re-ask is in flight before any is refused: none can find the
+    // hold armed by the others and stay home
+    while (got.filter((r) => r.path.endsWith("/messages")).length < 24) await Bun.sleep(5)
+    expect(_internal.busyHold.until).toBe(0)
+    openAgain()
     const rs = await Promise.all(all)
     // every request was refused twice; the fifth second refusal armed the
     // hold, and the ones after it changed neither hits nor until. Each

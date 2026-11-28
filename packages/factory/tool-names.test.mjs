@@ -329,6 +329,44 @@ test("refused again with every tool renamed, it is the request's content, and th
   expect(_internal.renamedInFull.size).toBe(0)
 })
 
+// plugins#1446: these five built-in Cowork declarations were each refused
+// by name on an Anthropic Messages request.
+const COWORK_MCP_NAMES = [
+  "mcp__cowork__present_files",
+  "mcp__cowork__screenshot_artifact",
+  "mcp__cowork__screenshot_file_preview",
+  "mcp__workspace__bash",
+  "mcp__workspace__web_fetch",
+]
+
+test("Cowork's five built-in MCP tool names go through full retry, and their call is restored", async () => {
+  const refused = new Set(COWORK_MCP_NAMES)
+  const { l, seen } = await loaded((sent) => {
+    if (sent.tools.some((t) => refused.has(t.name))) {
+      return Response.json({ code: "content_policy_rejected", detail: "This request was blocked by Factory's usage policy check." }, { status: 403 })
+    }
+    const called = JSON.parse(seen.at(-1).body).tools[0].name
+    return Response.json({
+      id: "m1", type: "message", role: "assistant", stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "t1", name: called, input: {} }],
+    })
+  })
+  const body = JSON.stringify({
+    model: "claude-opus-5-5", max_tokens: 128,
+    tools: COWORK_MCP_NAMES.map((name) => ({ name, input_schema: { type: "object", properties: {} } })),
+    messages: [{ role: "user", content: "请只回复 OK" }],
+  })
+  const res = await l.fetch(A, { method: "POST", body })
+  expect(res.status).toBe(200)
+  expect(seen.length).toBe(2)
+  const first = JSON.parse(seen[0].body).tools.map((t) => t.name)
+  const second = JSON.parse(seen[1].body).tools.map((t) => t.name)
+  expect(first).toEqual(COWORK_MCP_NAMES)
+  expect(second).not.toEqual(first)
+  expect(second.every((name, i) => name.startsWith(COWORK_MCP_NAMES[i] + "_"))).toBe(true)
+  expect((await res.json()).content[0].name).toBe(COWORK_MCP_NAMES[0])
+})
+
 test("a refused request that declares no tools is not sent again", async () => {
   const { l, seen } = await loaded(() => Response.json({ code: "content_policy_rejected", detail: "blocked" }, { status: 403 }))
   const res = await l.fetch(C, { method: "POST", body: JSON.stringify({ model: "glm-5.3", messages: [{ role: "user", content: "hi" }] }) })

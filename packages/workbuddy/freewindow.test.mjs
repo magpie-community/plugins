@@ -78,8 +78,10 @@ test("a window counts in + cache_read + out", async () => {
   expect(w.resetsAt).toBe(iso("2026-10-21T19:53:48+08:00"))
   expect(w.span).toBe(86400)
   expect(w.limit).toBe(1e8)
-  expect(w.unit).toBe("tokens")
-  expect(w.display).toBe("7.6M / 100M")
+  // no unit: the name says tokens (as the China card's), and the cap is
+  // an estimate (plugins#1567)
+  expect(w.unit).toBe("")
+  expect(w.display).toBe("7.6M / ~100M")
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
 })
 
@@ -660,7 +662,8 @@ test("an account refused under the cap reads full, not 93%", async () => {
   expect(w.used).toBe(100) // the rows sum to 92,792,962
   expect(w.amount).toBeUndefined()
   expect(w.display).toBe("")
-  expect(w.name).toBe("Free model tokens")
+  // the card WorkBuddy's refusal makes: nothing in it is estimated
+  expect(w.name).toBe("deepseek-v4.1-flash tokens")
   expect(w.resetsAt).toBe(iso("2026-10-19T19:52:24+08:00"))
   expect(w.refused).toBe(true)
 })

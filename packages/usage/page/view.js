@@ -62,12 +62,30 @@
     ];
   }
 
+  // models is one entry a model name: usage:summary has an entry for each
+  // provider a model went through (and each place a provider went to), each
+  // named by the model alone, so a model served by two providers came twice
+  // under one name (#1580). They are summed into one.
+  function models(s) {
+    const by = new Map();
+    for (const m of Array.isArray(s.models) ? s.models : []) {
+      const model = String(m?.model || "?");
+      const one = by.get(model) || { model, calls: 0, input: 0, output: 0, cost: 0 };
+      one.calls += Number(m?.calls) || 0;
+      one.input += Number(m?.input) || 0;
+      one.output += Number(m?.output) || 0;
+      one.cost += Number(m?.cost) || 0;
+      by.set(model, one);
+    }
+    return [...by.values()];
+  }
+
   // rows are the models, by sort: [{ name, value, detail, share }], share
   // being the bar's width, 0–1, of the first row's
   function rows(s, sort, lang) {
     if (!SORTS.includes(sort)) sort = "tokens";
-    const of = (m) => (sort === "calls" ? Number(m.calls) || 0 : sort === "cost" ? Number(m.cost) || 0 : (Number(m.input) || 0) + (Number(m.output) || 0));
-    const list = (Array.isArray(s.models) ? s.models : []).slice().sort((a, b) => of(b) - of(a) || String(a.model).localeCompare(String(b.model)));
+    const of = (m) => (sort === "calls" ? m.calls : sort === "cost" ? m.cost : m.input + m.output);
+    const list = models(s).sort((a, b) => of(b) - of(a) || a.model.localeCompare(b.model));
     const top = list.length ? of(list[0]) : 0;
     return list.map((m) => ({
       name: String(m.model || "?"),

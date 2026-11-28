@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
-import { currentHome, tokenFile } from "./account.mjs"
+import os from "node:os"
+import path from "node:path"
+import { accountsDir, currentHome, dropHome, homeOf, newHome, tokenFile } from "./account.mjs"
 
 // What agy's own sign-in looks like on this computer, read without running
 // agy. agy keeps its Google token in the system keyring through go-keyring,
@@ -94,7 +96,9 @@ function decodeStored(raw) {
 
 // parseStored is what a stored value says, "unknown" when it isn't the
 // shape agy writes. It says nothing of who: the account's email isn't kept
-// with the cached read (storedEmail reads it when a sign-in names it).
+// with the cached read (storedEmail reads it when a sign-in names it). who
+// is a hash of it, "" when it names none: heldByAnother tells an account of
+// agy's own from the one agy holds now by it.
 export function parseStored(raw, now = Date.now()) {
   const fp = createHash("sha256").update(String(raw ?? "").trim()).digest("hex").slice(0, 32)
   const stored = decodeStored(raw)
@@ -109,7 +113,172 @@ export function parseStored(raw, now = Date.now()) {
   const at = Date.parse(token.expiry ?? "")
   // Go's zero time (0001-01-01) is "doesn't end"
   const expiresAt = Number.isFinite(at) && at > 0 ? at : 0
-  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt }
+  return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt, who: whoOf(emailOf(raw)) }
+}
+
+// whoOf is an email's hash: what a cached read keeps of who it is for.
+export function whoOf(email) {
+  const e = typeof email === "string" ? email.trim().toLowerCase() : ""
+  return e ? createHash("sha256").update(e).digest("hex").slice(0, 32) : ""
+}
+
+// heldByAnother says agy's own sign-in (stored, a storedSignIn read) is
+// for another Google account than saved, the email an account of agy's own
+// was saved as; false when it is the same, or when either can't be told.
+// agy holds one Google account in its keyring: an account saved as agy's
+// own before agy was signed in to another (Switch to another Google account
+// before 0.1.67, a sign-in in a terminal) is no longer there, and its usage
+// and requests would be the other one's (ownsh1p on X: two accounts, both
+// showing the first one's balance).
+export function heldByAnother(stored, saved) {
+  const now = stored?.state === "present" && typeof stored.who === "string" ? stored.who : ""
+  const was = whoOf(saved)
+  return Boolean(now && was && now !== was)
+}
+
+// ownerUnknown says agy's own sign-in (stored, a storedSignIn read, null
+// before the first) can't say which Google account it is: not read yet,
+// unreadable, or stored without id_token_email. agy 1.5.18 writes that
+// field (StoredToken.IDTokenEmail, omitempty) only when Google's answer
+// carried an id token (RememberIDToken), and the value keeps no id token
+// to read it from instead: a terminal sign-in left one without it, and
+// agy ran as a banned account under every account of agy's own (#1599).
+// Unknown is not "the account's own".
+export function ownerUnknown(stored) {
+  if (stored?.state === "present") return !stored.who
+  return stored?.state !== "missing" && stored?.state !== "unreachable"
+}
+
+// notHeldError is what an account heldByAnother is told.
+export function notHeldError(saved) {
+  return `agy is signed in to another Google account now, not to ${saved}: agy holds one Google account, so ` +
+    `${saved}'s usage and requests would be the other account's. Sign ${saved} in again with "Add another Google ` +
+    `account" to use both.`
+}
+
+// unknownOwnerError is what an account of agy's own is told when agy's
+// sign-in can't say whose it is (ownerUnknown) and another account of
+// agy's own is here, with no sign-in kept for it.
+export function unknownOwnerError(saved) {
+  const who = saved || "this account"
+  return `agy's sign-in on this computer doesn't say which Google account it is, and another account here uses it ` +
+    `too, so ${who}'s usage and requests could be another account's. Sign ${who} in again with "Add another ` +
+    `Google account" to give it a sign-in of its own.`
+}
+
+// ---- an account of agy's own, kept --------------------------------------
+//
+// agy holds one Google account (heldByAnother). An account of agy's own
+// that agy held once is kept: while agy holds it, its stored sign-in (the
+// same JSON agy writes) is copied into a home of its own, keptHome(email),
+// as the token file agy keeps there (account.mjs). When agy holds another
+// account later (a sign-in in a terminal), that account's usage, models
+// and requests run in its kept home, with its own sign-in, the way an
+// account added with "Add another Google account" runs: agy itself, or the
+// quota read agy makes, and nothing else (ownsh1p on X: 为什么不能两个都显示
+// 额度). A kept sign-in Google no longer takes says to sign in again, as
+// before. agy's own keyring is only read, never written.
+
+// keptHome is the folder an account of agy's own is kept in: "own" and a
+// hash of its email, so no random home id (hex) is ever one.
+export function keptHome(email, env) {
+  const who = whoOf(email)
+  return who ? homeOf("own" + who.slice(0, 24), env) : null
+}
+
+export function isKeptId(id) {
+  return typeof id === "string" && id.startsWith("own")
+}
+
+// keptFor is email's kept home when its token file is a sign-in for that
+// account that can be renewed, else null.
+export function keptFor(email, env) {
+  const home = keptHome(email, env)
+  if (!home) return null
+  let raw
+  try { raw = fs.readFileSync(tokenFile(home), "utf8") } catch { return null }
+  const s = parseStored(raw)
+  return s.state === "present" && s.canRenew && s.who === whoOf(email) ? home : null
+}
+
+// keptOthers says a kept home holds a sign-in for another account than
+// email: another account of agy's own has been here.
+export function keptOthers(email, env) {
+  const who = whoOf(email)
+  let ids = []
+  try { ids = fs.readdirSync(accountsDir(env)) } catch { return false }
+  for (const id of ids) {
+    const home = isKeptId(id) ? homeOf(id, env) : null
+    if (!home) continue
+    let raw
+    try { raw = fs.readFileSync(tokenFile(home), "utf8") } catch { continue }
+    const s = parseStored(raw)
+    if (s.state === "present" && s.who && s.who !== who) return true
+  }
+  return false
+}
+
+// homeForOwn copies agy's own sign-in, the one email (or, unnamed, the
+// one just signed in) is, into a new account home (account.mjs): { id,
+// home }, or null when it can't. A second account of agy's own would
+// share agy's one keyring with the first (#1599), so it is saved as an
+// account with a home of its own instead. agy's keyring is only read.
+export async function homeForOwn(email, opts = {}) {
+  let account = null
+  try {
+    const v = await readStoredValue({ ...opts, home: null })
+    if (!("raw" in v)) return null
+    const s = parseStored(v.raw)
+    const value = decodeStored(v.raw)
+    if (s.state !== "present" || !s.canRenew || !value?.token) return null
+    if (s.who && email && s.who !== whoOf(email)) return null
+    account = newHome(opts.env)
+    const file = tokenFile(account.home)
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const tmp = `${file}.magpie-${process.pid}-${Date.now()}`
+    fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 })
+    fs.renameSync(tmp, file)
+    return account
+  } catch {
+    if (account) dropHome(account.home)
+    return null
+  }
+}
+
+// The keyring read (fp) each account was last kept from, by email.
+const keptFrom = new Map()
+
+// keepOwn keeps email's sign-in from agy's keyring when stored (the
+// keyring's read, storedSignIn) is that account's. Never throws.
+export async function keepOwn(email, stored, opts = {}) {
+  try {
+    const who = whoOf(email)
+    if (!who || stored?.state !== "present" || stored.who !== who || !stored.canRenew) return false
+    const key = who
+    if (keptFrom.get(key) === stored.fp) return false
+    const v = await readStoredValue({ ...opts, home: null })
+    if (!("raw" in v)) return false
+    const now = parseStored(v.raw)
+    const value = decodeStored(v.raw)
+    if (now.state !== "present" || now.who !== who || !now.canRenew || !value?.token) return false
+    const home = keptHome(email, opts.env)
+    const file = tokenFile(home)
+    const text = JSON.stringify(value)
+    let had = null
+    try { had = fs.readFileSync(file, "utf8") } catch {}
+    if (had !== text) {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+      fs.chmodSync(home, 0o700)
+      // agy in that home reads (and renews) the file: it never sees half
+      const tmp = `${file}.magpie-${process.pid}-${Date.now()}`
+      fs.writeFileSync(tmp, text, { mode: 0o600 })
+      fs.renameSync(tmp, file)
+    }
+    keptFrom.set(key, stored.fp)
+    return true
+  } catch {
+    return false
+  }
 }
 
 // emailOf is the Google account a stored value is signed in to, "" when
@@ -120,7 +289,8 @@ export function emailOf(raw) {
 }
 
 // readStoredValue reads agy's keyring value on this computer: { raw }, or
-// { state } when there is none ("missing") or it can't be read ("unknown").
+// { state } when there is none ("missing"), it can't be read ("unknown"),
+// or this process can't reach the keychain it is in ("unreachable").
 async function readStoredValue({ platform = process.platform, exec = run, env = process.env, home = currentHome() } = {}) {
   // an account with a home of its own (account.mjs): agy keeps its
   // sign-in in a file there, the same JSON
@@ -137,10 +307,10 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
   if (ENV_SIGN_INS.some((name) => env[name])) return { state: "unknown" }
   if (platform === "darwin") {
     const r = await exec("/usr/bin/security", ["find-generic-password", "-s", SERVICE, "-a", USER, "-w"])
+    if (r.code === 0) return { raw: r.stdout }
+    if (await loginKeychainOutOfReach({ exec, env })) return { state: "unreachable" }
     // 44: errSecItemNotFound
-    if (r.code === 44) return { state: "missing" }
-    if (r.code !== 0) return { state: "unknown" }
-    return { raw: r.stdout }
+    return { state: r.code === 44 ? "missing" : "unknown" }
   }
   if (platform === "win32") {
     const r = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT])
@@ -152,8 +322,43 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
     // go-keyring on Windows stores the value's bytes as they are (UTF-8)
     return { raw: Buffer.from(out.slice(3), "base64").toString("utf8") }
   }
+  // Linux and the rest: with no keyring to reach (Docker, a NAS, a
+  // headless box) agy keeps its sign-in in the same file an account's own
+  // home has (#1502). No file says nothing: it may be in a keyring.
+  const own = env.HOME || (env === process.env ? os.homedir() : "")
+  if (own) {
+    try {
+      return { raw: await fs.promises.readFile(tokenFile(own), "utf8") }
+    } catch {}
+  }
   return { state: "unknown" }
 }
+
+// loginKeychainOutOfReach says this process runs outside the user's
+// login session on macOS: their login keychain, where agy keeps its
+// sign-in, is not among the keychains it searches. A LaunchDaemon run as
+// the user (mayne_wong on X) searches only System.keychain, so the
+// keyring read finds nothing (44) while the window, in the login session,
+// finds agy signed in: the gateway answered "agy isn't signed in", and
+// signing in again said it was. agy, run there, can't read it either.
+// false when it can't tell.
+async function loginKeychainOutOfReach({ exec, env }) {
+  const home = env.HOME || (env === process.env ? os.homedir() : "")
+  if (!home) return false
+  const dir = path.join(home, "Library", "Keychains")
+  if (!fs.existsSync(path.join(dir, "login.keychain-db")) && !fs.existsSync(path.join(dir, "login.keychain"))) return false
+  const r = await exec("/usr/bin/security", ["list-keychains"])
+  if (r.code !== 0) return false
+  const searched = [...String(r.stdout ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1])
+  return searched.length > 0 && !searched.some((k) => k.startsWith(dir + path.sep))
+}
+
+// OUT_OF_REACH is what an account of agy's own is told when its sign-in
+// is out of reach (loginKeychainOutOfReach), with no copy kept in a file.
+export const OUT_OF_REACH = "this magpie runs outside your macOS login session (as a LaunchDaemon), where your " +
+  "login keychain, which holds agy's sign-in, can't be read. Run magpie as your own service instead " +
+  "(`magpie daemon install`, or the magpie app), or sign the account in with \"Add another Google account\", " +
+  "which keeps its sign-in in a file this magpie can read"
 
 // readStoredSignIn reads agy's stored sign-in on this computer.
 export async function readStoredSignIn({ now = Date.now(), ...opts } = {}) {
@@ -163,8 +368,9 @@ export async function readStoredSignIn({ now = Date.now(), ...opts } = {}) {
 
 // storedToken is agy's stored sign-in itself for the current account
 // ({ token: { access_token, refresh_token, expiry }, auth_method, … }), or
-// null when there is none or it can't be read. Only usage.mjs's direct
-// quota read uses it, and it never writes it back: agy owns the sign-in.
+// null when there is none or it can't be read. Only signedInEmail uses it,
+// and it never writes it back: agy owns the sign-in. Usage never reads it:
+// the quota is read through agy alone (usage.mjs).
 export async function storedToken(opts) {
   try {
     const v = await readStoredValue(opts)
@@ -214,6 +420,7 @@ const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 // Google sign-in, or "" when it may.
 export function cannotSignIn(s) {
   if (s?.state === "missing") return "agy isn't signed in"
+  if (s?.state === "unreachable") return OUT_OF_REACH
   if (s?.state === "present" && !s.canRenew && s.expired) return "agy's sign-in has expired"
   return ""
 }

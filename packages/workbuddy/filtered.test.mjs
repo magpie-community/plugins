@@ -188,6 +188,16 @@ test("the filter's line split over deltas that each carry an empty tool_calls is
   expect(contents(out).at(-1).finish_reason).toBe("content_filter")
 })
 
+test("empty tool_calls are stripped so reasoning stays one block (#1532)", async () => {
+  const d = (reasoning, finish = null) => chunk({ reasoning_content: reasoning, tool_calls: [] }, finish)
+  const upstream = d("The user ") + d("is asking ") + d("for an answer.") + chunk({ content: "ok" }, "stop") + "data: [DONE]\n\n"
+  const out = await through(upstream)
+  const cs = contents(out)
+  expect(cs.slice(0, 3).every((c) => c.delta.tool_calls === undefined)).toBe(true)
+  expect(cs.slice(0, 3).map((c) => c.delta.reasoning_content).join("")).toBe("The user is asking for an answer.")
+  expect(out).not.toContain('"tool_calls":[]')
+})
+
 test("a real tool call still lets the reply through as it came", async () => {
   const upstream = chunk({ content: "", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "grep", arguments: "{}" } }] }) + chunk({ content: said }) + chunk({}, "content_filter") + "data: [DONE]\n\n"
   expect(await through(upstream)).toBe(upstream)

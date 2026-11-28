@@ -35,6 +35,8 @@ magpie plugin login joycode
 
 因此 GPT 模型会走 Responses，Claude 模型会走 Anthropic Messages，GLM、Kimi、DeepSeek、MiniMax、Doubao 等继续走 Chat Completions。2026-10-28 使用真实账号核对时，`joycode_modelList` 返回 15 个模型：10 个 chat、4 个 `openai-response`、1 个 `anthropic`，三类均已覆盖。
 
+推理档位随账号目录中的 `extJson.reasoning.efforts` 同步。支持推理强度设置的客户端可在模型选择器中选档，例如 GPT-6.2 Sol 的 `low` 至 `max`。当目录允许切换 Chat 模型的思考模式时（例如 DeepSeek-V4.1-Flash），选择 `none` 会关闭思考，选择目录提供的推理档位会开启思考。未选择强度时沿用请求及上游默认行为。
+
 同时通过 `plugin_config` 的 `billingRate` 场景同步积分消耗倍率。点击「重新获取模型」可更新模型和倍率；按 `chatApiModel` 匹配，不会把仅出现在计费表中的模型加入列表。模型自身的倍率优先；公共倍率配置遵守 `excludeTenants`，无租户或被排除的租户不套用公共倍率。明确的 0× 会标记免费；查不到的倍率不当作 0×，也不虚构优惠前倍率。
 
 当前实测：JoyAI-Code-1.6 0×、GLM-5.3 0.6×、Kimi-K2.6 0.5×、MiniMax-M3 0.4×、Doubao-Seed-2.0-pro 0.4×。这些是查询结果，代码没有写死价格。它们是积分倍率，不是美元/token 价格。

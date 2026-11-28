@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/middleware-required-array",
+  "version": "0.1.0",
+  "description": "Give every tool parameter schema an explicit required array, for relays that reject a function schema whose object has no required key",
+  "type": "module",
+  "files": ["required-array.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "llm-gateway", "json-schema", "openai", "tools", "compatibility"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/required-array"
+  },
+  "magpie": {
+    "middleware": "./required-array.middleware.js"
+  }
+}

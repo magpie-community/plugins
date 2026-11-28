@@ -138,8 +138,6 @@ test("every model in droid 1.7.0's picker is offered, or left out for a reason",
     auto: "router", "auto-fast": "router",
     "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
     "gpt-6-astra-ultrafast": "opt-in", "gpt-6.1-sol-ultrafast": "opt-in",
-    // listed only once their feature flag is on for an account
-    "gpt-6.1-terra": "flag", "muse-spark-open": "flag",
     // Responses on Google: no wire of the plugin's goes there
     "muse-spark-1.3": "wire",
     "claude-opus-4-7": "older", "claude-opus-4-6": "older", "claude-opus-4-5-20251101": "older",
@@ -152,6 +150,8 @@ test("every model in droid 1.7.0's picker is offered, or left out for a reason",
   expect(picker.filter((id) => !got[id] && !reason[id])).toEqual([])
   expect(Object.keys(reason).filter((id) => got[id])).toEqual([])
   expect(entry170("gpt-6.1-sol-ultrafast")).toContain('explicitOptInRequirement:{kind:"high_cost"')
+  // offered behind their feature flags since 0.1.58, as Argon's is
+  // (droid 1.21.1's models, below)
   expect(entry170("gpt-6.1-terra")).toContain("featureFlag:k.Gpt61Terra,")
   expect(entry170("muse-spark-open")).toContain("featureFlag:k.MuseSparkOpen,")
   expect(entry170("muse-spark-1.3")).toContain('apiEndpoint:"responses",apiProviders:["google"]')
@@ -216,4 +216,122 @@ test("DeepSeek V4.1 Flash 1017 reaches both model hooks as droid 0.251.0 has it"
   expect(provider.api).toEqual({ id, url: config.provider.api, npm: config.provider.npm })
   expect(provider.capabilities.attachment).toBe(true)
   expect(provider.capabilities.input.image).toBe(true)
+})
+
+// will930128 on X (droid 1.20.0, plugin 0.1.57, Factory Pro): droid and
+// Factory's web UI list Gemini 4 Neon, the GPT-6.2 models and GPT-6.1
+// Terra; magpie listed none of them. droid has no endpoint that lists
+// models, its registry is compiled in, so the plugin's list had stayed at
+// droid 1.10.0's (#1297). The cases are droid 1.21.1's entries; 1.20.0 has
+// the same picker and entries under other minified names.
+const DROID_1211 = readFileSync(new URL("./testdata/droid-1.21.1-models.txt", import.meta.url), "utf8")
+
+function entry1211(id) {
+  const line = DROID_1211.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
+  if (!line) throw new Error(`${id} is not in the fixture`)
+  return line
+}
+
+// limits1211 reads P(total, output), or I, the GPT-6 family's, as the
+// fixture defines it.
+function limits1211(text) {
+  expect(DROID_1211).toContain("function P(e,i){return N({maxInputTokens:e-i,maxOutputTokens:i})}")
+  let m = text.match(/contextLimits:P\((\d+e\d+|\d+),(\d+)\)/)
+  if (!m) {
+    expect(text).toContain("contextLimits:I,")
+    m = DROID_1211.match(/^I=P\((\d+),(\d+)\)$/m)
+  }
+  return { context: Number(m[1]), output: Number(m[2]) }
+}
+
+const NEW_1211 = ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gemini-4-neon", "muse-spark-open", "gpt-6.2-astra-fast", "gpt-6.2-sol-fast"]
+
+test("droid 1.21.1's new models are offered as droid has them", async () => {
+  const got = await models()
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const listed = await hooks.provider.models({ id: "factory" }, {})
+  for (const id of NEW_1211) {
+    const text = entry1211(id)
+    const row = _internal.MODELS.find((r) => r.id === id)
+    for (const m of [got[id], listed[id]]) {
+      expect(m).toBeDefined()
+      expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+      expect(m.limit).toEqual(limits1211(text))
+      expect(m.rate).toBe(Number(text.match(/cost:\{tokenMultiplier:([\d.]+)/)[1]))
+    }
+    const m = got[id]
+    expect(row.upstream).toBe(JSON.parse(text.match(/apiProviders:(\[[^\]]*\])/)[1])[0])
+    const chat = text.includes('apiModelProvider:"generic-chat-completion-api"')
+    const npm = chat ? "@ai-sdk/openai-compatible" : text.includes('provider:"google"') ? "@ai-sdk/google" : "@ai-sdk/openai"
+    expect(m.provider.npm).toBe(npm)
+    expect(m.attachment).toBe(!text.includes("images:!1"))
+    const efforts = JSON.parse(text.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+    expect(Object.keys(m.variants)).toEqual(efforts.filter((e) => e !== "off"))
+    // each is behind a feature flag of Factory's, as Argon is
+    expect(text).toMatch(/featureFlag:x\.\w+,/)
+  }
+  // a Fast Mode model is its base model at the priority tier (fastBody)
+  expect(DROID_1211).toContain('ee=D({parallelToolCalls:!0,extendedCache:!0,safetyId:!0,verbosity:"low",serviceTier:"priority"})')
+  for (const id of ["gpt-6.2-astra-fast", "gpt-6.2-sol-fast"]) {
+    const text = entry1211(id)
+    const base = text.match(/baseVariant:"([^"]+)"/)[1]
+    expect(text).toContain("apiRequest:ee,")
+    expect(got[id].limit).toEqual(got[base].limit)
+    expect(got[id].variants).toEqual(got[base].variants)
+    const { body } = _internal.fastBody("/api/llm/o/v1/responses", JSON.stringify({ model: base, service_tier: "priority", input: "hi" }))
+    expect(JSON.parse(body).model).toBe(id)
+  }
+  expect(got["gemini-4-neon"].variants.xhigh).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "xhigh" } })
+})
+
+test("Gemini 4 Hydrogen takes xhigh, as droid 1.21.1 asks it", async () => {
+  const got = await models()
+  const text = entry1211("gemini-4-hydrogen")
+  expect(text).toContain('reasoningEffort:{supported:["low","medium","high","xhigh"]')
+  expect(text).toContain("apiRequest:S({supportsMedium:!0,supportsExtraHigh:!0})")
+  expect(DROID_1211).toContain('case"xhigh":return i?.supportsExtraHigh?"XHIGH":"HIGH"')
+  expect(Object.keys(got["gemini-4-hydrogen"].variants)).toEqual(["low", "medium", "high", "xhigh"])
+})
+
+test("Gemini 4 Neon goes without sampling parameters, as droid sends it", () => {
+  expect(entry1211("gemini-4-neon")).toContain("omitSamplingParameters:!0")
+  expect(DROID_1211).toContain("...!d?.omitSamplingParameters&&{temperature:1,topP:0.95,topK:64}")
+  const body = (model) => JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }], generationConfig: { temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 512 } })
+  const neon = JSON.parse(_internal.geminiBody("gemini-4-neon", body()))
+  expect(neon.generationConfig).toEqual({ maxOutputTokens: 512 })
+  const hydrogen = JSON.parse(_internal.geminiBody("gemini-4-hydrogen", body()))
+  expect(hydrogen.generationConfig).toEqual({ temperature: 0.7, topP: 0.9, topK: 40, maxOutputTokens: 512 })
+})
+
+test("Droid Core's windows count droid 1.21.1's core pool, not Muse Spark Open", () => {
+  expect(DROID_1211).toContain('Wr={billingPool:"standard",usesUSBasedInference:!1}')
+  for (const id of NEW_1211) {
+    expect(_internal.CORE.includes(id)).toBe(entry1211(id).includes('billingPool:"core"'))
+  }
+})
+
+test("every model in droid 1.21.1's picker is offered, or left out for a reason", async () => {
+  const got = await models()
+  const picker = [...DROID_1211.match(/^ze=(\[.*\])$/m)[1].matchAll(/id:"([^"]+)"|variants:\[([^\]]*)\]/g)]
+    .flatMap((m) => m[1] ? [m[1]] : JSON.parse(`[${m[2]}]`))
+  expect(picker).toContain("gemini-4-neon")
+  const reason = {
+    auto: "router", "auto-fast": "router",
+    "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
+    "gpt-6-astra-ultrafast": "opt-in", "gpt-6.1-sol-ultrafast": "opt-in", "gpt-6.2-astra-ultrafast": "opt-in",
+    // the ultrafast service tier, which the plugin doesn't send
+    "gpt-6.2-sol-ultrafast": "tier",
+    "muse-spark-1.3": "wire",
+    "claude-opus-4-7": "older", "claude-opus-4-6": "older", "claude-opus-4-5-20251101": "older",
+    "claude-sonnet-4-5-20250929": "older", "gpt-5.5-pro": "older", "gpt-5.4-mini": "older", "gpt-5.2": "older",
+    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older", "grok-4.5": "older", "kimi-k2.5": "older",
+    "glm-5.1": "older", "glm-5": "older", "glm-4.7": "older",
+    "deepseek-v4-flash-0731": "older", "deepseek-v4-pro": "older",
+    "claude-opus-4-7-fast": "older", "claude-opus-4-6-fast": "older", "gpt-5.4-mini-fast": "older",
+  }
+  expect(picker.filter((id) => !got[id] && !reason[id])).toEqual([])
+  expect(Object.keys(reason).filter((id) => got[id])).toEqual([])
+  expect(entry1211("gpt-6.2-astra-ultrafast")).toContain('explicitOptInRequirement:{kind:"high_cost"')
+  expect(entry1211("gpt-6.2-sol-ultrafast")).toContain("apiRequest:it,")
+  expect(DROID_1211).toContain('it=D({parallelToolCalls:!0,extendedCache:!0,safetyId:!0,verbosity:"low",serviceTier:"ultrafast"})')
 })

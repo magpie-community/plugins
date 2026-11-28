@@ -84,11 +84,11 @@ for (const [plugin, site, url] of [
     await on.config(cfg)
     expect(Object.keys(await on.provider.models(cfg.provider[site], { auth }))).toEqual(["hy3"])
     const off = await plugin({ client: {}, magpie: magpieWith({}) })
-    expect(Object.keys(await off.provider.models(cfg.provider[site], { auth }))).toEqual(["hy3", "glm-5.3", "hy4-preview", "auto", "claude-sonnet-5"])
+    expect(Object.keys(await off.provider.models(cfg.provider[site], { auth }))).toEqual(["hy3", "glm-5.3", "hy4-preview", "auto", "claude-sonnet-5", "workbuddy-tts", "workbuddy-transcribe"])
     // the other site's switch is its own
     const other = site === "workbuddy" ? "workbuddy-ai" : "workbuddy"
     const theirs = await plugin({ client: {}, magpie: magpieWith({ [other]: { free_only: true } }) })
-    expect(Object.keys(await theirs.provider.models(cfg.provider[site], { auth }))).toHaveLength(5)
+    expect(Object.keys(await theirs.provider.models(cfg.provider[site], { auth }))).toHaveLength(7)
   })
 
   test(`${site}: on, a list that can't be read is a failure, not the built-in list`, async () => {

@@ -60,6 +60,7 @@ knob and thinks *less* when it sees one.
 - **SSE 模型名重写**：将上游响应中的内部模型名重写为下游请求的 `model`，确保 Claude Code / Codex / OpenCode 等客户端兼容。
 - **会话与轮次请求头**：每个聊天请求按桌面客户端的方式带上会话 id（`X-RACCOON-Session-ID`）和轮次 id（`X-RACCOON-Turn-ID`）。宿主给了会话时直接用宿主给的；没有时由账号和首条用户消息派生，同一会话的每一轮都发同一个 id。
 
+
 ### 思考强度
 
 商汤小浣熊不认 OpenAI 的 `reasoning_effort`，认的是私有字段 `raccoon_thinking_level`，取值为 `level_1` ... `level_5`。**不同模型发布的档位并不相同**：`sn-qwen4-max` 只有 `level_1/3/5`，`sn-sensenova-6-8-flash-lite` 是 `level_1/2/4/5`。这些信息写在目录接口的 `params.raccoon_thinking` 里（带厂商自己的标签），插件直接读它，不再靠猜。
@@ -76,6 +77,7 @@ knob and thinks *less* when it sees one.
 | 关闭 off | — | `off`（仅当模型 `can_disable`） |
 
 在 `level_1/3/5` 的模型上实际发的是 `最低→1、低→3、中→3、高→5、最高→5`；在 `level_1/2/4/5` 上是 `1、2、4、4、5`。`reasoning_effort` 字段本身不会被转发——厂商把它当另一个开关，看到它反而会思考得更少。
+
 
 ### Browser callback lifecycle
 

@@ -123,15 +123,20 @@ function headers(extra = {}) {
 // magpie 自己的 MCP 服务器（网页搜索、识图、生图、插件工具）不在 library.json 里：
 // 网关的 /v1/magpie/mcp 列出现在开着的那几个（在 magpie 设置里关掉的不列）。
 // 老版本 magpie 没有这个接口（404）、网关连不上、答得不对，都当没有，不挡对话。
-export async function ownMcp(opts = {}) {
+//
+// 同一个回答里的 signedIn 是 magpie 已经登录了的 MCP 服务器（名字、URL、网关上的
+// 路径，不带任何凭据；plugins#873）：Library 里显示“已登录”的服务器，直接连原 URL
+// 是没有登录的，要走网关的 /mcp/<名字>，由 magpie 带上它的登录、替它续期。
+// 老版本 magpie 不给 signedIn，就当没有，照旧直连。
+export async function gatewayMcp(opts = {}) {
   try {
     const base = await resolveGateway(opts);
     const res = await fetch(base + "/v1/magpie/mcp", { headers: headers(), signal: AbortSignal.timeout(2500) });
-    if (!res.ok) return [];
+    if (!res.ok) return { own: [], signedIn: [] };
     const body = await res.json();
     const list = Array.isArray(body?.servers) ? body.servers : [];
     const auth = headers().authorization;
-    return list
+    const own = list
       .filter((s) => s && typeof s.name === "string" && s.name && typeof s.path === "string" && s.path.startsWith("/"))
       .map((s) => ({
         name: s.name,
@@ -141,9 +146,34 @@ export async function ownMcp(opts = {}) {
         detail: base + s.path,
         builtin: true,
       }));
+    const signedIn = (Array.isArray(body?.signedIn) ? body.signedIn : [])
+      .filter((s) => s && typeof s.name === "string" && s.name && typeof s.url === "string" && s.url
+        && typeof s.path === "string" && s.path.startsWith("/mcp/"))
+      .map((s) => ({ name: s.name, url: s.url, relay: base + s.path, auth }));
+    return { own, signedIn };
   } catch {
-    return [];
+    return { own: [], signedIn: [] };
   }
+}
+
+export async function ownMcp(opts = {}) {
+  return (await gatewayMcp(opts)).own;
+}
+
+// relayed 是 Library 里的一个服务器，换成走 magpie 网关的样子（magpie 给 agent 的也是
+// 这样：library/mcp_signin.go 的 through）：只认 Streamable HTTP（SSE 的流里会写死
+// 要 POST 的地址），名字和 URL 都要对上（同名但登录的是别的 URL，不算这个），
+// 自己的 Authorization 换成网关的 key，别的头照带。对不上就原样返回。
+export function relayed(m, signedIn = []) {
+  if (m?.transport !== "http" || typeof m.url !== "string") return null;
+  const hit = signedIn.find((s) => s.name === m.name && s.url === m.url);
+  if (!hit) return null;
+  const headers = {};
+  for (const [k, v] of Object.entries(m.headers && typeof m.headers === "object" ? m.headers : {})) {
+    if (k.toLowerCase() !== "authorization") headers[k] = v;
+  }
+  if (hit.auth) headers.authorization = hit.auth;
+  return { url: hit.relay, headers: Object.keys(headers).length ? headers : undefined };
 }
 
 // 归一化成界面要用的形状：名字、思考档位、上下文、能不能看图

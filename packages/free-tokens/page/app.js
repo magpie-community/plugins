@@ -14,7 +14,7 @@
   const TABS = [["ready", "已配置可用", "已装好并登录，可直接用"], ["setup", "有插件待配置", "有插件，还没装或没登录"], ["none", "暂无插件", "还没有对应的 magpie 插件"]];
   const TAB_HINT = {
     ready: "这些羊毛对应的供应商已在你的 magpie 里登录，可以直接使用；标「今日可领」的记得去签到。",
-    setup: "点「安装插件」会给出可粘贴的包名；到 magpie「插件 → 发现 → 已有想装的?」粘贴添加（页面无法直接跳转安装）。",
+    setup: "点「安装插件」打开该插件的介绍，确认后点「安装」。",
     none: "这些还没有对应的 magpie 插件；「复制链接」可在浏览器打开来源。",
   };
 
@@ -50,7 +50,14 @@
   }
   function showMessage(msg) { $("#list").innerHTML = `<div class="empty">${esc(msg)}</div>`; $("#empty").style.display = "none"; }
 
-  function onAction(btn) { const a = actionOf(btn.dataset); if (a) popover(a); }
+  // 新版 magpie 有 magpie.openPlugin：打开该包的介绍页，由读者自己点「安装」（不会静默安装）。
+  // 旧版没有，才退回到可复制包名的气泡。
+  const canOpen = () => hasBridge && typeof window.magpie.openPlugin === "function";
+  function onAction(btn) {
+    const ds = btn.dataset, a = actionOf(btn.dataset);
+    if (ds.act === "install" && ds.npm && canOpen()) { window.magpie.openPlugin(ds.npm).catch(() => { if (a) popover(a); }); return; }
+    if (a) popover(a);
+  }
 
   async function copyText(txt) { try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(txt); return true; } } catch {} try { const ta = document.createElement("textarea"); ta.value = txt; ta.style.position = "fixed"; ta.style.top = "-1000px"; document.body.appendChild(ta); ta.focus(); ta.select(); const ok = document.execCommand("copy"); ta.remove(); return ok; } catch { return false; } }
   function closePop() { const p = $("#pop-wrap"); if (p) p.remove(); }

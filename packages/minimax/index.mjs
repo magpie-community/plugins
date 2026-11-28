@@ -24,7 +24,7 @@ const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 const EARLY_MS = 2 * 60 * 1000 // a token this close to its end is refreshed before a request
 const LEAD_MS = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const SIGN_IN_MS = 10 * 60 * 1000 // when the device code gives no end of its own
-const KEEP_RENEWED_MS = 60 * 1000 // how long a saved refresh's result answers for the old token
+const KEEP_RENEWED_MS = 30 * 24 * 3600 * 1000 // how long a refresh's result answers for the token it spent
 const SIGN_SECRET = "I*7Cf%WZ#S&%1RlZJ&C2" // MiniMax Code's request signing (x-signature)
 const NPM = "@ai-sdk/anthropic"
 // the key the Anthropic SDK is given in MiniMax Code: a placeholder, the
@@ -938,10 +938,16 @@ async function answer(res, renewed) {
 // token is never sent twice from here.
 //
 // renewing is each refresh under way, by site and the refresh token it
-// spends; renewed is what each gave, kept a minute once saved so a request
-// that read the old token after the refresh was saved joins it rather than
-// spending the old token again, and kept for good when the save failed:
-// the account's newest tokens are then here only.
+// spends; renewed is what each gave, by the token it spent. A token MiniMax
+// has spent never works again, so what it gave answers for it as long as
+// this process runs (KEEP_RENEWED_MS): a request that read the old token
+// after the refresh was saved joins it rather than spending the old token
+// again, and so does magpie's renewal when the save of what auth.refresh
+// gave never reached the disk. It used to be kept one minute once saved,
+// and magpie's save was taken as made: a write magpie failed (a file
+// another program held on Windows) left the spent token on disk, and the
+// next renewal, a minute or more later, sent it again, and MiniMax's
+// invalid_grant signed the account out (Tiemo404 on X).
 const renewing = new Map()
 const renewed = new Map()
 
@@ -949,14 +955,19 @@ const renewed = new Map()
 function latest(site, a) {
   for (let i = 0; i < 16 && a.refresh; i++) {
     const done = renewed.get(site.id + "\n" + a.refresh)
-    if (!done || (done.saved && Date.now() - done.at >= KEEP_RENEWED_MS)) break
+    if (!done) break
     a = { ...a, ...done.got }
   }
   return a
 }
 
+// forgetOld drops what refreshes gave longer ago than KEEP_RENEWED_MS.
+function forgetOld() {
+  for (const [k, d] of renewed) if (Date.now() - d.at >= KEEP_RENEWED_MS) renewed.delete(k)
+}
+
 // renew spends a's refresh token, once: those who come while it runs wait
-// for it. save keeps what it gave, saying whether it could.
+// for it. save keeps what it gave.
 function renew(site, a, save) {
   const key = site.id + "\n" + a.refresh
   let r = renewing.get(key)
@@ -964,10 +975,9 @@ function renew(site, a, save) {
     r = (async () => {
       const t = await refreshToken(site, a.refresh)
       const got = { access: t.access, refresh: t.refresh, expires: t.expires }
-      const done = { got, at: Date.now(), saved: false }
-      renewed.set(key, done)
-      done.saved = await save({ ...a, ...got })
-      done.at = Date.now()
+      forgetOld()
+      renewed.set(key, { got, at: Date.now() })
+      await save({ ...a, ...got })
       return got
     })().finally(() => renewing.delete(key))
     renewing.set(key, r)

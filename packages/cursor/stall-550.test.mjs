@@ -9,7 +9,7 @@
 // field numbers, which is all a trace keeps). The bytes are made up where
 // the trace has only sizes: call ids, the tool's name, the count's value.
 import "./nonet.mjs" // first: no request leaves this machine
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { _internal } from "./index.mjs"
 import { NativeSessionPool, NATIVE_LIMITS, StepCalls, WireTrace, nativeFields, pendingCalls } from "./native-session.mjs"
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
@@ -175,6 +175,12 @@ test("Wire trace: a trace keeps the count's number, each call update's kind, the
 // the native path, the same frames
 const pools = []
 afterEach(async () => { await Promise.all(pools.splice(0).map((p) => p.clear())) })
+
+// these Runs send no count after a step's tool count: none is waited for
+// (plugins#1615)
+const usageWait = NATIVE_LIMITS.usageWait
+beforeEach(() => { NATIVE_LIMITS.usageWait = 0 })
+afterEach(() => { NATIVE_LIMITS.usageWait = usageWait })
 function owner(overrides = {}) {
   const pool = new NativeSessionPool({ ...NATIVE_LIMITS, ...overrides })
   pools.push(pool)

@@ -270,6 +270,32 @@ test("prepareChatBody reshapes a chat into what the gateway accepts and meters",
   assert.equal(x.prepareChatBody(null), null)
 })
 
+// GLM holds a tool call's arguments back until the call is written, and the
+// gateway's 60 s idle timeout cuts a long one off; `tool_stream` streams them.
+test("a GLM chat with tools asks for its tool arguments streamed", () => {
+  const tools = [{ type: "function", function: { name: "write_file", parameters: { type: "object", properties: {} } } }]
+  for (const model of ["glm-5.3-flash", "codearts/glm-5.3", "GLM-5.2", "glm-5.2-sft-harmony"]) {
+    const out = x.prepareChatBody({ model, messages: [], tools })
+    assert.equal(out.body.tool_stream, true, model)
+    assert.equal(out.toolStream, true, model)
+  }
+  // nothing to stream: no tools, or an empty list
+  assert.equal("tool_stream" in x.prepareChatBody({ model: "glm-5.3-flash", messages: [] }).body, false)
+  assert.equal("tool_stream" in x.prepareChatBody({ model: "glm-5.3-flash", messages: [], tools: [] }).body, false)
+  // not a GLM: its arguments already stream
+  const ds = x.prepareChatBody({ model: "deepseek-v4.1-flash-1017", messages: [], tools })
+  assert.equal("tool_stream" in ds.body, false)
+  assert.equal(ds.toolStream, false)
+  // the caller's own word stands
+  const said = x.prepareChatBody({ model: "glm-5.3-flash", messages: [], tools, tool_stream: false })
+  assert.equal(said.body.tool_stream, false)
+  assert.equal(said.toolStream, false)
+  // the caller's body is never changed
+  const parsed = { model: "glm-5.3-flash", messages: [], tools }
+  x.prepareChatBody(parsed)
+  assert.equal("tool_stream" in parsed, false)
+})
+
 // The caller's level is the gateway's own (measured 2026-11-03: none, low,
 // medium, high, xhigh and max are accepted, every other value is a 400), and a
 // level that was named is passed on as it is: `thinking: enabled` would
@@ -1266,7 +1292,7 @@ test("the free model's TPM limit inside a 200 is a 429 magpie fails over on, not
   }
 })
 
-// star21321321124 (Discord, 10-28): an agent sent DeepSeek V4.1 Flash an
+// star21321321124 (Discord, 10-28): an agent sent a text-only model an
 // image, and the "502: you can retry" had it ask again and again.
 const notMultimodal = { error_code: "InferHub.001001020.406", error_msg: "The request model is not multimodal" }
 
@@ -1275,7 +1301,7 @@ test("an image a text-only model turns away is a 400, not a 502 to retry, on eve
   let answer = () => sseResponse(sse(notMultimodal))
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => answer() })
   const loaded = await plugin.auth.loader(async () => makeAuth(cred))
-  const ask = (stream) => loaded.fetch(CHAT_URL, chatInit({ model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "看图" }], stream }))
+  const ask = (stream) => loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: "看图" }], stream }))
   const cases = [
     ["inside a 200", () => sseResponse(sse(notMultimodal))],
     ["as a 502", () => new Response(JSON.stringify(notMultimodal), { status: 502, headers: { "content-type": "application/json" } })],
@@ -1293,33 +1319,50 @@ test("an image a text-only model turns away is a 400, not a 502 to retry, on eve
   }
 })
 
-test("every model says it takes text alone, so an agent sends it no image", async () => {
+test("the five models CodeArts' kernel calls multimodal take images; the rest say text alone", async () => {
   const plugin = await CodeArtsAuthPlugin({ client: {} }, {})
   const config = {}
   await plugin.config(config)
   for (const [id, m] of Object.entries(config.provider.codearts.models)) {
-    assert.deepEqual(m.modalities, { input: ["text"], output: ["text"] }, id)
-    assert.equal(m.attachment, false, id)
+    // The config catalog carries two of the five: glm-5.3-flash and
+    // deepseek-v4.1-flash.
+    const sees = id === "glm-5.3-flash" || id === "deepseek-v4.1-flash"
+    assert.deepEqual(m.modalities, { input: sees ? ["text", "image"] : ["text"], output: ["text"] }, id)
+    assert.equal(m.attachment, sees, id)
   }
 
   const cred = await makeCred()
-  const listed = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { agents: agentList, detail: agentDetail }) })
-  // the host's entry for a config model, and one the user said sees
-  const provider = {
-    models: {
-      "GLM-5.2": { capabilities: { input: { text: true, image: false } } },
-      "glm-5.3-flash": { capabilities: { input: { text: true, image: true } } },
+  // The kernel's own list (CodeArts 0.2.9, 2026-11-23). The gateway and
+  // builtin fixtures add GLM-5.2 and deepseek-v4-flash-0731, which stay text-only.
+  const multimodalDetail = {
+    gpts: {
+      models: [
+        { model_name: "DeepSeek-V4.1-Flash", model_parameters: { model_id: "deepseek-v4.1-flash" } },
+        { model_name: "DeepSeek-V4.1-Flash-1017", model_parameters: { model_id: "deepseek-v4.1-flash-1017" } },
+        { model_name: "Kimi-K3", model_parameters: { model_id: "kimi-k3" } },
+        { model_name: "Kimi-K3.1-Pro", model_parameters: { model_id: "kimi-k3.1-pro" } },
+        { model_name: "GLM-5.3", model_parameters: { model_id: "glm-5.3" } },
+      ],
     },
   }
+  const listed = await CodeArtsAuthPlugin({ client: {} }, { fetch: modelsFetcher([], { detail: multimodalDetail }) })
+  const provider = { models: {} }
   const models = await listed.provider.models(provider, { auth: makeAuth(cred) })
-  // glm-5.3 only the agent lists, deepseek-v4-flash-0731 has no entry of its own
+  for (const id of ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "glm-5.3-flash", "kimi-k3", "kimi-k3.1-pro"]) {
+    assert.equal(models[id].capabilities.input.image, true, id)
+    assert.equal(models[id].capabilities.input.text, true, id)
+    assert.equal(models[id].capabilities.attachment, true, id)
+  }
   for (const id of ["GLM-5.2", "glm-5.3", "deepseek-v4-flash-0731"]) {
     assert.equal(models[id].capabilities.input.image, false, id)
     assert.equal(models[id].capabilities.input.text, true, id)
     assert.equal(models[id].capabilities.attachment, false, id)
   }
   // what the user's own config says stands
-  assert.equal(models["glm-5.3-flash"].capabilities.input.image, true)
+  const userProvider = { models: { "GLM-5.2": { capabilities: { attachment: true, input: { text: true, image: true } } } } }
+  const userModels = await listed.provider.models(userProvider, { auth: makeAuth(cred) })
+  assert.equal(userModels["GLM-5.2"].capabilities.input.image, true)
+  assert.equal(userModels["GLM-5.2"].capabilities.attachment, true)
 })
 
 test("embeddedErrorStatus sorts the gateway's codes into what magpie acts on", () => {
@@ -1747,6 +1790,40 @@ test("a body over 12 MB is refused before it is signed or sent (#1121)", async (
   assert.match(await res.text(), /13\.0 MB/)
   assert.equal(calls, 0)
 })
+test("InferHub's 001001005 on a chat over 10 MB is the size: a 413 that names it, never retried", async () => {
+  const cred = await makeCred()
+  const refused = '{"error_code":"InferHub.001001005.400","error_msg":"The request param is invalid"}'
+  for (const answer of [
+    () => new Response(refused, { status: 400 }),
+    // inside a 200, as the gateway also answers it when streaming
+    () => sseResponse(sse(JSON.parse(refused))),
+  ]) {
+    let calls = 0
+    let renewals = 0
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, {
+      fetch: async (url) => {
+        if (String(url) === x.STS_TOKEN_ENDPOINT) {
+          renewals += 1
+          return new Response("{}", { status: 500 })
+        }
+        calls += 1
+        return answer()
+      },
+      ...fastRetry,
+    })
+    const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+    const image = "data:image/png;base64," + "A".repeat(10 * 1024 * 1024)
+    const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] }))
+    assert.equal(res.status, 413)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    const text = await res.text()
+    assert.match(text, /10 MB/)
+    assert.match(text, /InferHub\.001001005/)
+    assert.equal(calls, 1, "the size is not retried")
+    assert.equal(renewals, 0)
+  }
+})
+
 test("a 403 is a sign-in the account no longer has, on chats and other requests alike", async () => {
   const cred = await makeCred()
   const denied = '{"error_code":"APIG.0305","error_msg":"access denied"}'
@@ -3563,6 +3640,56 @@ test("the fallback list holds no id OfficeAce has dropped (#1197)", () => {
   for (const id of ["deepseek-v4", "deepseek-v4.1", "qwen3-30b", "qwen3-32b", "kimi-k2.6", "pangu-2.0-pro", "pangu-2.0-flash"]) {
     assert.equal(Object.hasOwn(oa.OA_FALLBACK_MODELS, id), false, id)
   }
+})
+
+test("a refused catalog read never says the sign-in ended", async () => {
+  // The catalog is read with the account's MaaS Basic pair, which Huawei
+  // re-issues at client-permission-validate: a pair another client renewed is
+  // refused there with 401/403 (APIG.1009) while chat, renewing the pair on
+  // its own, keeps answering 200. Read as a sign-out, the listing marked
+  // working accounts to sign in again on every refresh — measured 2026-11-16
+  // on five accounts: 370 refused listings, 666 chats at 200.
+  for (const status of [401, 403]) {
+    const { record } = await officeAceAuthRecord({}, `iam::d1:user:hw02${status}`)
+    const { fetcher } = oaFetcher((url) =>
+      url.endsWith("/v2/models")
+        ? new Response(JSON.stringify({ error_code: "APIG.1009", error_msg: "AppKey or AppSecret is invalid" }), { status })
+        : undefined,
+    )
+    const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+    const cfg = { provider: {} }
+    await plugin.config(cfg)
+    // never throws: the listing falls back to the static table it was given
+    const models = await plugin.provider.models(cfg.provider.officeace, { auth: record })
+    assert.deepEqual(Object.keys(models).sort(), Object.keys(oa.OA_FALLBACK_MODELS).sort())
+  }
+})
+
+test("a sign-in that really ended still answers chat with a 401, which magpie marks", async () => {
+  // The other side of the catalog rule above: the verdict moved to chat, so
+  // a refresh token the vendor spent has to come back from chat as a 401
+  // (magpie marks a plugin's 401 without x-magpie-sign-in: kept).
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0401dead")
+  let chats = 0
+  const { fetcher } = oaFetcher((url) => {
+    if (url.includes("/v2/chat/completions")) {
+      chats++
+      return new Response(JSON.stringify({ error_code: "APIG.1009", error_msg: "AppKey or AppSecret is invalid" }), { status: 401 })
+    }
+    if (url === x.STS_TOKEN_ENDPOINT) {
+      return new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh token expired" }), { status: 400 })
+    }
+    return undefined
+  })
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const loader = await plugin.auth.loader(async () => record)
+  const response = await loader.fetch("https://api.modelarts-maas.com/v2/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "glm-5.3", messages: [] }),
+  })
+  assert.equal(response.status, 401)
+  assert.notEqual(response.headers.get("x-magpie-sign-in"), "kept")
+  assert.equal(chats, 1)
 })
 
 test("before a sign-in the OfficeAce provider still lists its models", async () => {

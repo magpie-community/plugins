@@ -22,6 +22,13 @@ export const NATIVE_LIMITS = {
   // step's last call; a Run that sent calls and then only heartbeats has
   // stopped, and the caller's next request goes on from the calls' results.
   countWait: 60_000,
+  // How long a step whose calls are all in waits for Cursor's count of
+  // that model call (ModelCallCompletedUpdate, 31) before handing the
+  // calls over without it (plugins#1615). Cursor sends it a checkpoint
+  // after the step's tool count, about 10 ms later in plugins#635's
+  // traces; without it the step said 0 used, and a client or relay
+  // reading the step's usage saw nothing spent.
+  usageWait: 1000,
   drain: 6000,
   replayWait: 120_000,
   blobBytes: 64 << 20,
@@ -956,6 +963,7 @@ export class NativeSessionPool {
     owner.execs.clear()
     owner.nativeCalls.clear()
     owner.stepUsages.clear()
+    owner.usageOrder = []
     owner.lastStepUsage = null
   }
   async clear() {
@@ -992,6 +1000,7 @@ class NativeSession {
     this.steps = 1
     this.stepSaid = 0
     this.stepUsages = new Map()
+    this.usageOrder = []
     this.lastStepUsage = null
     this.said = 0
     this.wrote = 0
@@ -1038,6 +1047,7 @@ class NativeSession {
     clearTimeout(this.batchTimer)
     clearTimeout(this.resultTimer)
     clearTimeout(this.drainTimer)
+    clearTimeout(this.usageTimer)
     clearTimeout(this.lifetimeTimer)
     this.quiet.pause()
     this.ac.abort()
@@ -1199,8 +1209,63 @@ class NativeSession {
       measuredOutput: fields.some((f) => f.num === 3),
       hasReasoning: fields.some((f) => f.num === 6),
     }
-    this.stepUsages.set(id || `step:${this.steps}:${this.stepUsages.size}`, entry)
+    const key = id || `step:${this.steps}:${this.stepUsages.size}`
+    if (!this.stepUsages.has(key)) this.usageOrder.push(entry)
+    else this.usageOrder[this.usageOrder.indexOf(this.stepUsages.get(key))] = entry
+    this.stepUsages.set(key, entry)
     this.lastStepUsage = entry
+    // the count of the step whose calls wait to be handed over
+    if (this.state === "awaiting-results" && this.segment.awaitingUsage && this.usageOrder.length >= this.steps) this.handOff(this.segment, entry)
+  }
+  // ownUsage is the count of the step being sealed when Cursor sent it
+  // already: one count per model call, in order, so the step's (the
+  // steps-th) is in once as many have come. A step whose calls were all
+  // answered here has its count sent after the next step began, which is
+  // why lastStepUsage can't tell.
+  ownUsage() {
+    const e = this.usageOrder.length >= this.steps ? this.usageOrder.at(-1) : null
+    return e && !e.billed ? e : null
+  }
+  // billed is what the steps handed over with their own count
+  // (ModelCallCompletedUpdate) already said: the final and a debt leave it
+  // out. unbilled is what the other counts Cursor sent say.
+  billed() {
+    return this.sumOf([...this.stepUsages.values()].filter((e) => e.billed))
+  }
+  unbilled() {
+    return this.sumOf([...this.stepUsages.values()].filter((e) => !e.billed))
+  }
+  sumOf(entries) {
+    const u = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0 }
+    for (const e of entries) for (const k of Object.keys(u)) u[k] += e.usage[k] ?? 0
+    return u
+  }
+  // handOff ends a sealed batch's segment: with its step's own count when
+  // Cursor sent one (plugins#1615), else 0 and pending, the turn's final
+  // or a later Run billing it.
+  handOff(segment, entry) {
+    clearTimeout(this.usageTimer)
+    this.usageTimer = null
+    segment.awaitingUsage = false
+    if (segment.closed || this.error) return
+    const counted = entry && (entry.measuredInput || entry.measuredOutput)
+    if (!counted) {
+      segment.finish({ stop: "tool_calls", usage: {
+        prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+        magpie_native: { accounting: "pending" },
+      } })
+      return
+    }
+    entry.billed = true
+    this.billedSteps = (this.billedSteps ?? 0) + 1
+    const u = entry.usage
+    const prompt = u.input + u.cacheRead + u.cacheWrite
+    segment.finish({ stop: "tool_calls", usage: {
+      prompt_tokens: prompt, completion_tokens: u.output, total_tokens: prompt + u.output,
+      prompt_tokens_details: { cached_tokens: u.cacheRead, cache_write_tokens: u.cacheWrite },
+      ...(entry.hasReasoning ? { completion_tokens_details: { reasoning_tokens: u.reasoning } } : {}),
+    } })
   }
   // waitForBatch gives the step batchWait from its latest call, answered
   // call, count, text or heartbeat, not from its first. Cursor sends each
@@ -1293,11 +1358,19 @@ class NativeSession {
     this.batches ??= []
     this.batches.push(segment)
     for (const c of segment.calls) this.pool.handles.set(c.id, { owner: this, batch: segment })
-    segment.finish({ stop: "tool_calls", usage: {
-      prompt_tokens: 0, completion_tokens: 0, total_tokens: 0,
-      prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
-      magpie_native: { accounting: "pending" },
-    } })
+    // The step's own count comes just after its tool count (plugins#1615):
+    // the calls wait for it, up to usageWait. A Run that sent none in a
+    // step's wait, and none at all, is not waited on again.
+    const own = this.ownUsage()
+    if (own) this.handOff(segment, own)
+    else if (!(this.limits.usageWait > 0) || (this.noStepUsage && !this.stepUsages.size)) this.handOff(segment, null)
+    else {
+      segment.awaitingUsage = true
+      this.usageTimer = later(() => {
+        this.noStepUsage = true
+        this.handOff(segment, null)
+      }, this.limits.usageWait)
+    }
     this.segments++
     this.resultTimer = later(() => this.fail({ status: 410, message: "native tool-result deadline expired" }, "expired"), this.limits.resultWait)
   }
@@ -1402,7 +1475,7 @@ class NativeSession {
     let earlier = null
     if (this.steps > 1) {
       if (last && (last.measuredInput || last.measuredOutput)) {
-        const prev = [...this.stepUsages.values()].filter((e) => e !== last)
+        const prev = [...this.stepUsages.values()].filter((e) => e !== last && !e.billed)
         const sum = (k) => prev.reduce((s, e) => s + e.usage[k], 0)
         const whole = u.input + u.cacheRead + u.cacheWrite
         const share = (total, own) => total > 0 ? Math.min(1, Math.max(own, total / this.steps) / total) : 0
@@ -1433,6 +1506,15 @@ class NativeSession {
         }
         earlier = { input: u.input - own.input, cacheRead: u.cacheRead - own.cacheRead, cacheWrite: u.cacheWrite - own.cacheWrite, output: u.output - own.output }
         Object.assign(u, own)
+      }
+      // The steps handed over with their own count were billed then
+      // (plugins#1615): the turn's totals leave them out, so each counts
+      // once. A sum of the counts left over has them out already.
+      if (this.billedSteps) {
+        const billed = this.billed()
+        const fromTurn = { input: turnInput, cacheRead: turnInput, cacheWrite: turnInput, output: turnOutput }
+        const summed = last && (last.measuredInput || last.measuredOutput)
+        for (const k of Object.keys(earlier)) if (!summed || fromTurn[k]) earlier[k] = Math.max(0, earlier[k] - billed[k])
       }
     }
     // What a later Run collected of this Run's event while this one waited on

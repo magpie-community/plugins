@@ -81,6 +81,15 @@ over Anthropic's Messages API. Provider id: `zcode`.
     what it saved when it was added; when that session has run out, it
     asks to be signed in again. It never sends one account's requests with
     another's credentials: to use both, add the app's sign-in once for each.
+  - ZCode 3.18 locks its credentials with a key it keeps in the system's
+    keychain ("ZCode Credential Encryption"). The plugin reads that key
+    only while you add this sign-in, once, so your system may ask you to
+    allow it then. The key is kept with the sign-in, and nothing else (a
+    request, the model list, the usage card, the daily check-in) reads
+    the keychain again. If you deny the prompt, the sign-in says so and
+    nothing asks again until you add it again. A sign-in added before
+    this, or moved from magpie's built-in, uses what it saved; its card
+    says to add the sign-in again to follow ZCode.
 - **GLM Coding Plan API key**
   - Paste a key (`<id>.<secret>`) and say which site it is from.
   - A key reaches the GLM Coding Plan alone. ZCode's gift plans (the
@@ -102,7 +111,9 @@ In OpenCode's `auth.json` (magpie: `plugin-auth.json`), under `zcode`:
 - **A pasted key** is kept as an `api` entry, with the site in `metadata`.
 
 The plugin never writes ZCode's own credential store. It reads it only for
-the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`).
+the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`, and
+`osKey`, ZCode 3.18's key as the keychain gave it when the sign-in was
+added).
 
 ## How requests are routed
 
@@ -240,7 +251,12 @@ one of the three has been read to its end (or its agent went away), and
 is not sent to be refused. That covers what magpie's queue cannot see —
 a `maxConcurrency` raised past three, two magpie providers on one ZCode
 account, an older host. A request that has waited two minutes is answered
-here with a 429 that says it was not sent and why. Free first skips the
+here with a 429 that says it was not sent and why. Since 0.1.71 it also
+says what it waited behind, as the gate saw it then: how many of the
+account's requests held its slots and how long the oldest had been in
+flight, how many more were waiting, and, when the account is narrowed
+(below), for how much longer and why; a request that had been sent and
+refused before its wait says so (plugins#1572). Free first skips the
 gift while its account's gate is full, so the plain model goes to the
 coding plan rather than queueing.
 
@@ -379,20 +395,22 @@ polling with the feed alone, and the feed is gated on the client's
 version, so the plugin asks as the current client (3.17.2) sends — and
 posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. An answer of nothing to claim
-carries an `until` half an hour out, so magpie's loop asks again then,
-and again, all day while the feed names no plan — one GET, nothing
-posted: ZCode drops plans into the feed on its own schedule (a weekend
-banner starting at 19:00 Beijing, say), and one that arrives
-after the day's ask used to sit unclaimed past its short life. The
-other answers stand for the day — but an *ineligible* (code 1004, below)
-is read again in half an hour, as an inactive is: a claimed plan leaves
-the feed, so
-asking again half an hour later would find nothing and flip the card
-from "Checked in today" to "No check-in event now"; a captcha plan
-re-asked makes ZCode demand its captcha again; a done plan re-asked
-posts a claim ZCode already answered. So a second plan the same day,
-after one was claimed, is seen the next day. The answer is judged by
+account's ZCode session, as the app does. ZCode drops plans into the
+feed on its own schedule through the day (a weekend banner starting at
+19:00 Beijing, and another at 19:30, say), and one that arrives after the
+day's ask used to sit unclaimed past its short life. So an answer of
+nothing to claim, a claim, a done and an ineligible each carry an
+`until` half an hour out, and magpie's loop asks again then, all day —
+one GET of the feed each time. A recheck posts only plans the account
+has no answer for yet that day: a plan claimed, answered 1003 or held
+for the captcha is never posted again, so its captcha is not asked for
+again and no claim ZCode already answered is repeated. With nothing new
+after the day's claim, the answer is *done*: the card keeps "Checked in
+today" rather than "No check-in event now" (a claimed plan leaves the
+feed). An ineligible (code 1004, below) is posted again on the next
+recheck, as it may be offered later. The day's answers live in memory
+and end with the Beijing day: after a magpie restart, a plan still in
+the feed is posted once more and answers 1003, *done*. The answer is judged by
 the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to

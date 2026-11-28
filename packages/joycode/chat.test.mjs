@@ -113,6 +113,50 @@ test('chat adds authenticated account metadata while preserving tools and messag
   assert.equal(infoCalls, 1)
 })
 
+test('chat adapts explicit thinking choices for the account models that declare them', async t => {
+  const model = 'DeepSeek-V4.1-Flash'
+  let catalogueCalls = 0
+  const sent = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const fn = new URL(url).searchParams.get('functionId')
+    if (fn === 'joycode_modelList') {
+      catalogueCalls++
+      const reasoning = init.headers.ptkey === 'toggle-key'
+        ? { toggle: true, sendThinking: true, efforts: [{ value: 'high' }, { value: 'max' }] }
+        : undefined
+      return Response.json({ code: 0, data: [{ chatApiModel: model, extJson: { reasoning } }] })
+    }
+    if (fn === 'joycode_userInfo') return Response.json({ code: 0, data: { userId: 'test-user' } })
+    assert.equal(fn, 'chat_completions')
+    const { reasoning_effort: effort, thinking } = JSON.parse(init.body)
+    sent.push([effort, thinking])
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+  })
+  const hooks = await plugin.server({}, { flatten: true })
+  const loaderFor = key => hooks.auth.loader(async () => ({ type: 'api', key }))
+  const send = async (loader, fields) => {
+    const body = JSON.stringify({ model, messages: [{ role: 'user', content: 'OK' }], stream: true, ...fields })
+    const response = await loader.fetch('https://api-ai.jd.com/v1/chat/completions', { method: 'POST', body })
+    assert.equal(response.status, 200)
+    await response.text()
+  }
+  const loader = await loaderFor('toggle-key')
+  await send(loader, {})
+  assert.equal(catalogueCalls, 0)
+  await send(loader, { reasoning_effort: 'max' })
+  await send(loader, { reasoning_effort: 'none' })
+  await send(loader, { reasoning_effort: 'high', thinking: { type: 'enabled', custom: true } })
+  await send(await loaderFor('different-key'), { reasoning_effort: 'high' })
+  assert.equal(catalogueCalls, 2)
+  assert.deepEqual(sent, [
+    [undefined, undefined],
+    ['max', { type: 'enabled' }],
+    [undefined, { type: 'disabled' }],
+    ['high', { type: 'enabled', custom: true }],
+    ['high', undefined],
+  ])
+})
+
 for (const [name, input, payload, functionId, npmShape] of [
   [
     'Responses',
