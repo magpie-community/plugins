@@ -72,3 +72,15 @@ test("OpenCode's own id is replaced too when Zen refuses it", () => {
   assert.ok(realSessionID(fresh), fresh);
   assert.equal(sessionID(headers, {}), fresh);
 });
+
+test("a replacement refused too is replaced again, and the client's own id follows the latest", () => {
+  const real = "ses_ecc5d8f28ffe9Cy14V8Em7lI2u";
+  const headers = new Headers({ "x-opencode-session": real });
+  const first = rotateSession(real);
+  // The replacement was refused as well: the client's own id has to follow
+  // the newest replacement, not the one already refused.
+  const second = rotateSession(first);
+  assert.notEqual(second, first);
+  assert.ok(realSessionID(second), second);
+  assert.equal(sessionID(headers, {}), second);
+});

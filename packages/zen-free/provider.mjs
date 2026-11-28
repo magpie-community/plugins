@@ -670,8 +670,11 @@ export function rotateSession(session) {
   }
   if (!known) {
     // OpenCode's own id passes through sessionID, so its replacement is
-    // remembered by the id it replaces.
+    // remembered by the id it replaces. An id that was already replaced onto
+    // this one follows it too, so the client's own id never names an id that
+    // was refused before.
     ROTATED.delete(session);
+    for (const [key, value] of ROTATED) if (value === session) ROTATED.set(key, fresh);
     ROTATED.set(session, fresh);
     if (ROTATED.size >= KEEP_SESSIONS) ROTATED.delete(ROTATED.keys().next().value);
   }
