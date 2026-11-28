@@ -110,11 +110,14 @@ are refused the same way: each name alone is served, the pair together is
 refused, one renamed is served (bisected 2026-11-17). They go as
 `stdin_write` and `agent_hold`.
 
-omp's `edit` is refused the same way as DSH's, with `path` where DSH's
-takes `file_path` (bisected 2026-11-17): what Zen reads is the parameter
-names `old_string` and `new_string`, whatever names the rest take. So
-`edit` with those two goes as `text_replace`, and `read` with DSH's
-parameters as `file_view`; the `edit` and `read` stand-ins Zen wants
+DSH 0.2.2's `edit` and `read` are refused by name with their own
+parameters, and the descriptions of its `edit`, `read` and `skill` are
+refused under any name (#632). Those descriptions go reworded with the
+same meaning. omp's `edit` is refused the same way as DSH's, with `path`
+where DSH's takes `file_path` (bisected 2026-11-17): what Zen reads is the
+parameter names `old_string` and `new_string`, whatever names the rest
+take. So `edit` with those two goes as `text_replace`, and `read` with
+DSH's parameters as `file_view`; the `edit` and `read` stand-ins Zen wants
 still go beside them.
 
 Zen's free tier also tells OpenCode's own requests by the environment
