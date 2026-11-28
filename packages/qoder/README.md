@@ -121,6 +121,11 @@ itself.
     two sentences, `You are ZCode. You are an interactive agent` (since
     0.2.79, #1667): Qoder CN parks a request with the name and comma as
     written in the same queue. Qoder's own names stay as they are.
+  - Kimi Code's identity line, `You are Kimi Code, an interactive general AI
+    agent running on a user's computer.`, goes as `You are a coding agent, ...`
+    (since 0.2.80): Qoder CN puts a request whose system prompt opens with
+    that line in the same 10605 / p2 / `RESOURCE_LIMIT` queue. The rest of the
+    prompt and your messages go as written.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.
