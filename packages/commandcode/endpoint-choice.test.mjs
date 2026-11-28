@@ -24,8 +24,13 @@ test("endpointChoice takes native Responses where the model offers both", () => 
   assert.equal(endpointChoice(["/messages"], true), MESSAGES)
 })
 
-test("endpointChoice says nothing when no known endpoint is named", () => {
+test("endpointChoice says nothing only when no endpoint is listed at all", () => {
+  // a model with no endpoints keeps the family's own answer: null
   assert.equal(endpointChoice([]), null)
-  assert.equal(endpointChoice(["/something-else"]), null)
   assert.equal(endpointChoice([], true), null)
+
+  // a model that lists endpoints magpie does not know is chat completions,
+  // as the built-in took it - it is not left to the family's answer
+  assert.equal(endpointChoice(["/something-else"]), CHAT)
+  assert.equal(endpointChoice(["/something-else"], true), CHAT)
 })

@@ -347,7 +347,10 @@ export function endpointChoice(eps, preferResponses = false) {
   if (has("/chat/completions")) return CHAT
   if (has("/responses")) return RESPONSES
   if (has("/messages")) return MESSAGES
-  return null
+  // endpoints are listed but none magpie knows: the built-in took those as
+  // chat completions, and so does this - only a model with **no** endpoints
+  // at all leaves the family's own answer alone (null)
+  return eps.length ? CHAT : null
 }
 
 async function liveModels(key, preferResponses = false) {

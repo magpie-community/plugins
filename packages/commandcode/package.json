@@ -4,26 +4,9 @@
   "description": "Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams) in OpenCode and magpie",
   "type": "module",
   "main": "./opencode.mjs",
-  "exports": {
-    ".": "./opencode2.mjs"
-  },
-  "files": [
-    "index.mjs",
-    "opencode.mjs",
-    "opencode2.mjs",
-    "README.md",
-    "CHANGELOG.md"
-  ],
-  "keywords": [
-    "opencode",
-    "opencode-plugin",
-    "magpie",
-    "commandcode"
-  ],
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "CHANGELOG.md"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "commandcode"],
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/magpie-community/plugins.git",
-    "directory": "packages/commandcode"
-  }
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/commandcode" }
 }
