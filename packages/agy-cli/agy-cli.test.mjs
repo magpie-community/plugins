@@ -44,6 +44,7 @@ for (const [name, mocks] of [
   ["web-search.mjs", false],
   ["tool-result-prefill.mjs", false],
   ["tool-step-retry.mjs", false],
+  ["tool-stream-reconnect.mjs", false],
   ["image-bytes.mjs", false],
   ["dsh-replay-state.mjs", false],
   ["duplicate-result-notice.mjs", false],
