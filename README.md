@@ -24,6 +24,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [commandcode](packages/commandcode) | Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro) | `commandcode-plan` |
 | [copilot](packages/copilot) | GitHub Copilot on GitHub.com or GitHub Enterprise, with premium request or credit quotas | `github-copilot` |
 | [cursor](packages/cursor) | Cursor subscriptions (Pro, Pro+, Ultra, Teams), on the API cursor-agent talks to | `cursor` |
+| [devpass](packages/devpass) | DevPass Lite, Pro and Max, or LLM Gateway pay-as-you-go: canonical live models on native Responses, Messages and Chat protocols, with daily, weekly premium and monthly allowance meters | `devpass` |
 | [devin](packages/devin) | Devin subscription (the devin CLI's account) | `devin` |
 | [factory](packages/factory) | Factory (Droid) subscription | `factory` |
 | [gcp-ai](packages/gcp-ai) | Google Cloud Vertex AI with your own gcloud / ADC login (needs `gcloud` and Chrome), plus the project's promotional credits | `gcp-ai` |

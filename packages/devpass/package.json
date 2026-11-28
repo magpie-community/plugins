@@ -1,0 +1,22 @@
+{
+  "name": "@magpie-community/opencode-devpass-auth",
+  "version": "0.1.0",
+  "description": "DevPass browser sign-in and LLM Gateway API keys in OpenCode and magpie: native model protocols, live models and allowance quotas",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "devpass", "llmgateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/devpass"
+  },
+  "scripts": { "test": "bun test" },
+  "magpie": {
+    "name": "DevPass",
+    "icon": "https://raw.githubusercontent.com/theopenco/llmgateway/main/apps/code/public/favicon/android-chrome-192x192.png",
+    "maxConcurrency": 4
+  }
+}
