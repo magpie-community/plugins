@@ -514,7 +514,7 @@ async function loadRemote() {
       renderDaily(lastDetail || {}); renderProv(lastModels); renderFlow();
       return;
     }
-    try { renderRemote(jd); } catch (re) { console.error('[usage-board] renderRemote threw:', re); throw new Error('renderRemote: ' + re.message); }
+    try { applyRemoteIcons(jd); renderRemote(jd); } catch (re) { console.error('[usage-board] renderRemote threw:', re); throw new Error('renderRemote: ' + re.message); }
   } catch (e) {
     if (seq !== remoteSeq) return; // 自己被新请求 abort：静默丢弃，不算失败
     remoteFailed = true; renderDaily(lastDetail || {}); renderProv(lastModels); // 真不可用：此刻才允许线路名兜底
@@ -653,6 +653,7 @@ document.addEventListener('dblclick',(e)=>{
 });
 
 function winVal(w){
+  // 旧 helper 已并入 winRemain（used 百分比窗口直接换算），不再有调用方
   if(w.unit&&w.unit!=='%'){
     const amt=w.amount!=null?fmt(w.amount):'';
     const lim=w.limit?' / '+fmt(w.limit):'';
@@ -687,9 +688,37 @@ function nextResetCN(){
   if(t<=now)t+=864e5;
   return t;
 }
+function winUsed(w){
+  // 已用绝对量：amount 直给；used 是 0–100 的百分比（MonkeyCode「每日 Token 额度」）；
+  // display 若是「已用 / 总量」口径（如 mclaw「已用 10,993 / 500,000」）也可反推。
+  if(w.amount!=null)return w.amount;
+  if(w.used!=null&&w.limit!=null&&w.used<=100&&(w.remaining==null||w.remaining<=100))return w.limit*w.used/100;
+  return null;
+}
+// used 字段是 0–100 百分比且语义可信（无 remaining 配对或 remaining 也 ≤100）→ 返回它；
+// 有 remaining 时 used 与 remaining 是一对（Loomy 98/2），份额交给 remaining 分支处理。
+function usedPct(w){
+  if(/usd|美元|\$/i.test(w.unit||''))return null; // 美元是账单口径
+  if(w.used==null||w.remaining!=null&&w.remaining>100)return null;
+  if(w.remaining!=null&&w.remaining<=100&&Math.abs(100-w.used-w.remaining)>1)return null; // 不互补→used 另有含义
+  if(w.used<0||w.used>100)return null;
+  return w.used;
+}
 function winRemain(w){
   if(w.runsOut!=null)return w.runsOut;
   if(w.limit&&w.amount!=null)return Math.max(0,w.limit-w.amount);
+  // used 百分比 + 无 remaining：剩余 = limit×(100-used)/100（MonkeyCode 每日 Token 额度）。
+  // 美元窗口排除：trae-global「Dollar Usage」used=0/limit=1 不是剩余 1 美元。
+  if(!/usd|美元|\$/i.test(w.unit||'')&&w.limit&&w.used!=null&&w.remaining==null)return Math.max(0,w.limit*(100-w.used)/100);
+  // 余额型窗口（magpie 0.1.3771 归一化形状：balance=剩余绝对量，无 limit）：
+  // meoo/kuku 的「积分」「积分余额」。balance 就是剩余，不是总量。
+  if(w.balance!=null)return Math.max(0,w.balance);
+  // 无 balance 字段但 display 是「纯余额文本」（catpaw「1198.12 credit」）→ 数字即剩余。
+  // 带「剩/已用/共」等前缀或「x / y」的不算（那是总量或已用口径，当剩余会虚高）。
+  if(w.limit==null){
+    const m=String(w.display||'').trim().match(/^([\d,.]+)\s*(?:credits?|积分|魔粒)?$/i);
+    if(m)return Math.max(0,Number(m[1].replace(/,/g,'')));
+  }
   return null;
 }
 // 还有余额可作废：卡片首行/排序都不该拿「已用空」的窗口当临期信号（如 5 小时额度 剩 0%）
@@ -697,6 +726,10 @@ function winAlive(w){
   if(w.runsOut!=null)return w.runsOut>0;
   // 先看实际余额再看百分比：Loomy 的 Daily grant 会报 remaining 0% 但还剩 16 credits
   if(w.limit&&w.amount!=null)return w.limit-w.amount>0;
+  // used 百分比窗口（MonkeyCode）：used<100 即还有剩余
+  if(w.limit&&w.used!=null&&w.remaining==null)return w.used<100;
+  // 余额型窗口：balance>0 即活着
+  if(w.balance!=null)return w.balance>0;
   if(w.remaining!=null)return w.remaining>0;
   return true;
 }
@@ -706,9 +739,9 @@ function isWorkBuddyProvider(provider){
 function isEstWindow(w){
   return /tokens?\s*\(est\.?\)/i.test(w.name||'');
 }
+// WorkBuddy 的 tokens (est.) 是按日重置的 Token 速率额度，不是积分：不能当临期行/排序信号
 function quotaWins(q){
   const wins=q.windows||[];
-  // WorkBuddy 的 tokens (est.) 是按日重置的 Token 速率额度，不是积分。
   return isWorkBuddyProvider(q.provider)?wins.filter(w=>!isEstWindow(w)):wins;
 }
 function soonWin(wins){
@@ -726,6 +759,11 @@ function soonWin(wins){
 // 总积分：优先用插件给的余额字段（“6800 积分”“248 魔粒可用”是聚合总量），
 // 其次取积分类窗口的总额（limit，或 display 里「已用 / 总量」的后者）。
 // 金额（$）不算积分；欠费表示可用为 0（“已欠费 1 积分” → 0，明细仍在首行显示）。
+// magpie 宿主把 aside/text 窗口归一化成 {text:true, remaining:100, display:"N credits"}
+// （结构被剥掉，只剩余额文本，remaining:100 无意义）——对这种窗口，display 的数字
+// 是各池的【余额】而非总量：多池并存时总积分 = 各池余额之和（VPS 的 loomy 就是这种
+// 形状：每日赠送 + 永久 两个 text 池），并把 allText 带回，让卡片标签写「积分余额」
+// 而不是「总积分」——后者暗示一个真实上限，这里并不存在。
 const fmtPts=n=>fmt(Number.isInteger(n)?n:Math.round(n*100)/100);
 function pointTotal(q,wins){
   const b=String(q.balance||'').replace(/,/g,'');
@@ -736,6 +774,19 @@ function pointTotal(q,wins){
       const u=/魔粒/.test(b)?t('unitMoli'):/credits/i.test(b)?'credits':/积分/.test(b)?t('unitPoints'):/points/i.test(b)?'points':'';
       return {n,u};
     }
+  }
+  // 先过一遍：有没有「纯余额文本」的积分类窗口（宿主归一化形状）
+  const textWins=wins.filter(w=>w.text&&/积分|魔粒|credits|points/i.test((w.name||'')+' '+(w.unit||'')));
+  if(textWins.length&&textWins.length===wins.filter(w=>/积分|魔粒|credits|points/i.test((w.name||'')+' '+(w.unit||''))).length){
+    // 全部积分类窗口都是 text 形状 → 余额求和；0 也是合法余额（每日用尽 ≠ 没这个池）
+    let sum=0,u='';
+    for(const w of textWins){
+      const v=dispNum(w);
+      if(v==null)continue;
+      sum+=v;
+      if(!u)u=/魔粒/.test(w.name||'')?t('unitMoli'):/credits/i.test((w.unit||'')+(w.name||''))?'credits':t('unitPoints');
+    }
+    if(sum>0||textWins.some(w=>dispNum(w)===0))return {n:sum,u,allText:true};
   }
   let best=null;
   for(const w of wins){
@@ -798,7 +849,7 @@ function pointSplit(q,wins,tot){
   const tempR=Math.max(0,winRemain(tw)||0);
   // 临时剩余不可能超过总积分：个别插件把 token 池标成 credits（SenseNova 120000），量级对不上就不画
   if(tot.n>0&&tempR>tot.n*1.001)return null;
-  const used=tw.amount!=null?Math.max(0,tw.amount):(tw.limit!=null?Math.max(0,tw.limit-tempR):0);
+  const used=(()=>{const u=winUsed(tw);return u!=null?Math.max(0,u):(tw.limit!=null?Math.max(0,tw.limit-tempR):0);})();
   const perm=Math.max(0,tot.n-tempR);
   const sum=perm+tempR+used;
   return sum>0?{perm,tempR,used,sum}:null;
@@ -810,7 +861,7 @@ function poolSplit(w){
   if(rem==null&&w.remaining!=null)rem=w.limit*w.remaining/100;
   if(rem==null)return null;
   rem=Math.max(0,rem);
-  const used=w.amount!=null?Math.max(0,w.amount):Math.max(0,w.limit-rem);
+  const used=(()=>{const u=winUsed(w);return u!=null?Math.max(0,u):Math.max(0,w.limit-rem);})();
   return {rem,used};
 }
 function segBar(name,rem,used){
@@ -840,12 +891,25 @@ function quotaCard(q){
   const rows=[];
   if(expWin){
     const rem=winRemain(expWin);
+    const pct=usedPct(expWin); // used 是 0–100 百分比的窗口（书生 5 小时额度、MonkeyCode）
     const val=rem!=null?(t('remPre')+fmt(rem)+(expWin.limit?(t('ofTotal')+fmt(expWin.limit)):'')+t('remSuf'))
       :(/欠费/.test(expWin.display||'')?esc(expWin.display)
       :(expWin.text?(t('remPre')+fmt(dispNum(expWin)||0)+t('remSuf'))
-      :(expWin.remaining!=null?(expWin.limit&&!/usd|美元|\$/i.test(expWin.unit||'')?(t('remPre')+fmt(expWin.limit*expWin.remaining/100)+t('ofTotal')+fmt(expWin.limit)+t('remSuf')):(t('remPre')+Math.round(expWin.remaining)+'%'+t('remSuf'))):(expWin.display?esc(expWin.display):'—'))));
+      :(expWin.remaining!=null?(expWin.limit&&!/usd|美元|\$/i.test(expWin.unit||'')?(t('remPre')+fmt(expWin.limit*expWin.remaining/100)+t('ofTotal')+fmt(expWin.limit)+t('remSuf')):(t('remPre')+Math.round(expWin.remaining)+'%'+t('remSuf')))
+      :(expWin.balance!=null?(t('remPre')+fmt(expWin.balance)+t('remSuf'))
+      :(pct!=null?(t('remainPct')+(100-pct)+'%'+t('remSuf'))
+      :(expWin.display?esc(expWin.display):'—'))))));
     const left=(expT-Date.now())/864e5;
-    const frac=(expWin.runsOut!=null&&expWin.limit)?expWin.runsOut/expWin.limit:(expWin.remaining!=null?expWin.remaining/100:null);
+    // 进度条画「剩余份额」：runsOut/limit、remaining/100，百分比窗口（MonkeyCode 等）
+    // 剩余 = limit×(100-used)/100 → frac = 剩余/limit = (100-used)/100。
+    // 不能用 used/100：那是「已用份额」，画出来会"剩一点"的错觉（used=0 时条只剩 2% 宽）。
+    // used 百分比不需要 limit 就能画份额（书生端砚「5 小时额度」只有 used+resetsAt）。
+    // 美元额度（$/¥）不画：那是账单不是额度池，100% 蓝条会误导。
+    const usdWin=/usd|美元|\$/i.test(expWin.unit||'');
+    const frac=usdWin?null
+      :(expWin.runsOut!=null&&expWin.limit)?expWin.runsOut/expWin.limit
+      :(expWin.remaining!=null?expWin.remaining/100
+      :(pct!=null?(100-pct)/100:null));
     // 窗口本身就叫「总积分」时，第一行讲剩余、第二行讲总量，避免两个同名标签（比较对象是上游中文名，走 T.zh）
     const expLabel=(expWin.name===T.zh.winTotalPoints)?t('winRemPoints'):expWin.name;
     const bar1=frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%;background:${expColor(days/864e5)}"></i></div>`:'';
@@ -853,7 +917,9 @@ function quotaCard(q){
       +bar1);
   }
   if(tot){
-    rows.push(`<div class="q2row"><span class="q2label">${t('winTotalPoints')}</span><span class="q2val">${fmtPts(tot.n)}</span><span class="q2exp">${esc(tot.u)}${tot.exp&&(!expWin||Math.abs(tot.exp-expT)>6e4)?(' · '+fmtDaysLeft(tot.exp)):''}</span></div>`);
+    // allText（各池只剩余额文本，宿主剥了结构）→ 标签写「积分余额」：这些数字相加是
+    // 余额合计，不是真实上限，「总积分」会撒谎
+    rows.push(`<div class="q2row"><span class="q2label">${t(tot.allText?'pointsBalance':'winTotalPoints')}</span><span class="q2val">${fmtPts(tot.n)}</span><span class="q2exp">${esc(tot.u)}${tot.exp&&(!expWin||Math.abs(tot.exp-expT)>6e4)?(' · '+fmtDaysLeft(tot.exp)):''}</span></div>`);
     if(sp){
       // 可用（长期+临时剩余）与已消耗两段；两者相加=发放总量
       const avail=sp.perm+sp.tempR, all=avail+sp.used;
@@ -864,6 +930,20 @@ function quotaCard(q){
     }else{
       const p2=poolSplit(expWin);
       if(p2)rows.push(segBar(expWin.name,p2.rem,p2.used));
+      else{
+        // 余额型窗口（balance/display 余额，无 limit）配「已用」文本窗口 → 已用/(已用+余额) 分段条
+        // （meoo：余额 6,106 + 「已用」894 → 12.8%）。无已用窗口时无分母，不画。
+        // expWin 可能为 null（tot 有值但没有任何窗口能算到期——soonWin 返回 [null,Infinity]）：
+        // 此时没有可配对的窗口，只保留上面那行总积分/积分余额（绝不能删它——删了 rows
+        // 会掉进 noWindows 兜底，MonkeyCode 这类 balance-only 卡就整卡变「无窗口数据」）。
+        if(expWin){
+          const rem=winRemain(expWin);
+          if(rem!=null){
+            const usedWin=wins.find(w=>w!==expWin&&/^已用|used/i.test(w.name||'')&&dispNum(w)!=null);
+            if(usedWin)rows.push(segBar(expWin.name,rem,dispNum(usedWin)));
+          }
+        }
+      }
     }
     // 没有积分分段条时，把容量最大的那个池子也画一条（SenseNova 的本周额度这类）
     if(!sp){
@@ -871,12 +951,13 @@ function quotaCard(q){
       for(const w of wins){
         if(w===expWin||w.limit==null)continue;
         if(expWin&&expWin.limit!=null&&w.limit<=expWin.limit)continue;
-        if(winRemain(w)==null&&w.remaining==null&&w.amount==null)continue;
+        if(winRemain(w)==null&&w.remaining==null&&winUsed(w)==null)continue;
         if(!bw||w.limit>bw.limit)bw=w;
       }
       if(bw){
         const rem2=winRemain(bw);
-        const frac2=(rem2!=null&&bw.limit)?rem2/bw.limit:(bw.remaining!=null?bw.remaining/100:null);
+        // 同样画「剩余份额」：rem2/limit；百分比窗口（无 remaining）画 (100-used)/100
+        const frac2=(rem2!=null&&bw.limit)?rem2/bw.limit:(bw.remaining!=null?bw.remaining/100:(usedPct(bw)!=null?(100-usedPct(bw))/100:null));
         const e2=winExp(bw), d2=e2!=null?(e2-Date.now())/864e5:null;
         const right2=d2!=null?fmtDaysLeft(e2):(bw.unit?esc(bw.unit):'');
         rows.push(`<div class="q2row"><span class="q2label" title="${esc(bw.name)}">${esc(bw.name)}</span><span class="q2val">${rem2!=null?(t('remPre')+fmt(rem2)+(bw.limit?(t('ofTotal')+fmt(bw.limit)):'')+t('remSuf')):'—'}</span><span class="q2exp"${d2!=null?` style="color:${expColor(d2)}${d2<=7?';font-weight:600':''}"`:''}>${right2}</span></div>`
@@ -890,7 +971,7 @@ function quotaCard(q){
     else if(rem!=null&&totWin.limit)right='/ '+fmt(totWin.limit);
     else if(totWin.remaining!=null&&totWin.limit)right=t('totalPre')+fmt(totWin.limit)+t('totalSuf');
     else right='';
-    const frac=(totWin.runsOut!=null&&totWin.limit)?totWin.runsOut/totWin.limit:(totWin.remaining!=null?totWin.remaining/100:null);
+    const frac=(totWin.runsOut!=null&&totWin.limit)?totWin.runsOut/totWin.limit:(totWin.remaining!=null?totWin.remaining/100:(usedPct(totWin)!=null?(100-usedPct(totWin))/100:null));
     rows.push(`<div class="q2row"><span class="q2label" title="${esc(totWin.name)}">${esc(totWin.name)}</span><span class="q2val">${val}</span><span class="q2exp">${right}</span></div>`
       +(frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%"></i></div>`:''));
   }else if(!totWin&&!q.balance&&expWin&&expWin.limit){
@@ -917,7 +998,21 @@ function countdown(iso){
 }
 
 let gwLimit=null; // 最近一次 /v1/magpie/limit：网关短暂缺席时沿用旧值；此前未声明，首绘读到未定义标识符 → 「渲染失败: gwLimit is not defined」红条闪现
+let lastQuotas=[], lastQuotaLimit=null; // 归因晚到时会重画卡片，需要留住最近一次额度列表
+// 远端 provider（quota 卡上的 magpie-direct/duanyan 这类）的图标由服务端从本机
+// icons/ 缓存拼成 data URI，随归属接口一起回来；只补缺、不覆盖本地已有的品牌映射。
+function applyRemoteIcons(d,redraw){
+  if(!d||!d.icons)return;
+  window.QLOGOS=window.QLOGOS||{};
+  let changed=false;
+  for(const k of Object.keys(d.icons)){
+    const v=d.icons[k];
+    if(v&&!window.QLOGOS[k]){window.QLOGOS[k]=v;changed=true;}
+  }
+  if(changed&&redraw!==false&&lastQuotas.length)renderQuotas(lastQuotas,lastQuotaLimit);
+}
 function renderQuotas(list,limitInfo){
+  lastQuotas=list||[]; lastQuotaLimit=limitInfo||null;
   gwLimit=limitInfo||gwLimit||null;
   // 同一订阅会因「直连/代理两条线路」和「本地/VPS 两个实例」出多张卡：
   // 按（归一化订阅 + 账号）分组，每组只留一张卡——同一上游额度池没必要显示两遍；
@@ -1263,8 +1358,11 @@ const LINE_OF={'magpie-direct':'lineDirectUnattr','remote-magpie':'lineDirectUna
 // 品牌拆分名归并（同一家的不同端点命名，2026-11-01 用户拍板）
 // 品牌名按 provider 原名展示（不再做个人化的归并映射）
 const nameOf=pn=>String(pn||'');
-// 线路前缀剥离（直连/代理两线路+旧出口名，归一化到同一订阅）
-const normSub=p=>String(p||'').replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//,'');
+// 线路前缀剥离：服务端注入 __LINES__（providers.json 里用户自定义的远端线路 id）+ magpie
+// 自带的四条。用户把远端线路起名 office 时，office/duanyan 的前缀才剥得掉、logo 找得到。
+const LINES=(window.__LINES__&&window.__LINES__.length)?window.__LINES__:fallback=['magpie-direct','magpie-cf','magpie-2','remote-magpie'];
+const LINE_RE=new RegExp('^('+LINES.map(s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')\\/');
+const normSub=p=>String(p||'').replace(LINE_RE,'');
 // 品牌 logo 映射 = window.QLOGOS（deploy 部署时由 logos/manifest.json 注入；
 // manifest 由 tools/sync-plugin-logos.mjs 从插件包生成——新 provider 装好后重跑该脚本即自动点亮）
 // provider 会带线路/地区/变体后缀（qoder-cn、monkeycode-intl、trae-global、hub-magicrew…），
@@ -1399,7 +1497,21 @@ function paint(d){
   renderQuotas(d.quotas||[], d.limit);
   loadRemote(); // 归因到达后 renderRemote 会重画 daily/prov/flow/hourly；在此之前线路名不出现（见 remoteFailed）
   renderHourly();
+  refreshQuotas(); // 首屏的 __DATA__.quotas 不含远端卡兜底，立刻补拉一次额度（含远端卡与图标）
   $('#updated').textContent=t('updatedAt')+new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'en-US',{hour12:false});
+}
+
+// 额度墙的增量刷新：/api/quotas 除网关卡外，remote 模式下还带本机服务补齐的远端卡与图标映射
+async function refreshQuotas(){
+  try{
+    const q=await (await fetch(auth('api/quotas'),{headers:hf()})).json();
+    if(q.error){ $('#quotaGrid').innerHTML='<div class="err">'+t('quotaApiErr')+esc(String(q.error).slice(0,80))+t('quotaApiErrTail')+'</div>'; return; }
+    // 先合并图标再画，避免卡片先以首字色块出现、图标晚到又闪一次
+    applyRemoteIcons(q,false);
+    renderQuotas(q.data||[], q.limit);
+  }catch(e){
+    $('#quotaGrid').innerHTML='<div class="err">'+t('quotaLoadFail')+esc(e.message||e)+'</div>';
+  }
 }
 
 async function load(){
@@ -1427,13 +1539,7 @@ async function load(){
   }catch(e){
     $('#updated').innerHTML='<span style="color:var(--bad)">'+t('loadFail')+esc(e.message||e)+'</span>';
   }
-  try{
-    const q=await (await fetch(auth('api/quotas'),{headers:hf()})).json();
-    if(q.error){ $('#quotaGrid').innerHTML='<div class="err">'+t('quotaApiErr')+esc(String(q.error).slice(0,80))+t('quotaApiErrTail')+'</div>'; return; }
-    renderQuotas(q.data||[], q.limit);
-  }catch(e){
-    $('#quotaGrid').innerHTML='<div class="err">'+t('quotaLoadFail')+esc(e.message||e)+'</div>';
-  }
+  await refreshQuotas();
   loadRemote();
   renderHourly();
 }
