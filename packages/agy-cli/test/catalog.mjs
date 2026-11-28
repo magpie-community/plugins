@@ -988,6 +988,137 @@ test("a family alias doesn't stand in for a model another signed-in account list
   })
 })
 
+test("unaliased models missing from this account fail fast without spawning agy when another signed-in account lists them", async () => {
+  const proRows = [
+    ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"],
+    ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+    ["gemini-4-argon-high", "Gemini 4 Argon (High)"],
+    ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"],
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
+  ]
+  const proOffered = proRows.filter(([id]) => id !== "gemini-4-argon-high")
+  await withKit({ modelsBehavior: { stdout: modelsOutput(proRows) }, offeredModels: proOffered }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    await kit.models()
+    const file = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "models.json")
+    const data = JSON.parse(fs.readFileSync(file, "utf8"))
+    const [own] = Object.keys(data.byAgy)
+    fs.mkdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "abcdef0123456789"), { recursive: true })
+    // Peer offered list mirrors real agy (bare + suffixed without effort fields)
+    // and also covers suffixed-only offered rows (gemini-4-carbon-high).
+    data.byAgy[`${own}#abcdef0123456789`] = {
+      at: Date.now(),
+      list: [
+        { id: "gemini-4-neon-high", name: "Gemini 4 Neon (High)", effort: "high" },
+        { id: "gemini-4-neon-xhigh", name: "Gemini 4 Neon (XHigh)", effort: "xhigh" },
+        { id: "gemini-4-carbon-high", name: "Gemini 4 Carbon (High)", effort: "high" },
+        { id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", effort: "high" },
+        { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+      ],
+      offered: [
+        { id: "gemini-4-neon", name: "Gemini 4 Neon" },
+        { id: "gemini-4-carbon-high", name: "Gemini 4 Carbon (High)" },
+        { id: "gemini-4-argon", name: "Gemini 4 Argon" },
+        { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+      ],
+    }
+    fs.writeFileSync(file, JSON.stringify(data))
+
+    const spawned = kit.acpSpawns.length
+    for (const model of ["gemini-4-neon", "gemini-4-neon-xhigh", "gemini-4-carbon", "gemini-4-argon", "claude-fable-5-2"]) {
+      const response = await kit.request(baseBody({ model: `agy-cli/${model}`, messages: [{ role: "user", content: model }] }))
+      const text = await response.text()
+      assert.equal(response.status, 400, `${model}: ${text}`)
+      assert.match(JSON.parse(text).error.message, /unavailable to this agy account; another signed-in agy account lists it/)
+    }
+    assert.equal(kit.acpSpawns.length, spawned, "no agy acp was started for models only another account lists")
+
+    // A model no signed-in account lists still reaches agy acp.
+    const unknown = await kit.request(baseBody({ model: "agy-cli/gemini-9-unknown", messages: [{ role: "user", content: "unknown" }] }))
+    assert.equal(unknown.status, 200)
+    await unknown.text()
+    assert.ok(kit.acpSpawns.length > spawned, "unlisted model should still reach agy acp")
+
+    // Own models still work.
+    const ownReq = await kit.request(baseBody({ model: "agy-cli/gemini-4-hydrogen-high", messages: [{ role: "user", content: "own" }] }))
+    assert.equal(ownReq.status, 200)
+    await ownReq.text()
+  })
+})
+
+test("unaliased fail-fast uses fresh agy models before ACP probe and does not reject on stale or fallback catalogs", async () => {
+  const proRows = [
+    ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"],
+    ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
+  ]
+  const peerEntry = {
+    at: Date.now(),
+    list: [
+      { id: "gemini-4-neon-high", name: "Gemini 4 Neon (High)", effort: "high" },
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    ],
+  }
+  const seedPeer = (kit, agyKey) => {
+    const file = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "models.json")
+    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { version: 1, byAgy: {} }
+    fs.mkdirSync(path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "abcdef0123456789"), { recursive: true })
+    data.byAgy[`${agyKey}#abcdef0123456789`] = { ...peerEntry, at: kit.clock.now() }
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(data))
+  }
+
+  // 1. Fresh `agy models` without an ACP probe yet: missing unaliased model
+  // fails fast, while this account's own Claude model is NOT falsely rejected.
+  await withKit({ modelsBehavior: { stdout: modelsOutput(proRows) }, offeredModels: proRows }, async (kit) => {
+    seedPeer(kit, kit.agyPath)
+    const missing = await kit.request(baseBody({ model: "agy-cli/gemini-4-neon", messages: [{ role: "user", content: "neon" }] }))
+    assert.equal(missing.status, 400)
+    assert.equal(kit.acpSpawns.length, 0, "fresh agy models should fail fast without starting agy acp")
+
+    const ownClaude = await kit.request(baseBody({ model: "agy-cli/claude-sonnet-4-6", messages: [{ role: "user", content: "claude" }] }))
+    assert.equal(ownClaude.status, 200)
+    await ownClaude.text()
+    assert.equal(kit.acpSpawns.length, 1, "own non-Gemini model in fresh agy models must not be rejected before ACP probe")
+  })
+
+  // 2. Fallback catalog (`agy models` hangs): do not reject before learning
+  // what this account actually serves.
+  await withKit({ modelsBehavior: { hang: true }, offeredModels: [["gemini-4-neon-high", "Gemini 4 Neon (High)"]] }, async (kit) => {
+    seedPeer(kit, kit.agyPath)
+    const res = await kit.request(baseBody({ model: "agy-cli/gemini-4-neon", messages: [{ role: "user", content: "cold" }] }))
+    assert.equal(res.status, 200)
+    await res.text()
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+
+  // 3. Stale saved catalog on restart (`agy models` fails): do not lock out
+  // an account that may have been upgraded since the last run.
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stale-failfast-"))
+  try {
+    const agy = path.join(shared, process.platform === "win32" ? "agy.exe" : "agy")
+    fs.writeFileSync(agy, "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+    const env = { XDG_STATE_HOME: path.join(shared, "state") }
+    await withKit({ agyPath: agy, env, modelsBehavior: { stdout: modelsOutput(proRows) }, offeredModels: proRows }, async (kit) => {
+      await kit.models()
+      await warmed(kit)
+      seedPeer(kit, agy)
+    })
+    await withKit({
+      agyPath: agy, env,
+      modelsBehavior: { code: 1, stderr: "timeout" },
+      offeredModels: [["gemini-4-neon-high", "Gemini 4 Neon (High)"]],
+    }, async (kit) => {
+      const res = await kit.request(baseBody({ model: "agy-cli/gemini-4-neon", messages: [{ role: "user", content: "upgraded" }] }))
+      assert.equal(res.status, 200)
+      await res.text()
+      assert.equal(kit.acpSpawns.length, 1)
+    })
+  } finally {
+    fs.rmSync(shared, { recursive: true, force: true })
+  }
+})
+
 test("各家族 limit 正确，未知动态型号不猜成 1M", async () => {
   const expected = {
     "gemini-4-argon": { context: 1048576, output: 65536 },
