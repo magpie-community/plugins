@@ -290,6 +290,7 @@ it off puts the config back.
 | [chatcut](packages/chatcut) | [ChatCut](https://chatcut.io): a separate Magpie connection in `~/.config/chatcut/magpie.json`, using ChatCut's isolated Codex harness; requires the companion Desktop release |
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
+| [qwen-mcp](packages/qwen-mcp) | [Qwen Code](https://github.com/QwenLM/qwen-code) Library bridge: tick MCP servers and skills for Qwen Code (`~/.qwen/settings.json` and `~/.qwen/skills`); models stay on the built-in Qwen Code row. Removable once magpie supports Qwen natively |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [deepzora](packages/deepzora) | [Deepzora](https://github.com/SivanCola/deepzora) Desktop, CLI and ACP: reversible global TOML/dotenv bridge; restart Deepzora after choosing a model |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
