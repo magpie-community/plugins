@@ -49,9 +49,25 @@ test("a tool continuation without a session or a warm cache does not recall agai
   const extra = { session: undefined };
   await plugin.onRequest(request("New question"), context(extra));
   const body = request("New question");
-  body.messages.push({ role: "assistant", tool_calls: [{ id: "fixture" }] }, { role: "tool", content: "done" });
+  body.messages.push({ role: "assistant", tool_calls: [{ id: "fixture" }] }, { role: "tool", content: "done" },
+    { role: "developer", content: "Use the tool results" });
   assert.equal(await plugin.onRequest(body, context(extra)), undefined);
   assert.equal(calls.length, 1);
+});
+
+test("trailing system and developer instructions preserve a new user turn", async () => {
+  const { plugin, calls } = stub();
+  for (const [protocol, field] of [["chat", "messages"], ["responses", "input"]]) {
+    const body = { [field]: [
+      { role: "user", content: "Find my preference" },
+      { role: "developer", content: "Keep the answer short" },
+      { role: "system", content: "Reply in Markdown" }
+    ] };
+    const result = await plugin.onRequest(body, context({ protocol, session: undefined }));
+    assert.match(result[field][0].content, /\[1\] Find my preference/);
+    assert.equal(result[field][1].content, "Keep the answer short");
+  }
+  assert.deepEqual(calls.map(call => call.query), ["Find my preference", "Find my preference"]);
 });
 
 test("changed effective queries and subagents do not reuse other recalled content", async () => {
@@ -181,4 +197,27 @@ test("agents can inherit or explicitly select an existing bank for both recall a
   assert.deepEqual(calls.map(url => url.split("/banks/")[1]), [
     "fixture-bank/memories/recall", "fixture-bank/memories", "hermes/memories/recall", "hermes/memories"
   ]);
+});
+
+test("slow verification of an override respects the recall budget and leaves the request intact", async () => {
+  const events = [];
+  let finishVerification;
+  let recalls = 0;
+  const keepAlive = setTimeout(() => {}, 2000);
+  try {
+    const plugin = createPlugin({
+      checkBank: () => new Promise(resolve => { finishVerification = resolve; }),
+      fetcher: async () => { recalls++; return Response.json({ results: [{ text: "unexpected" }] }); },
+      observe: event => events.push(event)
+    });
+    const body = request("question");
+    const options = { agent_mode: "manual", gatewayTimeoutMs: 250, agent_policies: {
+      claude: { recall: "gateway", bank: "slow-bank" }
+    } };
+    assert.equal(await plugin.onRequest(body, context({ options })), undefined);
+    assert.deepEqual(body, request("question"));
+    assert.equal(events.at(-1).code, "timeout");
+    finishVerification(true);
+    assert.equal(recalls, 0);
+  } finally { clearTimeout(keepAlive); }
 });

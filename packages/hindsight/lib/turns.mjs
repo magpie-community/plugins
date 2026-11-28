@@ -39,7 +39,10 @@ export function turns(body, protocol) {
 
 export function hasNewUserTurn(body, protocol, turn) {
   const list = contents(body, protocol);
-  return !Array.isArray(list) || turn.index === list.length - 1;
+  if (!Array.isArray(list)) return true;
+  return list.slice(turn.index + 1).every(item =>
+    (protocol === "chat" || (protocol === "responses" && (item?.type === undefined || item.type === "message"))) &&
+    (item?.role === "developer" || item?.role === "system"));
 }
 
 export function turnKeys(all, previousResponse) {

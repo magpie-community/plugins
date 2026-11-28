@@ -1,5 +1,5 @@
 import { agentId, agentPolicy, configuration, gatewayBank } from "./config.mjs";
-import { ApiError, Hindsight } from "./hindsight.mjs";
+import { ApiError, Hindsight, recallTimeout } from "./hindsight.mjs";
 import { continuesTools, finalAnswer, memoryBlock, responseTools, utf8Prefix } from "./protocol.mjs";
 import { conversationIdentity, createConversationStore, hash, hasNewUserTurn, injected, replay, turnKeys, turns, userText } from "./turns.mjs";
 
@@ -40,7 +40,12 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
     } catch { /* Observability is always best effort. */ }
   }
 
-  function dispatchRecall(query, ctx, config) {
+  function dispatchRecall(query, ctx, config, override) {
+    const budget = recallTimeout(config.gatewayTimeoutMs);
+    if (!budget) {
+      record(ctx, config, "recall", "budget");
+      return Promise.reject(new ApiError("budget"));
+    }
     const identity = hash([config.hindsight_api, config.bank]);
     const now = Date.now();
     const previous = health.get(identity);
@@ -54,7 +59,17 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
     if (health.size > 32) health.delete(health.keys().next().value);
     pendingRecalls++;
     const start = Date.now();
-    return new Hindsight(config, fetcher).recall(query).then(memories => {
+    const lookup = async () => {
+      const client = new Hindsight(config, fetcher);
+      if (override && checkBank) {
+        const deadline = AbortSignal.timeout(budget);
+        const valid = await stopWaiting(Promise.resolve().then(() => checkBank(config)), deadline).catch(() => false);
+        if (deadline.aborted) throw new ApiError("timeout");
+        if (!valid) throw new ApiError("bank-unverified");
+      }
+      return client.recall(query, budget - (Date.now() - start));
+    };
+    return lookup().then(memories => {
       const text = memoryBlock(memories, config.recall_max_tokens, config.injection_max_bytes - 2);
       healthEntry.failures = 0;
       healthEntry.until = 0;
@@ -62,6 +77,7 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
       return text;
     }, error => {
       const code = failureCode(error);
+      if (code === "bank-unverified") record(ctx, config, "policy", code);
       if (RETRYABLE.has(code) && (++healthEntry.failures >= 3 || code === "rate-limited")) {
         healthEntry.until = Date.now() + BANK_COOLDOWN_MS;
       }
@@ -97,14 +113,6 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
       if (policy.recall.reason === "native-conflict" || policy.capture.reason === "native-conflict")
         record(ctx, config, "policy", "native-conflict");
       if (!shouldRecall && !shouldCapture) { report(ctx, "skipped"); return undefined; }
-      if (override && checkBank) {
-        const valid = await stopWaiting(checkBank(config), ctx.signal).catch(() => false);
-        if (!valid) {
-          record(ctx, config, "policy", "bank-unverified");
-          report(ctx, "skipped");
-          return undefined;
-        }
-      }
 
       const all = turns(body, ctx.protocol);
       const turn = all.at(-1);
@@ -135,7 +143,7 @@ export function createPlugin({ fetcher = fetch, nativePolicy = () => ({}), obser
 
       let block = "";
       if (shouldRecall && rawText && !injected(turn) && !ctx.signal?.aborted && (!continuation || kept)) {
-        const recall = kept ?? { query, promise: dispatchRecall(query, ctx, config) };
+        const recall = kept ?? { query, promise: dispatchRecall(query, ctx, config, override) };
         if (!kept && stableTurn) cache.set(key, recall);
         if (recall.promise && !kept) {
           recall.promise.then(text => {

@@ -114,6 +114,18 @@ function hermesPolicy(config, provider, knownOverrides) {
   };
 }
 
+function hermesProfiles(primary, desktop) {
+  if (primary.evidence === "unknown") return desktop;
+  if (desktop.evidence === "unknown") return primary;
+  const recall = primary.recall === desktop.recall ? primary.recall : "unknown";
+  const capture = primary.capture === desktop.capture ? primary.capture : "unknown";
+  const bank = primary.bank === desktop.bank ? primary.bank : "";
+  const variableBank = Boolean(primary.variableBank || desktop.variableBank || primary.bank !== desktop.bank);
+  if (recall === primary.recall && capture === primary.capture && bank === primary.bank &&
+      primary.evidence === desktop.evidence && primary.variableBank === desktop.variableBank) return primary;
+  return { recall, capture, bank, variableBank, evidence: "multiple-profiles" };
+}
+
 function counts(source) {
   const byAgent = Object.create(null);
   function update(line, kind) {
@@ -188,8 +200,6 @@ export async function discoverAgents({ home = homedir(), env = process.env, conf
   const codexCustom = codexWiring.recall && !/codex-hook\.js/i.test(codexHooks);
   const primaryProvider = hermesProvider(hermesYaml);
   const desktopProvider = hermesProvider(desktopYaml);
-  const desktop = !primaryProvider && Boolean(desktopProvider);
-  const provider = primaryProvider || desktopProvider;
   const dshWired = [dshRoot, dshSettings, ...profiles].some(dshPlugin);
   const dshInstalled = dshPackages.some(text =>
     Object.hasOwn(json(text).dependencies ?? {}, "@vectorize-io/hindsight-coding-agents"));
@@ -199,9 +209,9 @@ export async function discoverAgents({ home = homedir(), env = process.env, conf
   const piWired = Array.isArray(piSettings?.extensions) &&
     piSettings.extensions.some(entry => typeof entry === "string" && /hindsight.*[\\/]pi\.js/i.test(entry));
   const native = {
-    hermes: primaryProvider && desktopProvider && primaryProvider !== desktopProvider
-      ? { ...unknown, evidence: "multiple-profiles" }
-      : hermesPolicy(json(desktop ? desktopConfig : hermesConfig), provider, env),
+    hermes: hermesProfiles(
+      hermesPolicy(json(hermesConfig), primaryProvider, env),
+      hermesPolicy(json(desktopConfig), desktopProvider, env)),
     dsh: !dshWired && dshInstalled
       ? { ...unknown, bank: codingBank({ ...cfg, ...cfg.harnesses?.dsh }), evidence: "installed-profile" }
       : codingPolicy("dsh", nativeStats.dsh, { recall: dshWired, capture: dshWired }, cfg, profiles.some(Boolean) || Boolean(dshRoot)),
@@ -223,7 +233,7 @@ export async function discoverAgents({ home = homedir(), env = process.env, conf
       : nativeStats[id] ? { ...unknown, evidence: "observed" } : unsupported;
   });
   const ids = new Set([...connected, ...discovered, ...Object.keys(nativeStats)]);
-  if (provider) ids.add("hermes");
+  if (primaryProvider || desktopProvider) ids.add("hermes");
   for (const id of ids) {
     const base = native[id.split("#")[0]];
     native[id] ??= nativeStats[id] ? { ...unknown, evidence: "observed" }
@@ -258,5 +268,9 @@ export function inventory(refresh = false) {
 export function nativePolicy(id) {
   // File discovery never delays a model request.
   void inventory();
-  return Object.hasOwn(snapshot.native, id) ? snapshot.native[id] : (id ? unsupported : unknown);
+  return discoveredNative(snapshot, id);
+}
+
+export function discoveredNative(data, id) {
+  return Object.hasOwn(data.native, id) ? data.native[id] : (id ? unsupported : unknown);
 }

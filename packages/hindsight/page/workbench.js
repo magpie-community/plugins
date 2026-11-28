@@ -135,7 +135,8 @@
     $("discard").disabled = !saved || !dirty || busy;
     $("check-draft").disabled = !saved || busy;
     $("agent_mode").disabled = !saved || busy;
-    $("capture").disabled = !saved || busy;
+    for (const id of [...Object.keys(defaults), "recall_tags"]) $(id).disabled = !saved || busy;
+    for (const menu of $("agent-rows").querySelectorAll("select")) menu.disabled = !saved || busy;
     $("add-agent").disabled = !saved || busy || $("agent_mode").value === "legacy";
   }
 
@@ -147,7 +148,11 @@
     }
     $("recall_tags").value = Array.isArray(options.recall_tags) ? options.recall_tags.join(", ") : "";
     $("agent_mode").value = options.agent_mode ?? (Object.hasOwn(options, "agents") ? "legacy" : "auto");
-    draftRules = Object.assign(Object.create(null), options.agent_policies || {});
+    draftRules = Object.create(null);
+    for (const [name, policy] of Object.entries(options.agent_policies ?? {})) {
+      const id = agentId(name);
+      if (id) draftRules[id] = policy;
+    }
     $("draft-result").hidden = true;
     dirty = false;
     previewRows = undefined;
@@ -163,7 +168,7 @@
         : numeric.includes(key) ? ($(key).valueAsNumber || 0) : $(key).value.trim();
     }
     next.agent_mode = $("agent_mode").value;
-    next.agent_policies = draftRules;
+    next.agent_policies = structuredClone(draftRules);
     next.recall_tags = $("recall_tags").value.split(/[,，]/).map(value => value.trim()).filter(Boolean);
     return next;
   }
@@ -252,6 +257,7 @@
       menu.value = draftRules[agent.id]?.[action] ?? fallback;
       menu.disabled = !saved || busy;
       menu.addEventListener("change", () => {
+        if (busy) return;
         const policy = draftRules[agent.id] ?? { recall: fallback, capture: fallback };
         draftRules[agent.id] = { ...policy, [action]: menu.value };
         changed();
@@ -284,7 +290,7 @@
   function bankCell(agent, activeBank) {
     const bank = node("td");
     const shared = $("bank").value || saved?.bank || snapshot.defaultBank || defaults.bank;
-    const picked = draftRules[agent.id]?.bank || agent.bankOverride || "";
+    const picked = (saved ? draftRules[agent.id]?.bank : agent.bankOverride) || "";
     if ($("agent_mode").value !== "legacy" && agent.id !== "unknown" && saved) {
       const selector = node("select", undefined, "bank-select");
       selector.dataset.agent = agent.id;
@@ -296,6 +302,7 @@
       selector.value = picked;
       selector.disabled = busy;
       selector.addEventListener("change", () => {
+        if (busy) return;
         const fallback = $("agent_mode").value === "auto" ? "auto" : "off";
         const rule = { recall: fallback, capture: fallback, ...(draftRules[agent.id] ?? {}) };
         if (selector.value) rule.bank = selector.value;
@@ -522,6 +529,7 @@
     busy = true;
     buttons();
     show("status", "正在验证并保存…");
+    let invalidField;
     try {
       const edits = values();
       const candidate = { ...saved, ...edits };
@@ -536,7 +544,7 @@
           if (["capture", "agent_mode"].includes(result.field)) panels("agents");
           else panels("connection");
           field.setAttribute("aria-invalid", "true");
-          field.focus();
+          invalidField = field;
         }
         return show("status", "配置验证失败" + (field ? "，请检查标记字段。" : "，请检查 Agent 规则。"), "error");
       }
@@ -550,7 +558,7 @@
       saved = response.data && typeof response.data === "object" ? response.data : candidate;
       fill(saved);
       const url = new URL(location.href);
-      if (!(host.service) && edits.port !== oldPort) url.port = edits.port;
+      if (edits.port !== oldPort) url.port = edits.port;
       url.searchParams.set("saved", "1");
       url.searchParams.set("panel", activePanel);
       pendingReconnect = { url, revision: result.revision };
@@ -560,6 +568,7 @@
     } finally {
       busy = false;
       buttons();
+      invalidField?.focus();
     }
   }
 
@@ -599,11 +608,12 @@
     });
   }
   $("agent_mode").addEventListener("change", () => {
+    if (!saved || busy) return;
     const legacy = saved && (saved.agent_mode ?? (Object.hasOwn(saved, "agents") ? "legacy" : "auto")) === "legacy";
     if (legacy && $("agent_mode").value === "manual") {
       for (const id of saved.agents ?? []) {
-        const name = id.trim().toLowerCase();
-        if (!Object.hasOwn(draftRules, name)) draftRules[name] = { recall: "gateway", capture: "gateway" };
+        const name = agentId(id);
+        if (name && !Object.hasOwn(draftRules, name)) draftRules[name] = { recall: "gateway", capture: "gateway" };
       }
       for (const agent of snapshot.agents) {
         if (agent.id === "unknown" || draftRules[agent.id]) continue;
@@ -654,7 +664,8 @@
   });
   $("close-dialog").addEventListener("click", () => $("agent-dialog").close());
   $("confirm-agent").addEventListener("click", () => {
-    const id = $("manual-id").value.trim().toLowerCase();
+    if (!saved || busy) return;
+    const id = agentId($("manual-id").value);
     if (!/^[a-z0-9][a-z0-9._# -]{0,127}$/.test(id) || id === "unknown") return show("dialog-error", "请输入有效的 Agent ID。");
     if (currentRows().some(row => row.id === id) || Object.hasOwn(draftRules, id)) return show("dialog-error", "这个 Agent 已在列表中。");
     const policy = $("agent_mode").value === "auto" ? "auto" : "off";
@@ -671,7 +682,7 @@
     if (parent !== window) {
       try {
         const hello = await call("hello");
-        host = { origin: hello.origin, service: hello.data?.service ?? "" };
+        host = { origin: hello.origin };
         visible = hello.data?.visible !== false;
         theme(hello.data);
         saved = (await call("options.get")).data ?? {};

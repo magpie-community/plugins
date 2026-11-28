@@ -62,7 +62,7 @@ export class Hindsight {
     }
   }
 
-  async recall(query) {
+  async recall(query, timeoutMs = recallTimeout(this.config.gatewayTimeoutMs)) {
     const tags = this.config.recall_tags;
     const data = await this.request(this.bankPath("/memories/recall"), {
       query,
@@ -70,7 +70,7 @@ export class Hindsight {
       budget: "low",
       include: { entities: null, chunks: null, source_facts: null },
       ...(tags.length ? { tags, tags_match: "any_strict" } : {})
-    }, { timeoutMs: recallTimeout(this.config.gatewayTimeoutMs) });
+    }, { timeoutMs });
     if (!Array.isArray(data?.results)) throw new ApiError("invalid");
     return data.results.flatMap(result => typeof result?.text === "string" && result.text.trim() ? [result.text] : []);
   }

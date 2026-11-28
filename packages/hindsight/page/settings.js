@@ -18,6 +18,11 @@ find("save-port").addEventListener("click", async () => {
     current = await magpie.options.get() || {};
     await magpie.options.set({ ...current, port });
     current.port = port;
+    if (root) {
+      const url = new URL(root);
+      url.port = port;
+      root = url.href;
+    }
     find("status").textContent = "端口已保存。";
     launch();
   } catch {

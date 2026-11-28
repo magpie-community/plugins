@@ -20,7 +20,7 @@ Use an existing Hindsight bank. The default is `hermes` on `http://127.0.0.1:888
 
 | Mode | Behavior |
 | --- | --- |
-| Automatic | A supported native integration remains responsible for the actions it already performs. A confirmed disabled native action can be handled by the gateway. Agents with insufficient evidence wait for a choice. |
+| Automatic (new installs) | A supported native integration remains responsible for the actions it already performs. A confirmed disabled native action can be handled by the gateway. Agents with insufficient evidence wait for a choice. |
 | Manual | Set recall and capture separately for each agent. New agents default to gateway off. Each action can still use automatic selection. |
 | Legacy | Existing options containing `agents` use the same exact allow-list until you save a new mode. An explicitly empty legacy list retains the old Hermes/DSH name exclusions. |
 
@@ -30,7 +30,7 @@ Gateway agents inherit the default shared bank unless you select an existing ban
 
 The workbench combines Magpie usage and the local applied-agent list, known local configuration directories, agents observed by the hook, saved choices, and manually added IDs. Native detection reads supported integration wiring for Hermes, DSH, Claude Code, Codex, OpenCode and Pi. Per-project, per-profile, custom, or unrecognized installations can remain unverified. Native tool and retrieval counts are bounded samples of locally available Hindsight Coding Agents logs. Gateway counts come from the hook. Bank totals are shared-bank totals.
 
-On Windows, detection also checks Hermes Desktop's data directory and recognizes custom Hindsight prompt hooks registered by Codex. A DSH dependency by itself is shown as installed with activation unverified. The workbench keeps the current page open during service restarts after saving. Activity distinguishes gateway requests with no recall attempt from completed recalls that returned no results.
+On Windows, detection checks Hermes Desktop's data directory and recognizes custom Hindsight prompt hooks registered by Codex. If Hermes CLI and Desktop disagree, the affected action waits for a choice. A DSH dependency by itself is shown as installed with activation unverified. The workbench keeps the current page open during service restarts after saving. Activity distinguishes gateway requests with no recall attempt from completed recalls that returned no results.
 
 Example explicit policy:
 
@@ -56,7 +56,7 @@ Example explicit policy:
 | `agent_policies.<id>.bank` | Inherit | Optional existing bank for an individual agent in automatic or manual mode. |
 | `recall_max_tokens` | `1024` | Per-query Hindsight budget. Range 1–16384. |
 | `injection_max_bytes` | `16384` | Total UTF-8 bytes newly appended by the hook per request, including history replay. Range 1024–131072. |
-| `gatewayTimeoutMs` | `5000` | Host hook limit. Recall keeps a 200 ms margin and is capped at 8000 ms. At or below 200 ms it is skipped. |
+| `gatewayTimeoutMs` | `5000` | Host hook limit. Bank verification and recall share the remaining budget after a 200 ms margin, capped at 8000 ms. At or below 200 ms recall is skipped. |
 | `recall_tags` | `[]` | Optional strict match on any selected tag. Gateway captures receive the same tags. Untagged entries do not match when tags are set. |
 | `allowRemote` | `false` | Permit a non-loopback Hindsight URL. |
 | `allowInsecureHttp` | `false` | Also required for non-loopback plain HTTP. |
@@ -86,7 +86,7 @@ Hindsight Memory 是 Magpie 的异步网关插件。它在模型回答前从 Hin
 
 | 模式 | 行为 |
 | --- | --- |
-| 自动识别 | 检测到原生启用的动作交给原生。确认原生关闭的动作可以交给网关。状态证据不足时显示「待确认」。 |
+| 自动识别（新装默认） | 检测到原生启用的动作交给原生。确认原生关闭的动作可以交给网关。状态证据不足时显示「待确认」。 |
 | 手动选择 | 分别设定召回和写入。新发现的 Agent 默认关闭网关处理，单个动作可以设回自动。 |
 | 兼容旧名单 | 已保存的 `agents` 名单按原规则生效。显式空名单沿用旧版 Hermes / DSH 排除规则，直到保存新模式。 |
 

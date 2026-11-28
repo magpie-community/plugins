@@ -53,10 +53,10 @@ test("settings launcher keeps a sandbox-safe options bridge and port recovery", 
   };
   const opened = [];
   let options = { bank: "hermes", agents: ["claude"], unrelated: true };
-  const magpie = { ready: Promise.resolve(), service: "", options: { get: async () => options, set: async next => { options = next; } } };
+  const magpie = { ready: Promise.resolve(), service: base, options: { get: async () => options, set: async next => { options = next; } } };
   new Script(script).runInNewContext({
     document: { getElementById: field }, window: { magpie }, magpie,
-    URLSearchParams, location: { search: "?recovery=1", assign: url => opened.push(url) }
+    URL, URLSearchParams, location: { search: "?recovery=1", assign: url => opened.push(url) }
   });
   await new Promise(resolve => setImmediate(resolve));
   field("port").valueAsNumber = 4382;
@@ -77,6 +77,90 @@ test("workbench response has scoped CSP, a nonce and no unresolved assets", asyn
   assert.doesNotMatch(html, /%%/);
   for (const id of ["bank-state", "agent-rows", "activity-totals", "check-draft", "mode-help", "save"]) assert.ok(html.includes('id="' + id + '"'));
   assert.doesNotThrow(() => new Script(html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1]));
+});
+
+test("workbench loads alias rules and saves only the verified snapshot before switching ports", async () => {
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const listing = Response.json({ banks: ["hermes", "fixture-existing", "fixture-shared"].map(bank_id => ({ bank_id })), total: 3 });
+  let release;
+  let verifying = false;
+  const workbench = server((url) => {
+    if (verifying && url.includes("/banks?limit=")) return new Promise(resolve => { release = () => resolve(listing); });
+  });
+  let options = { capture: true, agent_mode: "manual", agent_policies: {
+    "Claude Code": { recall: "gateway", capture: "gateway", bank: "fixture-existing" }
+  } };
+  workbench.options(options);
+  const html = await (await workbench.handle("/workbench")).text();
+  const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
+  const token = html.match(/name="hindsight-token" content="([a-f0-9]+)"/)[1];
+  const elements = new Map();
+  function element(tag) {
+    return {
+      tag, dataset: {}, children: [], events: {}, value: "", valueAsNumber: 0,
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      querySelectorAll(name) { return this.children.flatMap(child => child.tag === name ? [child] : child.querySelectorAll?.(name) ?? []); },
+      add(child) { this.append(child); },
+      setAttribute() {}, removeAttribute() {},
+      addEventListener(name, callback) { this.events[name] = callback; }
+    };
+  }
+  function field(id) {
+    if (!elements.has(id)) {
+      const input = element(id);
+      Object.defineProperty(input, "valueAsNumber", { get() { return Number(input.value); } });
+      elements.set(id, input);
+    }
+    return elements.get(id);
+  }
+  field("filter-policy").value = "all";
+  const opened = [];
+  const fetched = [];
+  const window = element("window");
+  const origin = "http://host.example";
+  const parent = { postMessage({ id, method, params }) {
+    const respond = result => window.events.message({ source: parent, origin, data: { magpie: 1, id, result } });
+    if (method === "hello") respond({ service: base });
+    else if (method === "options.get") respond(options);
+    else if (method === "options.set") {
+      options = JSON.parse(JSON.stringify(params.options));
+      workbench.options(options);
+      respond(options);
+    } else respond({});
+  } };
+  new Script(script).runInNewContext({
+    window, parent, URL, URLSearchParams, AbortSignal, structuredClone,
+    setTimeout() {}, clearTimeout() {}, setInterval() {},
+    Option: class { constructor(label, value) { Object.assign(this, { label, value }); } },
+    document: { getElementById: field, createElement: element, querySelectorAll: () => [], querySelector: () => ({ content: token }) },
+    location: { href: base + "/workbench", search: "", replace: url => opened.push(url) },
+    fetch: async (url, init) => {
+      fetched.push(url.href);
+      return workbench.handle(url.pathname + url.search, init);
+    }
+  });
+  await tick();
+  const control = action => field("agent-rows").querySelectorAll("select").find(menu => menu.dataset.agent === "claude" && menu.dataset.action === action);
+  assert.equal(control("recall").value, "gateway");
+  assert.equal(control("bank").value, "fixture-existing");
+  control("recall").value = "native";
+  control("recall").events.change();
+  field("bank").value = "fixture-shared";
+  field("port").value = "4382";
+  verifying = true;
+  field("save").events.click();
+  await tick();
+  const bank = control("bank");
+  assert.equal(bank.disabled, true);
+  bank.value = "";
+  bank.events.change();
+  assert.equal(typeof release, "function");
+  release();
+  await tick();
+  assert.deepEqual(options.agent_policies, { claude: { recall: "native", capture: "gateway", bank: "fixture-existing" } });
+  assert.ok(fetched.some(url => url.startsWith("http://127.0.0.1:4382/ready?revision=")));
+  assert.equal(opened[0], "http://127.0.0.1:4382/workbench?saved=1&panel=agents");
 });
 
 test("draft probe distinguishes API, database and the exact existing bank without a recall", async () => {
@@ -109,10 +193,12 @@ test("status and preview share effective policy, while draft checks do not repla
   assert.equal(saved.mode, "legacy");
   assert.equal(saved.agents.find(agent => agent.id === "dsh").policy.recall.owner, "off");
   assert.ok(saved.agents.some(agent => agent.id === "codex"));
-  const draft = await post("/api/preview", { options: { capture: true, agent_mode: "auto" } });
+  const draft = await post("/api/preview", { options: { capture: true, agent_mode: "auto" }, hints: ["custom-agent", "unknown"] });
   const dsh = draft.agents.find(agent => agent.id === "dsh");
   assert.equal(dsh.policy.recall.owner, "native");
   assert.equal(dsh.policy.capture.owner, "gateway");
+  assert.equal(draft.agents.find(agent => agent.id === "custom-agent").policy.recall.reason, "native-unsupported");
+  assert.equal(draft.agents.find(agent => agent.id === "unknown").policy.recall.reason, "native-unknown");
   assert.equal((await post("/api/check", { options: { bank: "other" } })).bankStatus, "not-listed");
   assert.equal((await post("/api/status")).connection, null);
   assert.equal(used.filter(call => call.url.endsWith("/health")).length, 1);

@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { activity } from "../lib/activity.mjs";
-import { inventory } from "../lib/agents.mjs";
+import { discoveredNative, inventory } from "../lib/agents.mjs";
 import { listBanks } from "../lib/banks.mjs";
 import { agentId, agentPolicy, configuration, DEFAULTS, gatewayBank, gatewayBanks } from "../lib/config.mjs";
 import { hash } from "../lib/turns.mjs";
@@ -41,12 +41,13 @@ function configView(options, snapshot, rows, hints) {
       agents.set(id, { id, name: id === "unknown" ? "未识别调用方" : id });
   }
   const data = [...agents.values()].map(agent => {
-    const native = agent.native ?? snapshot.native[agent.id] ?? {};
+    const id = agent.id === "unknown" ? "" : agent.id;
+    const native = agent.native ?? discoveredNative(snapshot, id);
     return { ...agent, native,
       fromUsage: hints.includes(agent.id),
       gatewayBank: gatewayBank(config, agent.id),
       bankOverride: config.agent_mode === "legacy" ? "" : config.agent_policies[agent.id]?.bank ?? "",
-      policy: agentPolicy(config, agent.id === "unknown" ? "" : agent.id, native)
+      policy: agentPolicy(config, id, native)
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
   return { agents: data, defaultBank: config.bank, mode: config.agent_mode, revision: hash(config).slice(0, 12) };
@@ -92,7 +93,8 @@ export function createService({ fetcher = fetch, readInventory = inventory, stat
     templates ??= Promise.all(UI.map(name => readFile(new URL(name, import.meta.url), "utf8")));
     const [html, css, script] = await templates;
     const body = html.replaceAll("%%NONCE%%", nonce).replace("%%TOKEN%%", token)
-      .replace("/* %%STYLE%% */", () => css).replace("/* %%SCRIPT%% */", () => script);
+      .replace("/* %%STYLE%% */", () => css)
+      .replace("/* %%SCRIPT%% */", () => `const agentId = ${agentId.toString()};\n${script}`);
     return new Response(body, { headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -206,14 +208,17 @@ export function createWorkbenchPlugin(serve = options => Bun.serve(options)) {
     async server(_input, options) {
       const port = options?.port ?? DEFAULTS.port;
       if (!Number.isInteger(port) || port < 1024 || port > 65535) return {};
-      service.options(options);
-      if (running?.port === port) return {};
+      if (running?.port === port) {
+        service.options(options);
+        return {};
+      }
       let server;
       try { server = serve({ hostname: "127.0.0.1", port, fetch: service.handle }); }
       catch {
         console.warn("[magpie-hindsight] Workbench could not listen on its local port.");
         return {};
       }
+      service.options(options);
       running?.stop(true);
       clearInterval(timer);
       running = server;

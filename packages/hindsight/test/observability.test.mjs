@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { discoverAgents } from "../lib/agents.mjs";
 import { createActivity } from "../lib/activity.mjs";
-import { configuration } from "../lib/config.mjs";
+import { agentPolicy, configuration } from "../lib/config.mjs";
 
 test("agent discovery reports installation, policy evidence and native events without exporting log text", async () => {
   const home = await mkdtemp(join(tmpdir(), "magpie-hindsight-inventory-"));
@@ -75,6 +75,25 @@ test("inventory distinguishes Windows Hermes, custom Codex hooks, OpenCode JSONC
   assert.equal(data.native.mimocode.evidence, "unsupported");
   assert.equal(data.native.codebuddy.recall, "inactive");
   assert.equal(data.native.codebuddy.capture, "unknown");
+  await writeFile(join(home, ".hermes/config.yaml"), "memory:\n  provider: hindsight\n");
+  await mkdir(join(home, ".hermes/hindsight"), { recursive: true });
+  await writeFile(join(home, ".hermes/hindsight/config.json"), JSON.stringify({
+    bank_id: "hermes", auto_recall: false, auto_retain: false
+  }));
+  const conflictingHermes = (await discoverAgents({ home, configDir, env: {} })).native.hermes;
+  assert.deepEqual(conflictingHermes, {
+    recall: "unknown", capture: "inactive", bank: "hermes", variableBank: false, evidence: "multiple-profiles"
+  });
+  const decision = agentPolicy(configuration({ capture: true }), "hermes", conflictingHermes);
+  assert.deepEqual(decision.recall, { owner: "pending", reason: "native-profile-unknown" });
+  assert.equal(decision.capture.owner, "gateway");
+  await writeFile(join(home, ".hermes/hindsight/config.json"), JSON.stringify({
+    bank_id: "fixture-native-bank", auto_recall: true, auto_retain: true
+  }));
+  const conflictingBank = (await discoverAgents({ home, configDir, env: {} })).native.hermes;
+  assert.deepEqual(conflictingBank, {
+    recall: "active", capture: "unknown", bank: "", variableBank: true, evidence: "multiple-profiles"
+  });
   await writeFile(join(home, ".codex/config.toml"), "[features]\ncodex_hooks = false\n");
   assert.equal((await discoverAgents({ home, configDir, env: {} })).native.codex.recall, "inactive");
   const dsh = join(home, ".dsh/profiles/desktop");

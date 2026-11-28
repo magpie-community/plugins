@@ -14,17 +14,20 @@ export const DEFAULTS = Object.freeze({
 const modes = new Set(["legacy", "auto", "manual"]);
 const owners = new Set(["auto", "gateway", "native", "off"]);
 const legacyNativeAgents = new Set(["hermes", "dsh"]);
-const aliases = new Map([
-  ["claude-code", "claude"], ["claude code", "claude"],
-  ["hermes-agent", "hermes"], ["hermes agent", "hermes"],
-  ["deepseek-harness", "dsh"], ["open-code", "opencode"]
-]);
-
+// Also embedded in the workbench, so keep this function self-contained.
 export function agentId(value) {
   if (typeof value !== "string") return "";
   const id = value.trim().toLowerCase();
   if (!id || id.length > 128 || /[\x00-\x1f\x7f]/.test(id)) return "";
-  return aliases.get(id) ?? id;
+  switch (id) {
+    case "claude-code":
+    case "claude code": return "claude";
+    case "hermes-agent":
+    case "hermes agent": return "hermes";
+    case "deepseek-harness": return "dsh";
+    case "open-code": return "opencode";
+    default: return id;
+  }
 }
 
 function invalid(field) {

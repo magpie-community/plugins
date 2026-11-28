@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { configuration } from "../lib/config.mjs";
 import { createPlugin } from "../lib/plugin.mjs";
 import { OPEN } from "../lib/protocol.mjs";
 
@@ -36,6 +37,7 @@ test("package declares asynchronous hooks and safe defaults", async () => {
   assert.equal(pkg.magpie.options.bank, "hermes");
   assert.equal(pkg.magpie.options.recall_max_tokens, 1024);
   assert.equal(pkg.magpie.options.gatewayTimeoutMs, 5000);
+  assert.equal(configuration(pkg.magpie.options).agent_mode, "auto");
   assert.ok(pkg.keywords.includes("magpie-plugin"));
   const entry = await import("../hooks.mjs");
   assert.equal(typeof entry.onRequest, "function");
