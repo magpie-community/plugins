@@ -126,6 +126,13 @@ names none. A fixed placeholder there is refused: since 2026-10-29 Zen
 answers `Working directory: unknown`, which 0.1.15 to 0.1.17 sent, with
 that 429 at once.
 
+That 429's message reads as the address's free allowance spent. For a
+request Zen doesn't take for OpenCode's own it isn't: OpenCode itself is
+still served from the same address meanwhile (#1661). From 0.1.31 the
+message says so, and asks for the agent and its version in an issue
+here, since such an agent's request still differs from OpenCode's
+somewhere. The status, error type and headers go as Zen sent them.
+
 Now and then Zen closes a streamed Chat Completions reply before its
 `[DONE]`. When the reply has said something and no tool call of it is
 unfinished, it ends there as an ordinary answer, and its text says it was
