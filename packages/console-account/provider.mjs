@@ -75,7 +75,7 @@ async function json(url, { auth, body, signal, optional = false, pending = false
   }
   if (!response.ok && !(pending && response.status === 400)) {
     await response.body?.cancel()
-    throw new Error(`OpenCode ${new URL(url).pathname} 返回 HTTP ${response.status}`)
+    throw Object.assign(new Error(`OpenCode ${new URL(url).pathname} 返回 HTTP ${response.status}`), { status: response.status })
   }
   let result
   try { result = await response.json() }
@@ -382,6 +382,8 @@ export function makePlugin(mode, input = {}) {
     return auth
   }
   const workspaceFreeModels = new Map()
+  const discoveryCache = new Map()
+  let discoveryScope, discoveryAttempt = 0
   const bootstrap = buildModels(JSON.parse(readFileSync(new URL(`./catalog/${mode}.json`, import.meta.url), "utf8")).data, mode)
   const bootstrapFreeModels = Object.values(bootstrap).filter((m) => m.free).map((m) => m.id)
   return {
@@ -487,12 +489,35 @@ export function makePlugin(mode, input = {}) {
     provider: {
       id: spec.id,
       async models(provider, { auth, signal } = {}) {
-        if (auth?.type !== "oauth") return provider.models
+        if (auth?.type !== "oauth") { discoveryScope = undefined; discoveryAttempt++; return provider.models }
         auth = await current(async () => auth)
-        const [catalog, remote] = await Promise.all([
+        const scope = createHash("sha256").update(JSON.stringify([auth.access, auth.refresh, auth.metadata.orgID])).digest("hex")
+        discoveryScope = scope
+        const attempt = ++discoveryAttempt
+        signal?.throwIfAborted()
+        const requests = [
           json(`${ORIGIN}${spec.root}/v1/models`, { signal }),
           json(`${CONSOLE}/api/v2/config`, { auth, signal }),
-        ])
+        ]
+        const results = input.magpie ? (await Promise.all(requests)).map((value) => ({ status: "fulfilled", value })) : await Promise.allSettled(requests)
+        signal?.throwIfAborted()
+        const failures = results.filter((r) => r.status === "rejected").map((r) => r.reason)
+        if (failures.length) {
+          const authFailure = results[1].status === "rejected" && (results[1].reason?.signIn === "expired" || results[1].reason?.status === 403)
+          const transient = (e) => e?.name === "TimeoutError" || e?.status === 408 || e?.status === 429 || (e?.status >= 500 && e?.status <= 599)
+          if (authFailure) discoveryCache.delete(scope)
+          const catalog = results[0].status === "fulfilled" && results[0].value
+          const models = Array.isArray(catalog?.data) && catalog.data.length ? buildModels(catalog.data, mode) : undefined
+          const validCatalog = models && Object.keys(models).length
+          const currentAttempt = discoveryScope === scope && discoveryAttempt === attempt
+          if (!input.magpie && results[1].status === "rejected" && transient(results[1].reason) && validCatalog && currentAttempt && discoveryCache.has(scope)) {
+            const approved = discoveryCache.get(scope)
+            for (const id of Object.keys(models)) if (!approved.has(id)) delete models[id]
+            return models
+          }
+          throw authFailure ? results[1].reason : failures[0]
+        }
+        const [catalog, remote] = results.map((r) => r.value)
         if (!Array.isArray(catalog?.data)) throw new Error("OpenCode 模型列表格式不完整。")
         // A transient empty public catalog must not replace the last good list.
         // Magpie preserves its cached models when the discovery hook fails.
@@ -501,6 +526,11 @@ export function makePlugin(mode, input = {}) {
         const models = buildModels(catalog.data, mode)
         if (!Object.keys(models).length) throw new Error("OpenCode 模型目录格式无效，保留已有列表。")
         const configured = applyOverrides(models, remote, spec)
+        if (!input.magpie && discoveryScope === scope && discoveryAttempt === attempt) {
+          discoveryCache.delete(scope)
+          discoveryCache.set(scope, new Set(Object.keys(configured)))
+          if (discoveryCache.size > 8) discoveryCache.delete(discoveryCache.keys().next().value)
+        }
         if (mode === "go") {
           workspaceFreeModels.delete(auth.metadata.orgID)
           workspaceFreeModels.set(auth.metadata.orgID, Object.values(configured).filter((m) => m.free).map((m) => m.id))

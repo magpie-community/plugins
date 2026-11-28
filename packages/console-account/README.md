@@ -37,6 +37,8 @@ The package also ships OpenCode 1.x and 2.x entry points. Standalone OpenCode us
 
 The plugin uses OpenCode's device authorization with the public `opencode-cli` client ID and sends its own User-Agent. Model discovery reads the public catalog and applies the selected workspace's model settings. An empty settings object makes no changes; explicitly disabled models stay hidden. An invalid catalog leaves Magpie's previous list in place. Inference uses the protocol declared by the model and preserves conversation IDs; a standalone model test gets its own ID.
 
+In standalone OpenCode, when workspace configuration temporarily fails, a usable public catalog is restricted to model IDs allowed by the last successful configuration for the same credentials and workspace. Updated catalog details are used, while newly listed models wait for configuration to recover. The in-memory cache holds up to eight entries and is cleared when the plugin instance ends. Authentication failures and invalid responses remain errors.
+
 ## Development
 
 ```sh

@@ -188,6 +188,97 @@ test("model discovery authenticates workspace config without treating it as a co
   assert.ok(models["deepseek-v4.1-flash"])
 })
 
+test("standalone discovery retains scoped configured models on transient failure", async () => {
+  const plugin = makePlugin("go"), a = auth("account-a"), b = auth("account-b", "org-b")
+  let status = 200, disabled = "deepseek-v4.1-flash"
+  globalThis.fetch = async (url) => url.endsWith("/models") ? Response.json({ data: catalog("go") })
+    : status === 200 ? Response.json({ providers: { "opencode-go": { models: { [disabled]: { disabled: true } } } } }) : new Response(null, { status })
+  const discover = (credential, signal) => plugin.provider.models({ models: {} }, { auth: credential, signal })
+  const first = await discover(a)
+  assert.equal(first[disabled], undefined)
+  first[Object.keys(first)[0]].name = "mutated"
+  disabled = "gpt-6-luna"
+  const second = await discover(b)
+  status = 503
+  assert.deepEqual(await discover(b), second)
+  const restored = await discover(a)
+  assert.equal(restored["deepseek-v4.1-flash"], undefined)
+  assert.notEqual(restored[Object.keys(restored)[0]].name, "mutated")
+  await assert.rejects(discover(auth("new-access")), /503/)
+  await assert.rejects(discover({ ...a, metadata: { ...a.metadata, orgID: "other-org" } }), /503/)
+  await assert.rejects(discover({ ...a, refresh: "new-refresh" }), /503/)
+  await assert.rejects(discover(a, AbortSignal.abort()), { name: "AbortError" })
+  status = 403
+  await assert.rejects(discover(a), /403/)
+  status = 503
+  await assert.rejects(discover(a), /503/)
+  status = 200
+  await discover(a)
+  status = 401
+  await assert.rejects(discover(a), (e) => e.signIn === "expired")
+  status = 503
+  await assert.rejects(discover(a), /503/)
+  globalThis.fetch = async (url) => new Response(null, { status: url.endsWith("/models") ? 503 : 401 })
+  await assert.rejects(discover(a), (e) => e.signIn === "expired")
+})
+
+test("a late older discovery cannot replace the newer cached configuration", async () => {
+  const plugin = makePlugin("go"), credential = auth()
+  let release, started
+  const waiting = new Promise((resolve) => { started = resolve })
+  const olderConfig = new Promise((resolve) => { release = resolve })
+  let count = 0, fail = false
+  const config = (id) => Response.json({ providers: { "opencode-go": { models: { [id]: { disabled: true } } } } })
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/models")) return Response.json({ data: catalog("go") })
+    if (fail) return new Response(null, { status: 503 })
+    if (++count === 1) { started(); return olderConfig }
+    return config("gpt-6-luna")
+  }
+  const discover = () => plugin.provider.models({ models: {} }, { auth: credential })
+  const older = discover()
+  await waiting
+  const newer = await discover()
+  release(config("deepseek-v4.1-flash"))
+  await older
+  fail = true
+  const cached = await discover()
+  assert.deepEqual(cached, newer)
+  assert.equal(cached["gpt-6-luna"], undefined)
+  assert.ok(cached["deepseek-v4.1-flash"])
+})
+
+test("fallback intersects approved IDs with the current catalog and uses current details", async () => {
+  const plugin = makePlugin("go"), credential = auth()
+  let rows = catalog("go"), fail = false
+  globalThis.fetch = async (url) => url.endsWith("/models") ? Response.json({ data: rows })
+    : fail ? new Response(null, { status: 503 }) : Response.json({})
+  const discover = () => plugin.provider.models({ models: {} }, { auth: credential })
+  const initial = await discover()
+  const [removed, retained] = rows
+  const added = { ...retained, id: "new-model" }
+  rows = [{ ...retained, name: "Updated model name" }, added]
+  fail = true
+  const result = await discover()
+  assert.ok(initial[removed.id])
+  assert.equal(result[removed.id], undefined)
+  assert.equal(result[added.id], undefined)
+  assert.equal(result[retained.id].name, "Updated model name")
+})
+
+test("discovery preserves empty configured results and Magpie errors", async () => {
+  let status = 200
+  globalThis.fetch = async (url) => url.endsWith("/models") ? Response.json({ data: catalog("go") })
+    : status === 200 ? Response.json({ providers: { "opencode-go": { disabled: true } } }) : new Response(null, { status })
+  const standalone = makePlugin("go"), magpie = makePlugin("go", { magpie: {} })
+  const discover = (plugin) => plugin.provider.models({ models: {} }, { auth: auth() })
+  assert.equal(Object.keys(await discover(standalone)).length, 0)
+  assert.equal(Object.keys(await discover(magpie)).length, 0)
+  status = 503
+  assert.equal(Object.keys(await discover(standalone)).length, 0)
+  await assert.rejects(discover(magpie), /503/)
+})
+
 test("quota reads use distinct workspace headers and retain partial results", async () => {
   globalThis.fetch = async (url, init) => {
     const headers = new Headers(init.headers)
