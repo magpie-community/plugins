@@ -5165,7 +5165,8 @@ function droppedPendingCalls(turn, expected, base, history) {
 }
 
 // The client's rows are the session's, tool results included, with only user
-// text added after its last row: the step's tool results (plugins#1644).
+// text (and pictures) added after its last row: the step's tool results
+// (plugins#1644).
 function appendedUserText(want, got) {
   if (!want.length || got.length !== want.length) return false
   const n = want.length - 1
@@ -5183,7 +5184,9 @@ function appendedUserText(want, got) {
       !b[k].text.slice(a[k].text.length).trim()) return false
     extra = [b[k], ...extra]
   }
-  return extra.length > 0 && extra.every((block) => block.type === "text")
+  // a chat client's new message may carry pictures beside its text
+  return extra.some((block) => block.type === "text") &&
+    extra.every((block) => block.type === "text" || block.type === "image")
 }
 
 // Every tool_use of the turn's calls in messages has a tool_result after it.
