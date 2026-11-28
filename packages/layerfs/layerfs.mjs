@@ -296,14 +296,35 @@ const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n… [${s.length - n} m
 // so a timeout kills the whole tree, not just /bin/sh; and the caller
 // resolves on 'exit' plus a short drain, not on 'close' — a background
 // child holding the stdout pipe open must not hold the call open.
+// shellFor is how a command is run on platform (#1325): a POSIX shell where
+// there is one, the command processor Windows has where there is not, so an
+// exec turned on works on both rather than failing before it starts.
+export function shellFor(platform, command, dir) {
+  if (platform === "win32") {
+    // /d skips AutoRun, /s makes the quoting of /c the one cmd.exe expects
+    return {
+      file: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command],
+      env: { ...process.env, TEMP: join(dir, ".tmp"), TMP: join(dir, ".tmp") },
+    }
+  }
+  return {
+    file: "/bin/sh",
+    args: ["-c", command],
+    env: { ...process.env, TMPDIR: join(dir, ".tmp"), XDG_CACHE_HOME: join(dir, ".cache") },
+  }
+}
+
 function runShell(command, dir, timeoutMs) {
   return new Promise((resolvePromise) => {
     ensureScratch(dir)
-    const child = spawn("/bin/sh", ["-c", command], {
+    const sh = shellFor(process.platform, command, dir)
+    const child = spawn(sh.file, sh.args, {
       cwd: dir,
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, TMPDIR: join(dir, ".tmp"), XDG_CACHE_HOME: join(dir, ".cache") },
+      env: sh.env,
     })
     let out = "", err = "", timedOut = false, settled = false
     let timer = null
@@ -315,8 +336,14 @@ function runShell(command, dir, timeoutMs) {
     }
     timer = setTimeout(() => {
       timedOut = true
-      try { process.kill(-child.pid, "SIGKILL") } // the whole group
-      catch { try { child.kill("SIGKILL") } catch { /* already gone */ } }
+      if (process.platform === "win32") {
+        // no process group to signal on Windows: taskkill takes the tree
+        try { spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true }) } catch { /* gone */ }
+        try { child.kill("SIGKILL") } catch { /* already gone */ }
+      } else {
+        try { process.kill(-child.pid, "SIGKILL") } // the whole group
+        catch { try { child.kill("SIGKILL") } catch { /* already gone */ } }
+      }
       // 'exit' follows the group kill; this is only a backstop
       setTimeout(() => finish(-1), 250).unref()
     }, timeoutMs)
