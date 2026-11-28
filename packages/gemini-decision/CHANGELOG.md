@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Fix the provider hook missing its `id`: magpie's plugin host only calls provider hooks whose id matches the provider, so the entire live models hook was dead code. `id: 'gemini-decision'` is now returned, and the host's `ctx.signal` is combined with the 10s timeout through `AbortSignal.any` so magpie can cancel the request.
+- Move the test suite to `test/plugin.test.mjs` using `node:test` so CI's root `bun test` discovers and runs it (`test/run.mjs` stays as the npm-test entry). The package was previously the only one in the repo with no bun-discoverable test file.
+- Fix non-PDF documents: Google's document block accepts `application/pdf` only. Inline text-like files (csv/txt/md/html/json/xml) now decode into text blocks; non-PDF file URLs are dropped instead of being sent to a guaranteed upstream rejection.
+- Fix unknown audio formats being labelled `audio/mpeg`: an unknown `format` now carries no `mime_type`, matching the unknown-image-extension policy.
+- README corrections: drop the outdated "byte-identical" passthrough claim (usage mapping re-serialises every 2xx body), remove the stale lobehub icon note, and state up front what this plugin adds over magpie's native gemini-decision-1 support (a separate key/project with its own quota, pooled keys, or a decisions-only concurrency cap).
+- Registry summary now describes the separate-key/pooling value rather than repeating pricing.
+- Expand the test suite from 34 to 42 cases: config-hook model facts (context/cost/modalities), provider-hook id, host-signal cancellation and timeout combination, the ignored `GEMINI_DECISION_BASE_URL` override, PDF-only document handling, and unknown-audio mime omission.
+
 ## 0.1.1
 
 - Fix usage lost on the way back: map Google's `usage.total_input_tokens` to magpie's `usage.input_tokens`/`output_tokens` (output always 0 — decisions return native probabilities).

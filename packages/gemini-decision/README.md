@@ -7,6 +7,15 @@ with other System One providers.
 
 **Provider id:** `gemini-decision`. **Model:** `gemini-decision/gemini-decision-1`.
 
+> **Do you even need this plugin?** Recent magpie already decides with
+> `gemini-decision-1` natively for any Google AI Studio key on the `google`
+> preset — same Decisions API wire, noul descriptions and audio support.
+> Install this plugin when you want decisions on a **separate key or
+> project** from your chat traffic: a dedicated free-tier project with its
+> own 200 RPM / 10k RPD quota, several pooled keys for failover, or a
+> concurrency cap just for decisions, without touching the google preset's
+> accounts.
+
 Magpie already speaks System One for compatible decision providers. Google
 uses a different endpoint and a few different field shapes, which this
 plugin converts. The plugin calls
@@ -86,7 +95,7 @@ plugin only bridges these differences:
 | --- | --- | --- |
 | `state` (string) | `input` | Passed as-is |
 | `state` (object) | `input` | JSON-serialized into a text block |
-| `state` array of strings and media parts | `input` content blocks | Strings become text blocks; `image_url`, `input_audio`, `video_url` and `input_file` parts become native `image`/`audio`/`video`/`document` blocks (data URLs split into bytes + mime type; https URLs passed as `uri`; `detail` maps to `resolution`; audio `format` maps to a mime type) |
+| `state` array of strings and media parts | `input` content blocks | Strings become text blocks; `image_url`, `input_audio`, `video_url` and `input_file` parts become native `image`/`audio`/`video`/`document` blocks (data URLs split into bytes + mime type; https URLs passed as `uri`; `detail` maps to `resolution`; a known audio `format` maps to a mime type, unknown ones carry none). `document` blocks are PDF-only like Google's API: inline text-like files (csv/txt/md/html/json/xml) decode into text blocks, and non-PDF file URLs are dropped because Google would reject them anyway |
 | `assets` media map | (no equivalent) | Entries are resolved into blocks wherever `state` references their key (plain string or `{"type":"asset"}`); the field itself is dropped |
 | noul `criteria` `{true, false}` | `{true_description, false_description}` | Keys renamed |
 | criteria value `null` (self-explanatory option) | empty string | Converted |
@@ -94,11 +103,12 @@ plugin only bridges these differences:
 | Model name | `gemini-decision-1` | Provider prefix stripped, then normalized |
 | `Authorization: Bearer` | `x-goog-api-key` | Swapped by the loader |
 
-Answers need no conversion and are passed through byte-identical when no
-question key needed sanitizing. Upstream status codes, error bodies and
-headers are forwarded untouched; a `401` adds `X-Magpie-Sign-In: expired`
-so magpie marks the account. Nothing is logged: no request bodies, no
-states, no keys.
+Google answers `usage.total_input_tokens`; the response is re-serialised
+so magpie sees `usage.input_tokens`/`output_tokens`, and answer keys are
+restored to their originals when a question key needed sanitizing. Status
+codes, error bodies and headers are forwarded untouched; a `401` adds
+`X-Magpie-Sign-In: expired` so magpie marks the account. Nothing is
+logged: no request bodies, no states, no keys.
 
 ### Not supported
 
@@ -124,14 +134,18 @@ send sensitive data on it.
 node test/run.mjs
 ```
 
-34 cases run against a local mock upstream (no network, no real key):
-config registration, state conversion, model normalization, noul criteria
-key mapping, null-criteria fallback, question-id sanitizing round-trips
+42 cases run against a local mock upstream (no network, no real key):
+config registration including model facts (context window, cost,
+modalities), state conversion, model normalization, noul criteria key
+mapping, null-criteria fallback, question-id sanitizing round-trips
 (including collisions and the 64-character limit), usage mapping, media
-and assets conversion, the live models hook (pagination, `models/` prefix
-stripping, decision-model filtering), auth header, error passthrough, 404
-for unknown paths, and the export contract.
+and assets conversion (PDF-only documents, unknown-audio mime omission),
+the live models hook (provider-hook id, pagination, `models/` prefix
+stripping, decision-model filtering, host-signal cancellation and the
+10-second timeout), the removed `GEMINI_DECISION_BASE_URL` environment
+override, auth header, error passthrough, 404 for unknown paths, and the
+export contract.
 
 ## License
 
-MIT. The Gemini icon is from lobehub-icons (MIT).
+MIT.

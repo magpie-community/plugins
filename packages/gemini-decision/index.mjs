@@ -381,6 +381,28 @@ const DOC_EXT_MIME = Object.freeze({
   html: 'text/html', json: 'application/json', xml: 'application/xml',
 });
 
+/** 可解码成文本送入的 mime（谷歌 document 块只吃 application/pdf，文本类一律转 text 块）。 */
+const TEXT_DOC_MIMES = new Set([
+  'text/csv', 'text/plain', 'text/markdown', 'text/html', 'application/json', 'application/xml', 'text/xml',
+]);
+
+/**
+ * 文本类文档内容（base64）→ UTF-8 字符串；非文本类或解码失败返回 null。
+ *
+ * @param {string} base64 base64 内容。
+ * @param {string} mime 文档 mime。
+ * @returns {string|null} 文本内容或 null。
+ */
+function decodeTextDocument(base64, mime) {
+  if (typeof mime !== 'string' || !TEXT_DOC_MIMES.has(mime)) return null;
+  try {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    return utf8Decoder.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 音频 format -> mime 映射（OpenRouter input_audio.format 枚举）。
  */
@@ -438,12 +460,19 @@ function convertStatePart(item, assetBlocks) {
 
   if (type === 'input_audio') {
     const audio = isPlainObject(item.input_audio) ? item.input_audio : {};
-    const mime = AUDIO_FORMAT_MIME[audio.format] || 'audio/mpeg';
+    // 未知 format 不臆造 mime_type（与 image 未知扩展名的策略一致）：谷歌会按数据嗅探。
+    const mime = AUDIO_FORMAT_MIME[audio.format] || null;
     if (typeof audio.data === 'string') {
-      if (/^https?:\/\//.test(audio.data)) return { type: 'audio', uri: audio.data, mime_type: mime };
+      if (/^https?:\/\//.test(audio.data)) {
+        const block = { type: 'audio', uri: audio.data };
+        if (mime) block.mime_type = mime;
+        return block;
+      }
       const parsed = parseDataUrl(audio.data);
       if (parsed) return { type: 'audio', data: parsed.data, mime_type: parsed.mime };
-      return { type: 'audio', data: audio.data, mime_type: mime };
+      const block = { type: 'audio', data: audio.data };
+      if (mime) block.mime_type = mime;
+      return block;
     }
     return null;
   }
@@ -467,10 +496,21 @@ function convertStatePart(item, assetBlocks) {
     const fileData = file.file_data;
     if (typeof fileData !== 'string') return null;
     const parsed = parseDataUrl(fileData);
-    if (parsed) return { type: 'document', data: parsed.data, mime_type: parsed.mime };
+    if (parsed) {
+      // 谷歌 document 块只吃 application/pdf；文本类（csv/txt/md/html/json/xml）
+      // 解码成 text 块送入，其余二进制如实标注 mime_type 交给上游判定。
+      const text = decodeTextDocument(parsed.data, parsed.mime);
+      if (text !== null) return { type: 'text', text };
+      return { type: 'document', data: parsed.data, mime_type: parsed.mime };
+    }
     if (/^https?:\/\//.test(fileData)) {
-      const block = { type: 'document', uri: fileData };
       const mime = mimeFromUrlExt(fileData, DOC_EXT_MIME);
+      if (mime && mime !== 'application/pdf') {
+        // URL 形态的非 PDF 文档无法本地解码成文本，而谷歌 document 块只收 application/pdf；
+        // 如实标 mime 一定会被上游拒绝，按 review 结论丢弃该块。
+        return null;
+      }
+      const block = { type: 'document', uri: fileData };
       if (mime) block.mime_type = mime;
       return block;
     }
@@ -901,18 +941,26 @@ async function modelsHook(provider, ctx, shared) {
   if (!apiKey) return fallback;
 
   // 逐页拉取（GET /v1beta/models 用 nextPageToken 分页）；每页请求带 10s 超时，
+  // 并与宿主传入的 ctx.signal 用 AbortSignal.any 组合，magpie 取消时请求随之中断。
   // 任何一页失败都整表回退静态登记，绝不返回半截列表。
+  const hostSignal = context.signal instanceof AbortSignal ? context.signal : undefined;
+  const pageSignal = () => {
+    if (typeof AbortSignal === 'undefined' || typeof AbortSignal.timeout !== 'function') return hostSignal;
+    const timeoutSignal = AbortSignal.timeout(10000);
+    if (hostSignal && typeof AbortSignal.any === 'function') return AbortSignal.any([hostSignal, timeoutSignal]);
+    // 没有 AbortSignal.any 的老运行时退化为 host signal 优先（宿主取消比超时更要紧）。
+    return hostSignal || timeoutSignal;
+  };
   const rows = [];
   let pageToken = '';
   try {
     for (let page = 0; page < 10; page++) {
+      if (hostSignal?.aborted) return fallback;
       const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : '';
       const response = await fetch(`${shared.baseURL}/models${query}`, {
         method: 'GET',
         headers: { 'x-goog-api-key': apiKey, accept: 'application/json' },
-        signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-          ? AbortSignal.timeout(10000)
-          : undefined,
+        signal: pageSignal(),
       });
       if (!response.ok) return fallback;
       const payload = await response.json();
@@ -983,6 +1031,9 @@ export default async function geminiDecisionPlugin(input, options) {
       loader: (getAuth, provider) => loaderHook(getAuth, provider, shared),
     },
     provider: {
+      // 必须有 id 且等于 provider id：magpie 的 plugin host 只调用 id 匹配的 provider hook，
+      // OpenCode 的 ProviderHook 形状同样是 { id, models }；缺了 id 整个 models hook 都是死代码。
+      id: PROVIDER_ID,
       models: (provider, ctx) => modelsHook(provider, ctx, shared),
     },
   };
