@@ -37,7 +37,7 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   在同一个会话里接着做，新工具已列出。子 agent（Task）和 Claude Code 自己的附带请求（标题、
   摘要）是各自独立的对话，各开各的会话。每开一个新会话，插件宿主的日志里会有一行
   `agy_bridge_session`，`"action":"session_new"` 并带 `reason`；`park_miss` 说明为什么没接上
-  重启前留下的会话（`none`、`expired`、`work_dir`、`instructions`、`history` 等），
+  重启前留下的会话（`none`、`expired`、`work_dir`、`instructions`、`history`、`agent_mode` 等；`agent_mode` 是旧版本在自定义 Agent 上留下的会话，默认 Agent 上重开），
   `resume_failed` 说明 agy 的 `session/resume` 为什么失败。
 - **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把
   客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。
@@ -274,7 +274,10 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 > 从 agy 1.5.17 起，自定义 Agent（`--agent`）开的会话按约 4 倍计额度
 > （google-antigravity/antigravity-cli#1890），所以插件的每个 agy 会话都改跑 agy 的默认
 > Agent：桥接指令写进会话目录的 `AGENTS.md`，`.agents/hooks.json` 里的 PreToolUse 钩子按
-> 工作区的工具允许名单拦截调用。默认 Agent 没有 `excludeDefaultComponents` 这样的开关，
+> 工作区的工具允许名单拦截调用。agy 仍用它自己的 `~/.gemini` 时（没有系统钥匙串、登录存在文件里，或
+> `AGY_BRIDGE_GEMINI_DIR=default`），默认 Agent 会读入 `~/.gemini/GEMINI.md` 和
+> `~/.gemini/config/GEMINI.md`（magpie 资料库给 agy 写的指令就在后者），以前的自定义 Agent 不读。
+> 插件自己的 agy 目录（默认）里没有这两个文件。默认 Agent 没有 `excludeDefaultComponents` 这样的开关，
 > 这个变量因此不再起作用，设了会在日志里提示一次（每个进程一次），去掉即可。
 
 默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词作为

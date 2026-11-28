@@ -56,7 +56,8 @@ channel: Antigravity's models over ACP. The differences:
   session writes an `agy_bridge_session` row with `"action":"session_new"`
   and its `reason` to the plugin host's log; `park_miss` says why a
   session kept from before a restart was not taken (`none`, `expired`,
-  `work_dir`, `instructions`, `history`, ...), and `resume_failed` why
+  `work_dir`, `instructions`, `history`, `agent_mode` for one an older
+  version left on a custom agent, ...), and `resume_failed` why
   agy's `session/resume` failed.
 - **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
   `tool_calls`. This plugin feeds the client's result back into the same agy
@@ -395,7 +396,12 @@ account", which keeps its sign-in in a file.
 > times the quota (google-antigravity/antigravity-cli#1890), so every agy
 > session the plugin opens runs on agy's default agent: the bridge's
 > instructions go in the session folder's `AGENTS.md`, and a PreToolUse hook
-> in `.agents/hooks.json` enforces that workspace's tool allowlist. The
+> in `.agents/hooks.json` enforces that workspace's tool allowlist. When
+> agy stays on its own `~/.gemini` (no keyring, so its sign-in is a file
+> there, or `AGY_BRIDGE_GEMINI_DIR=default`), the default agent also reads
+> `~/.gemini/GEMINI.md` and `~/.gemini/config/GEMINI.md` (where magpie's
+> Library writes agy's instructions), which the custom agent did not. The
+> plugin's own agy folder, the default, has neither. The
 > default agent has no switch like `excludeDefaultComponents`, so this
 > variable no longer has an effect; setting it logs a note once a process.
 > Unset it.
