@@ -1027,6 +1027,236 @@ test("A16: under a tight budget, a mid-loop user steer beats an opening meta com
   })
 })
 
+test("A16: mid tool loop keeps a queued user steer carried beside a tool_result", async () => {
+  const steerVariants = [
+    [
+      "claude-mid-turn",
+      "The user sent a new message while you were working:\nMID LOOP STEER: keep backward-compatible exports\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.",
+    ],
+    [
+      "following-message",
+      "The user sent the following message:\nMID LOOP STEER: keep backward-compatible exports\n\nPlease address this message and continue with your tasks.",
+    ],
+    [
+      "plugin-mid-turn",
+      "The review plugin sent a message while you were working:\nMID LOOP STEER: keep backward-compatible exports",
+    ],
+    [
+      "reminder-wrapped",
+      "<system-reminder>\nThe user sent a new message while you were working:\nMID LOOP STEER: keep backward-compatible exports\n</system-reminder>",
+    ],
+  ]
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  for (const [label, steerBlock] of steerVariants) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const messages = [
+        { role: "user", content: "ANCHOR opening request" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "LOOP OPENER: refactor group router" },
+      ]
+      for (let index = 0; index < 4; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_qsa_${index}`, name: "Read", input: { path: `/repo/a${index}.txt` } }] })
+        const content = [{ type: "tool_result", tool_use_id: `toolu_qsa_${index}`, content: big(`qsa-${index}`) }]
+        if (index === 3) content.push({ type: "text", text: steerBlock })
+        messages.push({ role: "user", content })
+      }
+      for (let index = 0; index < 14; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_qsb_${index}`, name: "Read", input: { path: `/repo/b${index}.txt` } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_qsb_${index}`, content: big(`qsb-${index}`) }] })
+      }
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_qs_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_qs_last", content: "LAST RESULT" }] })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `queued-steer-${label}` }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `${label}: initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), `${label}: loop opener is kept`)
+      assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), `${label}: queued steer beside tool_result is kept`)
+      assert.ok(prompt.indexOf("LOOP OPENER") < prompt.indexOf("MID LOOP STEER"), `${label}: steer stays after opener`)
+      assert.ok(!prompt.includes("This is how Claude Code surfaces"), `${label}: queued prompt wrapper is unwrapped`)
+      assert.ok(!prompt.includes("qsa-3 head"), `${label}: oversized tool_result beside the steer is still omitted`)
+      assert.ok(prompt.includes("qsb-13 tail"), `${label}: newest tail steps stay intact`)
+      assert.ok(prompt.includes("LAST RESULT"), `${label}: current turn result is kept`)
+    })
+  }
+})
+
+test("A16: a recent queued steer beside a tool_result keeps its tool_result and backfills recent steps before it", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_qtail_${index}`, name: "Read", input: { path: `/repo/t${index}.txt` } }] })
+      const content = [{ type: "tool_result", tool_use_id: `toolu_qtail_${index}`, content: big(`qtail-${index}`) }]
+      if (index === 15) {
+        content.push({
+          type: "text",
+          text: "The user sent a new message while you were working:\nRECENT STEER: also check edge cases\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.",
+        })
+      }
+      messages.push({ role: "user", content })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_qtail_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_qtail_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "recent-queued-steer" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("RECENT STEER: also check edge cases"), "recent queued steer is kept")
+    assert.ok(prompt.includes("qtail-15 tail"), "contiguous tool_result beside recent steer is restored")
+    assert.ok(prompt.includes("qtail-14 tail"), "recent steps immediately before the steer are backfilled")
+    assert.ok(prompt.includes("LAST RESULT"), "current turn result is kept")
+  })
+})
+
+test("A16: under a tight budget, a queued steer beside an oversized tool_result beats an opening meta companion", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(8 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const bigReminder = "<system-reminder>" + "r".repeat(4200) + "</system-reminder>"
+    const steer = "MID LOOP STEER: keep backward-compatible exports " + "s".repeat(900)
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+      { role: "user", content: bigReminder },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_qts_0", name: "Read", input: { path: "/repo/0.txt" } }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_qts_0", content: "z".repeat(4000) },
+          {
+            type: "text",
+            text: `The user sent a new message while you were working:\n${steer}\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.`,
+          },
+        ],
+      },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_qts_last", name: "Read", input: { path: "/repo/last.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_qts_last", content: "y".repeat(3000) + " LAST RESULT" }] },
+    ]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "tight-queued-steer" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 8 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), "queued steer beats opening reminder")
+    assert.ok(!prompt.includes(bigReminder), "oversized opening reminder gave way to fit the steer")
+    assert.ok(!prompt.includes("z".repeat(200)), "oversized tool_result beside the steer was dropped to fit the tight budget")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+test("A16: a trimmed replay after a short follow-up pins an earlier queued steer carried beside a tool_result", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "TURN 2 OPENER: inspect routing table" },
+    ]
+    for (let index = 0; index < 4; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_qpa_${index}`, name: "Read", input: { path: `/repo/pa${index}.txt` } }] })
+      const content = [{ type: "tool_result", tool_use_id: `toolu_qpa_${index}`, content: big(`qpa-${index}`) }]
+      if (index === 3) {
+        content.push({
+          type: "text",
+          text: "The user sent a new message while you were working:\nQUEUED TASK: preserve exact error codes on retry\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.",
+        })
+      }
+      messages.push({ role: "user", content })
+    }
+    for (let index = 0; index < 14; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_qpb_${index}`, name: "Read", input: { path: `/repo/pb${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_qpb_${index}`, content: big(`qpb-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: "Paused after checking the routing table." })
+    messages.push({ role: "user", content: "继续" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "queued-nudge-pin" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: QUEUED TASK: preserve exact error codes on retry"), "earlier queued steer is pinned for short follow-up")
+    assert.ok(!prompt.includes("qpa-3 head"), "oversized tool_result beside the pinned steer is not dragged in")
+    assert.ok(prompt.includes("继续"))
+  })
+})
+
+test("A16: non-steer companions beside a tool_result are not pinned as mid-loop steers", async () => {
+  const nonSteerCases = [
+    [
+      "dsh-time",
+      "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00Z",
+      [{ type: "text", text: "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00Z\nElapsed since the preceding step context: 10m 2s." }],
+      null,
+    ],
+    [
+      "skill-companion",
+      "SKILL_BODY_MARKER",
+      [
+        { type: "text", text: "(Re-invocation of /demo-skill — the skill instructions were previously loaded; the arguments or dynamic output below are new.)\n" },
+        { type: "text", text: "Base directory for this skill: /repo/skills/demo\n\nSKILL_BODY_MARKER: docs may quote The user sent a new message while you were working: literally." },
+      ],
+      null,
+    ],
+    [
+      "hook-output",
+      "HOOK_CONTEXT_MARKER",
+      [{ type: "text", text: "PostToolUse hook additional context: HOOK_CONTEXT_MARKER" }],
+      null,
+    ],
+    [
+      "system-reminder",
+      "REMINDER_DATE_MARKER",
+      [{ type: "text", text: "<system-reminder>\nREMINDER_DATE_MARKER: The date has changed.\n</system-reminder>" }],
+      null,
+    ],
+    [
+      "tool-result-body-quote",
+      "FILE_BODY_QUOTE_MARKER",
+      [],
+      "The user sent a new message while you were working:\nFILE_BODY_QUOTE_MARKER\n",
+    ],
+  ]
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  for (const [label, forbiddenMarker, extraBlocks, resultPrefix] of nonSteerCases) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const messages = [
+        { role: "user", content: "ANCHOR opening request" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "LOOP OPENER: refactor group router" },
+      ]
+      for (let index = 0; index < 4; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_nsa_${index}`, name: "Read", input: { path: `/repo/na${index}.txt` } }] })
+        const resultBody = (index === 3 && resultPrefix ? resultPrefix : "") + big(`nsa-${index}`)
+        const content = [{ type: "tool_result", tool_use_id: `toolu_nsa_${index}`, content: resultBody }]
+        if (index === 3) content.push(...extraBlocks)
+        messages.push({ role: "user", content })
+      }
+      for (let index = 0; index < 14; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_nsb_${index}`, name: "Read", input: { path: `/repo/nb${index}.txt` } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_nsb_${index}`, content: big(`nsb-${index}`) }] })
+      }
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_ns_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ns_last", content: "LAST RESULT" }] })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `non-steer-${label}` }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `${label}: initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), `${label}: loop opener is kept`)
+      assert.ok(!prompt.includes(forbiddenMarker), `${label}: non-steer companion must not be pinned as a mid-loop steer`)
+      assert.ok(prompt.includes("LAST RESULT"), `${label}: current turn result is kept`)
+    })
+  }
+})
+
 // #896: agy reports the run to its vendor unless it is told not to; the flag
 // is passed only to an agy whose own acp --help lists it.
 const TELEMETRY_HELP = "Usage of acp:\n  --disable-telemetry\n    \tdisable telemetry (default false)\n"
