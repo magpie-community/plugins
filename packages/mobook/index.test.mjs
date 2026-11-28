@@ -532,8 +532,9 @@ test('手机号 + 短信验证码：authorize 先发码，callback 换登录态'
     assert.equal(loginCall.body.verificationCode, '123456')
     assert.equal(loginCall.body.channel, INVITE_CHANNEL)
     assert.match(loginCall.body.deviceToken, /^[A-Za-z0-9_-]{43}$/)
-    // 与桌面端一致：appId=100→接口 40，靠 deviceToken 登记客户端、不顶网页端
-    assert.equal(calls[0].body._appId, 40)
+    // 发码走桌面作用域（200，避开网页作用域的阿里云人机验证）；登录仍按网页作用域 40（任务清单 15 项）
+    assert.equal(calls[0].body._appId, 200)
+    assert.equal(calls.find((c) => c.path === '/user/generateCode').body._appId, 200)
     assert.equal(loginCall.body._appId, 40)
     // 已有客户端设备：复用，不新增登记
     assert.equal(out.metadata.device.mode, 'client')

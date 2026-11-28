@@ -41,7 +41,7 @@ itself, so the native gateway, images, TTS and ASR work without the desktop clie
 | Whole Cookie (opens the sign-in page first) | no (pure reuse) | no |
 | Imported local client state | no (reuses the client's bot token) | no |
 
-If the SMS route is answered with **human verification (Aliyun slider captcha)**, the plugin cannot show it: MoBook's `/user/verifyConfig` says `captchaEnable` and the web app runs the Aliyun widget before sending the code. The plugin detects that and opens the sign-in page instead — log in there (complete the slider), then paste `_tk` / `_uid` as the Whole Cookie route; that route never needs a captcha.
+The SMS code is requested in the **desktop app scope (appId 200)**, where MoBook's `/user/verifyConfig` reports `captchaEnable: false`; the web scope (40) is the one that turns the Aliyun slider on. If the server still asks for human verification, the plugin cannot show the slider — it then opens the sign-in page and asks for `_tk` / `_uid` instead (the Whole Cookie route; that route never needs a captcha).
 
 All three routes return the same oauth-shaped credential (`access` = `_tk`, `refresh` = `''`, `expires`,
 `accountId` = nickname, `uid`). The host keeps `accountId`/`uid` only for that shape, so two accounts stay
@@ -233,7 +233,7 @@ magpie plugin on mobook
 | 粘贴 Cookie（会先打开登录页） | 否（纯复用） | 否 |
 | 导入本机客户端登录态 | 否（复用客户端 botToken） | 否 |
 
-如果短信登录被要求**人机验证（阿里云滑块）**：插件是纯 Node 环境，弹不出滑块（网页端会先读 `/user/verifyConfig` 的 `captchaEnable`，再加载阿里云验证码，通过后才发码）。插件会识别这种情况并直接打开登录页——在浏览器里用手机号登录（完成滑块），再把 `_tk` / `_uid` 按「粘贴 Cookie」方式粘回来即可；Cookie 方式不需要验证码。
+发短信验证码走的是**桌面端作用域（appId 200）**：墨宝的 `/user/verifyConfig` 在这个作用域返回 `captchaEnable: false`，而网页作用域（40）才会打开阿里云滑块。如果服务端仍然要求人机验证：插件是纯 Node 环境弹不出滑块，会直接打开登录页，改问你要 `_tk` / `_uid`（即「粘贴 Cookie」方式）；Cookie 方式永远不需要验证码。
 
 三种方式都返回 oauth 形状的凭据（`access` = `_tk`、`refresh` = `''`、`expires`、`accountId` = 昵称、
 `uid`）：宿主只对这个形状保留账号身份，两个账号能分开（`mobook` + `mobook#…`），后台续期也生效。

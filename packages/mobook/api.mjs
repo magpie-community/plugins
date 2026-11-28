@@ -1247,8 +1247,8 @@ export async function generateImage(cred, { model, prompt, size, image, response
 // fetchVerifyConfig 读登录风控配置。captchaEnable 为 true 时，网页登录页会先弹
 // 阿里云验证码（滑块），拿到 captchaVerifyParam 再调 /user/verifyIntelligentCaptcha，
 // 通过后才调 /user/generateCode 发短信。插件是纯 Node 环境，无法渲染这个滑块。
-export async function fetchVerifyConfig(deps = {}) {
-  const data = await apiCall({ tk: '', uid: '' }, '/user/verifyConfig', {}, deps)
+export async function fetchVerifyConfig(deps = {}, { appId = Number(process.env?.MOBOOK_SMS_APPID) || appIdForApi(110) } = {}) {
+  const data = await apiCall({ tk: '', uid: '', appId }, '/user/verifyConfig', {}, deps)
   return {
     captchaEnable: data?.captchaEnable === true,
     prefix: String(data?.prefix ?? ''),
@@ -1261,10 +1261,13 @@ export async function fetchVerifyConfig(deps = {}) {
 export async function sendSmsCode(mobileNo, deps = {}) {
   const phone = String(mobileNo ?? '').replace(/\D/g, '')
   if (!/^1[3-9]\d{9}$/.test(phone)) throw new MoBookError('手机号格式不对：要 11 位大陆手机号')
-  // 先看这次登录要不要人机验证：要就明确抛 MoBookCaptchaError，让界面引导改用 Cookie 登录，
-  // 不要傻发 /user/generateCode 吃一个看不懂的风控错误。
-  const verify = await fetchVerifyConfig(deps).catch(() => null)
+  // 发码走**桌面端作用域**（appId 200）：网页作用域（40）现在开着阿里云人机验证，
+  // 而桌面端作用域的 /user/verifyConfig 是 captchaEnable=false，与桌面客户端发码一致。
+  // 可用 MOBOOK_SMS_APPID 覆盖（比如强制回 40 观察网页作用域的行为）。
+  const appId = Number(process.env?.MOBOOK_SMS_APPID) || appIdForApi(110)
+  const verify = await fetchVerifyConfig(deps, { appId }).catch(() => null)
   if (verify?.captchaEnable) {
+    // 桌面作用域也要人机验证（服务端策略变化）：插件渲染不了阿里云滑块，明确引导用 Cookie 登录。
     throw new MoBookCaptchaError(
       '墨宝对本次手机号登录要求人机验证（阿里云滑块验证码），插件里无法弹出滑块。' +
         '请改用「粘贴整段 Cookie」方式：浏览器打开 https://mobook.me 用手机号登录（在那里完成人机验证），' +
@@ -1272,8 +1275,7 @@ export async function sendSmsCode(mobileNo, deps = {}) {
       verify,
     )
   }
-  // 桌面端客户端 appId=100→接口 40，故发码用 web 应用作用域（与桌面端一致）。
-  const data = await apiCall({ tk: '', uid: '' }, '/user/generateCode', { mobileNo: phone }, deps)
+  const data = await apiCall({ tk: '', uid: '', appId }, '/user/generateCode', { mobileNo: phone }, deps)
   return { mobileNo: phone, data }
 }
 
