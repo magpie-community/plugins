@@ -1421,6 +1421,50 @@ function foldRoot(root, ps, depth) {
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 
+// describedTool is a tool with its parameters' descriptions moved out of
+// its schema and into its own description, which goes to
+// <tool_descriptions>. Devin answers "Unable to process request due to an
+// MCP configuration issue" (permission_denied) to a schema carrying some
+// agents' own words in its descriptions, however the tool is named:
+// Cursor's Read, Grep, Glob, WebSearch, ReadLints and EditNotebook were each
+// refused alone, and went through with the same schema bare. The model
+// still reads every word, under the tool's entry; the schema keeps its
+// shape. Only schema keywords are walked: a parameter named description, or
+// an enum, default or example holding one, stays. A tool with nothing to
+// move is returned as it came; the caller's own is never changed.
+function describedTool(t) {
+  const notes = []
+  const schema = bareSchema(t.schema, "", notes, 0)
+  if (!notes.length) return t
+  const lines = [...new Set(notes.map(([at, words]) => (at ? `- ${at}: ` : "") + words.trim().replace(/\n/g, "\n  ")))]
+  return { ...t, schema, description: joinNonEmpty(t.description.trim(), "Parameters:\n" + lines.join("\n")) }
+}
+
+// the keywords whose value is a schema, a list of them, or a map of them by
+// name: nothing else in a schema is walked
+const ONE_SCHEMA = ["items", "additionalProperties", "additionalItems", "contains", "not", "if", "then", "else", "propertyNames", "unevaluatedProperties", "unevaluatedItems"]
+const SCHEMA_LIST = ["anyOf", "oneOf", "allOf", "prefixItems"]
+const SCHEMA_MAP = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]
+
+function bareSchema(s, at, notes, depth) {
+  if (!isObj(s) || depth > 32) return s
+  const out = {}
+  for (const [k, v] of Object.entries(s)) {
+    if (k === "description" && typeof v === "string") {
+      if (v.trim()) notes.push([at, v])
+    } else if (SCHEMA_MAP.includes(k) && isObj(v)) {
+      out[k] = Object.fromEntries(
+        Object.entries(v).map(([name, sub]) => [name, bareSchema(sub, k === "properties" ? (at ? `${at}.${name}` : name) : `${k}.${name}`, notes, depth + 1)]),
+      )
+    } else if (SCHEMA_LIST.includes(k) && Array.isArray(v)) {
+      out[k] = v.map((sub) => bareSchema(sub, k === "prefixItems" ? `${at}[]` : at, notes, depth + 1))
+    } else if (ONE_SCHEMA.includes(k)) {
+      out[k] = Array.isArray(v) ? v.map((sub) => bareSchema(sub, `${at}[]`, notes, depth + 1)) : bareSchema(v, k === "items" ? `${at}[]` : at, notes, depth + 1)
+    } else out[k] = v
+  }
+  return out
+}
+
 // geminiSchema is a tool's parameters as Devin's Gemini models take them.
 // Devin answers "There is an issue with this request, please try a
 // different model" (invalid_argument) to a Gemini model offered a tool
@@ -1689,7 +1733,7 @@ function build(chat, uid, key, opts = {}) {
   // describe themselves, and the same words in a message go through
   let tools = (chat.tools ?? [])
     .filter((t) => (!t?.type || t.type === "function") && t.function?.name)
-    .map((t) => ({ name: t.function.name, description: t.function.description ?? "", schema: objectRoot(t.function.parameters) }))
+    .map((t) => describedTool({ name: t.function.name, description: t.function.description ?? "", schema: objectRoot(t.function.parameters) }))
   if (chat.tool_choice === "none") tools = []
   if (/gemini/i.test(uid)) tools = tools.map((t) => ({ ...t, schema: geminiSchema(t.schema) }))
   const instructions = joinNonEmpty(system.join("\n\n"), toolDescriptions(tools))
@@ -1865,6 +1909,9 @@ function failure(status, text) {
   // Devin turns away some system prompts outright; sent again, the same
   // one is turned away again
   if (low.includes("content policy")) return { status: 400, message: msg }
+  // permission_denied for the request's tools, not the account: the same
+  // tools are refused again on every account (describedTool)
+  if (low.includes("mcp configuration issue")) return { status: 400, message: msg }
   if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
     return { status: 400, message: "input is too long for the model's context: " + msg }
   if (code === "invalid_argument") return { status: 400, message: msg, code }
@@ -2328,7 +2375,7 @@ function buildMessages(req, uid, key, opts = {}) {
   if (format) system.push({ role: USER, text: format })
   let tools = (req.tools ?? [])
     .filter((t) => (!t?.type || t.type === "custom") && t.name)
-    .map((t) => ({ name: t.name, description: t.description ?? "", schema: objectRoot(t.input_schema) }))
+    .map((t) => describedTool({ name: t.name, description: t.description ?? "", schema: objectRoot(t.input_schema) }))
   if (req.tool_choice?.type === "none") tools = []
   const described = toolDescriptions(tools)
   if (described) system.unshift({ role: USER, text: described, cache: false })
@@ -3471,4 +3518,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { describedTool, quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

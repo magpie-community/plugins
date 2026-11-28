@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-agnes-auth",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agnes AI international in OpenCode and magpie: Chrome browser sign-in, live text models, OpenAI-compatible chat, plan usage and USD balance",
   "type": "module",
   "main": "./opencode.mjs",

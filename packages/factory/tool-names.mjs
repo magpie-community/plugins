@@ -13,7 +13,10 @@ import { parseToolJSON } from "./anthropic-tools.mjs"
 // write_stdin and Shell or NotebookEdit, EnterPlanMode, ExitPlanMode and
 // get_weather. plugins#1291 also saw agent, Shell and StrReplace refused
 // on 2026-11-18 07:04 UTC; they are kept, since a name renamed that Factory
-// takes costs nothing and one missed refuses the whole request.
+// takes costs nothing and one missed refuses the whole request. Not every
+// entry is matched exactly: on 2026-11-28 (plugins#1676, hahhforest) advisor
+// and advisor_tool were refused and ADVISOR and Advisor taken, so a refused
+// name can be matched as a prefix, still case-sensitively.
 export const REFUSED_TOOL_NAMES = new Set([
   "Agent", "Bash", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "Write",
   "Shell", "StrReplace",
@@ -23,6 +26,8 @@ export const REFUSED_TOOL_NAMES = new Set([
   // web_search, read_file and execute_command too, and every name above
   // with leading underscores (_read, _web_search), while omp_read passes
   "web_search", "read_file", "execute_command",
+  // measured on plugins#1676: advisor, and advisor_tool after it
+  "advisor", "advisor_tool",
 ])
 
 // refusedName says whether Factory refuses a tool declared as name: one of
@@ -53,15 +58,36 @@ export const DROID_NAMES = new Map([
 ])
 
 // A refused tool droid has no name for (Claude Code's TaskCreate, ...), or
-// one whose droid name is taken, goes out as its own name with a suffix
-// drawn from this process (TaskCreate_3f9a): the same throughout the
+// one whose droid name is taken, or any tool of a request renamed in full,
+// goes out under salted(name): its name in capitals with a suffix drawn from
+// this process (TASKCREATE_3f9a). The suffix is the same throughout the
 // process, so a conversation reads one name and its prompt cache holds, but
-// no fixed name a list could hold.
+// no fixed name a list could hold. The capitals are what hides the name:
+// Factory matches some names as a prefix (plugins#1676: advisor_3f9a was
+// refused like advisor), so an alias never begins with the declared name,
+// and never with a refused one, which all hold small letters. A name with no
+// small letters goes in title case (ADVISOR as Advisor_3f9a), else behind
+// Tool_ or Fn_.
 const SALT = crypto.randomUUID()
-export function suffixed(name) {
+function salt(name) {
   let h = 0x811c9dc5
   for (const c of SALT + "\0" + name) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0
-  return name + "_" + (h & 0xffff).toString(16).padStart(4, "0")
+  return (h & 0xffff).toString(16).padStart(4, "0")
+}
+
+// beginsRefused says whether a name begins with a refused name, behind
+// leading underscores or not.
+function beginsRefused(name) {
+  const bare = name.replace(/^_+/, "")
+  for (const r of REFUSED_TOOL_NAMES) if (bare.startsWith(r)) return true
+  return false
+}
+
+export function salted(name) {
+  const lower = name.toLowerCase()
+  const forms = [name.toUpperCase(), lower.charAt(0).toUpperCase() + lower.slice(1), "Tool_" + name, "Fn_" + name]
+  const base = forms.find((f) => !f.startsWith(name) && !beginsRefused(f)) ?? "Tool"
+  return base + "_" + salt(name)
 }
 
 const isObject = (v) => v != null && typeof v === "object" && !Array.isArray(v)
@@ -125,7 +151,7 @@ function uses(request) {
 
 // aliasToolNames renames each declared tool Factory refuses, and every
 // later mention of it in the request, to a name it takes: droid's own for
-// the job (Execute for Bash, Create for Write, ...), else a suffixed one,
+// the job (Execute for Bash, Create for Write, ...), else a salted one,
 // never one the request already declares. With every, it renames each
 // declared tool but TAKEN_NAMES the same way: Factory's list keeps growing,
 // and a request refused for a name not on ours yet goes once more so. It
@@ -148,7 +174,9 @@ export function aliasToolNames(body, every = false) {
     if (!renames(name)) continue
     if (!renamed.has(name)) {
       let alias = DROID_NAMES.get(name) ?? DROID_NAMES.get(name.replace(/^_+/, ""))
-      if (alias == null || taken.has(alias)) alias = suffixed(name)
+      if (alias == null || taken.has(alias)) alias = salted(name)
+      // the suffix grows past a name the request declares, so each alias
+      // stands for one tool alone
       while (taken.has(alias) || refusedName(alias)) alias += "_"
       taken.add(alias)
       renamed.set(name, alias)
