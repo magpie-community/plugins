@@ -122,14 +122,28 @@ test("#1644 A's result changed beside the new message is still a conflict, never
   })
 })
 
-test("#1644 a B step that said something first is a fork the client never had: replayed as before", async () => {
+test("#1644 a B step that said something first is a fork the client never had: the same session is resumed at the shared rows", async () => {
   await withKit(async (kit) => {
-    const { original } = await atB(kit, { textBeforeB: "Now the second file." })
+    const { seen, original } = await atB(kit, { textBeforeB: "Now the second file." })
     const retry = structuredClone(original)
     retry.messages.push({ role: "user", content: "Use this new instruction." })
     const response = await readSse(await kit.request(retry))
     assert.equal(response.stopReason, "end_turn")
-    assert.equal(sessions(kit), 2)
+    // no new session (its system prompt would start a cold cache): the old one is resumed
+    assert.equal(sessions(kit), 1)
+    const resumes = kit.acpLog.filter((entry) => entry.method === "session/resume")
+    assert.equal(resumes.length, 1)
+    assert.equal(resumes[0].params.sessionId, kit.acpLog.find((entry) => entry.method === "session/prompt").sessionId)
+    // the shared rows run to A's result, which the session has: only the new
+    // message goes in, after a note that the step past A's result is not the client's
+    assert.equal(seen.prompts.length, 1)
+    assert.match(seen.prompts[0], /after the results of your Read \{\\"path\\":\\"\/fixture\/a\\"\} call is not in the client's conversation/)
+    assert.ok(seen.prompts[0].includes("Use this new instruction."))
+    assert.ok(!seen.prompts[0].includes("result A"), "A's result went to agy once")
+    assert.ok(!seen.prompts[0].includes("start the task"), "the shared opening is not replayed")
+    // B was never answered over MCP, so agy's session stays at the parked rows
+    // (the call's socket only closes with the stopped agy: no payload)
+    assert.equal(seen.b ?? null, null, "B got no MCP response")
   })
 })
 

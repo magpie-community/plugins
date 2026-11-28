@@ -29,7 +29,9 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   机器上没有时，在 Magpie 里登录会按 Google 官方安装脚本的方式装一份（见「环境要求」）。
 - **会话**：Antigravity ACP 每个请求开一个新会话，把历史当作上下文带上。本插件维护一个
   agy 进程池，同一段对话复用同一个 agy 会话，重启后用 `session/resume` 接上；只有接不上时
-  才重放历史。agy 会把一条提示词截在 128 KiB，所以 agy 1.5.17 起，更长的重放（或很长的粘贴）
+  才重放历史。客户端中断或改写了一步（拒绝的工具调用、改过的历史）时也不开新会话：会话停在
+  双方仍相同的那几行，用 `session/resume` 接上，只发之后的内容；相差的部分超过 64 KiB 或
+  超过整段对话的一半时照旧重放。agy 会把一条提示词截在 128 KiB，所以 agy 1.5.17 起，更长的重放（或很长的粘贴）
   分几条提示词发完，除最后一条外每条都在模型回答前取消，直到模型的窗口
   （`AGY_BRIDGE_MAX_REPLAY_BYTES`）；放不下的较早历史会明确告诉模型。magpie 的 image-slim 把较早的图片换成占位文字（Codex 上是整段
   view_image 结果换成一行字），或 magpie 为满足大小、图片数上限省去较早的图片时，会话照常复用。
@@ -37,7 +39,7 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   在同一个会话里接着做，新工具已列出。子 agent（Task）和 Claude Code 自己的附带请求（标题、
   摘要）是各自独立的对话，各开各的会话。每开一个新会话，插件宿主的日志里会有一行
   `agy_bridge_session`，`"action":"session_new"` 并带 `reason`；`park_miss` 说明为什么没接上
-  重启前留下的会话（`none`、`expired`、`work_dir`、`instructions`、`history`、`agent_mode` 等；`agent_mode` 是旧版本在自定义 Agent 上留下的会话，默认 Agent 上重开），
+  重启前留下的会话（`none`、`expired`、`work_dir`、`instructions`、`history`、`agent_mode` 等；`agent_mode` 是旧版本在自定义 Agent 上留下的会话，默认 Agent 上重开；`rebase`、`rebase_tail`、`state_busy` 是停在相同几行的会话没接上，`holder_alive` 是停下的旧 agy 在 `AGY_BRIDGE_REBASE_HOLDER_WAIT_MS`（默认 6 秒）内没退出），
   `resume_failed` 说明 agy 的 `session/resume` 为什么失败。
 - **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把
   客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。

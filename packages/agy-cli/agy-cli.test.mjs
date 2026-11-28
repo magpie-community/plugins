@@ -32,6 +32,7 @@ for (const [name, mocks] of [
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
   ["dropped-step.mjs", false],
+  ["rebase-resume.mjs", false],
   ["repeat-batch.mjs", false],
   ["unmatched-results.mjs", false],
   ["conversation-key.mjs", false],
