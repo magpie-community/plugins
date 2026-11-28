@@ -79,16 +79,16 @@ export const agent = {
     mcp: "~/.lorca/mcp.json",
     mcpFormat: "claude",
   },
-  // Take the provider as an object that magpie owns, not six loose keys.
-  // Magpie remembers which of the keys it wrote were already in the file, and
-  // on the way out it puts those back and removes the ones it created. With
-  // loose keys that bookkeeping only covers the keys, never the provider
-  // itself: turning magpie off emptied "custom:magpie" down to {} and left a
-  // nameless, modelless provider sitting in Lorca for good. With the object
-  // merged magpie also knows the provider was its own, so an emptied one is
-  // removed, and any member of the provider it doesn't write (yours) is left
-  // where it is.
-  merge: [KEY],
+  // merge is the parent object the provider is written under. magpie lifts
+  // an object returned at a merge path out of connect's result and writes
+  // its members (plugged.go merged). KEY is that provider, and connect
+  // returns it as one object, so naming KEY itself empties the result.
+  // magpie 0.1.4253 then refuses a connect-only plugin — "connect returned
+  // no keys to write" (plugins#1362) — before those members are counted.
+  // Naming "custom" leaves KEY in the result, so custom.custom:magpie is
+  // written beside any other custom:* provider. Disconnect removes that
+  // key and, when custom was magpie's and is left empty, removes custom.
+  merge: ["custom"],
   notice:
     "Lorca reads ~/.lorca/credentials.json once, when its local service starts, so this shows up after that service restarts: quit and reopen Lorca if Magpie doesn't appear.",
 };

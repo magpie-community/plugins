@@ -13,7 +13,7 @@ Magpie 官方规范 Agent 插件：将 Magpie 统一网关、模型目录与共�
 - **崩溃防护（对抗式枚举过滤）**：严格校验并过滤非法思考档位。由于 Lorca 遇到未知 level 时会直接抛弃整个 `custom` 配置段（导致所有自定义 Provider 消失），插件内置硬核过滤守卫，确保配置百分之百安全有效。
 - **MCP 工具库打通（Magpie Library）**：支持 Lorca 的 Claude 格式 MCP 规范（`~/.lorca/mcp.json`），可通过 `magpie library sync` 一键将全局 MCP Server 分发给 Lorca。
 - **流量精准归因（UA 识别）**：声明 `ua: ["lorca"]`，使 Lorca 发出的推理请求在 Magpie 监控面板与审计日志（`usage.jsonl`）中清晰归因，方便统计与调试。
-- **原子级合并与纯净卸载**：采用 `merge: ["custom.custom:magpie"]` 对象级管理。连接时精准合并，断开或切换时整段彻底清理，绝不残留 `{}` 空壳对象，亦不破坏用户自建的其他 Provider。
+- **原子级合并与纯净卸载**：`merge` 指向父对象 `custom`。连接时把 `custom.custom:magpie` 整段写入，旁边的其他 `custom:*` Provider 保持不动；断开时去掉 `custom:magpie`，若 `custom` 因此变空则一并清掉，其他顶层键不动。
 
 ---
 
