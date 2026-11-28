@@ -1,0 +1,21 @@
+{
+  "name": "@magpie-community/gateway-paseo-bridge",
+  "version": "0.1.2",
+  "description": "Show actual Magpie routes for recorded Codex requests in Paseo",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kogekiplay/magpie-paseo-bridge.git"
+  },
+  "keywords": ["magpie-plugin", "paseo", "codex"],
+  "files": ["paseo-bridge.hooks.mjs", "README.zh-CN.md"],
+  "magpie": {
+    "hooks": "./paseo-bridge.hooks.mjs",
+    "name": "Magpie Paseo Bridge",
+    "summary": {
+      "en": "Show the actual provider, model, and fallback attempts for recorded Codex requests in Paseo. Route metadata stays on the same machine.",
+      "zh": "在 Paseo 中逐次显示 Codex 请求实际使用的供应商、模型和回退尝试。路由元数据只保存在本机。"
+    }
+  }
+}
