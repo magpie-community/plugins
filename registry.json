@@ -344,6 +344,7 @@
       "summary": { "en": "Connect Tianshu (天枢 / rivet harness) to any Magpie model from Magpie's Agents page. Writes the two keys Tianshu picks its model with; your other providers and MCP servers stay as they are.", "zh": "在 magpie 的 Agents 页为天枢（Tianshu / rivet harness）选 magpie 的模型。写入天枢选模型用的两个键，其余供应商与 MCP 服务器原样保留。" } },
     { "package": "magpie-translate", "name": "Translate", "kind": "page",
       "icon": "https://raw.githubusercontent.com/aqiu817/magpie-translate/main/icon.svg",
-      "summary": { "en": "A two-pane translation page inside magpie: text and image translation with chunked long texts, fenced code pass-through, translation history and an in-page settings drawer, powered by magpie's own gateway models through a local companion server that only serves its own page (per-process token, Host and Origin checked).", "zh": "magpie 窗口内的翻译页面：双栏翻译器，文本与图片翻译、长文分块、围栏代码直通、翻译历史与页面内设置抽屉，走 magpie 自己的网关模型（本地伴侣服务，只服务自己的页面：进程口令 + Host/Origin 校验）。" } }
+      "summary": { "en": "A two-pane translation page inside magpie: text and image translation with chunked long texts, fenced code pass-through, translation history and an in-page settings drawer, powered by magpie's own gateway models through a local companion server that only serves its own page (per-process token, Host and Origin checked).", "zh": "magpie 窗口内的翻译页面：双栏翻译器，文本与图片翻译、长文分块、围栏代码直通、翻译历史与页面内设置抽屉，走 magpie 自己的网关模型（本地伴侣服务，只服务自己的页面：进程口令 + Host/Origin 校验）。" } },
+    {"package": "@magpie-community/page-firstmate-dashboard", "name": "Firstmate Dashboard", "kind": "page", "community": true, "summary": {"en": "Manage Firstmate dispatch rules, secondmate startup settings, and quota sources.", "zh": "管理 Firstmate 派工规则、二副启动配置和额度来源。"}}
   ]
 }
