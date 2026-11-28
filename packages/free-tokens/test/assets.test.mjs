@@ -31,5 +31,5 @@ test("allowlist non-empty; kept vendor present; dropped providers excluded", () 
 });
 test("view KIND covers every classify kind", () => {
   const V = globalThis.FTView;
-  for (const k of ["daily", "monthly", "once", "limited", "free"]) assert.ok(V.KIND[k], `missing KIND ${k}`);
+  for (const k of ["daily", "weekly", "monthly", "once", "limited", "free"]) assert.ok(V.KIND[k], `missing KIND ${k}`);
 });

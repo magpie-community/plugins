@@ -2,7 +2,7 @@ import { MAPPING } from "./mapping.js";
 import { BRAND } from "./icons.js";
 import { OFFICIAL_PROVIDERS } from "./allowlist.js";
 
-const KINDS = new Set(["daily", "monthly", "once", "limited", "free"]);
+const KINDS = new Set(["daily", "weekly", "monthly", "once", "limited", "free"]);
 function todayBJ() { return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }); }
 const RANK = { claimed: 4, done: 3, inactive: 2, failed: 1 };
 
@@ -58,7 +58,7 @@ export function buildPayload(ftData, local) {
   const priced = deals.filter((d) => d.yuan != null);
   const today = Math.round(deals.filter((d) => d.counted && d.yuan != null).reduce((s, d) => s + d.yuan, 0));
   const meta = {
-    generatedAt: new Date().toISOString(), source: "aihot.news/free-tokens",
+    generatedAt: new Date().toISOString(), source: "aihot.news/free-tokens.md", updatedAt: typeof ftData.updatedAt === "string" ? ftData.updatedAt : null,
     todayClaimable: today, faceTotal: +priced.reduce((s, d) => s + d.yuan, 0).toFixed(2),
     pricedCount: priced.length, monthlyClaimed: 0, totalDeals: deals.length, kindCounts: countKinds(deals), basis: ftData.basis || null,
   };
