@@ -5,6 +5,7 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_CONTEXT,
   DEFAULT_OUTPUT,
+  createCatalog,
   normalizeCodingPlanModel,
   sanitizeModelKey,
   toConfigModel,
@@ -162,6 +163,63 @@ test("catalog rows tolerate malformed optional fields", () => {
     type: "openai",
     baseURL: undefined,
   });
+});
+
+const PLACEHOLDER_STATUS = {
+  codingplan_free: {
+    plan_name: "CodingPlan Lite",
+    status: -1,
+    claimed_at: null,
+    expires_at: null,
+    remaining_days: null,
+  },
+  current_usage: { placeholder: true, usage_percent: 0, window_hours: null },
+  rate_limit_windows: [],
+};
+
+test("catalog：占位套餐不把套餐名当成已确认档位去拉 models-v2", async () => {
+  const urls = [];
+  const catalog = createCatalog({
+    apiBase: "https://api.gitcode.com/api/v5",
+    clientVersion: "5.2.3",
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      if (String(url).includes("status-v2")) {
+        return new Response(JSON.stringify(PLACEHOLDER_STATUS), { status: 200 });
+      }
+      return new Response(JSON.stringify([{ display_model_name: "should-not-load" }]), { status: 200 });
+    },
+  });
+  assert.deepEqual(await catalog.load({ access: "tok", uid: "u" }), []);
+  assert.equal(urls.some((url) => url.includes("models-v2")), false);
+});
+
+test("catalog：已确认套餐仍按档位拉取模型", async () => {
+  const urls = [];
+  const catalog = createCatalog({
+    apiBase: "https://api.gitcode.com/api/v5",
+    clientVersion: "5.2.3",
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      if (String(url).includes("status-v2")) {
+        return new Response(
+          JSON.stringify({
+            codingplan_free: { plan_name: "CodingPlan Pro", status: 1, remaining_days: 4, expires_at: "2099-01-01" },
+            current_usage: { usage_percent: 0, window_hours: 5 },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify([{ display_model_name: "pro-model", context_window: 1000 }]), {
+        status: 200,
+      });
+    },
+  });
+  const models = await catalog.load({ access: "tok", uid: "u" });
+  assert.equal(models.length, 1);
+  assert.equal(models[0].id, "pro-model");
+  const modelsURL = urls.find((url) => url.includes("models-v2"));
+  assert.equal(new URL(modelsURL).searchParams.get("plan_type"), "Pro");
 });
 
 test("model factories provide stable defaults for empty rows", () => {

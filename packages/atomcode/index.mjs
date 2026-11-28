@@ -48,7 +48,7 @@ import {
   tokenFor,
   userAgentOf,
 } from "./oauth.mjs";
-import { claimCodingPlan, fetchStatus, planNeedsClaim } from "./codingplan.mjs";
+import { claimCodingPlan, fetchStatus, planIsUnconfirmed, planNeedsClaim } from "./codingplan.mjs";
 import { createVersionSource } from "./version.mjs";
 import { quotaFromStatus } from "./quota.mjs";
 import {
@@ -548,11 +548,11 @@ export async function AtomCodePlugin(input = {}, options = {}) {
   const quotaCache = new Map();
 
   /**
-   * 签到（重领）：套餐缺失或到期时按档位级联补领一次。
+   * 签到（重领）：套餐缺失、到期或仍是占位/未确认时按档位级联补领一次。
    *
-   * 只在 status 判定确实需要时才动手（planNeedsClaim，保守判定），30 分钟
-   * 冷却防止在"日限额已满"的放量节奏上空转；结果只进日志，绝不影响
-   * usage / models 的正常返回。
+   * 只在 status 判定确实需要时才动手（planNeedsClaim），30 分钟冷却防止在
+   * "日限额已满"的放量节奏上空转。领取失败记日志；额度卡以随后的 status
+   * 为准，占位套餐不再显示成已用 0%。
    */
   const RECLAIM_COOLDOWN_MS = 30 * 60_000;
   const claimCooldown = new Map();
@@ -588,41 +588,42 @@ export async function AtomCodePlugin(input = {}, options = {}) {
   }
 
   async function ensurePlan(credentials, { status, deadline } = {}) {
-    if (!autoClaimEnabled()) return false;
+    if (!autoClaimEnabled()) return { claimed: false, reason: "disabled" };
     try {
       if (!status) {
         const remaining = remainingMs(deadline);
-        if (remaining !== undefined && remaining <= 0) return false;
+        if (remaining !== undefined && remaining <= 0) return { claimed: false, reason: "timeout" };
         status = await fetchStatus(opts.codingPlanAPIURL, credentials.access, {
           clientVersion: await clientVersionNow(),
           timeoutMs: Math.max(250, Math.min(7_000, remaining ?? 7_000)),
         });
       }
-      if (!planNeedsClaim(status)) return false;
+      if (!planNeedsClaim(status)) return { claimed: false, reason: "active" };
     } catch (error) {
       log(
         "warn",
         `${PROVIDER}: ${fill(t.readFailed, { detail: redactText(error.message) })}`,
       );
-      return false;
+      return { claimed: false, reason: "read-failed" };
     }
     try {
       const claim = await claimOnce(credentials, { deadline });
-      if (!claim) return false;
-      if (claim.claimed) log("info", `${PROVIDER}: ${fill(t.reclaimed, { plan: claim.planName || claim.tier })}`);
-      else {
-        log(
-          "warn",
-          `${PROVIDER}: ${fill(t.reclaimFailed, { detail: redactText(claim.message) })}`,
-        );
+      if (!claim) return { claimed: false, reason: "cooldown" };
+      if (claim.claimed) {
+        log("info", `${PROVIDER}: ${fill(t.reclaimed, { plan: claim.planName || claim.tier })}`);
+        return { claimed: true, reason: "claimed" };
       }
-      return claim.claimed;
+      log(
+        "warn",
+        `${PROVIDER}: ${fill(t.reclaimFailed, { detail: redactText(claim.message) })}`,
+      );
+      return { claimed: false, reason: "failed", message: claim.message };
     } catch (error) {
       log(
         "warn",
         `${PROVIDER}: ${fill(t.reclaimFailed, { detail: redactText(error.message) })}`,
       );
-      return false;
+      return { claimed: false, reason: "failed", message: error.message };
     }
   }
 
@@ -698,7 +699,7 @@ export async function AtomCodePlugin(input = {}, options = {}) {
           // 目录为空的合法场景之一是"权益还没发放"（官方注释同款）——先签到重领一次再取。
           if (
             !list.length &&
-            (await ensurePlan(credentials, { deadline: Date.now() + USAGE_BUDGET_MS }))
+            (await ensurePlan(credentials, { deadline: Date.now() + USAGE_BUDGET_MS })).claimed
           ) {
             list = await loadCatalog(credentials);
           }
@@ -1148,13 +1149,22 @@ export async function AtomCodePlugin(input = {}, options = {}) {
             cacheKey = credentials.uid ?? credentials.access;
             status = await readStatus(credentials, 7_000);
           }
-          // 签到语义：套餐缺失/到期 → 自动重领一次，成功后重取状态再映射。
-          if (await ensurePlan(credentials, { status, deadline })) {
+          // 签到语义：套餐缺失、到期或仍是占位 → 自动重领一次，成功后重取状态再映射。
+          const now = Date.now();
+          const ensured = await ensurePlan(credentials, { status, deadline });
+          if (ensured.claimed) {
             const remaining = remainingMs(deadline);
             if (remaining !== undefined && remaining <= 0) throw new Error(t.usageTimeout);
             status = await readStatus(credentials, 4_000);
           }
-          const value = quotaFromStatus(status, t, { user });
+          const value = quotaFromStatus(status, t, { user, now });
+          if (planIsUnconfirmed(status, now)) {
+            value.windows = [];
+            if (!value.error) value.error = t.planUnconfirmed;
+            if (ensured.reason === "failed" && ensured.message) {
+              value.error = fill(t.reclaimFailed, { detail: redactText(ensured.message) });
+            }
+          }
           quotaCache.set(cacheKey, { at: Date.now(), value });
           await stateStore.recordQuota(credentials.uid, value);
           await stateStore.recordLogin(credentials.uid, raw?.source ?? "browser");
@@ -1216,6 +1226,7 @@ export async function AtomCodePlugin(input = {}, options = {}) {
         }
         // 状态先看一眼：套餐仍在有效期内就不打扰领取接口（claim-v2 幂等，
         // 但一次元数据请求换一个确定的 done 比一次网络往返更稳）。
+        let sawUnconfirmed = false;
         try {
           const statusTimeout = () => {
             const remaining = remainingMs(deadline);
@@ -1249,7 +1260,9 @@ export async function AtomCodePlugin(input = {}, options = {}) {
             credentials = retry.credentials;
             status = await readStatus();
           }
-          if (!planNeedsClaim(status)) {
+          const now = Date.now();
+          sawUnconfirmed = planIsUnconfirmed(status, now);
+          if (!planNeedsClaim(status, now)) {
             const plan = status?.codingplan_free ?? status?.plan ?? {};
             return {
               outcome: "done",
@@ -1284,6 +1297,22 @@ export async function AtomCodePlugin(input = {}, options = {}) {
                 redactText(claim.message) ||
                 fill(t.reclaimFailed, { detail: "no tier" }),
             };
+          }
+          if (claim.claimed && sawUnconfirmed) {
+            try {
+              const remaining = remainingMs(deadline);
+              if (remaining === undefined || remaining > 0) {
+                const after = await fetchStatus(opts.codingPlanAPIURL, credentials.access, {
+                  clientVersion: await clientVersionNow(),
+                  timeoutMs: Math.max(250, Math.min(6_000, remaining ?? 6_000)),
+                });
+                if (planIsUnconfirmed(after)) {
+                  return { outcome: "failed", message: t.planUnconfirmed };
+                }
+              }
+            } catch {
+              /* 领取结果已经成功；复查失败时沿用下面的领取结论。 */
+            }
           }
           if (claim.duplicate) {
             return {

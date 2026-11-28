@@ -12,7 +12,7 @@
  * @module magpie-atomcode/quota
  */
 
-import { planOf } from "./codingplan.mjs";
+import { planOf, planQuotaUnconfirmed } from "./codingplan.mjs";
 import { fill } from "./i18n.mjs";
 import { atomInstantISO } from "./internal.mjs";
 
@@ -143,10 +143,23 @@ function hasAnyValue(...values) {
  *
  * @param {object} status - parsed `status-v2`.
  * @param {object} t - the i18n table for labels.
- * @param {{user?: string}} [context] - the account's display name for the row.
- * @returns {{plan?: string, user?: string, until?: string, windows: object[]}}
+ * @param {{user?: string, now?: number}} [context] - the account's display name for the row.
+ * @returns {{plan?: string, user?: string, until?: string, error?: string, windows: object[]}}
  */
-export function quotaFromStatus(status, t, { user } = {}) {
+export function quotaFromStatus(status, t, { user, now = Date.now() } = {}) {
+  if (planQuotaUnconfirmed(status, now)) {
+    const held = planOf(status) ?? {};
+    return {
+      ...(held.plan_name ? { plan: held.plan_name } : { plan: t.planFallback }),
+      ...(user ? { user } : {}),
+      ...(held.expires_at
+        ? { until: atomInstantISO(held.expires_at) ?? String(held.expires_at) }
+        : {}),
+      error: t.planUnconfirmed,
+      windows: [],
+    };
+  }
+
   const plan = planOf(status) ?? {};
   const usage = status?.current_usage ?? {};
   const windows = [];
@@ -183,36 +196,39 @@ export function quotaFromStatus(status, t, { user } = {}) {
       addWindow(rawCallWindow(raw, t, usage));
     }
   }
-  const currentHours = num(usage.window_hours) ?? 5;
-  const currentSpan = currentHours * 3600;
-  const currentUnit = rawUnit(usage);
-  const currentToken =
-    currentUnit === "tokens"
-      ? tokenWindow(usage, currentHours, resetOf(usage), t) ?? {
-          name: fill(t.windowTokens, { hours: currentHours }),
-          span: currentSpan,
-          unit: "tokens",
-          ...resetOf(usage),
-        }
-      : undefined;
-  if (
-    currentUnit !== "tokens" &&
-    !seen.has(`calls:${currentSpan}`) &&
-    (num(usage.usage_percent) !== undefined ||
-      num(usage.window_hours) !== undefined)
-  ) {
-    // No window row (older shape?): fall back to the current_usage block.
-    const used = num(usage.usage_percent);
-    addWindow({
-      name: fill(t.windowHours, { hours: currentHours }),
-      ...(used !== undefined ? { used } : {}),
-      span: currentSpan,
-      unit: "calls",
-      ...resetOf(usage),
-    });
-  }
-  if (currentToken && !seen.has(`tokens:${currentToken.span}`)) {
-    addWindow(currentToken);
+  // Placeholder usage has no real window. Rate-limit rows above still count.
+  if (usage.placeholder !== true) {
+    const currentHours = num(usage.window_hours) ?? 5;
+    const currentSpan = currentHours * 3600;
+    const currentUnit = rawUnit(usage);
+    const currentToken =
+      currentUnit === "tokens"
+        ? tokenWindow(usage, currentHours, resetOf(usage), t) ?? {
+            name: fill(t.windowTokens, { hours: currentHours }),
+            span: currentSpan,
+            unit: "tokens",
+            ...resetOf(usage),
+          }
+        : undefined;
+    if (
+      currentUnit !== "tokens" &&
+      !seen.has(`calls:${currentSpan}`) &&
+      (num(usage.usage_percent) !== undefined ||
+        num(usage.window_hours) !== undefined)
+    ) {
+      // No window row (older shape?): fall back to the current_usage block.
+      const used = num(usage.usage_percent);
+      addWindow({
+        name: fill(t.windowHours, { hours: currentHours }),
+        ...(used !== undefined ? { used } : {}),
+        span: currentSpan,
+        unit: "calls",
+        ...resetOf(usage),
+      });
+    }
+    if (currentToken && !seen.has(`tokens:${currentToken.span}`)) {
+      addWindow(currentToken);
+    }
   }
 
   return {
