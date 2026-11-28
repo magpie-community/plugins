@@ -669,7 +669,7 @@ export async function createBridgeKit(options = {}) {
         return fakeServer
       },
     },
-    "node:os": { homedir: () => home, tmpdir: () => tmp },
+    "node:os": { homedir: () => home, tmpdir: () => options.tmpdir ?? tmp },
   }
   const runtime = new vm.SyntheticModule(RUNTIME_NAMES, function init() {
     this.setExport("Date", clock.Date)

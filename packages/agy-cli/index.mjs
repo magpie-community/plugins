@@ -257,6 +257,10 @@ const parked = new Map()
 const allProcs = new Set()
 const sessions = new Map()
 const toolCalls = new Map()
+// sessionId -> a stop in progress of the agy that holds it (Proc.stop)
+const stoppingSessions = new Map()
+// this host among the bridges that share the state file (rebaseHolderGone)
+const HOST_ID = `${process.pid}-${randomUUID().slice(0, 8)}`
 let cachedAgyPath
 let cachedAgySearchKey
 let controlServer
@@ -3074,6 +3078,10 @@ class Proc {
     }
     const turn = new Turn(this, messages)
     turn.model = model
+    // the rows agy holds once this turn's prompt went in, and once each
+    // step's results went in (recordToolResults): where a rebase may cut
+    // the session (sessionPrefix)
+    turn.rowMarks = [messages.map((message) => ({ ...message }))]
     this.turn = turn
     this.expectedMessages = messages.map((message) => ({ ...message }))
     this.historyInvalid = false
@@ -3225,6 +3233,9 @@ class Proc {
   recordToolResults(turn, messages) {
     if (this.turn !== turn) return
     this.expectedMessages = messages.map((message) => ({ ...message }))
+    turn.rowMarks?.push(this.expectedMessages.slice())
+    // the results agy took so far are in these rows (parkRebase)
+    for (const call of turn.calls) if (call.mcpResponded) call.marked = true
     parkStep(this)
   }
 
@@ -3747,6 +3758,12 @@ class Proc {
   #respondMcp(call, payload) {
     if (call.mcpResponded) return
     call.mcpResponded = true
+    // parked for a rebase (forgetCalls): agy hears nothing for the call, so
+    // its session stays at the parked rows; the socket goes with the agy
+    if (call.silenced) {
+      call.socket?.destroy()
+      return
+    }
     if (call.socket?.writable) call.socket.end(JSON.stringify(payload) + "\n")
     else call.socket?.destroy()
   }
@@ -3798,6 +3815,17 @@ class Proc {
     this.finalizeTurn(turn)
   }
 
+  // A turn whose session is parked for a rebase: its calls leave the
+  // registry at once, so a retry of the same results while agy stops finds
+  // no live call (and is not dropped again), and none is answered.
+  forgetCalls(turn) {
+    for (const call of turn.calls) {
+      clearTimeout(call.deadline)
+      call.silenced = true
+      if (call.id && toolCalls.get(call.id)?.call === call) toolCalls.delete(call.id)
+    }
+  }
+
   fail(error) {
     this.turn?.fail(error)
     dropFromPool(this)
@@ -3823,7 +3851,14 @@ class Proc {
 
   stop() {
     if (this.stopPromise) return this.stopPromise
+    const sessionId = this.sessionId
     this.stopPromise = this.#stop()
+    if (sessionId) {
+      const stopping = this.stopPromise.catch(() => {}).finally(() => {
+        if (stoppingSessions.get(sessionId) === stopping) stoppingSessions.delete(sessionId)
+      })
+      stoppingSessions.set(sessionId, stopping)
+    }
     return this.stopPromise
   }
 
@@ -3836,12 +3871,14 @@ class Proc {
   }
 
   async #stop() {
-    if (this.turn && this.sessionId && !this.keepsParkedStep(this.turn)) unparkSession(this.convKey, this.sessionId)
+    if (this.turn && this.sessionId && !this.keepsParkedStep(this.turn) && !this.rebaseParked) unparkSession(this.convKey, this.sessionId)
     this.stopping = true
     this.turn?.fail(new Error("stopped"))
     this.#markDead(new Error("stopped"))
     sessions.delete(this.token)
-    if (this.turn) {
+    // parked for a rebase (parkRebase): agy must not take an error for an
+    // open call and go on past the parked rows; it is stopped as it waits
+    if (this.turn && !this.rebaseParked) {
       for (const call of this.turn.calls) {
         if (call.mcpSeen && !call.mcpResponded) {
           this.#respondMcp(call, { error: { code: -32603, message: "agy bridge: process stopped" } })
@@ -3871,7 +3908,26 @@ class Proc {
     this.child = null
     // A resumed session's agy starts again in this folder; never remove it
     // from under one that already has.
-    if (this.workspace && ![...allProcs].some((proc) => proc !== this && proc.workspace === this.workspace)) {
+    if (this.workspace && this.rebaseParked) {
+      // Parked for a rebase, the folder goes with the session: a host that
+      // took the entry resumes in it (once this agy is gone,
+      // rebaseHolderGone) and removes it when it is done. Checked and
+      // removed under the state file's lock, which a take holds too, so
+      // the folder never goes from under an agy that resumed in it.
+      if (![...allProcs].some((proc) => proc !== this && proc.workspace === this.workspace)) {
+        const { convKey, sessionId, workspace } = this
+        try {
+          withStateLock(sessionStateFile(), () => {
+            if (!readStateFile().some((entry) => entry?.key === convKey && entry.sessionId === sessionId && entry.rebase)) {
+              // taken by another host: never written back from this one's copy
+              if (parked.get(convKey)?.sessionId === sessionId) parked.delete(convKey)
+              return
+            }
+            fs.rmSync(workspace, { recursive: true, force: true })
+          })
+        } catch {}
+      }
+    } else if (this.workspace && ![...allProcs].some((proc) => proc !== this && proc.workspace === this.workspace)) {
       const removal = this.#removeWorkspace()
       workspaceRemovals.set(this.workspace, removal)
       await removal
@@ -4173,7 +4229,7 @@ function withStateLock(file, fn) {
 function saveParked() {
   const file = sessionStateFile()
   try {
-    withStateLock(file, () => {
+    return withStateLock(file, () => {
       const merged = new Map()
       for (const entry of readStateFile().filter(validEntry)) merged.set(entry.key, entry)
       for (const key of unparked) merged.delete(key)
@@ -4185,8 +4241,11 @@ function saveParked() {
       fs.writeFileSync(temp, JSON.stringify({ version: 1, entries }) + "\n", { mode: 0o600 })
       fs.renameSync(temp, file)
       unparked.clear()
-    })
-  } catch {}
+      return true
+    }) === true
+  } catch {
+    return false
+  }
 }
 
 function unpark(convKey) {
@@ -4229,16 +4288,17 @@ function unparkSession(convKey, sessionId) {
   if (own(parked.get(convKey)) || readStateFile().some(own)) unpark(convKey)
 }
 
-function writeParked(proc, midTurn) {
+function writeParked(proc, midTurn, rebase = null) {
   loadParked()
   parked.delete(proc.convKey)
   unparked.delete(proc.convKey)
+  const held = rebase?.rows ?? proc.expectedMessages
   parked.set(proc.convKey, {
     key: proc.convKey,
     sessionId: proc.sessionId,
-    historyHash: digest(historyKey(proc.expectedMessages)),
-    historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
-    toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
+    historyHash: digest(historyKey(held)),
+    historyHashSansInputs: digest(historyKey(stripToolUseInputs(held))),
+    toolUseIdentitiesHash: digest(toolUseIdentitiesKey(held) ?? ""),
     instructionsHash: digest(sentInstructionsIdentity(proc.instructions)),
     userCloak: USER_CLOAK,
     instructionsInSession: !!proc.instructionsInSession,
@@ -4246,11 +4306,145 @@ function writeParked(proc, midTurn) {
     workDir: proc.workDir,
     workspace: proc.workspace,
     media: proc.media,
-    ...midTurn ? { midTurn: true, count: proc.expectedMessages.length } : {},
+    // a rebase entry also names the request that left the session (taken
+    // only by one going on from it) and the agy still holding the session
+    // as it stops (rebaseHolderGone)
+    ...rebase ? {
+      rebase: true, count: rebase.rows.length, beyond: !!rebase.beyond,
+      requestHash: digest(historyKey(rebase.messages)), requestCount: rebase.messages.length,
+      stopping: true, holder: { pid: proc.child?.pid ?? null, host: HOST_ID },
+    }
+      : midTurn ? { midTurn: true, count: proc.expectedMessages.length } : {},
     at: Date.now(),
   })
   while (parked.size > MAX_PARKED) parked.delete(parked.keys().next().value)
   saveParked()
+  // Another host can take a rebase entry while this host is still stopping agy.
+  if (rebase) parked.delete(proc.convKey)
+}
+
+function samePrefix(rows, messages, count) {
+  const held = rows.slice(0, count)
+  const actual = messages.slice(0, count)
+  if (historyKey(held) === historyKey(actual)) return true
+  return sameToolUseIdentities(held, actual) &&
+    historyKey(stripToolUseInputs(held)) === historyKey(stripToolUseInputs(actual))
+}
+
+// The longest run of rows this session's agy holds that the client's
+// messages still begin with, at most `limit` of them: any prefix of what
+// the session was last known to hold (expectedMessages, the step's model
+// output included), or a row boundary a step recorded (turn.rowMarks: the
+// turn's prompt, each step's results). Null when none is shared.
+function sessionPrefix(proc, turn, messages, limit) {
+  let best = 0
+  let from = null
+  const expected = Array.isArray(proc.expectedMessages) ? proc.expectedMessages : []
+  // a prefix that matches has matching prefixes below it: the longest by halves
+  let lo = 0
+  let hi = Math.min(expected.length, limit)
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (samePrefix(expected, messages, mid)) lo = mid
+    else hi = mid - 1
+  }
+  if (lo > 0) [best, from] = [lo, expected]
+  const marks = (Array.isArray(turn?.rowMarks) ? turn.rowMarks : [])
+    .filter((rows) => rows.length > best && rows.length <= limit)
+    .sort((a, b) => b.length - a.length)
+  for (const rows of marks) {
+    if (samePrefix(rows, messages, rows.length)) {
+      [best, from] = [rows.length, rows]
+      break
+    }
+  }
+  return from ? from.slice(0, best) : null
+}
+
+// What the client has after the shared rows and before its own last
+// messages goes into the rebased prompt as text, and stays in the session
+// beside the session's own copy. Past this, the whole replay is cheaper
+// to carry than the doubled tail.
+const REBASE_TAIL_MAX_BYTES = 64 * 1024
+
+// The tail (what the client has between the shared rows and its own last
+// messages) past 64KB, or past half the whole conversation: then the
+// replay costs less than the session carrying both copies.
+function rebaseTailTooBig(messages, count, historyLength) {
+  const tail = messages.slice(count, Math.max(count, historyLength))
+  if (!tail.length) return false
+  const bytes = Buffer.byteLength(JSON.stringify(tail))
+  return bytes > REBASE_TAIL_MAX_BYTES || bytes * 2 > Buffer.byteLength(JSON.stringify(messages))
+}
+
+// agy keeps one writer per session. The agy that parked a session for a
+// rebase stops after it parks, in this host or in one a reload is
+// retiring while this host already takes its requests; the session is
+// resumed only once that process is gone. Bounded: past the wait, or with
+// no pid to check from another host, the request opens a new session and
+// replays, never resuming beside the old agy. A pid the system gave to
+// another process reads as alive, and ends the same way.
+function rebaseHolderWaitMs() {
+  return configuredTimeout("AGY_BRIDGE_REBASE_HOLDER_WAIT_MS", 6_000)
+}
+
+async function rebaseHolderGone(resume) {
+  // counted in the time slept, not by the clock (a clock set back or
+  // frozen would never end the wait)
+  let left = rebaseHolderWaitMs()
+  const stopping = stoppingSessions.get(resume.sessionId)
+  if (stopping) {
+    let timer
+    const done = await Promise.race([
+      stopping.catch(() => {}).then(() => true),
+      new Promise((resolve) => { timer = setTimeout(resolve, left, false) }),
+    ])
+    clearTimeout(timer)
+    if (!done) return false
+  }
+  const pid = resume.holder?.pid
+  if (!Number.isSafeInteger(pid) || pid <= 0) return resume.holder?.host === HOST_ID
+  while (processExists(pid)) {
+    if (left <= 0) return false
+    const step = Math.min(50, left)
+    await new Promise((resolve) => setTimeout(resolve, step))
+    left -= step
+  }
+  return true
+}
+
+// A live session the request can't go on in (an interrupted or steered turn
+// that won't steer, a history that differs past the session's last step, a
+// grown catalog) was replaced by a new session with the whole conversation
+// replayed into it. agy's system prompt names the session (its conversation
+// id and artifact folder), so a new one shares no prefix with the old and
+// the replay is read uncached, every time.
+// Instead the session is parked at the rows it is known to hold that the
+// client's history begins with, and the next acquire resumes it in its own
+// folder and sends what the client has after them (renderRebasedParts).
+// False when there are no such rows; the caller then replays, as before.
+function parkRebase(proc, turn, messages, history, opts, convKey) {
+  if (!proc.resumable || !proc.sessionId || !proc.hasSentFirstTurn || proc.historyInvalid || proc.seeding ||
+    proc.dead || proc.stopping || proc.retiring || proc.convKey !== convKey ||
+    proc.workDir !== opts.workDir || proc.media !== opts.media ||
+    !sameInstructions(proc.instructions, opts.instructions) ||
+    !Array.isArray(messages) || !Array.isArray(history)) return null
+  // Results agy already took that no row mark holds (a steer that answered
+  // its calls and then failed, a call the bridge answered itself): the
+  // session went on from them, and a rebased prompt would send them again
+  // as if new.
+  if (turn?.steering || turn?.calls?.some((call) => call.mcpResponded && !call.marked)) return null
+  // the rows may reach into the request's own last messages (the results
+  // agy already took), never all of them: something must follow
+  const rows = sessionPrefix(proc, turn, messages, messages.length - 1)
+  if (!rows) return null
+  if (rebaseTailTooBig(messages, rows.length, history.length)) return null
+  // the session holds a step past the rows the client never kept
+  const expected = Array.isArray(proc.expectedMessages) ? proc.expectedMessages : []
+  const beyond = rows.length < expected.length || !samePrefix(expected, rows, rows.length)
+  writeParked(proc, false, { rows, beyond, messages })
+  proc.rebaseParked = true
+  return rows
 }
 
 // Only a folder this bridge makes: the state file is never a way to run agy
@@ -4260,6 +4454,16 @@ function resumeWorkspace(workspace) {
   const resolved = path.resolve(workspace)
   if (path.dirname(resolved) !== path.resolve(os.tmpdir())) return null
   return /^magpie-agy-bridge-[A-Za-z0-9]{6}$/.test(path.basename(resolved)) ? resolved : null
+}
+
+// A rebase entry (parkRebase) is the request's that left the session: the
+// messages go on from all of it.
+function rebaseRequestTakes(entry, opts) {
+  const messages = opts.messages
+  return Array.isArray(messages) && Number.isSafeInteger(entry.count) && entry.count >= 1 &&
+    entry.count < messages.length && Number.isSafeInteger(entry.requestCount) &&
+    entry.requestCount >= entry.count && entry.requestCount <= messages.length &&
+    entry.requestHash === digest(historyKey(messages.slice(0, entry.requestCount)))
 }
 
 // Why no parked session was taken goes in `miss.reason`: counts and names
@@ -4285,9 +4489,14 @@ function takeParked(convKey, opts, miss = {}) {
     miss.reason = "none"
     return null
   }
+  // a rebase entry stays for the request it is for
+  if (entry.rebase && !rebaseRequestTakes(entry, opts)) {
+    miss.reason = "rebase"
+    return null
+  }
   parked.delete(key)
   unparked.add(key)
-  saveParked()
+  const saved = saveParked()
   miss.reason = Date.now() - entry.at > RESUME_TTL_MS ? "expired"
     : entry.defaultAgent !== true ? "agent_mode"
     : (entry.workDir ?? null) !== (opts.workDir ?? null) ? "work_dir"
@@ -4300,6 +4509,34 @@ function takeParked(convKey, opts, miss = {}) {
     : null
   if (miss.reason) return null
   const workspace = resumeWorkspace(entry.workspace)
+  // Parked for a rebase (parkRebase): taken only by the request that left
+  // the live session, its retry, or the same request reaching a host that
+  // started while the old one was stopping the session, and one going on
+  // from it: messages that begin with the whole request, not just with the
+  // shared rows (another branch of the conversation under the same key
+  // shares those too).
+  if (entry.rebase) {
+    const prefix = opts.messages.slice(0, entry.count)
+    if (!sameParkedHistory(entry, prefix)) {
+      miss.reason = "history"
+      return null
+    }
+    // the client's tail may have grown since the session was parked
+    if (rebaseTailTooBig(opts.messages, entry.count, Array.isArray(opts.history) ? opts.history.length : opts.messages.length - 1)) {
+      miss.reason = "rebase_tail"
+      return null
+    }
+    // taken for good only once the state file says so: the host that parked
+    // it removes the folder unless it was taken (Proc #stop)
+    if (!saved) {
+      miss.reason = "state_busy"
+      return null
+    }
+    return {
+      sessionId: entry.sessionId, expectedMessages: prefix, workspace, rebase: true, beyond: entry.beyond !== false,
+      holder: entry.holder ?? null,
+    }
+  }
   // A step parked mid-turn is taken only by its results: the request goes
   // on from the parked history with the model's calls and their results.
   if (entry.midTurn || opts.resumeStep) {
@@ -4683,8 +4920,15 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   }
   // a tool result whose live call is gone (a restarted host) may still go
   // on in the session parked at its step (parkStep)
-  const parkMiss = { reason: isFreshConversation ? null : forceNew && !opts.resumeStep ? "forced" : null }
-  const resume = isFreshConversation || (forceNew && !opts.resumeStep) ? null : takeParked(convKey, opts, parkMiss)
+  // or the live session it left, parked for a rebase (parkRebase)
+  const parkMiss = { reason: isFreshConversation ? null : forceNew && !opts.resumeStep && !opts.rebase ? "forced" : null }
+  let resume = isFreshConversation || (forceNew && !opts.resumeStep && !opts.rebase) ? null : takeParked(convKey, opts, parkMiss)
+  // never two agy in one session: the one that parked it may still be
+  // stopping, in this host or another (rebaseHolderGone)
+  if (resume?.rebase && !(await rebaseHolderGone(resume))) {
+    parkMiss.reason = "holder_alive"
+    resume = null
+  } else if (resume) await stoppingSessions.get(resume.sessionId)?.catch(() => {})
   // a spare runs in a folder of its own, and a resumed session needs its own
   const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir, opts.media)
   while (!spare && allProcs.size >= maxProcs()) {
@@ -4712,16 +4956,18 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // traced to the check that failed (#1058). Counts only, never content.
   proc.sessionReason = why
   proc.resumedStep = !!(proc.resumed && resume?.step)
+  proc.resumedRebase = proc.resumed && resume?.rebase ? { beyond: resume.beyond } : null
   logSessionEvent(proc, why, {
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
     ...parkMiss.reason ? { park_miss: parkMiss.reason } : {},
     ...resume && !proc.resumed ? { resume_failed: proc.resumeFailure ?? "unknown" } : {},
     ...resume?.step ? { step: true } : {},
+    ...resume?.rebase ? { rebase: resume.expectedMessages.length } : {},
     ...historyDiff !== undefined ? { first_diff: historyDiff } : {},
     ...proc.phases,
   })
-  return { proc, history: proc.resumedStep ? resume.expectedMessages : opts.history }
+  return { proc, history: proc.resumedStep || proc.resumedRebase ? resume.expectedMessages : opts.history }
 }
 
 // Open a stateless request's session in an idle agy that answered one
@@ -8101,6 +8347,68 @@ function renderResumedStepParts(messages) {
     renderTurnMessagesParts(messages.filter((message) => message.role !== "assistant")))
 }
 
+// Where a rebased session and the client part, named by the last row they
+// share: the calls it carries or answers, by name and arguments (in a
+// tool loop "the results" alone could be any step's), else its opening
+// words.
+function rebaseCallSummary(block) {
+  let args = ""
+  try { args = JSON.stringify(block?.input ?? {}) ?? "" } catch {}
+  if (args.length > 80) args = `${args.slice(0, 80)}...`
+  return `${block?.name ?? "tool"} ${args}`.trim()
+}
+
+function rebaseAnchor(rows) {
+  const message = rows.at(-1)
+  const blocksOf = (row) => Array.isArray(row?.content) ? row.content : [{ type: "text", text: String(row?.content ?? "") }]
+  const blocks = blocksOf(message)
+  const own = message?.role === "assistant"
+  const plural = (list) => list.length > 1 ? "s" : ""
+  const results = blocks.filter((block) => block?.type === "tool_result")
+  if (results.length) {
+    const ids = new Set(results.map((block) => block.tool_use_id))
+    const calls = blocksOf(rows.at(-2)).filter((block) => block?.type === "tool_use" && ids.has(block.id))
+    if (calls.length) return `the results of your ${calls.map(rebaseCallSummary).join(", ")} call${plural(calls)}`
+  }
+  const calls = blocks.filter((block) => block?.type === "tool_use")
+  if (calls.length) return `your ${calls.map(rebaseCallSummary).join(", ")} call${plural(calls)}`
+  const text = blocks.filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text).join(" ").replace(/\s+/g, " ").trim()
+  if (text) {
+    const words = text.length > 80 ? `${text.slice(0, 80)}...` : text
+    return `${own ? "your message" : "the user's message"} that begins "${words}"`
+  }
+  if (results.length) return `the ${results.length} tool result${plural(results)} the client kept last`
+  return own ? "your last message the client kept" : "the user's last message the client kept"
+}
+
+// A session resumed for a rebase (parkRebase) holds the rows before
+// `after`, and, when `anchor` is given (those rows), steps of
+// its own past them that the client never kept: the prompt says where the
+// two part. What the client has after the rows goes in as the replay
+// renders it, with the request's own messages as the current turn.
+function renderRebasedParts(after, currentCount, anchor = null) {
+  const count = Math.max(0, Math.min(currentCount, after.length))
+  const tail = after.slice(0, after.length - count)
+  const current = after.slice(after.length - count)
+  const hasResults = current.some((message) => Array.isArray(message.content) &&
+    message.content.some((block) => block?.type === "tool_result"))
+  const note = anchor
+    ? `Everything in this session after ${rebaseAnchor(anchor)} is not in the client's conversation (the user interrupted or rewrote it); treat it as never done. `
+    : ""
+  if (!tail.length) {
+    const parts = hasResults ? renderResumedStepParts(current) : renderContinuedTurnParts(current)
+    return note ? mergePromptParts([{ type: "text", text: `${note}The conversation goes on from there:\n\n` }], parts) : parts
+  }
+  const out = []
+  appendPrompt(out, `${note}The conversation ${note ? "goes on from there" : "since then goes on"} as the client has it:\n\n<conversation_history>\n`)
+  for (const message of tail) appendPrompt(out, renderHistoryEntry(message))
+  appendPrompt(out, HISTORY_RECORD_NOTE + "</conversation_history>\n\n<current_turn>\n")
+  appendPrompt(out, toPromptParts(renderTurnMessagesSegments(current)))
+  appendPrompt(out, "\n</current_turn>")
+  return toPromptParts(out)
+}
+
 function validateBody(body) {
   if (!Array.isArray(body?.messages) || !body.messages.length) {
     throw new UnsupportedContent("a request without messages")
@@ -9410,6 +9718,11 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   if (!isFirstTurn && proc.resumedStep) {
     proc.resumedStep = false
     baseParts = renderResumedStepParts(messages.slice(history.length))
+  } else if (!isFirstTurn && proc.resumedRebase) {
+    const { beyond } = proc.resumedRebase
+    proc.resumedRebase = null
+    baseParts = renderRebasedParts(messages.slice(history.length), trailingMessages(body).messages.length,
+      beyond ? history : null)
   } else if (!isFirstTurn) {
     baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...messages.slice(1)]
@@ -10102,9 +10415,20 @@ export const AntigravityBridgePlugin = async () => {
                       first_diff: historyMatches ? null : firstHistoryDiff(proc.expectedMessages, trailingMessages(body).history),
                     })
                     acquireOpts.dropReason = dropReason
+                    // the same session, resumed at the rows it shares with
+                    // the client, instead of a new one (parkRebase)
+                    const rebaseRows = dropReason === "prefill" ? null
+                      : parkRebase(proc, turn, body.messages, trailingMessages(body).history, acquireOpts, convKey)
                     dropFromPool(proc)
-                    proc.abandonTurn(turn)
-                    await proc.stop()
+                    if (rebaseRows) {
+                      acquireOpts.rebase = true
+                      proc.forgetCalls(turn)
+                      await proc.stop()
+                      proc.abandonTurn(turn)
+                    } else {
+                      proc.abandonTurn(turn)
+                      await proc.stop()
+                    }
                   } else {
                     let toolResultStep = null
                     if (!proc.dead && !turn.done) {
