@@ -1,9 +1,10 @@
-import { VendorError } from "./api.mjs"
+import { LOCAL_MEDIA, VendorError } from "./api.mjs"
 
 const RATIOS = new Map([[0, "adaptive"], [2, "16:9"], [3, "9:16"], [4, "4:3"], [5, "3:4"], [6, "1:1"], [7, "2:1"], [8, "2.35:1"], [9, "1.85:1"], [10, "1.125:2.436"], [11, "3:2"], [12, "2:3"], [13, "21:9"]])
 const own = (value, key) => Object.hasOwn(value, key)
 const fail = (message) => { throw new VendorError(message) }
 const canonical = (value) => String(value).toLowerCase()
+const ratioLabel = (value) => (typeof value === "number" || (typeof value === "string" && /^\d+$/.test(value))) ? RATIOS.get(Number(value)) : undefined
 
 function referenceCapabilities(model) {
   const limits = {}
@@ -81,7 +82,7 @@ export function modelRows(rows) {
     if (ratios.length) {
       supported.aspect_ratio = { type: "enum", values: ratios }
       const defaultRatio = model.parameter_config?.default_combination?.ratio ?? ratioDimension?.default_value ?? model.default_ratio
-      const label = RATIOS.get(Number(defaultRatio))
+      const label = ratioLabel(defaultRatio)
       if (defaultRatio != null && !ratioDimension?.active_when_any?.length && ratios.includes(label)) supported.aspect_ratio.default = label
     }
     for (const dimension of model.parameter_config?.dimensions ?? []) {
@@ -184,6 +185,7 @@ export function describeModel(model) {
 }
 
 function sourceOf(value) {
+  if (value?.[LOCAL_MEDIA] && typeof value.path === "string" && typeof value.mime === "string") return value
   if (typeof value === "string" && value) return value
   if (value && typeof value.image_url === "string") return value.image_url
   if (value && typeof value.image_url?.url === "string") return value.image_url.url
@@ -212,8 +214,8 @@ function validateDimensions(model, params) {
   if (params.seconds !== undefined) effective.duration = params.seconds
   function equal(key, left, right) {
     if (key === "ratio") {
-      left = RATIOS.get(Number(left)) ?? left
-      right = RATIOS.get(Number(right)) ?? right
+      left = ratioLabel(left) ?? left
+      right = ratioLabel(right) ?? right
     }
     return canonical(left) === canonical(right)
   }
@@ -256,15 +258,13 @@ function validateDimensions(model, params) {
 export function normalizeRequest(kind, body, model) {
   if (!body || typeof body !== "object" || Array.isArray(body)) fail("生成请求必须是对象。")
   const overrides = []
-  if (body.size !== undefined && body.size !== "auto") {
-    if (body.ratio !== undefined) overrides.push("size 的比例由 ratio 覆盖")
-    if (body.resolution !== undefined) overrides.push("size 的分辨率由 resolution 覆盖")
-  }
   if (kind === "video" && body.seconds !== undefined && body.duration !== undefined) overrides.push("seconds 由 duration 覆盖")
   if (kind === "image" && typeof body.size === "string" && body.size.includes("@")) {
-    const match = /^(auto|[1-9]\d*(?:\.\d+)?:[1-9]\d*(?:\.\d+)?)@(auto|\d+(?:\.\d+)?K)$/.exec(body.size)
+    const match = /^(auto|adaptive|[1-9]\d*(?:\.\d+)?:[1-9]\d*(?:\.\d+)?)@(auto|\d+(?:\.\d+)?[kK])$/.exec(body.size)
     if (!match) fail("size 比例／分辨率格式不正确。")
     const [, ratio, resolution] = match
+    if (ratio !== "auto" && body.ratio !== undefined) overrides.push("size 的比例由 ratio 覆盖")
+    if (resolution !== "auto" && body.resolution !== undefined) overrides.push("size 的分辨率由 resolution 覆盖")
     body = { ...body, size: undefined }
     if (ratio !== "auto" && body.ratio === undefined) body.ratio = ratio
     if (resolution !== "auto" && body.resolution === undefined) body.resolution = resolution
@@ -298,6 +298,7 @@ export function normalizeRequest(kind, body, model) {
   let ratio = body.ratio
   if (body.size && body.size !== "auto") {
     const pixels = /^(\d+)x(\d+)$/.exec(body.size)
+    if (body.ratio !== undefined) overrides.push("size 的比例由 ratio 覆盖")
     if (pixels) {
       const width = Number(pixels[1])
       const height = Number(pixels[2])
@@ -307,8 +308,9 @@ export function normalizeRequest(kind, body, model) {
         return pair.length === 2 && Math.abs(width / height - pair[0] / pair[1]) < 0.002
       })
       if (!ratio) fail("size 比例不在小云雀支持范围，请使用明确比例。")
-      if (kind === "video" && !draftPreview && body.resolution === undefined) {
-        params.resolution = `${Math.min(width, height)}p`
+      if (kind === "video" && !draftPreview) {
+        if (body.resolution !== undefined) overrides.push("size 的分辨率由 resolution 覆盖")
+        else params.resolution = `${Math.min(width, height)}p`
       }
     } else ratio ??= body.size
   }
@@ -319,8 +321,9 @@ export function normalizeRequest(kind, body, model) {
       if (!RATIOS.has(enumerated)) fail("图片比例不支持。")
       params.ratio = enumerated
     } else {
-      if (!RATIOS.has(Number(ratio)) && ![...RATIOS.values()].includes(ratio)) fail("视频比例不支持。")
-      params.ratio = RATIOS.get(Number(ratio)) ?? ratio
+      const resolved = ratioLabel(ratio) ?? (typeof ratio === "string" && [...RATIOS.values()].includes(ratio) ? ratio : undefined)
+      if (!resolved) fail("视频比例不支持。")
+      params.ratio = resolved
     }
   }
   if (body.resolution !== undefined && !draftPreview) {
@@ -385,7 +388,6 @@ export function normalizeRequest(kind, body, model) {
     if (params.draft === false) fail("Draft 升级请提供原始 draft_task_id。")
     params.draft = true
   }
-  if (kind === "image" && (videos.length || audios.length)) fail("图片生成仅支持参考图片。")
   const referenceSupport = referenceCapabilities(model)
   const counts = { image: images.length, video: videos.length, audio: audios.length }
   for (const [type, count] of Object.entries(counts)) {
@@ -455,7 +457,7 @@ export function buildSubmission(kind, normalized, model, assets) {
   return { agent_name: "pippit_video_part_agent", call_source: "pippit_cli", message: prompt, platform: "magpie", video_part_tool_param: settings }
 }
 
-export function parseRun(data, runId) {
+export function parseRun(data, runId, fallbackError) {
   const root = typeof data === "string" ? JSON.parse(data) : data
   const thread = root.thread
   if (!Array.isArray(thread?.run_list)) fail("小云雀任务响应缺少 run_list。")
@@ -493,7 +495,7 @@ export function parseRun(data, runId) {
       }
     }
   }
-  if (status === "failed" && !result.error) result.error = "小云雀生成失败。"
+  if (status === "failed" && !result.error) result.error = fallbackError || "小云雀生成失败。"
   if (status === "succeeded" && !result.images.length && !result.videos.length) fail("小云雀任务已结束，但未返回可下载产物。")
   return result
 }

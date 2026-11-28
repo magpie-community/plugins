@@ -8,8 +8,41 @@ import { downloadResult } from "./delivery.mjs"
 const BASE = "https://xyq.jianying.com/v1"
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
-export function createService({ directory, fetchImpl = globalThis.fetch, pollMs = 3000, now = Date.now } = {}) {
-  const api = createAPI({ directory, fetchImpl, now })
+export function createService({ directory, fetchImpl = globalThis.fetch, pollMs = 3000, imageTimeoutMs = 300_000, now = Date.now, maxTasks = 200 } = {}) {
+  const api = createAPI({ directory, fetchImpl, now, maxTasks })
+  async function resolveTeam(auth, teamId, identity, signal) {
+    const team = teamId !== undefined ? teamId : identity.teamId
+    if (team !== identity.teamId) {
+      const spaces = await api.spaces(auth, signal)
+      if (!spaces.some((space) => String(space.team_id) === team)) throw new VendorError("当前账号不属于所选团队。", 400)
+    }
+    return team
+  }
+  async function submitTask(auth, { kind, model, team, identity, path, body, adaptation }, signal) {
+    await api.ensureWatermarkOff(auth, signal)
+    signal?.throwIfAborted()
+    let submitted
+    try {
+      submitted = await api.post(auth, path, body, { signal, teamId: team })
+    } catch (error) {
+      if (error.status >= 500) throw new VendorError("小云雀提交结果未知。请先在小云雀网页核对任务，禁止自动重新提交。", 409)
+      throw error
+    }
+    if (!submitted.run?.thread_id || !submitted.run?.run_id) throw new VendorError("小云雀已响应提交，但未返回完整任务标识。请到网页核对，禁止重新提交。", 409)
+    const task = {
+      kind, thread: submitted.run.thread_id, run: submitted.run.run_id,
+      model, team, account: identity.account, created: Math.floor(now() / 1000),
+      ...(submitted.web_thread_link ? { web: submitted.web_thread_link } : {}),
+      ...(adaptation ? { adaptation } : {}),
+    }
+    const id = encodeTask(task)
+    try {
+      await api.remember(task)
+    } catch {
+      throw new VendorError(`小云雀任务已提交，本地记录写入失败。请保存任务 ID 并仅查询：${id}`, 409)
+    }
+    return { id, task }
+  }
   async function start(auth, kind, body, signal) {
     if (!["image", "video"].includes(kind)) throw new VendorError("生成类型须为 image 或 video。")
     const identity = credentials(auth)
@@ -18,11 +51,7 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
     if (!model) throw new VendorError("请从当前小云雀模型列表选择完整模型名称。", 400)
     if (model.disabled === true) throw new VendorError("当前账号尚未开放该模型，请选择可用模型。", 400)
     const input = normalizeRequest(kind, body, model)
-    const team = body.team_id !== undefined ? body.team_id : identity.teamId
-    if (team !== identity.teamId) {
-      const spaces = await api.spaces(auth, signal)
-      if (!spaces.some((space) => String(space.team_id) === team)) throw new VendorError("当前账号不属于所选团队。", 400)
-    }
+    const team = await resolveTeam(auth, body.team_id, identity, signal)
     const assets = { images: [], videos: [], audios: [] }
     for (const [key, type] of [["images", "image"], ["videos", "video"], ["audios", "audio"]]) {
       const results = []
@@ -39,34 +68,70 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
     const bodyToSubmit = buildSubmission(kind, input, model, assets)
     const attribution = { scene_lv1: "ai_agent", scene_lv2: "front_tool", tool_id: "instant_video", tab_name: "other", edit_type: "instant_video", enter_from: "skill" }
     const path = "/api/biz/v1/skill/submit_run" + (kind === "video" ? `?babi_param=${encodeURIComponent(JSON.stringify(attribution))}` : "")
-    let submitted
-    try {
-      submitted = await api.post(auth, path, bodyToSubmit, { signal, teamId: team })
-    } catch (error) {
-      if (error.status >= 500) throw new VendorError("小云雀提交结果未知。请先在小云雀网页核对任务，禁止自动重新提交。", 409)
-      throw error
+    return submitTask(auth, { kind, model: body.model, team, identity, path, body: bodyToSubmit, adaptation: input.adaptation }, signal)
+  }
+  async function processVideo(auth, body, signal) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new VendorError("视频处理请求必须是对象。")
+    const actions = { super_resolution: "video_super_resolution", erase_subtitle: "erase_video_subtitle" }
+    const toolName = actions[body.action]
+    if (!toolName) throw new VendorError("action 须为 super_resolution 或 erase_subtitle。")
+    if (!body.video) throw new VendorError("请提供待处理的视频。")
+    let payload
+    let message
+    if (body.action === "super_resolution") {
+      if (typeof body.output_resolution !== "string" || !body.output_resolution.trim()) throw new VendorError("视频超分须提供 output_resolution（如 720p、1080p、2k、4k）。")
+      const output_resolution = body.output_resolution.trim().toLowerCase()
+      const tool_version = body.tool_version !== undefined ? String(body.tool_version).trim() : ""
+      if (body.tool_version !== undefined && (typeof body.tool_version !== "string" || !tool_version)) throw new VendorError("tool_version 须为有效字符串。")
+      payload = { output_resolution, ...(tool_version ? { tool_version } : {}) }
+      message = "提升视频清晰度"
+    } else {
+      if (body.output_resolution !== undefined || body.tool_version !== undefined) throw new VendorError("擦除字幕不支持 output_resolution 或 tool_version。")
+      message = "擦除视频字幕"
     }
-    if (!submitted.run?.thread_id || !submitted.run?.run_id) throw new VendorError("小云雀已响应提交，但未返回完整任务标识。请到网页核对，禁止重新提交。", 409)
-    const task = {
-      kind, thread: submitted.run.thread_id, run: submitted.run.run_id,
-      model: body.model, team, account: identity.account, created: Math.floor(now() / 1000),
-      ...(submitted.web_thread_link ? { web: submitted.web_thread_link } : {}),
-      ...(input.adaptation ? { adaptation: input.adaptation } : {}),
-    }
-    const id = encodeTask(task)
-    try {
-      await api.remember(task)
-    } catch {
-      throw new VendorError(`小云雀任务已提交，本地记录写入失败。请保存任务 ID 并仅查询：${id}`, 409)
-    }
-    return { id, task }
+    const identity = credentials(auth)
+    const team = await resolveTeam(auth, body.team_id, identity, signal)
+    const assetId = await api.upload(auth, body.video, "video", { teamId: team, signal, index: 0 })
+    const videoRef = { pippit_asset_id: assetId }
+    const tool_param = body.action === "super_resolution"
+      ? { video_super_resolution_tool_param: { ...payload, video: videoRef } }
+      : { erase_video_subtitle_tool_param: { video: videoRef } }
+    return submitTask(auth, {
+      kind: "video",
+      model: toolName,
+      team,
+      identity,
+      path: "/api/biz/v1/skill/submit_run",
+      body: {
+        agent_name: "pippit_video_part_agent",
+        call_source: "pippit_cli",
+        message,
+        platform: "magpie",
+        video_part_tool_param: { mini_tool_param: { tool_name: toolName, tool_param } },
+      },
+    }, signal)
   }
   async function result(auth, id, signal) {
     const task = decodeTask(id)
-    if (credentials(auth).account !== task.account) throw new VendorError("请使用提交该任务的原小云雀账号查询。", 403)
-    const data = await api.post(auth, "/api/biz/v1/skill/get_thread", { thread_id: task.thread, run_id: task.run }, { signal, teamId: task.team })
-    const parsed = parseRun(data, task.run)
-    if (parsed.error) parsed.error = String(parsed.error).split(credentials(auth).key).join("[已隐藏密钥]")
+    const identity = credentials(auth)
+    if (identity.account !== task.account) throw new VendorError("请使用提交该任务的原小云雀账号查询。", 403)
+    let data
+    let queryError
+    try {
+      data = await api.post(auth, "/api/biz/v1/skill/get_thread", { thread_id: task.thread, run_id: task.run }, { signal, teamId: task.team })
+    } catch (error) {
+      if (!(error instanceof VendorError) || !error.data) throw error
+      data = error.data
+      queryError = error
+    }
+    let parsed
+    try {
+      parsed = parseRun(data, task.run, queryError?.message)
+    } catch (error) {
+      if (queryError) throw queryError
+      throw error
+    }
+    if (parsed.error) parsed.error = String(parsed.error).split(identity.key).join("[已隐藏密钥]")
     return { ...parsed, task, id, ...(task.web ? { web_thread_link: task.web } : {}) }
   }
   async function imageData(images, signal) {
@@ -130,6 +195,7 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
     let active
     try {
       if (method === "POST" && ["/v1/images/generations", "/v1/images/edits", "/v1/videos"].includes(path)) {
+        const kind = path === "/v1/videos" ? "video" : "image"
         let body
         const contentType = new Headers(init.headers).get("content-type") ?? ""
         if (contentType.startsWith("multipart/form-data")) {
@@ -141,7 +207,7 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
             const field = key.replace(/\[\]$/, "")
             if (["image", "images", "reference_images", "reference_videos", "reference_audios"].includes(field)) {
               if (typeof value === "string" && value.trimStart().startsWith("[")) source = JSON.parse(value)
-              const target = field === "image" ? "images" : field
+              const target = field === "image" && kind === "image" ? "images" : field
               body[target] ??= []
               body[target].push(...(Array.isArray(source) ? source : [source]))
             } else {
@@ -150,25 +216,33 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
             }
           }
         } else body = JSON.parse(typeof init.body === "string" ? init.body : Buffer.from(init.body).toString("utf8"))
-        const kind = path === "/v1/videos" ? "video" : "image"
         active = await start(auth, kind, body, init.signal)
         if (kind === "video") return json(videoObject(active.task, active.id, "queued"))
-        while (true) {
-          init.signal?.throwIfAborted()
-          const current = await result(auth, active.id, init.signal)
-          if (current.status === "succeeded") {
-            if (!current.images.length) throw new Error("任务没有返回图片产物。")
-            const data = body.response_format === "url"
-              ? current.images.map((image) => ({ url: image.url }))
-              : await imageData(current.images, init.signal)
-            return json({
-              created: active.task.created, data,
-              ...(active.task.adaptation ? { adaptation: active.task.adaptation } : {}),
-            })
+        const deadline = AbortSignal.timeout(imageTimeoutMs)
+        const polling = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline
+        let current
+        try {
+          while (true) {
+            polling.throwIfAborted()
+            current = await result(auth, active.id, polling)
+            if (current.status !== "running") break
+            await wait(pollMs, undefined, { signal: polling })
           }
-          if (current.status !== "running") throw new Error(current.error || `任务状态为 ${current.status}，请在小云雀网页处理。`)
-          await wait(pollMs, undefined, { signal: init.signal })
+        } catch (error) {
+          if (deadline.aborted && !init.signal?.aborted) throw new VendorError("图片生成等待超时。", 409)
+          throw error
         }
+        if (current.status === "succeeded") {
+          if (!current.images.length) throw new Error("任务没有返回图片产物。")
+          const data = body.response_format === "url"
+            ? current.images.map((image) => ({ url: image.url }))
+            : await imageData(current.images, init.signal)
+          return json({
+            created: active.task.created, data,
+            ...(active.task.adaptation ? { adaptation: active.task.adaptation } : {}),
+          })
+        }
+        throw new Error(current.error || `任务状态为 ${current.status}，请在小云雀网页处理。`)
       }
       const route = /^\/v1\/videos\/([^/]+)(\/content)?$/.exec(path)
       if (method === "GET" && route) {
@@ -209,7 +283,7 @@ export function createService({ directory, fetchImpl = globalThis.fetch, pollMs 
       return json({ error: { type: "xiaoyunque_error", message: error.message } }, error.status ?? 400)
     }
   }
-  return { api, start, result, collect, imageData, native }
+  return { api, start, processVideo, result, collect, imageData, native }
 }
 
 function videoObject(task, id, status) {
@@ -246,7 +320,7 @@ export async function XiaoyunquePlugin(input) {
         const auth = await getAuth()
         if (!auth) return {}
         await loadModels(auth)
-        return { baseURL: BASE, apiKey: credentials(auth).key, fetch: (url, init) => service.native(auth, url, init) }
+        return { baseURL: BASE, apiKey: credentials(auth).key, fetch: async (url, init) => service.native(await getAuth(), url, init) }
       },
       async usage(getAuth) {
         const auth = await getAuth()

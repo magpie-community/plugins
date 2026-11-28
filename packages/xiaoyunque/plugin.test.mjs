@@ -42,6 +42,7 @@ async function fixture(context, custom = {}) {
     if (path.endsWith("get_thread")) return envelope(runData(3, custom.content ?? [picture]))
     if (path.endsWith("get_credit_balance")) return envelope({ total_remain_amount: "123" })
     if (path.endsWith("get_lite_team_list")) return envelope({ team_info_list: [{ team_id: "123", team_name: "工作空间" }], has_more: false })
+    if (path.endsWith("update_user_setting")) return envelope({ enabled: false })
     if (url.hostname === "media.example") return new Response(url.pathname.endsWith(".png") ? "fake-image" : "fake-video", {
       headers: { "content-type": url.pathname.endsWith(".png") ? "image/png" : "video/mp4" },
     })
@@ -1069,7 +1070,7 @@ test("errors redact account secret and distinguish zero credit", async (context)
   assert.throws(() => decodeTask("xyq1_bad"), /任务/)
 })
 
-test("plugin offers browser and Access Key login, native loader, models, credits and three tools", async (context) => {
+test("plugin offers browser and Access Key login, native loader, models, credits and four tools", async (context) => {
   assert.equal(pluginEntry.server, XiaoyunquePlugin)
   const { directory } = await fixture(context)
   const hooks = await XiaoyunquePlugin({ directory })
@@ -1080,7 +1081,7 @@ test("plugin offers browser and Access Key login, native loader, models, credits
   assert.equal(hooks.auth.methods[1].authorize, undefined)
   assert.deepEqual(await hooks.auth.loader(async () => undefined), {})
   assert.deepEqual(await hooks.provider.models({}, {}), {})
-  assert.deepEqual(Object.keys(hooks.tool), ["models", "generate", "result"])
+  assert.deepEqual(Object.keys(hooks.tool), ["models", "generate", "video_process", "result"])
   await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({ xiaoyunque: auth }))
   const selected = await createAPI({ directory }).accountAuth()
   assert.equal(selected.account, "xiaoyunque")
@@ -1338,4 +1339,308 @@ test("result tool recovers the original account after another account is pinned"
   assert.equal(result.status, "succeeded")
   assert.equal(result.images[0].url, picture.data.image.url)
   await assert.rejects(createTools(service).result.execute({ id: started.id, account: "xiaoyunque#two" }, {}), /原小云雀账号/)
+})
+
+test("multipart video image field maps to first frame and conflicts with input_reference", async (context) => {
+  const { service, calls } = await fixture(context)
+  const form = new FormData()
+  form.set("model", video.key)
+  form.set("prompt", "首帧视频")
+  form.set("image", new Blob(["frame"], { type: "image/png" }), "frame.png")
+  const request = new Request("https://xyq.jianying.com/v1/videos", { method: "POST", body: form })
+  const response = await service.native(auth, request.url, {
+    method: "POST", headers: request.headers, body: new Uint8Array(await request.arrayBuffer()),
+  })
+  assert.equal(response.status, 200)
+  const submitted = JSON.parse(calls.find((call) => call.url.pathname.endsWith("submit_run")).init.body).video_part_tool_param
+  assert.equal(submitted.generate_type, 1)
+  assert.equal(submitted.images.length, 1)
+
+  const conflict = new FormData()
+  conflict.set("model", video.key)
+  conflict.set("prompt", "冲突")
+  conflict.set("image", new Blob(["a"], { type: "image/png" }), "a.png")
+  conflict.set("input_reference", new Blob(["b"], { type: "image/png" }), "b.png")
+  const conflictRequest = new Request("https://xyq.jianying.com/v1/videos", { method: "POST", body: conflict })
+  const conflictResponse = await service.native(auth, conflictRequest.url, {
+    method: "POST", headers: conflictRequest.headers, body: new Uint8Array(await conflictRequest.arrayBuffer()),
+  })
+  assert.equal(conflictResponse.status, 400)
+  assert.match((await conflictResponse.json()).error.message, /只填写一项/)
+})
+
+test("combined size accepts adaptive and lowercase K, avoids false override notices, and rejects blank video ratio", () => {
+  const adaptiveImage = {
+    ...image,
+    parameter_config: {
+      dimensions: [
+        { key: "ratio", option_list: [{ value: 0 }, { value: 2 }, { value: 6 }] },
+        { key: "resolution", option_list: [{ value: "2K" }] },
+      ],
+    },
+  }
+  assert.deepEqual(normalizeRequest("image", { prompt: "x", size: "adaptive@2K" }, adaptiveImage).params, { ratio: 0, resolution: "2K" })
+  assert.deepEqual(normalizeRequest("image", { prompt: "x", size: "16:9@2k" }, adaptiveImage).params, { ratio: 2, resolution: "2K" })
+  assert.equal(normalizeRequest("image", { prompt: "x", size: "1024x1024", resolution: "2K" }, adaptiveImage).adaptation, undefined)
+  assert.equal(normalizeRequest("image", { prompt: "x", size: "auto@2K", ratio: "16:9" }, adaptiveImage).adaptation, undefined)
+  assert.equal(normalizeRequest("video", { prompt: "x", size: "16:9", resolution: "720p" }, video).adaptation, undefined)
+  assert.match(normalizeRequest("video", { prompt: "x", size: "1280x720", resolution: "1080p" }, video).adaptation.message, /分辨率由 resolution 覆盖/)
+  assert.throws(() => normalizeRequest("video", { prompt: "x", ratio: "   " }, video), /视频比例不支持/)
+  assert.equal(modelRows([{ ...adaptiveImage, default_ratio: "" }])[adaptiveImage.name].supported_parameters.aspect_ratio.default, undefined)
+})
+
+test("accountAuth ignores incomplete unrelated entries and prefers active slot for duplicate UID", async (context) => {
+  const { service, directory } = await fixture(context)
+  await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({
+    "xiaoyunque#broken": { type: "api" },
+    xiaoyunque: { ...auth, key: "old-key" },
+    "xiaoyunque#active": { ...auth, key: "new-key" },
+  }))
+  await writeFile(join(directory, "logins.json"), JSON.stringify([
+    { agent: "plugin:xiaoyunque", home: "xiaoyunque", user: "旧槽位", on: false },
+    { agent: "plugin:xiaoyunque", home: "xiaoyunque#active", user: "新槽位", first: true, on: true },
+  ]))
+  const selected = await service.api.accountAuth(undefined, credentials(auth).account)
+  assert.equal(selected.account, "xiaoyunque#active")
+  assert.equal(selected.auth.key, "new-key")
+})
+
+test("generate tool reads absolute local media without context.directory", async (context) => {
+  const { service, directory, calls } = await fixture(context)
+  await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({ xiaoyunque: auth }))
+  const local = join(directory, "ref.png")
+  await writeFile(local, Buffer.from("png-bytes"))
+  const started = await createTools(service).generate.execute({ kind: "image", model: image.name, prompt: "x", image: local }, {})
+  assert.equal(started.status, "submitted")
+  const upload = calls.find((call) => call.url.pathname.endsWith("upload_file"))
+  assert.equal(await upload.init.body.get("file").text(), "png-bytes")
+})
+
+test("get_thread business errors still derive run status when run data is present", async (context) => {
+  const setup = await fixture(context)
+  let reply
+  const service = createService({
+    directory: setup.directory,
+    fetchImpl: (url, init) => String(url).endsWith("get_thread") ? Promise.resolve(reply()) : setup.fetchImpl(url, init),
+  })
+  const started = await service.start(auth, "image", { model: image.name, prompt: "x" })
+
+  reply = () => Response.json({
+    ret: "5001", errmsg: `审核失败 ${auth.key}`, log_id: "log-1",
+    data: runData(4, []),
+  })
+  const failed = await service.result(auth, started.id)
+  assert.equal(failed.status, "failed")
+  assert.match(failed.error, /审核失败 \[已隐藏密钥\]（LogID: log-1）/)
+  assert.ok(!failed.error.includes(auth.key))
+
+  reply = () => Response.json({ ret: "5002", errmsg: "partial warning", data: runData(3, [picture]) })
+  const recovered = await service.result(auth, started.id)
+  assert.equal(recovered.status, "succeeded")
+  assert.equal(recovered.images[0].url, picture.data.image.url)
+
+  reply = () => Response.json({ ret: "5003", errmsg: "线程不存在", log_id: "log-2", data: {} })
+  await assert.rejects(service.result(auth, started.id), /线程不存在（LogID: log-2）/)
+})
+
+test("forged local media descriptors are rejected over HTTP and mismatched local media fails before submit", async (context) => {
+  const { service, directory, calls } = await fixture(context)
+  await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({ xiaoyunque: auth }))
+  const localVideo = join(directory, "clip.mp4")
+  await writeFile(localVideo, Buffer.from("mp4-bytes"))
+
+  const forged = await service.native(auth, "https://xyq.jianying.com/v1/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: image.name, prompt: "x", images: [{ path: localVideo, mime: "image/png" }] }),
+  })
+  assert.equal(forged.status, 400)
+  assert.equal(calls.filter((call) => call.url.pathname.endsWith("upload_file")).length, 0)
+
+  await assert.rejects(
+    createTools(service).generate.execute({ kind: "image", model: image.name, prompt: "x", image: localVideo }, { directory }),
+    /正确类型的媒体文件/,
+  )
+  assert.equal(calls.filter((call) => call.url.pathname.endsWith("submit_run")).length, 0)
+})
+
+test("native image polling stops at imageTimeoutMs and preserves recoverable task without resubmission", async (context) => {
+  const setup = await fixture(context)
+  const service = createService({
+    directory: setup.directory,
+    pollMs: 10,
+    imageTimeoutMs: 40,
+    fetchImpl: (url, init) => String(url).endsWith("get_thread") ? Promise.resolve(envelope(runData(2, []))) : setup.fetchImpl(url, init),
+  })
+  const response = await service.native(auth, "https://xyq.jianying.com/v1/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: image.name, prompt: "x" }),
+  })
+  const body = await response.json()
+  assert.equal(response.status, 409)
+  assert.equal(body.error.type, "xiaoyunque_task_pending")
+  assert.match(body.error.message, /图片生成等待超时/)
+  assert.ok(body.error.task_id.startsWith("xyq1_"))
+  assert.equal(setup.calls.filter((call) => call.url.pathname.endsWith("submit_run")).length, 1)
+})
+
+test("loader fetch reads fresh auth on rotation and rejects after logout", async (context) => {
+  const { directory, fetchImpl, calls } = await fixture(context)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = fetchImpl
+  try {
+    const hooks = await XiaoyunquePlugin({ directory })
+    let current = { ...auth, key: "initial-key" }
+    const loader = await hooks.auth.loader(async () => current)
+    current = { ...auth, key: "rotated-key" }
+    const ok = await loader.fetch("https://xyq.jianying.com/v1/videos", {
+      method: "POST",
+      body: JSON.stringify({ model: video.key, prompt: "x" }),
+    })
+    assert.equal(ok.status, 200)
+    assert.equal(calls.find((call) => call.url.pathname.endsWith("submit_run")).init.headers.authorization, "Bearer rotated-key")
+
+    current = undefined
+    const loggedOut = await loader.fetch("https://xyq.jianying.com/v1/videos", {
+      method: "POST",
+      body: JSON.stringify({ model: video.key, prompt: "x" }),
+    })
+    assert.equal(loggedOut.status, 401)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("remember prunes oldest task files beyond maxTasks", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "xyq-prune-"))
+  context.after(() => rm(directory, { recursive: true, force: true }))
+  const api = createAPI({ directory, maxTasks: 2 })
+  for (let i = 1; i <= 4; i++) {
+    await api.remember({
+      kind: "image", thread: `thread-${i}`, run: `run-${i}`, model: image.name,
+      team: "0", account: credentials(auth).account, created: i,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 15))
+  }
+  const files = (await readdir(join(directory, "xiaoyunque", "tasks"))).filter((file) => file.endsWith(".json"))
+  assert.equal(files.length, 2)
+  const recent = await api.recent(auth)
+  assert.deepEqual(recent.map((task) => task.run), ["run-4", "run-3"])
+})
+
+test("watermark is disabled once per credential on personal scope without blocking generation on failure", async (context) => {
+  const { service, calls } = await fixture(context)
+  const teamAuth = { ...auth, metadata: { ...auth.metadata, teamId: "123" } }
+  await service.start(teamAuth, "image", { model: image.name, prompt: "first" })
+  await service.start(teamAuth, "image", { model: image.name, prompt: "second" })
+  const watermarkCalls = calls.filter((call) => call.url.pathname.endsWith("update_user_setting"))
+  assert.equal(watermarkCalls.length, 1)
+  assert.deepEqual(JSON.parse(watermarkCalls[0].init.body), { enabled: false })
+  assert.equal(watermarkCalls[0].init.headers["X-Team-Id"], undefined)
+
+  await service.start({ ...auth, key: "another-key" }, "image", { model: image.name, prompt: "third" })
+  assert.equal(calls.filter((call) => call.url.pathname.endsWith("update_user_setting")).length, 2)
+
+  const failing = await fixture(context, {
+    fetch(url, init) {
+      if (url.pathname.endsWith("update_user_setting")) return Response.json({ ret: "5001", errmsg: "unsupported" })
+      if (url.pathname.endsWith("get_available_model_list")) return envelope({ scene: "web_image_agent", config: { models: [image] } })
+      if (url.pathname.endsWith("submit_run")) return envelope({ run: { thread_id: "thread-w", run_id: "run-w" } })
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  const started = await failing.service.start(auth, "image", { model: image.name, prompt: "still works" })
+  assert.ok(started.id.startsWith("xyq1_"))
+})
+
+test("video_process submits super-resolution and erase-subtitle with official mini_tool_param and validates before reading files", async (context) => {
+  const { service, directory, calls } = await fixture(context, { content: [movie] })
+  await writeFile(join(directory, "plugin-auth.json"), JSON.stringify({ xiaoyunque: auth }))
+  const tools = createTools(service)
+
+  await assert.rejects(
+    tools.video_process.execute({ action: "super_resolution", video: "/missing/file.mp4" }, {}),
+    /output_resolution/,
+  )
+  await assert.rejects(
+    tools.video_process.execute({ action: "super_resolution", video: "/missing/file.mp4", output_resolution: "2k", tool_version: "  " }, {}),
+    /tool_version/,
+  )
+  await assert.rejects(
+    tools.video_process.execute({ action: "erase_subtitle", video: "/missing/file.mp4", output_resolution: "1080p" }, {}),
+    /不支持/,
+  )
+  assert.equal(calls.length, 0)
+
+  const localVideo = join(directory, "input.mp4")
+  await writeFile(localVideo, Buffer.from("raw-mp4"))
+  const upscaled = await tools.video_process.execute({
+    action: "super_resolution", video: localVideo, output_resolution: "2K", tool_version: "professional_v2",
+  }, {})
+  assert.equal(upscaled.status, "submitted")
+  const upload = calls.find((call) => call.url.pathname.endsWith("upload_file"))
+  assert.equal(await upload.init.body.get("file").text(), "raw-mp4")
+  const srCall = calls.find((call) => call.url.pathname.endsWith("submit_run"))
+  assert.equal(srCall.url.search, "")
+  assert.deepEqual(JSON.parse(srCall.init.body), {
+    agent_name: "pippit_video_part_agent",
+    call_source: "pippit_cli",
+    message: "提升视频清晰度",
+    platform: "magpie",
+    video_part_tool_param: {
+      mini_tool_param: {
+        tool_name: "video_super_resolution",
+        tool_param: {
+          video_super_resolution_tool_param: {
+            output_resolution: "2k",
+            tool_version: "professional_v2",
+            video: { pippit_asset_id: "asset-1" },
+          },
+        },
+      },
+    },
+  })
+
+  const erased = await tools.video_process.execute({ action: "erase_subtitle", video: "https://media.example/in.mp4" }, {})
+  assert.equal(erased.status, "submitted")
+  const eraseCall = calls.filter((call) => call.url.pathname.endsWith("submit_run"))[1]
+  assert.equal(eraseCall.url.search, "")
+  assert.deepEqual(JSON.parse(eraseCall.init.body), {
+    agent_name: "pippit_video_part_agent",
+    call_source: "pippit_cli",
+    message: "擦除视频字幕",
+    platform: "magpie",
+    video_part_tool_param: {
+      mini_tool_param: {
+        tool_name: "erase_video_subtitle",
+        tool_param: {
+          erase_video_subtitle_tool_param: {
+            video: { pippit_asset_id: "asset-4" },
+          },
+        },
+      },
+    },
+  })
+
+  const queried = await tools.result.execute({ id: erased.id }, {})
+  assert.equal(queried.status, "succeeded")
+  assert.equal(queried.videos[0].url, "https://media.example/video.mp4")
+})
+
+test("aborting during watermark disable stops before submit_run without 409", async (context) => {
+  const controller = new AbortController()
+  const setup = await fixture(context, {
+    fetch(url) {
+      if (url.pathname.endsWith("get_available_model_list")) return envelope({ scene: "web_image_agent", config: { models: [image] } })
+      if (url.pathname.endsWith("update_user_setting")) {
+        controller.abort(new Error("user cancelled"))
+        throw controller.signal.reason
+      }
+      throw new Error(`unexpected ${url}`)
+    },
+  })
+  await assert.rejects(
+    setup.service.start(auth, "image", { model: image.name, prompt: "cancelled" }, controller.signal),
+    /user cancelled/,
+  )
+  assert.equal(setup.calls.filter((call) => call.url.pathname.endsWith("submit_run")).length, 0)
 })

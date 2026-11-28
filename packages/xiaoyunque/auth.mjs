@@ -123,7 +123,7 @@ export async function beginLogin({ directory, signal, now = Date.now, timeout = 
   const url = new URL("https://www.xiaoyunque.com/cli/pippit-tool-login")
   for (const [key, value] of Object.entries({
     callback: callbackURL, random_secret_key: secret, source: SOURCE,
-    cli_version: "1.0.52", auth_protocol: "1", device_id: identity.deviceId,
+    cli_version: "1.0.57", auth_protocol: "1", device_id: identity.deviceId,
     ...(identity.tokenId ? { token_id: identity.tokenId } : {}),
   })) url.searchParams.set(key, value)
   return {

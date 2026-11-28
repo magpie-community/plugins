@@ -1,5 +1,6 @@
-import { readFile, realpath, stat } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import { extname, isAbsolute, resolve } from "node:path"
+import { LOCAL_MEDIA } from "./api.mjs"
 import { decodeTask, describeModel, encodeTask } from "./media.mjs"
 
 const string = (description) => ({ type: "string", description })
@@ -86,6 +87,35 @@ export function createTools(service) {
           ...(started.task.adaptation ? { adaptation: started.task.adaptation } : {}) }
       },
     },
+    video_process: {
+      description: "提交一次小云雀视频超分（super_resolution）或视频擦字幕（erase_subtitle）任务，立即返回任务 ID 和官方页面；使用 result 查询与下载，禁止通过再次提交恢复任务。待处理视频可用 HTTPS、data URL 或本地绝对路径。",
+      args: schema({
+        ...base,
+        action: { type: "string", enum: ["super_resolution", "erase_subtitle"], description: "super_resolution 为视频超分，erase_subtitle 为擦除视频字幕。" },
+        video: string("待处理视频：HTTPS 地址、Base64 data URL 或本机绝对路径。"),
+        output_resolution: { type: "string", enum: ["720p", "1080p", "2k", "4k"], description: "仅 super_resolution 必填：目标分辨率（720p、1080p、2k、4k）。" },
+        tool_version: { type: "string", enum: ["standard", "professional_v1", "professional_v2"], description: "仅 super_resolution 可选：超分模型版本。" },
+      }, ["action", "video"]),
+      async execute(args, context) {
+        if (!["super_resolution", "erase_subtitle"].includes(args.action) || typeof args.video !== "string" || !args.video.trim()) {
+          throw new Error("请提供有效的 action（super_resolution 或 erase_subtitle）和 video。")
+        }
+        if (args.action === "super_resolution" && (typeof args.output_resolution !== "string" || !args.output_resolution.trim())) {
+          throw new Error("视频超分须提供 output_resolution（如 720p、1080p、2k、4k）。")
+        }
+        if (args.action === "super_resolution" && args.tool_version !== undefined && (typeof args.tool_version !== "string" || !args.tool_version.trim())) {
+          throw new Error("tool_version 须为有效字符串。")
+        }
+        if (args.action === "erase_subtitle" && (args.output_resolution !== undefined || args.tool_version !== undefined)) {
+          throw new Error("擦除字幕不支持 output_resolution 或 tool_version。")
+        }
+        const { auth, account } = await service.api.accountAuth(args.account)
+        const { account: _account, ...body } = args
+        const converted = await localMedia(body, context.directory)
+        const started = await service.processVideo(auth, converted, context.abort)
+        return { account, id: started.id, status: "submitted", team_id: started.task.team, web_thread_link: started.task.web }
+      },
+    },
     result: {
       description: "查询原小云雀任务并返回图片或视频、样片标识及服务端结果信息；可限时等待并下载到本地目录，不覆盖已有文件，失败不重新生成。省略 id 查看最近 20 个任务以恢复中断工作。",
       args: schema({
@@ -126,17 +156,17 @@ async function localMedia(body, directory) {
     if (typeof source !== "string") throw new Error("参考媒体须为字符串。")
     if (/^(https:|data:)/.test(source)) return source
     if (!isAbsolute(source)) throw new Error("本地参考素材请提供完整绝对路径。")
-    const path = await realpath(resolve(directory, source))
+    const path = await realpath(directory ? resolve(directory, source) : resolve(source))
     const details = await stat(path)
     if (!details.isFile() || details.size <= 0 || details.size >= 500_000_000) throw new Error("参考媒体须为小于 500 MB 的文件。")
     const mime = mimes[extname(path).toLowerCase()]
     if (!mime) throw new Error("不支持该参考媒体文件格式。")
-    return `data:${mime};base64,${(await readFile(path)).toString("base64")}`
+    return { [LOCAL_MEDIA]: true, path, mime }
   }
   const converted = { ...body }
   for (const key of ["reference_images", "reference_videos", "reference_audios"]) {
     if (converted[key]) converted[key] = await Promise.all(converted[key].map(convert))
   }
-  for (const key of ["image", "input_reference", "last_frame"]) if (converted[key]) converted[key] = await convert(converted[key])
+  for (const key of ["image", "input_reference", "last_frame", "video"]) if (converted[key]) converted[key] = await convert(converted[key])
   return converted
 }
