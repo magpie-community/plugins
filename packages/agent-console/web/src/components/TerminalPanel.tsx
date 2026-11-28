@@ -11,6 +11,7 @@ import { ConfirmDialog } from "./Dialog";
 import { toast } from "./Toast";
 import { errMsg, t as tr, tf } from "../i18n/index.js";
 import "@xterm/xterm/css/xterm.css";
+import { readTerminalFont } from "../terminal/font";
 import { xtermTheme } from "../terminal/theme";
 
 type TermInfo = { id: string; index: number; projectId: string; title: string; alive: boolean; simple?: boolean };
@@ -123,18 +124,19 @@ function TermView({ term, visible }: { term: TermInfo; visible: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const [attached, setAttached] = useState(false);
 
   // Mount once: xterm + fit + attach snapshot + output frames + input
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const font = readTerminalFont();
     const xterm = new Terminal({
-      // Monospace fonts for Windows / macOS / Linux, followed by each platform's Chinese font
-      fontFamily:
-        '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, Monaco, "DejaVu Sans Mono", "Ubuntu Mono", ' +
-        '"Microsoft YaHei UI", "PingFang SC", "Noto Sans Mono CJK SC", monospace',
-      fontSize: 13,
+      // --font-mono follows Magpie (--magpie-code); the fallback covers a page whose CSS has not applied yet
+      fontFamily: font.fontFamily,
+      fontSize: font.fontSize,
       lineHeight: 1.25,
       cursorBlink: true,
       scrollback: 5000,
@@ -179,22 +181,35 @@ function TermView({ term, visible }: { term: TermInfo; visible: boolean }) {
     };
   }, [term.id, term.index]);
 
-  // Sync xterm colors when switching light/dark theme
+  // Sync xterm colors, and the font Magpie publishes as --font-mono / the body font size.
+  // Tokens land on <html style>, light/dark on data-theme (same observer the colors already used).
   useEffect(() => {
     const el = document.documentElement;
     const sync = () => {
       const xt = termRef.current;
-      if (xt) xt.options.theme = xtermTheme();
+      if (!xt) return;
+      xt.options.theme = xtermTheme();
+      const font = readTerminalFont();
+      const fontChanged = xt.options.fontFamily !== font.fontFamily || xt.options.fontSize !== font.fontSize;
+      xt.options.fontFamily = font.fontFamily;
+      xt.options.fontSize = font.fontSize;
+      const fit = fitRef.current;
+      if (!fontChanged || !visibleRef.current || !fit) return;
+      try {
+        fit.fit();
+        const enc = new TextEncoder();
+        ws.sendBinary(3, term.index, enc.encode(JSON.stringify({ cols: xt.cols, rows: xt.rows })));
+      } catch {}
     };
     const obs = new MutationObserver(sync);
-    obs.observe(el, { attributes: true, attributeFilter: ["data-theme"] });
+    obs.observe(el, { attributes: true, attributeFilter: ["data-theme", "style"] });
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     mq.addEventListener("change", sync);
     return () => {
       obs.disconnect();
       mq.removeEventListener("change", sync);
     };
-  }, []);
+  }, [term.index]);
 
   // Visibility/size change → fit + resize frame
   useEffect(() => {

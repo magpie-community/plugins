@@ -10490,6 +10490,16 @@ function simpleShellArgs(shell, platform = process.platform) {
   }
   return ["-i"];
 }
+function localeConfigured(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function withUtf8Locale(env, platform = process.platform) {
+  const next = { ...env };
+  if (platform === "win32") return next;
+  if (localeConfigured(next.LC_ALL) || localeConfigured(next.LC_CTYPE) || localeConfigured(next.LANG)) return next;
+  next.LC_CTYPE = platform === "darwin" ? "UTF-8" : "C.UTF-8";
+  return next;
+}
 function fixSpawnHelper() {
   if (process.platform !== "darwin") return;
   try {
@@ -10541,6 +10551,7 @@ var TerminalService = class {
     const alive = [...this.terms.values()].filter((t) => t.projectId === projectId && t.alive);
     if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: tr("term.max", { n: MAX_TERMS_PER_PROJECT }) };
     const shell = pickShell();
+    const env = withUtf8Locale(process.env);
     const term = {
       id: rid5(),
       index: nextIndex++,
@@ -10563,7 +10574,7 @@ var TerminalService = class {
           cols: Math.max(20, cols),
           rows: Math.max(5, rows),
           cwd,
-          env: process.env
+          env
         });
         term.pty = { write: (d) => p.write(d), resize: (c, r) => p.resize(c, r), kill: () => p.kill(), onData: (cb) => p.onData(cb), onExit: (cb) => p.onExit(cb), pid: p.pid };
         term.pty.onData((d) => this.onData(term, d));
@@ -10579,7 +10590,7 @@ var TerminalService = class {
         cwd,
         stdio: "pipe",
         windowsHide: true,
-        env: process.env,
+        env,
         detached: process.platform !== "win32"
       });
       term.proc = proc;

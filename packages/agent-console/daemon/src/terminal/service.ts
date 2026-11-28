@@ -88,6 +88,21 @@ export function simpleShellArgs(shell: string, platform: NodeJS.Platform = proce
   return ["-i"];
 }
 
+function localeConfigured(value: string | undefined): boolean {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** UTF-8 locale for a shell that launchd started with LANG/LC_* unset. An explicit LC_ALL, LC_CTYPE, or LANG is kept
+ *  (an empty string counts as unset). macOS gets LC_CTYPE=UTF-8, other POSIX gets C.UTF-8, Windows is copied unchanged.
+ *  The input env object is not mutated. */
+export function withUtf8Locale(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...env };
+  if (platform === "win32") return next;
+  if (localeConfigured(next.LC_ALL) || localeConfigured(next.LC_CTYPE) || localeConfigured(next.LANG)) return next;
+  next.LC_CTYPE = platform === "darwin" ? "UTF-8" : "C.UTF-8";
+  return next;
+}
+
 /** node-pty's macOS prebuilds start children through spawn-helper; npm unpacking sometimes drops its executable bit → posix_spawnp failed. */
 function fixSpawnHelper(): void {
   if (process.platform !== "darwin") return;
@@ -147,6 +162,7 @@ export class TerminalService {
     const alive = [...this.terms.values()].filter((t) => t.projectId === projectId && t.alive);
     if (alive.length >= MAX_TERMS_PER_PROJECT) return { error: tr("term.max", { n: MAX_TERMS_PER_PROJECT }) };
     const shell = pickShell();
+    const env = withUtf8Locale(process.env);
     const term: Term = {
       id: rid(), index: nextIndex++, projectId, cwd, title: tr("term.title", { n: alive.length + 1 }),
       alive: true, simple: false, pty: null, proc: null, buf: "", pend: "", timer: null,
@@ -155,7 +171,7 @@ export class TerminalService {
     if (pty) {
       try {
         const p = pty.spawn(shell, [], {
-          name: "xterm-256color", cols: Math.max(20, cols), rows: Math.max(5, rows), cwd, env: process.env,
+          name: "xterm-256color", cols: Math.max(20, cols), rows: Math.max(5, rows), cwd, env,
         });
         term.pty = { write: (d) => p.write(d), resize: (c, r) => p.resize(c, r), kill: () => p.kill(), onData: (cb) => p.onData(cb), onExit: (cb) => p.onExit(cb), pid: p.pid };
         term.pty.onData((d) => this.onData(term, d));
@@ -170,7 +186,7 @@ export class TerminalService {
       const args = simpleShellArgs(shell);
       // Non-Windows: detached, its own process group, so closing the terminal kill(-pgid)s the commands running in the shell too
       const proc = spawn(shell, args, {
-        cwd, stdio: "pipe", windowsHide: true, env: process.env,
+        cwd, stdio: "pipe", windowsHide: true, env,
         detached: process.platform !== "win32",
       });
       term.proc = proc;
