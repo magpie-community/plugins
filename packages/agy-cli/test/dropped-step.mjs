@@ -175,3 +175,18 @@ test("#1644 renamed ids with A's result changed are not taken as the dropped ste
     assert.doesNotMatch(seen.b?.result?.content?.[0]?.text ?? "", /not executed|result A/)
   })
 })
+
+const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" } }
+
+test("#1644 a new message with a picture beside its text goes on the same way, the picture in the prompt", async () => {
+  await withKit(async (kit) => {
+    kit.promptImages = true
+    const { seen, b, original } = await atB(kit)
+    const retry = structuredClone(original)
+    retry.messages.push({ role: "user", content: [{ type: "text", text: "Use this new instruction." }, png] })
+    const response = await readSse(await kit.request(retry))
+    goesOn(kit, seen, response, b)
+    const prompt = kit.acpLog.filter((entry) => entry.method === "session/prompt").at(-1).params.prompt
+    assert.ok(prompt.some((part) => part.type === "image"))
+  })
+})
