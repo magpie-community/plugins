@@ -1,1 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16M6 15V9m6 6V5m6 10v-4"/><path d="M3 4v16h18"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="pq-ring" x1="12" y1="6" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3ff0c2"/>
+      <stop offset="1" stop-color="#14b48b"/>
+    </linearGradient>
+    <linearGradient id="pq-rest" x1="56" y1="34" x2="34" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#94a5b3"/>
+      <stop offset="1" stop-color="#5c6976"/>
+    </linearGradient>
+    <linearGradient id="pq-mark" x1="22" y1="20" x2="42" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#86f8d6"/>
+      <stop offset="1" stop-color="#37e2b0"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-width="7">
+    <path stroke="url(#pq-ring)" d="M37.4 8.62A24 24 0 0 1 55.38 26.6"/>
+    <path stroke="url(#pq-rest)" d="M55.38 37.4A24 24 0 0 1 37.4 55.38"/>
+    <path stroke="url(#pq-ring)" d="M26.6 55.38A24 24 0 0 1 8.62 37.4"/>
+    <path stroke="url(#pq-ring)" d="M8.62 26.6A24 24 0 0 1 26.6 8.62"/>
+  </g>
+  <g fill="none" stroke="url(#pq-mark)" stroke-linecap="round">
+    <path stroke-width="4.6" d="M23.4 43.4 40.6 20.6"/>
+    <circle stroke-width="3.4" cx="25.2" cy="25.6" r="3.9"/>
+    <circle stroke-width="3.4" cx="38.8" cy="38.4" r="3.9"/>
+  </g>
+</svg>

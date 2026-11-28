@@ -678,19 +678,45 @@ async function refresh(force = false) {
   try {
     const url = new URL("api/report", base);
     if (force) url.searchParams.set("refresh", "1");
-    const response = await fetch(url, {
-      headers: { "x-provider-quota-key": pageKey },
-      signal: AbortSignal.timeout(force ? 50000 : 15000),
-    });
-    const report = await response.json();
-    if (!response.ok) throw new Error(report.error || `HTTP ${response.status}`);
+    const response = await fetchReport(url, force);
+    const report = await response.json().catch(() => null);
+    if (response.status === 401 && (report?.code === "page_session_expired" || report?.error === "页面凭证已失效，请重新打开页面")) {
+      const target = new URL(location.href);
+      const now = Date.now();
+      if (!currentReport && now - Number(target.searchParams.get("reconnect")) < 10000) {
+        throw new Error("重新打开页面后凭证仍然失效");
+      }
+      setStatus("服务已更新，正在重新加载", "warn", "页面服务已重启，正在获取新的访问凭证");
+      target.searchParams.set("reconnect", String(now));
+      location.replace(target.href);
+      return;
+    }
+    if (!response.ok) throw new Error(report?.error || `额度服务返回 HTTP ${response.status}`);
+    if (!Array.isArray(report?.accounts)) throw new Error("额度服务返回了无法识别的报告");
     render(report);
   } catch (error) {
-    setStatus("更新失败", "error", error.message);
+    setStatus(force ? "刷新额度失败" : "读取额度失败", "error", error.message);
   } finally {
     loading = false;
     elements.refresh.disabled = false;
     elements.refresh.setAttribute("aria-label", "刷新额度");
+  }
+}
+
+async function fetchReport(url, force) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { "x-provider-quota-key": pageKey },
+        cache: "no-store",
+        signal: AbortSignal.timeout(force ? 50000 : 15000),
+      });
+      if (force || attempt >= 3 || ![502, 503, 504].includes(response.status)) return response;
+    } catch (error) {
+      if (force || attempt >= 3 || error.name !== "TypeError") throw error;
+    }
+    setStatus("正在重新连接额度服务", "warn");
+    await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
   }
 }
 

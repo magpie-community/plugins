@@ -3,6 +3,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createReader, createResetter } from "./data.mjs";
 
+const SERVICE_ID = "magpie-provider-quota";
+
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
@@ -54,6 +56,9 @@ export async function startServer({ port = 3497, configDir, reader, resetter, ga
       }
       if (origin && origin !== "null" && !origins.includes(origin)) return send(403, { error: "不接受此来源" });
       const url = new URL(request.url, origins[0]);
+      if (url.pathname === "/api/ping") {
+        return send(200, { service: SERVICE_ID, protocol: 1 });
+      }
       if (request.method === "OPTIONS") {
         response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         response.setHeader("Access-Control-Allow-Headers", "x-provider-quota-key, content-type");
@@ -66,7 +71,7 @@ export async function startServer({ port = 3497, configDir, reader, resetter, ga
       };
       if (url.pathname === "/api/reset") {
         if (request.method !== "POST") return send(405, { error: "仅支持 POST" });
-        if (!authorized()) return send(401, { error: "页面凭证已失效，请重新打开页面" });
+        if (!authorized()) return send(401, { code: "page_session_expired", error: "页面凭证已失效，请重新打开页面" });
         if (!/^application\/json\b/i.test(String(request.headers["content-type"] ?? ""))) {
           return send(415, { error: "请以 JSON 提交" });
         }
@@ -94,7 +99,7 @@ export async function startServer({ port = 3497, configDir, reader, resetter, ga
       }
       if (request.method !== "GET") return send(405, { error: "仅支持 GET" });
       if (url.pathname === "/api/report") {
-        if (!authorized()) return send(401, { error: "页面凭证已失效，请重新打开页面" });
+        if (!authorized()) return send(401, { code: "page_session_expired", error: "页面凭证已失效，请重新打开页面" });
         const report = await readReport({ force: url.searchParams.get("refresh") === "1" });
         return send(200, { ...report, canReset: Boolean(sessionKey) });
       }
@@ -121,13 +126,69 @@ export async function startServer({ port = 3497, configDir, reader, resetter, ga
     }
   });
 
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => {
-      server.removeListener("error", reject);
+  const listenOnce = () => new Promise((resolve, reject) => {
+    const onListening = () => {
+      cleanup();
       actualPort = server.address().port;
-      resolve();
-    });
+      resolve(true);
+    };
+    const onError = (error) => {
+      cleanup();
+      if (error.code === "EADDRINUSE" || error.code === "EACCES") return resolve(false);
+      reject(error);
+    };
+    const cleanup = () => {
+      server.removeListener("listening", onListening);
+      server.removeListener("error", onError);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1");
   });
-  return { server, port: actualPort };
+
+  let closed = false;
+  if (await listenOnce()) {
+    return {
+      server,
+      port: actualPort,
+      listening: true,
+      ready: Promise.resolve(actualPort),
+      close: async () => {
+        closed = true;
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+        if (server.listening) await new Promise((resolve) => server.close(resolve));
+      },
+    };
+  }
+
+  const ready = (async () => {
+    while (!closed) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (closed) return 0;
+      try {
+        await listenOnce();
+        if (server.listening) {
+          actualPort = server.address().port;
+          return actualPort;
+        }
+      } catch (error) {
+        throw error;
+      }
+    }
+    return 0;
+  })();
+  ready.catch(() => {});
+  return {
+    server,
+    port,
+    listening: false,
+    ready,
+    close: async () => {
+      closed = true;
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+    },
+  };
 }

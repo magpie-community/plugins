@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-provider-quota",
-  "version": "0.5.2",
+  "version": "0.5.6",
   "description": "统一查看 Magpie 中的订阅额度、密钥套餐与 API 余额，支持各服务的周期、积分和请求数。",
   "type": "module",
   "main": "./index.mjs",
@@ -19,7 +19,7 @@
     "page": {
       "title": "Provider Quota",
       "titles": { "zh": "账号额度" },
-      "file": "page/index.html",
+      "file": "page/quota.html",
       "icon": "page/icon.svg",
       "service": { "port": 3497, "option": "port" }
     },

@@ -1,8 +1,36 @@
 (async () => {
+  const boot = document.getElementById("boot");
   const status = document.getElementById("status");
-  document.getElementById("retry").addEventListener("click", () => location.reload());
+  const hint = document.getElementById("hint");
+  const retry = document.getElementById("retry");
+  retry.addEventListener("click", () => location.reload());
+
+  const setStatus = (text) => { status.textContent = text; };
+  const fail = (message) => {
+    boot.dataset.state = "error";
+    boot.setAttribute("aria-busy", "false");
+    setStatus(message);
+    hint.hidden = true;
+    retry.hidden = false;
+  };
+
+  const applyTheme = (theme) => {
+    if (theme && typeof theme.dark === "boolean") {
+      document.documentElement.dataset.theme = theme.dark ? "dark" : "light";
+    }
+  };
+
+  // 桥接脚本未加载（例如直接打开本文件）时给出明确提示，而不是一直转圈
+  if (typeof window.magpie === "undefined") {
+    fail("未检测到 Magpie，请在 Magpie 中打开此页面");
+    return;
+  }
+
   try {
+    applyTheme(magpie.theme);
     const theme = await magpie.ready;
+    applyTheme(theme);
+    setStatus("正在启动额度服务");
     const options = await magpie.options.get();
     const port = Number(options?.port ?? 3497);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("插件端口无效");
@@ -27,11 +55,16 @@
       // 配色带不过去时页面使用自己的默认配色
     }
     target.searchParams.set("_", Date.now().toString());
+    setStatus("正在读取账号额度");
     setTimeout(() => {
-      status.textContent = "服务未就绪";
+      boot.dataset.state = "slow";
+      setStatus("服务启动较慢");
+      hint.textContent = "插件服务可能仍在启动，请稍候片刻；若长时间无响应，可点击重试或在插件列表中重新启用。";
+      hint.hidden = false;
+      retry.hidden = false;
     }, 5000);
     location.replace(target.href);
   } catch (error) {
-    status.textContent = error.message;
+    fail(error?.message || "加载失败");
   }
 })();

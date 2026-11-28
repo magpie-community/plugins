@@ -238,7 +238,7 @@ test("从网关读取，连续请求复用缓存，手动刷新绕过缓存", as
       requests.push(`${options.method || "GET"} ${url.href}`);
       if (url.pathname.endsWith("/refresh") && options.method === "POST") {
         refreshed = true;
-        return { ok: true, json: async () => ({ data: [] }) };
+        return new Response(null, { status: 204 });
       }
       return { ok: true, json: async () => ({ data: [
         { provider: "codex", windows: [{ name: "5h", remaining: refreshed ? 65 : 80 }] },

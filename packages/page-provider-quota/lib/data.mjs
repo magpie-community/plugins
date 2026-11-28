@@ -295,7 +295,6 @@ export function createReader({ configDir, fetchImpl = fetch } = {}) {
           redirect: "error",
         });
         if (!refreshed.ok) throw new Error(`网关刷新返回 HTTP ${refreshed.status}`);
-        if (!Array.isArray((await refreshed.json())?.data)) throw new Error("网关刷新结果格式不受支持");
       }
       const response = await fetchImpl(new URL("/v1/magpie/quotas?kept=1", base), {
         signal: AbortSignal.timeout(5000),
