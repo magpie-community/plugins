@@ -407,7 +407,7 @@ test("a gift plan ZCode holds but has not granted is named on the card, to claim
   expect(Number(t.url.searchParams.get("seq"))).toBeGreaterThanOrEqual(0)
   expect(t.headers.Authorization).toBe("Bearer " + token)
   expect(t.headers["X-Device-Mid"]).toBe("11111111-2222-4333-8444-555555555555")
-  expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
+  expect(t.headers["X-ZCode-App-Version"]).toBe("4.0.0")
   expect(t.headers["X-Client-Language"]).toBeTruthy()
   // nothing claims it here
   expect(calls.some((c) => c.url.pathname.endsWith("/claim"))).toBe(false)

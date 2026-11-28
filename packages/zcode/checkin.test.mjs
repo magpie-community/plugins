@@ -152,7 +152,7 @@ test("nothing to claim: inactive, and no claim is asked", async () => {
   expect(Number(t.url.searchParams.get("seq"))).toBeGreaterThanOrEqual(0)
   expect(t.headers.Authorization).toBe("Bearer " + TOKEN)
   expect(t.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
+  expect(t.headers["X-ZCode-App-Version"]).toBe("4.0.0")
   expect(t.headers["X-Client-Language"]).toBeTruthy()
 })
 
@@ -187,7 +187,7 @@ test("one plan to claim, claimed with code 0", async () => {
   expect(JSON.parse(c.body)).toEqual({ plan_id: TRUST })
   expect(c.headers.Authorization).toBe("Bearer " + TOKEN)
   expect(c.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(c.headers["X-ZCode-App-Version"]).toBe("3.17.2")
+  expect(c.headers["X-ZCode-App-Version"]).toBe("4.0.0")
   expect(c.headers["X-Platform"]).toBe(`${process.platform}-${process.arch}`)
   expect(c.headers["Content-Type"]).toBe("application/json")
   // the route is read again, so the next request uses the plan
@@ -389,7 +389,7 @@ test("a banner plan is claimed from the app's marketing feed", async () => {
   expect(Number(t.url.searchParams.get("seq"))).toBeGreaterThanOrEqual(0)
   expect(t.headers.Authorization).toBe("Bearer " + TOKEN)
   expect(t.headers["X-Device-Mid"]).toBe(DEVICE)
-  expect(t.headers["X-ZCode-App-Version"]).toBe("3.17.2")
+  expect(t.headers["X-ZCode-App-Version"]).toBe("4.0.0")
   expect(t.headers["X-Client-Language"]).toBeTruthy()
   // asked again the same day while it is still listed, it is not posted
   // again: done, the day's claim
