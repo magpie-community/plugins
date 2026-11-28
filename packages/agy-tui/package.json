@@ -1,0 +1,43 @@
+{
+  "name": "@magpie-community/opencode-agy-tui-auth",
+  "version": "0.1.0",
+  "description": "Magpie/OpenCode model provider that runs Antigravity's models through agy's own interactive mode: each request is typed into the real agy TUI and its answer read from agy's transcript",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "login.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "antigravity",
+    "agy",
+    "tui"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agy-tui"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "engines": {
+    "magpie": ">=0.1.5027"
+  },
+  "magpie": {
+    "maxConcurrency": 4
+  }
+}
