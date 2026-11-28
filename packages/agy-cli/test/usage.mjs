@@ -336,7 +336,9 @@ const record = {
   update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
   path: process.env.PATH, browser: process.env.BROWSER,
   browserContent: (() => { try { return fs.readFileSync(process.env.BROWSER, "utf8") } catch { return null } })(),
-  agent: fs.readFileSync(path.join(process.cwd(), ".agents/agents/magpie-usage/agent.md"), "utf8"),
+  agent: fs.readFileSync(path.join(process.cwd(), "AGENTS.md"), "utf8"),
+  hooks: JSON.parse(fs.readFileSync(path.join(process.cwd(), ".agents/hooks.json"), "utf8")),
+  agentDefinition: fs.existsSync(path.join(process.cwd(), ".agents/agents")),
   mode: fs.statSync(process.cwd()).mode & 0o777,
   guard: guardRun.status,
 }
@@ -395,7 +397,7 @@ if (mode === "eligibility" && !version) {
   setInterval(() => {}, 1000)
 }
 else if (version) {
-  console.log(process.env.TEST_VERSION || "1.3.5")
+  console.log(process.env.TEST_VERSION || "1.5.19")
 } else if (mode === "fail") {
   console.error(process.env.TEST_ERROR || "oops secret@example.com https://secret.invalid/token")
   if (process.env.TEST_FAILURE_REPORT) console.log(process.env.TEST_FAILURE_REPORT)
@@ -478,13 +480,20 @@ test("queries only the structured command in a private, restricted workspace and
     assert.notEqual(actual.options.env, f.env)
   }
   assert.deepEqual(logs[0].args, ["--version"])
-  assert.deepEqual(logs[1].args.slice(0, 6), ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage"])
-  assert.equal(logs[1].args[6], "--print-timeout")
-  assert.match(logs[1].args[7], /^\d+s$/)
+  // agy's default agent: no --agent (a custom agent costs four times the quota from agy 1.5.17)
+  assert.deepEqual(logs[1].args.slice(0, 4), ["-p", "/usage", "--output-format", "json"])
+  assert.ok(!logs[1].args.includes("--agent"))
+  assert.equal(logs[1].args[4], "--print-timeout")
+  assert.match(logs[1].args[5], /^\d+s$/)
   for (const log of logs) {
     if (process.platform !== "win32") assert.equal(log.mode, 0o700)
     assert.equal(log.update, "false")
-    assert.ok(log.agent.includes("tools: []\nmcpServers: []"))
+    assert.equal(log.agent, "Do not run model prompts or tools.\n")
+    assert.equal(log.agentDefinition, false)
+    // the tool gate names no tool: whatever a model tried would fail
+    const gate = log.hooks["magpie-tool-gate"].PreToolUse[0]
+    assert.equal(gate.matcher, "*")
+    assert.match(gate.hooks[0].command, /tool-gate\.mjs'?$/)
     assert.equal(log.guard, 1)
     // macOS process.cwd() canonicalizes /var to /private/var.
     assert.equal(path.basename(log.path.split(path.delimiter)[0]), path.basename(log.cwd))
@@ -521,7 +530,7 @@ test("with the app's gateway on, /usage reads a folder without it (--gemini_dir)
   assert.equal(result.windows[0].used, 25)
   const logs = await f.logs()
   assert.deepEqual(logs[0].args, ["--version"])
-  assert.deepEqual(logs[1].args.slice(0, 8), ["--gemini_dir", folder, "-p", "/usage", "--output-format", "json", "--agent", "magpie-usage"])
+  assert.deepEqual(logs[1].args.slice(0, 7), ["--gemini_dir", folder, "-p", "/usage", "--output-format", "json", "--print-timeout"])
   assert.deepEqual(asked, [f.executable])
   // createUsageReader hands the folder to the read it runs
   const read = createUsageReader(async () => f.executable, { ...f.options, geminiDir })
@@ -709,13 +718,13 @@ test("stops retrying locked-directory removal after four attempts without failin
 })
 
 test("rejects old/unverified versions before any possible model prompt", async t => {
-  for (const version of ["1.1.10", "0.9.0", "garbage", "1.3", "1.3.5-beta"]) {
+  for (const version of ["1.5.18", "1.1.11", "garbage", "1.3", "1.3.5-beta"]) {
     const f = await fixture(t, { TEST_VERSION: version })
-    await assert.rejects(fetchUsage(f.executable, f.options), /1\.1\.11 or later/)
+    await assert.rejects(fetchUsage(f.executable, f.options), /1\.5\.19/)
     assert.equal((await f.logs()).length, 1)
     await f.assertClean()
   }
-  for (const version of ["1.1.11", "1.2.0", "2.0.0"]) {
+  for (const version of ["1.5.19", "1.5.20", "2.0.0"]) {
     const f = await fixture(t, { TEST_VERSION: version })
     assert.equal((await fetchUsage(f.executable, f.options)).windows.length, 1)
     await f.assertClean()
@@ -1084,12 +1093,12 @@ test("usage.mjs asks Google nothing itself: no endpoint, no OAuth client, no sto
 test("a quota read and a refusal alike go through agy -p, never a request of the plugin's own", async t => {
   const asked = noFetch(t)
   const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
-  const f = await fixture(t, { TEST_VERSION: "1.5.9" })
+  const f = await fixture(t, { TEST_VERSION: "1.5.19" })
   const ok = await createUsageReader(() => f.executable, { ...f.options, signIn: async () => live })()
   assert.equal(ok.error, undefined)
   assert.equal(ok.windows.length, 1)
   // a region refusal stands as agy says it: unknown, never zero or full
-  const refused = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9" })
+  const refused = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.19" })
   const no = await createUsageReader(() => refused.executable, { ...refused.options, signIn: async () => live })()
   assert.deepEqual(no.windows, [])
   assert.match(no.error, /not eligible/)
@@ -1161,7 +1170,7 @@ test("an account agy -p calls ineligible while agy acp names its tier reads its 
   const asked = noFetch(t)
   storeCatalogRows(LIVE_MODEL_ROWS)
   t.after(() => storeCatalogRows(null))
-  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA), TEST_VERSION: "1.5.18" })
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA), TEST_VERSION: "1.5.19" })
   const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 20_000 })
   assert.equal(result.error, undefined)
   assert.deepEqual(result.windows.filter(w => !w.model).map(w => [w.pool, w.name, w.used]), [
@@ -1229,7 +1238,7 @@ test("on the app's gateway, agy acp and its TUI read the folder without it too",
 test("an ended or ending access token with a refresh token runs no agy and asks Google nothing", async t => {
   const asked = noFetch(t)
   for (const ends of [1, 1_000_000 + 60_000]) {
-    const f = await fixture(t, { TEST_VERSION: "1.5.9" })
+    const f = await fixture(t, { TEST_VERSION: "1.5.19" })
     let stored = { state: "present", fp: "ended", canRenew: true, expiresAt: ends, expired: ends === 1 }
     const read = createUsageReader(() => f.executable, { ...f.options, now: () => 1_000_000, signIn: async () => stored })
     for (let i = 0; i < 2; i++) {

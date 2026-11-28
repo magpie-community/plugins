@@ -5,7 +5,6 @@ import { OneshotAgyError, runOneshotAgySession } from "./oneshot-acp.mjs"
 export const IMAGE_MODEL_ID = "gemini-3.1-flash-image"
 export const IMAGE_MODEL_NAME = "Gemini 3.1 Flash Image"
 const IMAGE_NPM = "@ai-sdk/openai-compatible"
-const IMAGE_AGENT_NAME = "magpie-agy-image"
 const IMAGE_OUTPUT_PREFIX = "magpie_generated"
 const MAX_REFERENCE_IMAGES = 3
 const MAX_DRAWINGS = 4
@@ -330,28 +329,12 @@ export async function parseImageRequest(routeKind, fetchInput, init = {}) {
   }
 }
 
-function imageAgentDefinition() {
-  const lines = [
-    "---",
-    `name: ${IMAGE_AGENT_NAME}`,
-    "description: Generates or edits an image with the built-in image generator",
-    "mainAgent: true",
-    "subagent: false",
-    "tools:",
-    "  - generate_image",
-    "  - invoke_subagent",
-    "  - view_file",
-    "inheritMcp: false",
-    "inheritCustomizations: false",
-  ]
-  if (process.env.AGY_BRIDGE_MINIMAL_AGENT === "1") lines.push("excludeDefaultComponents: true")
-  lines.push(
-    "---",
-    "Follow the user's image generation instructions strictly. Use only the built-in image generation capability and never fabricate files.",
-    "",
-  )
-  return lines.join("\n")
-}
+// The image session runs on agy's default agent (default-agent.mjs): these
+// are its instructions, and its tool gate lets through only what drawing
+// takes, the built-in image-generator subagent's own calls among them.
+// agy 1.5.19's default agent lists no generate_image: it delegates.
+const IMAGE_INSTRUCTIONS = "Follow the user's image generation instructions strictly. Use only the built-in image generation capability and never fabricate files. Every tool but generate_image, invoke_subagent and the file viewer is turned off in this session."
+const IMAGE_TOOLS = ["generate_image", "invoke_subagent", "view_file", "read_file"]
 
 export function buildImagePrompt({ prompt, ratio, refPaths }) {
   const lines = [
@@ -538,8 +521,8 @@ async function runOneImageAgy(parsed, deps, signal) {
   return runOneshotAgySession({
     label: "image generation",
     tempPrefix: "magpie-agy-image-",
-    agentName: IMAGE_AGENT_NAME,
-    agentDefinition: imageAgentDefinition(),
+    instructions: IMAGE_INSTRUCTIONS,
+    allowedTools: IMAGE_TOOLS,
     driverEnvVar: "AGY_BRIDGE_IMAGE_DRIVER",
     timeoutMs: configuredImageTimeout(),
     signal,

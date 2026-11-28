@@ -5,10 +5,14 @@ import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
 import { familiesInGroup, nameIndex } from "./model-ids.mjs"
 import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
+import { writeDefaultAgentFiles } from "./default-agent.mjs"
+import { agyTooOld, MIN_AGY_VERSION } from "./agy-version.mjs"
+import { currentHome } from "./account.mjs"
 
 // agy's own read, --version included. Magpie waits 20 seconds for a usage
 // call; a read that takes longer goes on past it (createUsageReader).
 const DEFAULT_TIMEOUT_MS = 45_000
+const USAGE_INSTRUCTIONS = "Do not run model prompts or tools."
 const MAX_TIMEOUT_MS = 120_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
 
@@ -391,13 +395,6 @@ function run(file, args, { cwd, env, deadline, signal, maxOutputBytes, onTreeKil
   })
 }
 
-function supportedVersion(output) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(output.trim())
-  if (!match) return false
-  const [major, minor, patch] = match.slice(1).map(Number)
-  return major > 1 || major === 1 && (minor > 1 || minor === 1 && patch >= 11)
-}
-
 // What usage says while Antigravity's app has a gateway on in agy's folder
 // and this agy can't be given another (plugins#1591): agy reads that file,
 // and on a gateway its /usage asks Google nothing and lists no quota.
@@ -652,12 +649,14 @@ export async function fetchUsage(agy, {
   let pendingTreeKill = null
   try {
     await fs.chmod(directory, 0o700)
-    const agentDir = path.join(directory, ".agents", "agents", "magpie-usage")
-    await fs.mkdir(agentDir, { recursive: true })
-    await fs.writeFile(path.join(agentDir, "agent.md"), [
-      "---", "name: magpie-usage", "description: Read CLI usage only", "mainAgent: true", "subagent: false",
-      "tools: []", "mcpServers: []", "---", "Do not run model prompts or tools.", "",
-    ].join("\n"), { mode: 0o600 })
+    // agy's default agent, as every session the plugin opens
+    // (default-agent.mjs): /usage is agy's own command, and should a model
+    // ever see it, no tool of agy's runs
+    const hookEnv = await writeDefaultAgentFiles(directory, {
+      instructions: USAGE_INSTRUCTIONS,
+      allowed: [],
+      geminiDir: folder?.gateway ? folder.dir : path.join(currentHome() || os.homedir(), ".gemini"),
+    })
     if (process.platform === "win32") {
       await fs.writeFile(path.join(directory, "open.cmd"), "@exit /b 1\r\n")
     } else {
@@ -671,6 +670,7 @@ export async function fetchUsage(agy, {
       if (/^path$/i.test(key) && key !== "PATH") delete baseEnv[key]
     }
     const childEnv = agyChildEnv(baseEnv, {
+      ...hookEnv,
       PATH: directory + path.delimiter + inheritedPath,
       BROWSER: path.join(directory, process.platform === "win32" ? "open.cmd" : "open"),
     })
@@ -689,7 +689,10 @@ export async function fetchUsage(agy, {
         throw error
       })
       if (version.code !== 0) throw commandFailure(version.stderr)
-      if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
+      const reported = version.stdout.trim()
+      if (!/^\d+\.\d+\.\d+$/.test(reported)) throw new UsageError(`agy usage reports require a verified agy version ${MIN_AGY_VERSION} or later. Update the CLI.`)
+      const tooOld = agyTooOld(reported)
+      if (tooOld) throw new UsageError(tooOld)
       if (binary) versionCache.set(binary, { code: 0, stdout: version.stdout, stderr: "" })
     }
     // Only agy asks Google for the quota: its own /usage, so every request
@@ -700,7 +703,7 @@ export async function fetchUsage(agy, {
     // the quota: 5 to 10 seconds on a quick network, 20 or more behind a
     // slow proxy (2 to 3 seconds a call, plugins#1255), or on agy's first
     // start. It gets the whole deadline.
-    const result = await run(agy, [...folderArgs, "-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options).catch((error) => {
+    const result = await run(agy, [...folderArgs, "-p", "/usage", "--output-format", "json", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options).catch((error) => {
       if (error?.kind !== "timeout") throw error
       throw new UsageError(`agy's own usage read didn't finish in ${limit / 1000}s. agy asks Google about twelve times, one after another, before it has the quota, which takes longer behind a slow network or proxy. It's asked again in a minute; if this stays, check agy's network or proxy.`, { kind: "timeout", output: error.output })
     })

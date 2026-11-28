@@ -11,14 +11,14 @@ async function withSharedState(fn) {
   const stateFile = path.join(shared, "magpie-agy-bridge", "sessions.json")
   const kits = []
   const start = async ({ env, ...options } = {}) => {
-    const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, ...options,
+    const kit = await createBridgeKit({ agentVersion: "1.5.19", sessionResume: true, ...options,
       env: { ...env, XDG_STATE_HOME: shared } })
     kits.push(kit)
     return kit
   }
   const entries = () => JSON.parse(fs.readFileSync(stateFile, "utf8")).entries
   try {
-    await fn(start, entries)
+    await fn(start, entries, stateFile)
   } finally {
     for (const kit of kits.reverse()) await kit.dispose().catch(() => {})
     fs.rmSync(shared, { recursive: true, force: true })
@@ -72,6 +72,25 @@ test("a host finds a conversation parked after it first loaded the index", async
     await a.finishChildren()
 
     await assertResumes(b, history, parked.sessionId)
+  })
+})
+
+test("a parked session needs the default-agent marker to resume", async () => {
+  await withSharedState(async (start, entries, stateFile) => {
+    const a = await start()
+    const history = await complete(a, opening(), FIRST_REPLY)
+    await a.finishChildren()
+    const parked = entries()[0]
+    assert.equal(parked.defaultAgent, true)
+    const saved = JSON.parse(fs.readFileSync(stateFile, "utf8"))
+    delete saved.entries[0].defaultAgent
+    fs.writeFileSync(stateFile, JSON.stringify(saved))
+
+    const b = await start()
+    await complete(b, withUser(history, TAIL), "replayed")
+    assert.equal(b.acpLog.filter(({ method }) => method === "session/resume").length, 0)
+    assert.equal(b.acpLog.filter(({ method }) => method === "session/new").length, 1)
+    assert.equal(entries()[0].defaultAgent, true)
   })
 })
 

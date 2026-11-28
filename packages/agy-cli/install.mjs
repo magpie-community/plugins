@@ -16,6 +16,7 @@ import os from "node:os"
 import path from "node:path"
 import { createGunzip } from "node:zlib"
 import { childEnv, ownAgyPath } from "./platform.mjs"
+import { agyTooOld } from "./agy-version.mjs"
 
 const MANIFESTS = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/"
 export const AGY_MANUAL = process.platform === "win32"
@@ -78,7 +79,14 @@ export async function readManifest(platform = agyPlatform(), { signal } = {}) {
   if (!m || typeof m.url !== "string" || !/^https?:\/\//.test(m.url) || !/^[0-9a-f]{128}$/i.test(String(m.sha512 || ""))) {
     throw new Error("Antigravity's release manifest isn't one")
   }
-  return { version: String(m.version || ""), url: m.url, sha512: String(m.sha512).toLowerCase(), platform }
+  const version = String(m.version || "")
+  checkReleaseVersion(version)
+  return { version, url: m.url, sha512: String(m.sha512).toLowerCase(), platform }
+}
+
+function checkReleaseVersion(version) {
+  const tooOld = agyTooOld(version)
+  if (tooOld) throw new Error(tooOld)
 }
 
 // drained waits for a full stream to take more, and leaves no listener
@@ -220,6 +228,7 @@ function lastLine(text) {
 // each see a whole binary. It returns the version installed.
 export async function installAgy({ signal, bin = ownPath(), platform = agyPlatform(), manifest } = {}) {
   const m = manifest || (await readManifest(platform, { signal }))
+  if (manifest) checkReleaseVersion(m.version)
   const windows = (platform || "").startsWith("windows_")
   const dir = path.dirname(bin)
   fs.mkdirSync(dir, { recursive: true })
@@ -238,6 +247,7 @@ export async function installAgy({ signal, bin = ownPath(), platform = agyPlatfo
     if (signal?.aborted) throw new DOMException("the install was cancelled", "AbortError")
     const check = await run(staged, ["--version"])
     if (check.code !== 0) throw new Error(`the downloaded agy doesn't run here (${lastLine(check.output) || `exit ${check.code}`})`)
+    checkReleaseVersion(lastLine(check.output).replace(/^agy\s+/i, ""))
     if (windows && fs.existsSync(bin)) {
       // a running exe can't be replaced on Windows, but it can be moved
       try { fs.renameSync(bin, path.join(dir, `.old-${tag}.exe`)) } catch {}

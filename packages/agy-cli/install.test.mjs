@@ -125,17 +125,17 @@ test("agy is taken out of its archive, past a long name and a ./ prefix", async 
 })
 
 test.if(unix)("installs the manifest's agy, checked and runnable, leaving nothing else", async () => {
-  release("1.5.9")
+  release("1.5.19")
   const bin = path.join(root, "data", "magpie-agy-cli", "agy")
-  expect(await installAgy({ bin, platform: "linux_amd64" })).toBe("1.5.9")
+  expect(await installAgy({ bin, platform: "linux_amd64" })).toBe("1.5.19")
   expect(fs.statSync(bin).mode & 0o111).not.toBe(0)
-  expect(Bun.spawnSync([bin]).stdout.toString()).toContain("agy 1.5.9")
-  expect(installedVersion(bin)).toBe("1.5.9")
+  expect(Bun.spawnSync([bin]).stdout.toString()).toContain("agy 1.5.19")
+  expect(installedVersion(bin)).toBe("1.5.19")
   expect(fs.readdirSync(path.dirname(bin)).sort()).toEqual(["agy", "agy.version"])
 })
 
 test.if(unix)("a download that isn't the manifest's is never installed", async () => {
-  release("1.5.9")
+  release("1.5.19")
   manifest.sha512 = sha(Buffer.from("something else"))
   const bin = path.join(root, "agy")
   await expect(installAgy({ bin, platform: "linux_amd64" })).rejects.toThrow(/checksum/)
@@ -143,13 +143,27 @@ test.if(unix)("a download that isn't the manifest's is never installed", async (
 })
 
 test.if(unix)("an agy that doesn't run here isn't put in place of one that does", async () => {
-  release("1.5.9")
+  release("1.5.19")
   const bin = path.join(root, "agy")
   await installAgy({ bin, platform: "linux_amd64" })
   release("1.6.0", [["antigravity", Buffer.from("#!/bin/sh\necho 'cannot execute: required file not found' >&2\nexit 126\n")]])
   await expect(installAgy({ bin, platform: "linux_amd64" })).rejects.toThrow(/doesn't run here \(cannot execute/)
-  expect(Bun.spawnSync([bin]).stdout.toString()).toContain("agy 1.5.9")
-  expect(installedVersion(bin)).toBe("1.5.9")
+  expect(Bun.spawnSync([bin]).stdout.toString()).toContain("agy 1.5.19")
+  expect(installedVersion(bin)).toBe("1.5.19")
+})
+
+test.if(unix)("install and update refuse a release below the default-agent version floor", async () => {
+  const bin = path.join(root, "agy")
+  release("1.5.18")
+  await expect(installAgy({ bin, platform: "linux_amd64" })).rejects.toThrow(/agy 1\.5\.18 is older than 1\.5\.19/)
+  expect(fs.readdirSync(root)).toEqual([])
+  release("1.5.19")
+  await installAgy({ bin, platform: "linux_amd64" })
+  release("1.5.18")
+  await expect(updateOwnAgy({ bin, used: bin, platform: "linux_amd64", env: {} })).rejects.toThrow(/older than 1\.5\.19/)
+  release("1.5.20", [["antigravity", script("1.5.18")]])
+  await expect(updateOwnAgy({ bin, used: bin, platform: "linux_amd64", env: {} })).rejects.toThrow(/older than 1\.5\.19/)
+  expect(installedVersion(bin)).toBe("1.5.19")
 })
 
 test.if(unix)("a manifest the server won't give says so", async () => {
@@ -157,7 +171,7 @@ test.if(unix)("a manifest the server won't give says so", async () => {
 })
 
 test.if(unix)("an install given up stops its download and leaves nothing", async () => {
-  release("1.5.9")
+  release("1.5.19")
   slow = true
   const bin = path.join(root, "agy")
   const ctl = new AbortController()
@@ -170,14 +184,14 @@ test.if(unix)("an install given up stops its download and leaves nothing", async
 
 test.if(unix)("only the plugin's own copy is kept current, and not when the user turned updates off", async () => {
   const bin = path.join(root, "agy")
-  release("1.5.9")
+  release("1.5.19")
   expect(await updateOwnAgy({ bin, platform: "linux_amd64", env: {} })).toBe("none")
   await installAgy({ bin, platform: "linux_amd64" })
   expect(await updateOwnAgy({ bin, platform: "linux_amd64", env: {} })).toBe("current")
   release("1.6.0")
   expect(await updateOwnAgy({ bin, platform: "linux_amd64", env: { AGY_CLI_DISABLE_AUTO_UPDATE: "true" } })).toBe("off")
   expect(await updateOwnAgy({ bin, platform: "linux_amd64", env: {}, used: "/usr/local/bin/agy" })).toBe("not used")
-  expect(installedVersion(bin)).toBe("1.5.9")
+  expect(installedVersion(bin)).toBe("1.5.19")
   expect(await updateOwnAgy({ bin, platform: "linux_amd64", env: {}, used: bin })).toBe("updated")
   expect(Bun.spawnSync([bin]).stdout.toString()).toContain("agy 1.6.0")
   expect(installedVersion(bin)).toBe("1.6.0")

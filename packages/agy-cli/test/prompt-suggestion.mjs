@@ -45,7 +45,7 @@ const text = (value) => ({ type: "text", text: value })
 const prompts = (kit) => kit.acpLog.filter((entry) => entry.method === "session/prompt")
 
 async function withKit(run) {
-  const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, promptImages: true })
+  const kit = await createBridgeKit({ agentVersion: "1.5.19", sessionResume: true, promptImages: true })
   const journal = []
   const original = process.stderr.write
   const prefix = "[agy-bridge] "

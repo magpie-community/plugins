@@ -123,6 +123,10 @@ test("a runtime under a non-ASCII folder builds nc.exe from an ASCII copy", asyn
   })
   try {
     await turn(kit, "hi")
+    const [spawn] = kit.acpSpawns
+    assert.equal(spawn.env.MAGPIE_AGY_HOOK_RUNTIME, runtime)
+    const batch = fs.readFileSync(path.join(spawn.cwd, ".agents", "tool-gate.cmd"), "utf8")
+    assert.match(batch, /"%MAGPIE_AGY_HOOK_RUNTIME%"/)
     const builds = buildsOf(kit)
     assert.equal(builds.length, 1)
     assert.notEqual(builds[0].file, runtime)

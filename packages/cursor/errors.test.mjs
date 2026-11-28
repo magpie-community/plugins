@@ -78,3 +78,38 @@ test("a sign-in that can't give a token is a 401, the account kept", async () =>
   expect(res.status).toBe(401)
   expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
 })
+
+// easyku (#1615): every claude-fable model failed while claude-opus-4-8
+// worked on the same account. Cursor turns a Fable model away until its
+// data retention policy is approved in Cursor's dashboard, asked when
+// Privacy Mode is on (cursor.com/docs/models/claude-fable-5). The 502 it
+// was answered as said neither: it is the model, not the account, and the
+// user's step is in the dashboard. Its words are magpie's unserved model
+// ("model … not enabled"), so only that model rests on that account.
+const POLICY = "Review Data Policy: You must acknowledge Claude Fable 5's data retention policy to use the model."
+for (const code of ["failed_precondition", "permission_denied", "unauthenticated", "internal", "unknown", ""]) {
+  test(`a model whose data retention policy isn't approved says where to approve it (${code || "no code"})`, () => {
+    const error = { code, message: "Error", details: [{ debug: { details: {
+      title: "Review Data Policy", detail: "You must acknowledge Claude Fable 5's data retention policy to use the model.",
+    } } }] }
+    // a stream's end with no code ended well, so the no-code case is an HTTP error only
+    for (const [status, body] of [...(code ? [[200, { error }]] : []), [400, error], [403, error]]) {
+      const got = failure(status, JSON.stringify(body))
+      expect(got.status).toBe(403)
+      expect(got.message.startsWith(POLICY.replace(/\.$/, ""))).toBe(true)
+      expect(got.message).toContain("https://cursor.com/dashboard/restricted_models/claude-fable-5")
+      expect(got.message).not.toMatch(/sign in to Cursor again/)
+      // magpie's unservedWords (internal/gateway/fallback.go): the model rests, not the account
+      expect(got.message).toMatch(/model.{0,80}not (supported|accessible|available|found|enabled|allowed)/i)
+      expect(got.message).not.toMatch(/quota|credit|rate limit|usage limit/i)
+    }
+  })
+}
+
+test("another model's data retention policy points at the dashboard, not Fable's page", () => {
+  const body = JSON.stringify({ error: { code: "failed_precondition", message: "Review Data Policy: You must acknowledge Some Model's data retention policy to use the model." } })
+  const got = failure(200, body)
+  expect(got.status).toBe(403)
+  expect(got.message).toContain("open https://cursor.com/dashboard signed in")
+  expect(got.message).not.toContain("claude-fable-5")
+})

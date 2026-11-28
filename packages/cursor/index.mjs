@@ -1668,6 +1668,17 @@ async function* frames(body) {
 
 const regional = (msg) => msg.toLowerCase().includes("region")
 
+// policyUnapproved is Cursor turning a model away until its data retention
+// policy is approved: "Review Data Policy: You must acknowledge Claude
+// Fable 5's data retention policy to use the model." (#1615). Cursor asks
+// it of a Fable model on an account, team or organization with Privacy
+// Mode on, in its dashboard (cursor.com/docs/models/claude-fable-5); the
+// account's other models are served as before.
+const policyUnapproved = (low) => low.includes("review data policy") || /acknowledge.{0,80}data retention polic/.test(low)
+// The Fable models (5, 5.1, 5.2) share one page; another model's is
+// somewhere in the dashboard.
+const policyPage = (low) => low.includes("fable") ? "https://cursor.com/dashboard/restricted_models/claude-fable-5" : "https://cursor.com/dashboard"
+
 // failure is the status and message for Cursor's Connect error, whose
 // details say it best: {"code", "message", "details": [{"debug": {"error",
 // "details": {"title", "detail"}}}]}, or the same under "error" at a
@@ -1700,6 +1711,10 @@ function statusOf(status, code, msg) {
   // Cursor labels this prompt refusal unauthenticated too. Asking the user
   // to sign in again would misdiagnose a request error as an account fault.
   if (low.includes("the provider refused to serve this request based on the content")) return out(400, msg)
+  // the model, not the account: magpie rests this model on this account
+  // alone ("model … not enabled"), and no sign-in mends it
+  if (policyUnapproved(low))
+    return out(403, msg.replace(/[.\s]+$/, "") + ` — this model is not enabled for this Cursor account until its data retention policy is approved: open ${policyPage(low)} signed in as this account (on a team, an admin approves it once for the whole team), then try again`)
   if (regional(msg)) return out(403, msg + " — Cursor serves your team only in some regions and turned this request away; signing in again won't change that")
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))

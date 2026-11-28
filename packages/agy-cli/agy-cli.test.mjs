@@ -2,13 +2,15 @@
 // in a bun process of its own: they mock node:child_process, move the clock and
 // set the bridge's environment, and smoke.mjs ends with process.exit.
 import { expect, test } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
 const dir = path.join(import.meta.dir, "test")
 const hook = path.join(dir, "cp-hook.mjs")
 
-function run(args, timeout) {
-  const result = Bun.spawnSync({ cmd: [process.execPath, ...args], cwd: dir, env: { ...process.env, AGY_BRIDGE_STORED_SIGNIN: "skip" }, stdout: "pipe", stderr: "pipe", timeout })
+function run(args, timeout, env = {}) {
+  const result = Bun.spawnSync({ cmd: [process.execPath, ...args], cwd: dir, env: { ...process.env, AGY_BRIDGE_STORED_SIGNIN: "skip", ...env }, stdout: "pipe", stderr: "pipe", timeout })
   const output = result.stdout.toString() + result.stderr.toString()
   if (result.exitCode !== 0) console.error(output)
   return { code: result.exitCode, output }
@@ -57,6 +59,7 @@ for (const [name, mocks] of [
   ["same-opening.mjs", false],
   ["claude-code-sessions.mjs", false],
   ["media-input.mjs", false],
+  ["default-agent.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     // bun's 5s default per test is a fixed wait these process-spawning tests
@@ -81,9 +84,17 @@ test("test/image-signature-unit.mjs", () => {
 }, 70_000)
 
 test("test/smoke.mjs against a fake agy", () => {
-  const { code, output } = run([path.join(dir, "smoke.mjs")], 240_000)
-  expect(output).toMatch(/ALL OK \(\d+ checks\)/)
-  expect(code).toBe(0)
+  // Bun reads the home at startup. Keep host gateway settings and saved
+  // accounts out of this subprocess's fake account tests.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smoke-home-"))
+  try {
+    const env = { HOME: home, USERPROFILE: home, XDG_STATE_HOME: path.join(home, "state") }
+    const { code, output } = run([path.join(dir, "smoke.mjs")], 240_000, env)
+    expect(output).toMatch(/ALL OK \(\d+ checks\)/)
+    expect(code).toBe(0)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 }, 250_000)
 
 test("test/array-items-unit.mjs", () => {

@@ -37,7 +37,7 @@ async function atB(kit, { textBeforeB = "" } = {}) {
 }
 
 async function withKit(fn) {
-  const kit = await createBridgeKit({ agentVersion: "1.5.18", sessionResume: true })
+  const kit = await createBridgeKit({ agentVersion: "1.5.19", sessionResume: true })
   try { return await fn(kit) } finally { await kit.dispose() }
 }
 
