@@ -514,10 +514,12 @@ export class AgentManager {
       rt.currentTurnId = null;
       // After a failure/crash the session is dead (mock /exit) → clear it
       if (ev.status === "failed" && rt.session && !this.alive(rt.session)) rt.session = null;
-      await this.setStatus(threadId, "idle");
-      // Next queued message
+      // A queued turn is still active work: never publish/store idle in the handoff window.
       const next = rt.queue.shift();
-      if (!next) void this.recycleIdle().catch(() => {});
+      if (!next) {
+        await this.setStatus(threadId, "idle");
+        void this.recycleIdle().catch(() => {});
+      }
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         // A queued message that fails to start is only logged; it must not break the event pump (startTurn already wrote notice/turn_ended)
@@ -688,9 +690,10 @@ export class AgentManager {
   private async syncDefaultModelIfNeeded(threadId: string, meta: ThreadMeta, rt: Runtime): Promise<void> {
     if (meta.model) return; // explicit model pick — leave it alone
     if (!rt.session) return;
-    // Only skip a turn that is already running / initializing. rt.starting is true for the whole
-    // startTurnInner (including this sync-before-send), so it must not block adoption of a new Magpie default.
-    if (rt.status === "running" || rt.status === "initializing") return;
+    // A queued successor keeps the public status running, but the previous turn has ended.
+    // Use the actual turn id here so it still adopts a new default before send. rt.starting alone
+    // cannot block this: it is true throughout startTurnInner, including sync-before-send.
+    if (rt.currentTurnId !== null || rt.status === "initializing") return;
     const current = await this.resolveDefaultSessionModel(meta.provider);
     if (current === (rt.syncedDefaultModel ?? null)) return;
     try {

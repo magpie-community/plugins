@@ -9736,10 +9736,12 @@ var AgentManager = class {
       await this.threads.patch(threadId, { lastTurnStatus: ev.status });
       rt.currentTurnId = null;
       if (ev.status === "failed" && rt.session && !this.alive(rt.session)) rt.session = null;
-      await this.setStatus(threadId, "idle");
       const next = rt.queue.shift();
-      if (!next) void this.recycleIdle().catch(() => {
-      });
+      if (!next) {
+        await this.setStatus(threadId, "idle");
+        void this.recycleIdle().catch(() => {
+        });
+      }
       if (next) {
         this.gw.publish(`thread:${threadId}`, { type: "queue", queue: rt.queue });
         await this.startTurn(threadId, next.text, next.attachments, next.mentions ?? [], next.clientId).catch((e) => {
@@ -9895,7 +9897,7 @@ var AgentManager = class {
   async syncDefaultModelIfNeeded(threadId, meta, rt) {
     if (meta.model) return;
     if (!rt.session) return;
-    if (rt.status === "running" || rt.status === "initializing") return;
+    if (rt.currentTurnId !== null || rt.status === "initializing") return;
     const current = await this.resolveDefaultSessionModel(meta.provider);
     if (current === (rt.syncedDefaultModel ?? null)) return;
     try {
