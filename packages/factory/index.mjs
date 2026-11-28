@@ -1773,7 +1773,22 @@ function escapeDeep(value, phrases = PI_QUOTED_IN_TOOL) {
 
 // sanitizeBody is the last pass before a request leaves: every string in the
 // body gets escapePhrases. Handles Messages, Responses, chat and Gemini.
-function sanitizeBody(body) {
+// extraPhrases is the phrases a user adds (#406): Factory's policy check
+// reads the whole conversation, so one line quoted into a tool result refuses
+// every later request of that session until the text is gone. A phrase named
+// here is escaped exactly as the built-in ones are - the \uXXXX form, which
+// the model reads and Factory's check does not - rather than dropped, so the
+// conversation keeps its meaning.
+//
+// Patterns are not taken: a regular expression is a language of its own, and
+// escaping a match needs a decision about what "the phrase" is (the whole
+// match, or the group that names it). That is a design call, not a default.
+export function extraPhrases(options = {}) {
+  const named = Array.isArray(options.redact_phrases) ? options.redact_phrases : []
+  return named.filter((p) => typeof p === "string" && p.length > 0)
+}
+
+export function sanitizeBody(body, extra = []) {
   const text = bodyText(body)
   if (text == null) return body
   let parsed
@@ -1782,7 +1797,8 @@ function sanitizeBody(body) {
   } catch {
     return body
   }
-  if (!escapeDeep(parsed)) return body
+  const phrases = extra.length ? [...PI_QUOTED_IN_TOOL, ...extra] : undefined
+  if (!escapeDeep(parsed, phrases)) return body
   return JSON.stringify(parsed)
 }
 
