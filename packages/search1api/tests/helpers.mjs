@@ -13,6 +13,7 @@ export async function fixture(t) {
     decline: false,
     rejectRefresh: false,
     rejectAccess: false,
+    rejectKeys: new Set(),
     refreshDelay: 0,
   };
   let registration;
@@ -107,6 +108,13 @@ export async function fixture(t) {
       req.headers.authorization === "Bearer test-access-0"
     )
       return json({ message: "expired" }, 401);
+    if (
+      state.rejectKeys.size &&
+      state.rejectKeys.has(
+        String(req.headers.authorization ?? "").replace("Bearer ", ""),
+      )
+    )
+      return json({ message: "refused" }, 401);
     return json({
       query: "fixture",
       intent: { sources: ["github"], time_range: "week" },

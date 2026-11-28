@@ -2,27 +2,22 @@ import { join } from "node:path";
 import { Credentials } from "./auth.ts";
 import { CATEGORIES, DESCRIPTION, feedbackBody } from "./feedback.ts";
 import { startOAuth } from "./oauth.ts";
-import { AuthenticationError, request } from "./request.ts";
+import { Pool } from "./pool.ts";
+import { request } from "./request.ts";
 import { filters, maxResults, query, searchBody, validate, type ArgumentsSchema, type Schema } from "./tools.ts";
 import { API_BASE, PROVIDER, serviceURL, type Options, type PluginInput, type StoredAuth, type StoredOAuth } from "./types.ts";
 
 export const Search1APIPlugin = async (input: PluginInput, options: Options = {}) => {
   if (options.apiKey !== undefined && typeof options.apiKey !== "string")
     throw new Error("apiKey must be a string.");
+  if (options.keyPick !== undefined && options.keyPick !== "order" && options.keyPick !== "rotate")
+    throw new Error('keyPick must be "order" or "rotate".');
   const baseUrl = serviceURL(options.baseUrl ?? API_BASE).href.replace(/\/$/, "");
   const credentials = new Credentials(input, options);
+  const pool = new Pool(credentials, options.keyPick ?? "order");
 
   async function send(name: string, payload: Record<string, unknown>, signal: AbortSignal) {
-    let auth = await credentials.token(signal);
-    signal.throwIfAborted();
-    try {
-      return await request(baseUrl, name, auth.token, payload, signal);
-    } catch (error) {
-      if (!(error instanceof AuthenticationError) || !auth.oauth) throw error;
-      const renewed = await credentials.renew(auth.oauth, signal);
-      auth = { token: renewed.access, oauth: renewed };
-      return await request(baseUrl, name, auth.token, payload, signal);
-    }
+    return pool.send((token) => request(baseUrl, name, token, payload, signal), signal);
   }
 
   function tool(
@@ -65,7 +60,7 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
   ) {
     if (typeof query !== "string" || !query.trim()) throw new Error("query is required.");
     // The account magpie picked is the one sent, so a refusal rests the
-    // account that was refused. The option or environment key is used only
+    // account that was refused. The option or environment keys are used only
     // where magpie gives no account (a host without getAuth).
     let token: string | undefined;
     if (ctx.getAuth) {
@@ -74,14 +69,16 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
       else if (auth?.type === "oauth" && auth.access) token = auth.access;
       else throw new Error("Not signed in to Search1API.");
     }
-    token ??= (await credentials.token(ctx.abort)).token;
     const n = Math.trunc(Number(count));
-    const result = await request(baseUrl, "search", token, {
+    const payload = {
       query: query.trim(),
       search_service: "google",
       max_results: n >= 1 ? Math.min(n, 50) : 10,
       crawl_results: 0,
-    }, ctx.abort) as { results?: unknown };
+    };
+    const result = (token === undefined
+      ? await pool.send((bearer) => request(baseUrl, "search", bearer, payload, ctx.abort), ctx.abort)
+      : await request(baseUrl, "search", token, payload, ctx.abort)) as { results?: unknown };
     const text = (v: unknown) => (typeof v === "string" ? v : "");
     return (Array.isArray(result?.results) ? result.results : [])
       .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
@@ -97,7 +94,6 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
     },
     auth: {
       provider: PROVIDER,
-      single: true,
       methods: [
         { type: "oauth" as const, label: "Sign in to Search1API", authorize: () => startOAuth(baseUrl, undefined, join(input.directory, "search1api-oauth-client.json")) },
         { type: "api" as const, label: "Search1API API key" },
