@@ -53,6 +53,10 @@ magpie quota
 
 - **图像（`/v1/images/generations`、`/v1/images/edits`）**：`MiniMax-H3-Image`、`MiniMax-H3-Image-Highspeed`、`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2`、`nano-banana-2`、`nano-banana-pro`、`doubao-seedream-5-0-pro-260628`、`doubao-seedream-4-5-251128`、`midjourney-8.2`（国际版另含 `midjourney-8.1` / `midjourney-7` / `midjourney-niji7`）。编辑请求中的参考图会自动通过 `/api/v1/files/upload` 上传（`openai` / `nano_banana` 使用 data URI），不支持 mask 蒙版编辑（返回 400）。
 - **视频（`/v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`）**：`MiniMax-H3`、`MiniMax-H3-Max`、`seedance-2.5`、`seedance-2.5-draft`、`seedance-2.0`、`wan-3.0-video`、`wan-3.0-video-prime`、`kling-v3-omni-video`、`kling-avatar`（需传 `input_reference` 与 `extra.sound_file`），国际版另含 `veo-3.1`、`veo-3.1-fast`。
+- **原生语音（`/v1/audio/speech`、`/v1/audio/transcriptions`）**：
+  - TTS（`POST /v1/audio/speech`）：`speech-2.8-hd`（`minimax_tts`，支持 `voice`/`speed`/`emotion`/`vol`/`pitch`/`pronunciation_dict`/`voice_modify`）与 `seed-audio-1.0`（`seedaudio`，支持 `instructions`/`speed`/`response_format` `mp3`/`wav`/`pcm`/`opus`/`sample_rate` 与参考音频/图像）。
+  - ASR（`POST /v1/audio/transcriptions`）：`minimax-asr`（支持 `multipart/form-data` 上传 `file` ≤ 64 MB，超限返回 413，或 HTTPS `audio_url`，输出 `json`/`text`/`verbose_json`/`srt`/`vtt`）。
+  - 注：音频模型不进入对话模型选择器，调用时请显式传入带前缀的模型 ID（如 `minimax-design/speech-2.8-hd`、`minimax-design/minimax-asr`）。
 
 ## 额度查询（`auth.usage`）
 
