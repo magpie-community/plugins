@@ -1,0 +1,6 @@
+{
+  "providers": {
+    "opencode": { "models": {} },
+    "opencode-go": { "models": {} }
+  }
+}
