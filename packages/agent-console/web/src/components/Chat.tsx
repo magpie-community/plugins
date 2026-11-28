@@ -8,7 +8,7 @@ import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
 import { foldTimeline, TOOL_COLLAPSE_AT } from "../timeline/fold";
 import { collectAutoApproved } from "../timeline/autoApproved";
-import { decideOnScroll, newTracker, SCROLL_DOWN_KEYS, SCROLL_UP_KEYS } from "../timeline/stick";
+import { decideOnScroll, decideOnWheel, newTracker, SCROLL_DOWN_KEYS, SCROLL_UP_KEYS } from "../timeline/stick";
 import { Composer } from "./Composer";
 import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
@@ -159,10 +159,18 @@ export function Chat() {
   // 1.3.8: with its direction where the gesture tells it (touch and the scrollbar don't)
   const intent = (dir: "up" | "down" | "any" = "any") => { track.current.intentAt = performance.now(); track.current.intentDir = dir; };
   const onWheel = (e: React.WheelEvent) => {
-    intent(e.deltaY < 0 ? "up" : e.deltaY > 0 ? "down" : "any");
     const el = scrollRef.current;
-    // upward wheel on an overflowing list: leave at once, before the next growth snaps it back
-    if (e.deltaY < 0 && el && el.scrollHeight > el.clientHeight && track.current.stick) setStick(false);
+    if (!el || e.defaultPrevented) return;
+    // A nested vertical scroller consumes its own wheel until its edge; do not turn that into a jump.
+    for (let node = e.target instanceof Element ? e.target : null; node && node !== el; node = node.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(node).overflowY) &&
+          (e.deltaY > 0 ? node.scrollHeight - node.scrollTop - node.clientHeight > 1 : node.scrollTop > 0)) return;
+    }
+    const unit = e.deltaMode === 1 ? parseFloat(getComputedStyle(el).lineHeight) || 16
+      : e.deltaMode === 2 ? el.clientHeight : 1;
+    const now = decideOnWheel(track.current, el, e.deltaY * unit, performance.now());
+    if (now !== stick) setStick(now);
+    if (now) { setHasNew(false); toBottom(); }
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
     // 1.3.8: scrolling down by key is a gesture too (it may re-stick within 60px of the bottom)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideOnScroll, newTracker, INTENT_MS } from "./stick";
+import { decideOnScroll, decideOnWheel, newTracker, INTENT_MS } from "./stick";
 
 const m = (scrollTop: number, scrollHeight: number, clientHeight = 800) => ({ scrollTop, scrollHeight, clientHeight });
 
@@ -139,5 +139,33 @@ describe("near the bottom, the user's direction wins (1.3.8, issue #2)", () => {
     // the scrollbar (pointer held) counts either way
     t.pointerDown = true;
     expect(decideOnScroll(t, m(3165, 3970, 800), 5000)).toBe(true);
+  });
+});
+
+
+describe("wheel intent across layout growth", () => {
+  it("remembers a wheel reaching the bottom before a delayed scroll event sees streaming growth", () => {
+    const t = newTracker();
+    t.stick = false; t.lastTop = 2800; t.lastDist = 400;
+    expect(decideOnWheel(t, m(2800, 4000), 20000, 1000)).toBe(true);
+    // The browser clamps to 3200, then another 240px arrives before its scroll event is handled.
+    expect(decideOnScroll(t, m(3200, 4240), 1010)).toBe(true);
+  });
+
+  it("a small downward wheel and layout growth alone cannot chase the bottom", () => {
+    const t = newTracker();
+    t.stick = false; t.lastTop = 2800; t.lastDist = 400;
+    expect(decideOnWheel(t, m(2800, 4000), 5, 1000)).toBe(false);
+    expect(decideOnScroll(t, m(2805, 4240), 1010)).toBe(false);
+    expect(decideOnWheel(t, m(2805, 4240), 0, 1020)).toBe(false);
+    expect(decideOnWheel(t, m(2805, 4240), NaN, 1020)).toBe(false);
+  });
+
+  it("an upward wheel detaches immediately, even before scrolling and within 60px", () => {
+    const t = newTracker(); t.lastTop = 3200;
+    expect(decideOnWheel(t, m(3200, 4000), -1, 1000)).toBe(false);
+    expect(decideOnScroll(t, m(3199, 4200), 1010)).toBe(false);
+    expect(decideOnWheel(t, m(3199, 4200), 201, 1020)).toBe(true);
+    expect(decideOnWheel(t, m(3199, 4200), -1, 1030)).toBe(false);
   });
 });

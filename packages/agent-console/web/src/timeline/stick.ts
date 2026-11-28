@@ -62,6 +62,19 @@ export function decideOnScroll(t: StickTracker, m: ScrollMetrics, now: number): 
   return false;
 }
 
+/** Record wheel intent before the browser scrolls. A wheel that covers the remaining distance requests
+ * the bottom now: content may grow before the coalesced scroll event, hiding that it was ever reached.
+ * deltaPx is normalized by the caller (wheel events can use pixels, lines or pages).
+ */
+export function decideOnWheel(t: StickTracker, m: ScrollMetrics, deltaPx: number, now: number): boolean {
+  if (!Number.isFinite(deltaPx) || deltaPx === 0) return t.stick;
+  t.intentAt = now;
+  t.intentDir = deltaPx < 0 ? "up" : "down";
+  if (deltaPx < 0 && m.scrollHeight > m.clientHeight) t.stick = false;
+  else if (deltaPx > 0 && deltaPx >= Math.max(0, distanceFromBottom(m))) t.stick = true;
+  return t.stick;
+}
+
 /** Keys that scroll the conversation up when it has focus */
 export const SCROLL_UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 /** Keys that scroll the conversation down when it has focus (1.3.8: a gesture that may re-stick near the bottom) */

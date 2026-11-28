@@ -114,6 +114,20 @@ describe("AgentManager Magpie default-model sync", () => {
     expect((await threads.get(threadId))?.model).toBeNull();
   }, 30000);
 
+  it("syncs a changed default before a queued successor without publishing an idle handoff", async () => {
+    await manager.send(threadId, { text: "first" });
+    mocks.magpieDefaultModel.mockResolvedValue("hub/model-queued");
+    setModelSpy.mockClear();
+    sendSpy.mockClear();
+    expect(await manager.send(threadId, { text: "queued" })).toBe("queued");
+    await waitFor(async () => (await threads.readEvents(threadId, 0, 50000)).filter((e) => e.type === "turn_ended").length === 2 &&
+      (await threads.get(threadId))?.status === "idle", 20000);
+    expect(setModelSpy.mock.calls).toEqual([["hub/model-queued"]]);
+    expect(setModelSpy.mock.invocationCallOrder[0]!).toBeLessThan(sendSpy.mock.invocationCallOrder[0]!);
+    const started = (await threads.readEvents(threadId, 0, 50000)).filter((e) => e.type === "turn_started") as { model?: string }[];
+    expect(started.map((e) => e.model)).toEqual(["hub/model-a", "hub/model-queued"]);
+  }, 25000);
+
   it("1.3.6: a Magpie default the session skipped (ACP validation) is not marked synced — the next idle send retries it", async () => {
     await manager.send(threadId, { text: "hi" });
     await waitFor(async () => (await threads.get(threadId))?.status === "idle");
