@@ -1680,22 +1680,21 @@ const zcodeDir = () => join(dataIn(), ".zcode", "v2")
 // which magpie took for a reply that did not stream, rested the account and
 // said 502, and an agent took for a stream that ended without a stop reason
 // (plugins#1635). So what is asked as is the version of the client installed
-// here, and FALLBACK_APP_VERSION only when none is found.
-const FALLBACK_APP_VERSION = "3.17.2"
+// here, never one older than FALLBACK_APP_VERSION: the newest client ZCode
+// serves when this was written, which a machine with no ZCode (a server, a
+// container, an account moved over) or an old one asks as.
+//
+// Only the version: ZCode 4.0.0's engine (Resources/glm/zcode.cjs) builds a
+// Start Plan request's headers as 3.17.2's does (buildZCodeSourceHeadersFromContext
+// and buildCliZCodeSourceHeaders unchanged, the same header names), and signs
+// no Start Plan request (requiresClientRequestSigning is false for a
+// zhipu-account in start-plan, off-peak or highspeed mode), so 4.0.0 asks as
+// this plugin does with the number changed.
+const FALLBACK_APP_VERSION = "4.0.0"
 
 // SEMVER is a folder ZCode unpacks one engine into, a version of its own: it
 // keeps one per version it can fall back to, under runtime/provider.
 const SEMVER = /^\d+\.\d+\.\d+$/
-
-// ENGINE names the platform folder as ZCode's Rust runtime does, which is not
-// how platform() names a machine: windows-x86_64, mac-arm64, linux-x86_64.
-const ENGINE = {
-  "win32-x64": "windows-x86_64",
-  "darwin-x64": "mac-x86_64",
-  "darwin-arm64": "mac-arm64",
-  "linux-x64": "linux-x86_64",
-  "linux-arm64": "linux-aarch64",
-}
 
 const dirNames = (dir) => {
   try {
@@ -1705,32 +1704,29 @@ const dirNames = (dir) => {
   }
 }
 
+const semverOrder = (a, b) => {
+  const [x, y] = [a, b].map((v) => v.split(".").map(Number))
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
+}
+
 // installedAppVersion is the ZCode client installed here: the highest engine
-// version it unpacked, which is the one it starts. "" when it has none — not
-// installed, not yet started, or unpacked under a platform folder named
-// otherwise than ENGINE guesses, the whole place read then — and root is
-// where the engines are, for a test that has no ZCode of its own.
+// version it unpacked, which is the one it starts, under whichever platform
+// folder it chose (windows-x86_64 on Windows, darwin-aarch64 on a Mac). ""
+// when it has none — not installed or not yet started — and root is where
+// the engines are, for a test that has no ZCode of its own.
 function installedAppVersion(root = join(zcodeDir(), "runtime", "provider")) {
-  const ours = ENGINE[platform()]
-  let names = ours ? dirNames(join(root, ours)) : []
-  if (!names.length) for (const d of dirNames(root)) names = names.concat(dirNames(join(root, d)))
-  const num = (v) => v.split(".").map(Number)
-  return names
-    .filter((n) => SEMVER.test(n))
-    .sort((a, b) => {
-      const [x, y] = [num(a), num(b)]
-      return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
-    })
-    .pop() ?? ""
+  const names = dirNames(root).flatMap((d) => dirNames(join(root, d)))
+  return names.filter((n) => SEMVER.test(n)).sort(semverOrder).pop() ?? ""
 }
 
 // appVersion is the version to ask as: ZCODE_APP_VERSION when it names one
 // (a client ZCode gates too, before the next release reads it from here),
-// else the client installed, else the one this plugin was written against.
+// else the client installed or FALLBACK_APP_VERSION, whichever is newer.
 const appVersion = (root) => {
   const forced = (process.env.ZCODE_APP_VERSION ?? "").trim()
   if (SEMVER.test(forced)) return forced
-  return installedAppVersion(root) || FALLBACK_APP_VERSION
+  const installed = installedAppVersion(root)
+  return installed && semverOrder(installed, FALLBACK_APP_VERSION) > 0 ? installed : FALLBACK_APP_VERSION
 }
 const APP_VERSION = appVersion()
 const UA = "ZCode/" + APP_VERSION

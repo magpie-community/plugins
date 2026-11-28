@@ -22,26 +22,37 @@ const engines = (folders) => {
   return root
 }
 
-test("the version asked as is the client installed, its highest engine", () => {
-  // a windows folder on any machine: ENGINE's own guess is not there, so the
-  // whole place is read, which is what a platform named otherwise takes
-  const root = engines([["windows-x86_64", "3.17.2"], ["windows-x86_64", "4.0.0"], ["windows-x86_64", "cache"]])
-  try {
-    expect(_internal.installedAppVersion(root)).toBe("4.0.0")
-  } finally {
-    rmSync(root, { recursive: true, force: true })
+test("the version asked as is the client installed, its highest engine, under any platform folder", () => {
+  // windows-x86_64 is where ZCode unpacks on Windows, darwin-aarch64 on a Mac
+  for (const platform of ["windows-x86_64", "darwin-aarch64"]) {
+    const root = engines([[platform, "3.17.2"], [platform, "4.0.0"], [platform, "4.1.2"], [platform, "cache"]])
+    try {
+      expect(_internal.installedAppVersion(root)).toBe("4.1.2")
+      expect(_internal.appVersion(root)).toBe("4.1.2")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   }
 })
 
-test("no engine unpacked, the version this plugin was written against stands", () => {
-  const root = engines([["windows-x86_64", "cache"]])
+// plugins#1639: zcode.z.ai answers 3.17.2 with an empty 200, so no machine
+// asks as that any more, whatever is installed on it
+test("no ZCode installed, or an old one, asks as the newest client ZCode serves", () => {
+  expect(_internal.FALLBACK_APP_VERSION).toBe("4.0.0")
+  expect(_internal.APP_VERSION).toBe("4.0.0")
+  const none = engines([["windows-x86_64", "cache"]])
+  const old = engines([["darwin-aarch64", "3.14.3"]])
   try {
-    expect(_internal.installedAppVersion(root)).toBe("")
-    expect(_internal.appVersion(root)).toBe(_internal.FALLBACK_APP_VERSION)
+    expect(_internal.installedAppVersion(none)).toBe("")
+    expect(_internal.appVersion(none)).toBe("4.0.0")
+    expect(_internal.installedAppVersion(old)).toBe("3.14.3")
+    expect(_internal.appVersion(old)).toBe("4.0.0")
   } finally {
-    rmSync(root, { recursive: true, force: true })
+    rmSync(none, { recursive: true, force: true })
+    rmSync(old, { recursive: true, force: true })
   }
   expect(_internal.installedAppVersion(join(tmpdir(), "no-zcode-at-all"))).toBe("")
+  expect(_internal.appVersion(join(tmpdir(), "no-zcode-at-all"))).toBe("4.0.0")
 })
 
 test("ZCODE_APP_VERSION says what to ask as, an install there or not", () => {

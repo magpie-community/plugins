@@ -162,9 +162,9 @@ for (const status of ["active", "pending_unknown_word"]) {
     const calls = bigmodel([next(status)])
     const r = await signIn()
     expect(r.error).toBeUndefined()
-    // the balance is asked as ZCode 3.17.2 asks it: it judges by app_version
+    // the balance is asked as ZCode asks it: it judges by app_version
     const b = calls.find((c) => c.url.pathname === "/api/v1/zcode-plan/billing/balance")
-    expect(b.url.searchParams.get("app_version")).toBe("3.17.2")
+    expect(b.url.searchParams.get("app_version")).toBe("4.0.0")
     expect(r.type).toBe("success")
     const s = JSON.parse(r.refresh)
     expect(s).toMatchObject({ site: "bigmodel", plan: "Start Plan" })
