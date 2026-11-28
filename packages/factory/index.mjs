@@ -1773,7 +1773,37 @@ function escapeDeep(value, phrases = PI_QUOTED_IN_TOOL) {
 
 // sanitizeBody is the last pass before a request leaves: every string in the
 // body gets escapePhrases. Handles Messages, Responses, chat and Gemini.
-function sanitizeBody(body) {
+// extraPhrases is the phrases a user adds (#406): Factory's policy check
+// reads the whole conversation, so one line quoted into a tool result refuses
+// every later request of that session until the text is gone. A phrase named
+// here is escaped exactly as the built-in ones are - the \uXXXX form, which
+// the model reads and Factory's check does not - rather than dropped, so the
+// conversation keeps its meaning.
+//
+// Patterns are not taken: a regular expression is a language of its own, and
+// escaping a match needs a decision about what "the phrase" is (the whole
+// match, or the group that names it). That is a design call, not a default.
+const REDACT_PHRASES = "redact_phrases"
+// redactPhrases is magpie's own switch for extra phrases (#406), read at each
+// request as MODEL_ORDER is: a comma-separated string, or a list if magpie
+// hands one. Nothing named is nothing extra.
+function redactPhrases(magpie) {
+  try {
+    const v = magpie?.option?.(PROVIDER, REDACT_PHRASES)
+    if (Array.isArray(v)) return v
+    if (typeof v === "string") return v.split(",").map((x) => x.trim()).filter(Boolean)
+  } catch {}
+  return []
+}
+
+export function extraPhrases(options = {}) {
+  const named = Array.isArray(options.redact_phrases) ? options.redact_phrases : []
+  // a phrase of nothing but space would rewrite every run of it in every
+  // message, code and tool output included: it needs a character of its own
+  return named.filter((p) => typeof p === "string" && p.trim().length > 0)
+}
+
+export function sanitizeBody(body, extra = []) {
   const text = bodyText(body)
   if (text == null) return body
   let parsed
@@ -1782,7 +1812,8 @@ function sanitizeBody(body) {
   } catch {
     return body
   }
-  if (!escapeDeep(parsed)) return body
+  const phrases = extra.length ? [...PI_QUOTED_IN_TOOL, ...extra] : undefined
+  if (!escapeDeep(parsed, phrases)) return body
   return JSON.stringify(parsed)
 }
 
@@ -2507,6 +2538,13 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           description:
             "Keeps an account in routing only while its Standard usage lasts: once any Standard window (5 hours, 7 days, 30 days) is used up, magpie moves every model, Droid Core's too, to the next account until the window resets. Droid Core and Extra usage are shown but never keep an account in routing.",
         },
+        {
+          key: REDACT_PHRASES,
+          label: "Extra phrases to redact",
+          description:
+            "Comma-separated words or names to escape in what Factory reads, beside the ones magpie already escapes for every client (#406).",
+          default: "",
+        },
       ],
       // magpie renews the sign-in MAGPIE_LEAD before its end, before its
       // requests and usage ask for it, and saves what this gives. Under
@@ -2597,7 +2635,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           // every, all of its tools do (renamedInFull)
           const named = aliasToolNames(anthropic ? anthropicBody(body) : droidBody(path, body), every)
           const adapted = anthropic ? wrapAnthropicTools(named.body) : { body: named.body, names: new Set() }
-          const out = sanitizeBody(adapted.body)
+          const out = sanitizeBody(adapted.body, extraPhrases({ redact_phrases: redactPhrases(magpie) }))
           // the caller's length is of the body it sent, not of this one
           if (out !== init?.body) h.delete("content-length")
           const res = await fetch(url, { ...init, method: init?.method ?? (input instanceof Request ? input.method : "POST"), headers: h, body: out })
@@ -2688,4 +2726,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { harnessText, clientOpening, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { harnessText, clientOpening, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, NO_SAMPLING, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels, redactPhrases }
