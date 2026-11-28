@@ -2199,10 +2199,15 @@ function ownTeam(store, key) {
 // reached on the wrong lane is refused there, so the base is read with the key.
 export function planBases() {
   return [
-    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
-    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
-    [["account:zai-offpeak-idle-plan", "account:bigmodel-offpeak-idle-plan"], OFF_PEAK_BASE],
-    [["account:zai-highspeed-card", "account:bigmodel-highspeed-card"], HIGHSPEED_BASE],
+    { ids: ["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], base: ZAI_BASE, site: "zai" },
+    { ids: ["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], base: BIGMODEL_BASE, site: "bigmodel" },
+    // the two lanes 3.16 added share one base between the two sites, so the
+    // plan's own id is what names the site: reading it off the base would
+    // call a BigModel idle plan Z.ai's (#1662's review)
+    { ids: ["account:zai-offpeak-idle-plan"], base: OFF_PEAK_BASE, site: "zai" },
+    { ids: ["account:bigmodel-offpeak-idle-plan"], base: OFF_PEAK_BASE, site: "bigmodel" },
+    { ids: ["account:zai-highspeed-card"], base: HIGHSPEED_BASE, site: "zai" },
+    { ids: ["account:bigmodel-highspeed-card"], base: HIGHSPEED_BASE, site: "bigmodel" },
   ]
 }
 
@@ -2212,13 +2217,13 @@ export function planBases() {
 function configKey(key) {
   const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
   if (!providers || typeof providers !== "object") return null
-  for (const [ids, base] of planBases()) {
+  for (const { ids, base, site } of planBases()) {
     for (const id of ids) {
       let k = providers[id]?.options?.apiKey
       if (typeof k !== "string") continue
       k = k.trim()
       if (k.startsWith("enc:")) k = first(decrypt(key, k))
-      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base }
+      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base, site }
     }
   }
   return null
@@ -2406,7 +2411,7 @@ function ownSignIn() {
   const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
-  else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
+  else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.site || (s.base === BIGMODEL_BASE ? "bigmodel" : "zai") }
   if (!s.key && !s.jwt && !isTeam(s)) return null
   let info = {}
   // The JWT belongs to the app's active sign-in. Cached profiles from
