@@ -32,9 +32,13 @@ magpie plugin login gemini-decision
 Sign in with a Google AI Studio API key. Note that the
 Decisions API is rolled out per Google Cloud project — some projects
 report a zero quota; test a fresh key with one direct curl before adding
-it. Register several keys in magpie for failover and pooling. Check
-Google's rate-limit documentation for the quotas that apply to your
-project and tier.
+it. Register several keys in magpie for failover and pooling. Per
+[Google's rate-limit documentation](https://aistudio.google.com/docs/rate-limits#gemini-decision),
+the free tier allows 200 requests/minute and 10,000 requests/day
+(Tier 1: 1,500 RPM, 50,000 RPD; higher tiers scale further), and input
+tokens are free of charge on the free tier — the paid tier is $0.10
+per 1M input tokens, with zero output tokens either way. Limits apply
+per project, not per key.
 
 ### Credentials and compatibility
 
@@ -106,9 +110,11 @@ states, no keys.
 ## Models and limits
 
 One model: `gemini-decision-1` (context 262,144 tokens, input text,
-image, audio, video and PDF documents; input costs $0.10 per 1M tokens).
-Google rate limits are per project — check Google's rate-limit
-documentation for the quotas that apply to your project and tier.
+image, audio, video and PDF documents; input costs $0.10 per 1M tokens
+on the paid tier and is free of charge on the free tier).
+[Google's rate limits](https://aistudio.google.com/docs/rate-limits#gemini-decision)
+are per project: free tier 200 RPM / 10,000 RPD, Tier 1 1,500 RPM /
+50,000 RPD, Tier 2+ unlimited RPD.
 Free-tier traffic may be used by Google to improve its products — don't
 send sensitive data on it.
 
