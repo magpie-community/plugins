@@ -517,6 +517,37 @@ export function statedDirectory(body, protocol) {
   return undefined;
 }
 
+// Zen's 429 FreeUsageLimitError ("Free usage limit reached") reads as the
+// address's free allowance spent. To a request Zen doesn't take for
+// OpenCode's own it is not: such a request gets a small allowance a day,
+// then this 429 until 00:00 UTC, while OpenCode itself is still served from
+// the same address in the same minute (JoeGIT333 on #1661: DSH, WorkBuddy
+// and Kimi through this plugin, the real OpenCode CLI beside them). So the
+// reply's message says that too; its status, type, headers and every other
+// field go as Zen sent them, and a reply that isn't JSON goes untouched.
+export const LIMIT_NOTE =
+  " (OpenCode Zen's free tier gives requests it doesn't take for OpenCode's own a small allowance a day, then this 429 until 00:00 UTC, while OpenCode itself can still be served from the same address. If OpenCode still works here, Zen is telling this agent's requests apart: report the agent and its version at https://github.com/magpie-community/plugins/issues.)";
+
+export async function limitSaid(response) {
+  if (response.status !== 429) return response;
+  const text = await response.text();
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  const as = (body) => new Response(body, { status: response.status, statusText: response.statusText, headers });
+  if (!text.includes("FreeUsageLimitError")) return as(text);
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return as(text);
+  }
+  const error = value?.error && typeof value.error === "object" ? value.error : value;
+  if (typeof error?.message !== "string" || error.message.includes(LIMIT_NOTE)) return as(text);
+  error.message += LIMIT_NOTE;
+  return as(JSON.stringify(value));
+}
+
 // OpenCode's block, said for `directory`.
 export function environment(directory) {
   const local = localDirectory(directory);
@@ -853,7 +884,7 @@ async function server(_input, options = {}) {
               signal: request.signal,
               redirect: "error",
             });
-            const guarded = await guardToolResponse(response, protocol, toolPolicy, {
+            const guarded = await guardToolResponse(await limitSaid(response), protocol, toolPolicy, {
               endCutShort: streaming,
             });
             return streaming ? guarded : collapseResponse(guarded, protocol);

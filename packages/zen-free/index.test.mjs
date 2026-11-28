@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
-import { addEnvironment, environment, latestVersion, projectID, statedDirectory, traceHeaders, userAgent } from "./provider.mjs";
+import { addEnvironment, environment, latestVersion, LIMIT_NOTE, projectID, statedDirectory, traceHeaders, userAgent } from "./provider.mjs";
 
 const subject = import("./index.mjs").then((module) => ({
   default: { server: module.ZenFreePlugin },
@@ -69,7 +69,7 @@ async function fixture(t, input = {}) {
       res.write(": heartbeat\n\n");
     } else if (state.status !== 200) {
       res.writeHead(state.status, { "content-type": "application/json", "retry-after": "30" });
-      res.end('{"error":{"message":"limited","type":"rate_limit_error"}}');
+      res.end(state.errorBody ?? '{"error":{"message":"limited","type":"rate_limit_error"}}');
     } else {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
@@ -622,6 +622,49 @@ test("collapses SSE for a non-streaming client and preserves upstream HTTP error
   assert.equal(error.status, 429);
   assert.equal(error.headers.get("retry-after"), "30");
   assert.equal((await error.json()).error.message, "limited");
+});
+
+// Zen's FreeUsageLimitError reads as the address's allowance spent, while
+// a request it doesn't take for OpenCode's own is limited apart from
+// OpenCode itself (#1661): the message says so, the rest goes as sent.
+test("a FreeUsageLimitError 429 says Zen limits other agents apart from OpenCode, the rest as Zen sent it", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const send = (path = "chat/completions", model = "chat-free") =>
+    loader.fetch(`${origin}/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hello" }] }),
+    });
+  state.status = 429;
+  for (const [body, read] of [
+    ['{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached"}}', (v) => v.error],
+    ['{"error":{"type":"FreeUsageLimitError","message":"Free usage limit reached","code":null}}', (v) => v.error],
+    ['{"name":"FreeUsageLimitError","message":"Free usage limit reached"}', (v) => v],
+  ]) {
+    state.errorBody = body;
+    const error = await send();
+    assert.equal(error.status, 429);
+    assert.equal(error.headers.get("retry-after"), "30");
+    const value = await error.json();
+    assert.equal(read(value).message, "Free usage limit reached" + LIMIT_NOTE);
+    // every other field as Zen sent it
+    const sent = JSON.parse(body);
+    read(sent).message = read(value).message;
+    assert.deepEqual(value, sent);
+  }
+  // every protocol
+  state.errorBody = '{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached"}}';
+  const messages = await send("messages", "messages-free");
+  assert.equal(messages.status, 429);
+  assert.match((await messages.json()).error.message, /until 00:00 UTC/);
+  // another 429, or one that isn't JSON, goes untouched
+  for (const body of ['{"error":{"message":"limited","type":"rate_limit_error"}}', "FreeUsageLimitError: Free usage limit reached"]) {
+    state.errorBody = body;
+    const other = await send();
+    assert.equal(other.status, 429);
+    assert.equal(await other.text(), body);
+  }
 });
 
 for (const [path, model, key] of [
