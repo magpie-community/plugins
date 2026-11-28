@@ -28,6 +28,10 @@
 
 在插件页选择语言和汉化方式。Windows 商店版使用默认的「启动时加载」；保持喜鹊运行，主窗口启动或第三方推理设置窗口打开后会自动加载中文。加载时会短暂出现调试窗口和文件选择框，完成后自动收起。插件页显示加载进度和结果。
 
+运行时加载不可用时，可选择「内置补丁（需管理员）」。通过「文件 → 退出」完全关闭 Claude 后，点击「应用中文补丁」并确认 UAC。插件会执行随包固定并校验的上游补丁，写入中文资源与恢复备份；完成后 Claude 自动打开。需要还原时点击「恢复原样」。
+
+内置补丁会修改 Claude 程序文件，可能使程序签名失效；官网 MSIX 安装可能要求接管程序目录的写入权限，恢复补丁不会自动还原目录权限。微软商店版不支持这种方式。详见[内置补丁说明](docs/third-party-patch.md)。
+
 ![喜鹊中的 Claude 中文插件设置页](https://raw.githubusercontent.com/polang233/claude-desktop-zh/main/docs/images/magpie-plugin-settings.png)
 
 ![Claude 的语言选择窗口，已选中简体中文](https://raw.githubusercontent.com/polang233/claude-desktop-zh/main/docs/images/claude-language-choice.png)
@@ -39,7 +43,8 @@
 ## 插件会改动什么
 
 - **启动时加载（默认，支持商店版）**：语言包缓存在本机，加载到当前窗口内存里，应用安装文件保持原样。首次准备会等待 Claude 正常退出，备份开发者设置并开启自动加载需要的 DevTools 选项。
-- **原位应用（兼容的可写 Windows 解包版）**：正常退出 Claude 并确认后，插件备份原文件，修改前端的语言加载与选择代码，写入中文语言资源。可在插件页恢复原始资源。商店版的受保护安装目录不支持此方式。
+- **写入安装资源（兼容且可写的 Windows 解包版）**。正常退出 Claude 后，手动点击「写入所选语言」并确认。插件会备份原文件，修改前端语言加载与选择代码，并写入中文资源。可在插件页恢复原始资源。受保护的 MSIX 安装请使用启动时加载。
+- **内置补丁（需管理员）**：执行随包固定、校验哈希的 javaht Windows 补丁，直接改写兼容安装并保留 `.zh-cn-backups`。应用和恢复都需要完全退出 Claude 并确认 UAC；可能使程序签名失效，恢复不会自动还原被修改的目录权限。
 
 ## 说明
 
@@ -49,6 +54,7 @@ Claude 更新后，插件会自动检查并重建语言包。准备进度和失�
 
 - [安装步骤](https://github.com/polang233/claude-desktop-zh/blob/main/docs/first-install.md)
 - [插件设置与常见问题](https://github.com/polang233/claude-desktop-zh/blob/main/docs/magpie.md)
+- [内置补丁说明](https://github.com/polang233/claude-desktop-zh/blob/main/docs/third-party-patch.md)
 - [macOS 手动运行时说明](https://github.com/polang233/claude-desktop-zh/blob/main/docs/macos.md)
 - [开发与验证](https://github.com/polang233/claude-desktop-zh/blob/main/docs/README.md)
 

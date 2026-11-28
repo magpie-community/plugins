@@ -154,13 +154,13 @@ Magpie 资源库勾选
           "api_key": "magpie-deeptutor",
           "api_format": "openai_chat",
           "models": [
-            { "id": "group/oneday-glm5.3", "model": "group/oneday-glm5.3", "context_window": 128000 },
-            { "id": "group/workbuddyqoderlobster-kimi-k3.1-pro", "model": "group/workbuddyqoderlobster-kimi-k3.1-pro", "context_window": 1048576 }
+            { "id": "group/acme-chat", "model": "group/acme-chat", "context_window": 128000 },
+            { "id": "group/acme-reasoning-pro", "model": "group/acme-reasoning-pro", "context_window": 1048576 }
           ]
         }
       ],
       "active_profile_id": "llm-profile-magpie",
-      "active_model_id": "group/oneday-glm5.3"
+      "active_model_id": "group/acme-chat"
     }
   }
 }
@@ -191,7 +191,7 @@ httpx.InvalidURL: Invalid port: ':1]'
 把 `NO_PROXY` 里的 `[::1]` 去掉，只保留 `::1` 即可：
 
 ```text
-NO_PROXY=10.69.24.25,198.18.0.1,.local,localhost,127.0.0.1,::1
+NO_PROXY=192.0.2.10,198.51.100.1,.local,localhost,127.0.0.1,::1
 ```
 
 ### Magpie 里看不到 DeepTutor

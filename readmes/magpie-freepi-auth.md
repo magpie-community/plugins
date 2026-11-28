@@ -11,6 +11,7 @@ Unofficial; the protocol was reverse-engineered from free-pi-cli (same shape as 
 - **Direct upstream**: credentials live in magpie's `plugin-auth.json` (mode 600); requests ride magpie's proxy chain for this provider (switchable to direct via options).
 - **GitHub device-code sign-in**: click login in the app, enter the code in your browser — no API key.
 - **Live model catalog** (26 available models at the moment) with free/usage-rate badges from the upstream, falling back to a built-in static list when unreachable.
+- **Capability flags**: reasoning and image-input support are marked per model (curated from upstream specs and verified live), and effort-capable models expose a low/medium/high reasoning-strength picker.
 - **Real daily quota**: the account card shows free-pi's daily credits and its UTC-midnight reset, so routing can weigh the account.
 - **Automatic ad impressions**: free-pi only serves completions when the client reports banner impressions; the plugin fetches one banner and reports the impression before each request (never clicks, never blocks, failures are swallowed). The count is visible on the account card.
 
@@ -33,7 +34,7 @@ Check the live list in magpie's model picker. **Every model consumes the daily c
 - Premium models run 2–60x (`claude-haiku-5.5` 2x, `deepseek-v4-pro` 18x, uncensored/abliterated fine-tunes 20–60x), and `deepseek-v4.1-flash-1017-ultrafast` burns ~295x — watch the badge before selecting
 - Occasional free promotions (🔥 Free Unlimited) still appear from time to time; when one is active the plugin flags those models as free automatically
 
-Your remaining daily credits (currently 15,000, resetting at UTC midnight) show on the account card and in `magpie quota`.
+Your remaining daily credits (the allowance is set by free-pi — 4,000/day at the time of writing, down from 15,000 earlier in November; resets at UTC midnight) show on the account card and in `magpie quota`.
 
 Context/output limits come from [models.dev](https://models.dev) (matched via the upstream `stats_id`): most models are ~1M context; unmatched entries default to 128k/16k. The upstream may still cap per request.
 

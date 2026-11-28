@@ -41,6 +41,8 @@ itself, so the native gateway, images, TTS and ASR work without the desktop clie
 | Whole Cookie (opens the sign-in page first) | no (pure reuse) | no |
 | Imported local client state | no (reuses the client's bot token) | no |
 
+The SMS code is requested in the **desktop app scope (appId 200)**, where MoBook's `/user/verifyConfig` reports `captchaEnable: false`; the web scope (40) is the one that turns the Aliyun slider on. If the server still asks for human verification, the plugin cannot show the slider — it then opens the sign-in page and asks for `_tk` / `_uid` instead (the Whole Cookie route; that route never needs a captcha).
+
 All three routes return the same oauth-shaped credential (`access` = `_tk`, `refresh` = `''`, `expires`,
 `accountId` = nickname, `uid`). The host keeps `accountId`/`uid` only for that shape, so two accounts stay
 apart (`mobook` + `mobook#…`) and its background renewal works on every route. The agent is always the
@@ -193,7 +195,7 @@ and from `done.json`, so a day with only them left counts as done.
 ## Tests
 
 ```
-node --test index.test.mjs task-runner.test.mjs   # 118 tests (94 + 24 for the task runner)
+node --test index.test.mjs task-runner.test.mjs   # 119 tests (95 + 24 for the task runner)
 ```
 
 ## 中文
@@ -230,6 +232,8 @@ magpie plugin on mobook
 | 手机号（客户端登记） | 否 | 已有客户端就复用，没有才登记一台 |
 | 粘贴 Cookie（会先打开登录页） | 否（纯复用） | 否 |
 | 导入本机客户端登录态 | 否（复用客户端 botToken） | 否 |
+
+发短信验证码走的是**桌面端作用域（appId 200）**：墨宝的 `/user/verifyConfig` 在这个作用域返回 `captchaEnable: false`，而网页作用域（40）才会打开阿里云滑块。如果服务端仍然要求人机验证：插件是纯 Node 环境弹不出滑块，会直接打开登录页，改问你要 `_tk` / `_uid`（即「粘贴 Cookie」方式）；Cookie 方式永远不需要验证码。
 
 三种方式都返回 oauth 形状的凭据（`access` = `_tk`、`refresh` = `''`、`expires`、`accountId` = 昵称、
 `uid`）：宿主只对这个形状保留账号身份，两个账号能分开（`mobook` + `mobook#…`），后台续期也生效。
@@ -353,5 +357,5 @@ magpie 把插件工具挂到内置 MCP 服务器 `http://127.0.0.1:3425/mcp/magp
 ### 测试
 
 ```
-node --test index.test.mjs task-runner.test.mjs   # 118 个用例（94 + 24），约 2 秒
+node --test index.test.mjs task-runner.test.mjs   # 119 个用例（95 + 24），约 2 秒
 ```

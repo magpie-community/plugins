@@ -153,10 +153,11 @@ rides the model record, the field the host's picker reads the multiplier
 from. A model the
 upstream itself declares free — the words 免费 in the name, or a rate of
 exactly zero — carries a `free` bit; no rate at all is not free. Rows that
-aren't chat models stay off the chat list — the image generators say so in
-their `type`, and carry an image generator's name besides, read by the same
-words the host's own image-model catalog reads, so a row that ships no
-`type` at all stays off just the same: chatting into one is a failure.
+aren't chat models stay off the chat list — the image and video generators
+say so in their `type`, and carry a generator's name besides, read by the
+same words the host's own image- and video-model catalogs read, so a row
+that ships no `type` at all stays off just the same: chatting into one is
+a failure.
 
 The image generators come back beside the chat list from a roster the
 plugin itself keeps — the three it vouches for, each under the display
@@ -174,7 +175,22 @@ host's own image-model catalog reads (`qwen-image`, `seedream`… —
 `Hy-Image` is not among those words), and until the host learns to keep a
 plugin's generators out of the chat list too (yetone/magpie#2792) they
 show there as chips as well: leave them unticked, and no agent chats into
-one.
+one. The video generators read beside them from a second roster, the same
+mechanism word for word: a video word list (`seedance`, `sora`, `kling`…
+— `seedance` is ByteDance's video line, `seedream` its image one, and the
+two lists never hit each other's rows) keeps the video rows off the chat
+list — the only gate that does, measured 2026-11-28: the gateway ships no
+video type, its three seedance rows (`seedance-2-0-fast`, `seedance-2-0`,
+`seedance-2-5`, ids and names verbatim) stamp themselves `type:"chat"`
+and carry the video nature only in `output_modalities`, which is why 0.2.3
+showed them as chat choices — and the roster puts the vouched-for ones
+back, live-gated like the image one, the fallback carrying none. On the
+record shape the `capabilities.output.video` bit is measured ground (read
+2026-11-28 at magpie 0.1.38xx: the host projects `outputs` off the
+mapping's true keys, the array the video badge lights from), and so is the
+draw — a seedance clip rendered end to end on 2026-11-28 (magpie
+0.1.5032), while the `{apiBase}/videos/generations` spelling those records
+aim at stays inferred.
 
 The live list is the source of truth and wins the moment it answers. Without
 a session, on an empty answer or a failed ask, the plugin falls back to the

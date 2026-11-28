@@ -47,7 +47,7 @@ magpie plugin add github:zhuangzm/magpie-mistral-pool
 # 2) 本地目录（改代码时用）
 magpie plugin add <本仓库路径>
 
-# 3) npm 包（尚未发布，发布流程见 docs/publish.md）
+# 3) npm 包（可选，尚未发布；流程见 docs/publish.md）
 # magpie plugin add @solary/magpie-mistral-pool
 ```
 
@@ -71,11 +71,11 @@ vibe-acp --version
 ```jsonc
 {
   "spec": "github:zhuangzm/magpie-mistral-pool",
-  "options": { "engine": "acp", "proxyUrl": "http://127.0.0.1:7890" }
+  "options": { "engine": "acp" }
 }
 ```
 
-此时 provider 名为 **Mistral Vibe (ACP · $300)**。
+此时 provider 名为 **Mistral Vibe (ACP · $300)**。代理默认自动跟随系统代理，要固定端口时再写 `proxyUrl`（见「代理」）。
 
 桥接怎么做的：
 
@@ -91,7 +91,8 @@ vibe-acp --version
 | `engine` | `direct` | `direct` / `acp` |
 | `providerId` | `mistral-vibe` | provider id，双入口时用它区分 |
 | `providerName` | 按引擎推导 | 面板上显示的名字 |
-| `proxyUrl` | 空 | 出站代理，同时下发给 ACP 子进程 |
+| `proxyUrl` | 空（自动探测） | 出站代理：URL / `system` / `none`，同时下发给 ACP 子进程 |
+| `noProxy` | 空（读 `NO_PROXY`） | 额外的直连例外，逗号分隔，支持 `*`、`.domain`、CIDR |
 | `vibeAcpPath` | 走 `PATH`（Windows 用 `where.exe` 找） | 显式指定 `vibe-acp` |
 | `vibeAcpArgs` | `[]` | 仅供测试用包装器，需与 `vibeAcpPath` 一起用 |
 | `maxSessions` | 4 | 单个桥里并发的 ACP 会话上限 |
@@ -102,7 +103,7 @@ vibe-acp --version
 | `idleMs` | 300000 | 流式 chunk 之间的空闲预算 |
 | `includeApiSurface` | `false` | 是否放出 `codestral` / `ministral` / `pixtral` |
 
-环境变量：`VIBE_ACP_CMD` 覆盖 `vibe-acp` 命令；`HTTP_PROXY` / `HTTPS_PROXY` / `NODE_USE_ENV_PROXY` 见下面「代理」一节。
+环境变量：`VIBE_ACP_CMD` 覆盖 `vibe-acp` 命令；`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` 参与下面的代理自动探测。
 
 ## 登录
 
@@ -128,23 +129,34 @@ vibe-acp --version
 
 - 首字节：**720 s**（`options.firstOutputMs`），直连与 ACP 桥一致。
 - 流式 chunk 之间的空闲：**300 s**（`options.idleMs`），两个引擎一致。
-- 装了 `undici` 时开 TCP keepalive；在 Magpie 的 Bun 宿主里改用宿主 `fetch`，由宿主按请求应用 `proxyUrl` 并持有连接设置。
+- 装了 `undici` 时开 TCP keepalive；在 Magpie 的 Bun 宿主里改用宿主 `fetch`，由宿主按请求应用已解析的代理并持有连接设置。
 - 没有 60 s 的 header 超时：那会在深度思考的首字节到达前就掐断请求。
 - SSE 逐块透传并带背压，不缓冲整段补全。
 
 ## 代理
 
+默认自动跟随系统代理，不用手填端口。解析顺序：
+
+1. `options.proxyUrl` 里写的 URL——显式指定永远优先；
+2. `"none"`（也认 `off` / `direct` / `disabled`）强制直连；
+3. `"system"`（也认 `auto` / `windows` / `default`）强制做一次系统探测；
+4. 环境变量 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（大小写都认）；
+5. Windows 的 WinINET 系统代理：`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 下的 `ProxyEnable` / `ProxyServer`，`http=…;https=…` 写法与 `ProxyOverride` 例外表都读；
+6. 都没有就直连。
+
+所以 `proxyUrl` 留空就是「自动」：Clash 换端口、换客户端、开 TUN 都不用改配置。
+
 ```jsonc
-{ "proxyUrl": "http://127.0.0.1:7890" }
+{ "proxyUrl": "system" }                 // 与留空等价：环境变量 → 系统代理 → 直连
+{ "proxyUrl": "http://127.0.0.1:1080" }  // 指定端口
+{ "proxyUrl": "none" }                   // 强制直连
 ```
 
-Node 下 `proxyUrl` 需要 `undici`（可选依赖）。Node 的全局 `fetch` 不读 `HTTPS_PROXY`；Node 22.21+/24+ 可以改用 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY`，装不装 `undici` 都行。
-
-Magpie 的 Bun 宿主下插件完全不加载 `undici`（那会绕开宿主 fetch），而是调宿主 `fetch`，把 `proxyUrl` 作为 Bun 的按请求 `proxy` 选项传下去，所以宿主的代理与 CA 设置照常生效。
-
-ACP 子进程从 `proxyUrl` 得到 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，并用 `NO_PROXY` 排除回环；它的控制面（whoami / billing）仍走插件自己的传输与代理。
-
-undici agent 的 `headersTimeout` / `bodyTimeout` 是故意关掉的：它默认 300 s，会在首字节晚到的请求上先动手，把 720 s 的预算废掉。
+- 回环地址（`127.*`、`::1`、`localhost`）永远直连，插件自己的冒烟测试与本地端点不受影响。
+- 只读系统代理的静态设置，不执行 PAC 脚本；系统只配了 PAC 而没有静态端口时按直连处理——TUN 模式下本来就该这样。
+- 三个出口共用同一份解析结果：控制面（`whoami` / `billing`）、API 传输、`vibe-acp` 子进程。子进程的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 由它写入，`NO_PROXY` 会合并选项、`noProxy`、系统例外表与回环地址。
+- Node 下走代理需要 `undici`（可选依赖），插件建 `ProxyAgent`；Magpie 的 Bun 宿主下插件完全不加载 `undici`（那会绕开宿主 fetch），而是把解析出的代理作为 Bun 的按请求 `proxy` 选项传给宿主 `fetch`，宿主的代理与 CA 设置照常生效。
+- undici agent 的 `headersTimeout` / `bodyTimeout` 是故意关掉的：默认 300 s 会在首字节晚到的请求上先动手，把 720 s 的预算废掉；首字节与空闲分别由插件的 720 s / 300 s 看门狗接管。
 
 ## 会话粘性
 
@@ -163,8 +175,8 @@ magpie group set <group> stays=session
 | `MAX_SESSIONS` | 默认 4 个并发 ACP 子进程；调小 `maxSessions`，或靠 `sessionTtlMs` 让空闲会话过期 |
 | `/billing/budget` 403 | 缺少组织用量权限时的预期行为，卡片只显示套餐 |
 | 429 | 走 Magpie 自己的重试语义，插件不发明冷却 |
-| 超时 | 调大 `firstOutputMs` / `idleMs`，或检查代理；首字节前超时是 `TRANSPORT_TIMEOUT_FIRST_OUTPUT`，流卡住是 `TRANSPORT_TIMEOUT_IDLE` |
-| 代理没生效 | Node 下装 `undici` 或用 `NODE_USE_ENV_PROXY=1`；Bun 宿主下按请求 `proxy` 已经生效 |
+| 超时 | 调大 `firstOutputMs` / `idleMs`；首字节前超时是 `TRANSPORT_TIMEOUT_FIRST_OUTPUT`，流卡住是 `TRANSPORT_TIMEOUT_IDLE`；也要确认代理可达 |
+| 代理没生效 | 先看日志里的 `proxy: <source> <url>`，只有 `option` / `environment` / `windows` 才算命中；只配了 PAC 的系统代理不解析，会按直连处理，不确定就直接填 `proxyUrl`。Node 下还需要装 `undici` |
 | 面板还是旧额度 | GUI 缓存，重开设置页或重启 Magpie 插件宿主 |
 
 ## 安全与边界
@@ -193,6 +205,7 @@ CI（`.github/workflows/ci.yml`）在 ubuntu / windows / macos × node 20/22/24 
 | `src/core.mjs` | 常量、Vibe surface 模型表、key 类型判定、请求头清洗 |
 | `src/billing.mjs` | subscription / budget 读取，映射成 Magpie 的用量窗口 |
 | `src/thinking.mjs` | 把历史思考字段改写成 Mistral 接受的 typed content part |
+| `src/proxy.mjs` | 代理解析：选项 / 环境变量 / Windows 系统代理、NO_PROXY 例外匹配 |
 | `src/transport.mjs` | 720 s / 300 s 双层看门狗、代理、重试边界 |
 | `src/acp/` | ACP 运行时、JSON-RPC、MCP server、OpenAI 映射、子进程配置 |
 | `test/` | `node --test` 单元与契约测试 |

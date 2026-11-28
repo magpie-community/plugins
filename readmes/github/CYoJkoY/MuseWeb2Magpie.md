@@ -280,8 +280,9 @@ Magpie 在会话到期前 10 分钟自动续期；续不上时额度卡片显示
 - 指纹浏览器安装器读取的远端响应有大小上限（见 ADR 0013）：发布文档与 `.manifest.json` 上限 1 MiB、压缩包上限 512 MiB，声明的 `content-length` 先检查，带流时边读边计数、超限立刻断开；压缩包边到边写盘，内存不随下载大小增长。一个永不结束或坏掉的响应因此只会变成一次带原因的拒绝并退回系统 Chromium，而不是撑爆内存或占满磁盘。
 - 解压出来的大小同样有上限（见 ADR 0014）：整份发布包最多解开到 2 GiB、最多 100,000 个文件，`inflateRawSync` / `zstdDecompressSync` 都带着 `maxOutputLength` 解压，超限立刻停手；系统 `tar` 没有可传的上限，所以解压后统计实际产物，超预算就丢掉整个暂存目录、不安装。一个几百 KB 却能解出几百 GB 的压缩包只会变成一次失败并退回系统 Chromium。
 - 调试端口由浏览器自己挑，引擎不猜（见 ADR 0015）：`--remote-debugging-port=0` 让 Chromium 监听就绪后写下 `<profileDir>/DevToolsActivePort`，引擎只读这个文件里的端口，并要求 `/json/version` 回的 WebSocket 地址端口一致、主机是回环、路径在 `/devtools/browser/` 下。这样本机别的进程无法抢先占住一个被预定的端口、冒充调试接口收走一条带着账号 cookie 的连接；启动前还会删掉 profile 里遗留的旧文件，免得把上一轮的端口当成这一轮的答案。
+- 能不能驱动浏览器在启动后先问清（见 ADR 0018）：有的内嵌内核（Donut Browser 免费版的 Wayfern）会开窗口、也提供调试端口，却拒绝 `Runtime.evaluate`，而引擎的每一次页面操作都靠它。引擎在启动后先用一次 `Runtime.evaluate` 探测，被拒绝就关掉它、改用系统里的 Chrome/Edge/Chromium 重开一次并记住这个内核；只有内核对自动化的明确拒绝才算数，导航慢或连接超时不会被误判。登录完成的测试消息只用来「确认能回答」，cookie 已由 muse.ai 接受，因此只有 muse.ai 说会话失效才删除账号，其它原因保留账号并在进度页提示「已保存但未确认，第一条对话会再试」。
 
-完整的威胁模型、必须保持的不变量和已知残留风险见 [`SECURITY.md`](SECURITY.md)；health challenge 的取舍见 [`docs/adr/0004-health-challenge.md`](docs/adr/0004-health-challenge.md)，凭据只走回环或 https 的取舍见 [`docs/adr/0006-credentials-over-the-wire.md`](docs/adr/0006-credentials-over-the-wire.md)，免鉴权面不做工与在飞上限的取舍见 [`docs/adr/0008-admission-control.md`](docs/adr/0008-admission-control.md)，手填浏览器路径的形状限制见 [`docs/adr/0009-typed-browser-path.md`](docs/adr/0009-typed-browser-path.md)，配置站点的传输规则见 [`docs/adr/0010-configured-site-transport.md`](docs/adr/0010-configured-site-transport.md)，下载文件名的限制见 [`docs/adr/0011-release-file-name.md`](docs/adr/0011-release-file-name.md)，代理凭据不进命令行的取舍见 [`docs/adr/0012-proxy-credentials-off-argv.md`](docs/adr/0012-proxy-credentials-off-argv.md)，远端响应上限与边到边写盘的取舍见 [`docs/adr/0013-bounded-downloads.md`](docs/adr/0013-bounded-downloads.md)，解压大小上限的取舍见 [`docs/adr/0014-bounded-extraction.md`](docs/adr/0014-bounded-extraction.md)，调试端口由浏览器自己挑的取舍见 [`docs/adr/0015-browser-chosen-debug-port.md`](docs/adr/0015-browser-chosen-debug-port.md)。
+完整的威胁模型、必须保持的不变量和已知残留风险见 [`SECURITY.md`](SECURITY.md)；health challenge 的取舍见 [`docs/adr/0004-health-challenge.md`](docs/adr/0004-health-challenge.md)，凭据只走回环或 https 的取舍见 [`docs/adr/0006-credentials-over-the-wire.md`](docs/adr/0006-credentials-over-the-wire.md)，免鉴权面不做工与在飞上限的取舍见 [`docs/adr/0008-admission-control.md`](docs/adr/0008-admission-control.md)，手填浏览器路径的形状限制见 [`docs/adr/0009-typed-browser-path.md`](docs/adr/0009-typed-browser-path.md)，配置站点的传输规则见 [`docs/adr/0010-configured-site-transport.md`](docs/adr/0010-configured-site-transport.md)，下载文件名的限制见 [`docs/adr/0011-release-file-name.md`](docs/adr/0011-release-file-name.md)，代理凭据不进命令行的取舍见 [`docs/adr/0012-proxy-credentials-off-argv.md`](docs/adr/0012-proxy-credentials-off-argv.md)，远端响应上限与边到边写盘的取舍见 [`docs/adr/0013-bounded-downloads.md`](docs/adr/0013-bounded-downloads.md)，解压大小上限的取舍见 [`docs/adr/0014-bounded-extraction.md`](docs/adr/0014-bounded-extraction.md)，调试端口由浏览器自己挑的取舍见 [`docs/adr/0015-browser-chosen-debug-port.md`](docs/adr/0015-browser-chosen-debug-port.md)，「浏览器能不能被驱动」在启动后先问清、账号只由 muse.ai 判定失效的取舍见 [`docs/adr/0018-browser-that-can-be-driven.md`](docs/adr/0018-browser-that-can-be-driven.md)。
 
 <a name="readme-usage"></a>
 
@@ -347,7 +348,9 @@ magpie provider test muse-web          # 发一条真实的小请求，检查整
 | 登录反复不完成，账号数一直是 0 | 默认浏览器里那个页面只是进度。请在另开的指纹浏览器或 Chromium 窗口里登录，并等引擎确认会话后它自己关掉。看 `engine.log` 有没有 `verify` 或 `warm`；状态页上的错误若是 `/api/session HTTP 403`，是出口地区或代理问题，可试 `MUSE_WEB_PROXY=direct` |
 | 登录前没有出现我的浏览器 | 选最后一项「手动填写浏览器路径…」填可执行文件的绝对路径（粘贴的引号会自动去掉；相对路径、目录、不存在的文件会被当场拒绝）；或设 `MUSE_WEB_CHROME` 后重开 Magpie——这个值同样要是绝对路径的普通文件，填了 `chrome.exe` 这样的相对名会被当成未设置，`engine.log` 里会写原因 |
 | 用了 Donut Browser，但引擎没用它的内核 | 引擎会自己找 `%LOCALAPPDATA%\DonutBrowser`、`DONUTBROWSER_DATA_DIR` / `DONUTBROWSER_DATA_ROOT` 和 Scoop 的 `apps\donutbrowser\current` 下的 `binaries\wayfern\<版本>`。装在别处时设 `MUSE_WEB_DONUT_BROWSER` 指向 Donut 的 data 目录或 `chrome.exe`；不想用 Donut 时设 `MUSE_WEB_DONUT_BROWSER=0` |
+| 登录窗口登录成功，进度页却一直停在「正在发一条测试消息」| Donut Browser 免费版的 Wayfern 内核会开窗口、也提供调试端口，但拒绝 `Runtime.evaluate`（回复 `Browser automation requires a paid Donut Browser plan.`），引擎没法在它里面操作页面。0.12.7 起引擎启动后会先探测，被拒绝就改用系统里的 Chrome/Edge/Chromium 重开，并在 `engine.log` 记一行 `不允许自动化`；只有 muse.ai 说会话失效才删账号，其它情况账号会保留并在进度页提示「已保存但未确认」。本机没有第二个浏览器时，装一个 Chromium 系浏览器或用 `MUSE_WEB_CHROME` 指定 |
 | 提示「浏览器没有打开调试端口」 | 报错里写着等了多久、`DevToolsActivePort` 是还没出现还是里面写着什么、最后一次探测的回答、以及浏览器自己最后三行 stderr，按这四样判断：冷启动慢（老硬盘、开机后第一次启动、被安全软件扫描）就把 `MUSE_WEB_START_MS` 调长，比如 `180000`；文件一直不出现时看 stderr 里浏览器自己说的原因 |
+| 页面写着「Muse已解除关联」，或返回 `account_unlinked` | muse.ai 已在这个账号侧解除了 Muse 工作区（虚拟机 `DISABLED`，唤醒被拒），重新登录不会恢复。引擎会把这个登录窗口留在这一页：在那个窗口里点「提交工单」，填「提交反馈」表单（主题选「账户访问与登录」），关联成功后再登录一次；换一个没被解除关联的账号也能立刻继续用 |
 | 日志显示指纹浏览器下载或安装失败 | 引擎会自动改用本机 Chrome/Edge/Chromium。检查网络代理后重试，或用 `MUSE_WEB_FINGERPRINT_BROWSER` 指定本机已有的 Apostate 或 Wayfern 内核；确实不想用它时设 `MUSE_WEB_FINGERPRINT=0` |
 | 登录失败：「已登录，但账号没有回答测试消息」 | 会话拿到了但对话不通，常见于虚拟机还在预热，稍后重新登录 |
 | Agent 说它看不到你的文件，或让你自己运行命令 | 模型这次没按工具格式回答，重试或换种说法；日志里会是 `tools=…→text` |
@@ -369,6 +372,7 @@ magpie provider test muse-web          # 发一条真实的小请求，检查整
 | `vm_warming` | 503 | 账号虚拟机还在预热 | 10 秒后重试 |
 | `page_unavailable` | 503 | 页面没加载出来 | 10 秒后重试 |
 | `send_failed` | 503 | 消息没有发出去 | 重试 |
+| `account_unlinked` | 503 | muse.ai 已解除这个账号的 Muse 关联 | 在 muse.ai 页面点「提交工单」重新关联（登录窗口会停在这一页），或换号；`Retry-After: 3600` |
 | `engine_busy` | 503 | 引擎同时在处理的请求太多 | 稍后重试；`Retry-After: 1` |
 | `stream_interrupted` | SSE | 流式回答中途失败 | 重试该轮 |
 | `tool_call_not_parsed` | 422 | required / 指定工具没有被调用 | 重试或换模型 |
@@ -397,8 +401,8 @@ npm test               # 插件契约 + 引擎集成测试（HTTP、存储、日
 发布：先把 `package.json` 的版本号和 `CHANGELOG.md` 里同名小节准备好，再推送同名 tag。`.github/workflows/release.yml` 会校验 tag 与版本号一致、跑完整测试、`npm pack`，再把打出的 tgz 改名为 `MuseWeb2Magpie-<版本>.tgz`（npm 包名仍是 `magpie-muse-web`，Magpie 里的行名是 `MuseWeb2Magpie`），连同 `assets/icon.png`、`assets/icon.ico` 一起传到 GitHub Release，发布说明取自 CHANGELOG 对应小节。补发已有 tag 时，在 Actions 里手动触发 `release` 并填入 tag。
 
 ```sh
-git tag v0.12.6
-git push origin v0.12.6
+git tag v0.12.9
+git push origin v0.12.9
 ```
 
 没装浏览器时，用到浏览器的测试会自动跳过。Linux 环境可以用 Docker 跑：
@@ -437,7 +441,7 @@ MuseWeb2Magpie
 
 ## <img src="assets/readme/icons/roadmap.svg" width="24" height="24" alt=""> 状态与路线
 
-当前版本 **0.12.6**：纯 TypeScript 源码（不再有 Go 引擎）、TypeScript loopback 引擎、稳定的网页账号接入、会话复用、工具调用、额度卡片与自动续期；冷启动与驱动协议经过一轮性能剖析和优化。
+当前版本 **0.12.9**：纯 TypeScript 源码（不再有 Go 引擎）、TypeScript loopback 引擎、稳定的网页账号接入、会话复用、工具调用、额度卡片与自动续期；冷启动与驱动协议经过一轮性能剖析和优化。
 
 路线上的工作主要是提升与网页改版的兼容性、改进错误恢复与诊断，以及让引擎的部署形态更灵活。图片、文件上传与生图生视频不在计划内——那是 muse2api 的方向。
 

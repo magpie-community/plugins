@@ -86,6 +86,7 @@ Key 用 `npx magpie-aws-quick-bridge status` 看。
 - 多轮对话接着上一轮的线程走，只发新增的内容；客户端用 `x-session-id`、`x-session-affinity` 这类请求头标出的会话各走各的线程，开头相同的两个对话不会串
 - 每个账号带一个固定的设备 ID 连接 Amazon Quick，而不是空值（`stable_device_id` 设为 `false` 可关）
 - Amazon Quick 每条消息最多 64 KB：工具很多、提示词很长时会自动压缩工具说明和系统提示词，很长的对话内容和图片转成附件，保证发得出去
+- 图片、PDF 会作为附件发给 Amazon Quick：包括 Claude Code 读到的截图和 PDF（工具结果和 `document` 块）、Codex 和 OpenCode 发的文件，以及 `https://…` 形式的图片地址（先下载，最大 10 MB，不下载本机和内网地址）。只有个人账号支持，Gateway 企业账号仍然只发占位文字
 - 额度查询，模型列表按账号实际开通的来
 - 额度用完时返回 429，并带上额度恢复还要多久（最长按 6 小时算，到点再问一次），Magpie 会让这个账号休息到那时，先用别的账号；报错里也写明是哪种额度、多久恢复（写成 Magpie 能识别的 “try again in 3h 32m”）；Amazon Quick 不说什么时候恢复时，按 30 分钟后再问一次算
 - 额度用完时 Amazon Quick 有时不报错，只回一句 “You've reached your usage limit. Check your profile for details.”：我把它当成额度用完返回 429，不当回答交给客户端
@@ -98,7 +99,7 @@ Key 用 `npx magpie-aws-quick-bridge status` 看。
 ## 我验证到了哪一步
 
 - **真实账号（我自己的个人账号）**：Magpie 插件的登录、对话、工具调用、线程复用、附件、额度；CC Switch 模式下 Claude Code、Codex、OpenCode 经本机 API 读文件、写文件。
-- **只用模拟服务测过**：企业账号、`advanced` 模型、图片附件、额度用完后的休息时间（我没把额度用完过）。
+- **只用模拟服务测过**：企业账号、`advanced` 模型、图片和 PDF 附件、下载图片地址、额度用完后的休息时间（我没把额度用完过）。
 - 企业账号的租户地址是 `….enterprise.quick.aws.com` 时，走的是 Amazon Quick 的 Gateway 线路：登录时自动识别，账号名和 AWS 账号 ID 取自令牌，令牌里没有时再问租户一次，都取不到就显示租户地址。这条线路的登录和对话我都只用模拟服务测过，登录或对话失败请把报错发到 issue。
 - 工具调用是靠提示词约定的文本协议做的，模型偶尔会不按约定来，重试一下通常就好。
 - Amazon Quick 每轮会带上它自己的一大段系统提示词，所以 token 数看起来很大；额度按它的 credits 算。

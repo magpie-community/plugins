@@ -4,7 +4,7 @@
 
 把 [zfr-core](https://github.com/wayne091106-hash/zfr-core) 的**多出口 IP 轮换 / OpenCode v2.1.3 协议伪装 / 冷却式故障切换**以纯 JS/TS 移植成 **Magpie provider 插件**。
 
-**自包含：无 Rust、无 CLI、无 sidecar、不需要 `zfr serve`。** 装进 Magpie 就能用。当前版本 `0.2.0`。
+**自包含：无 Rust、无 CLI、无 sidecar、不需要 `zfr serve`。** 装进 Magpie 就能用。当前版本 `0.2.2`。
 
 ## 安装
 
@@ -52,6 +52,10 @@ src/catalog.mjs    内置模型表、等价映射、failover 链
 src/sse.mjs        SSE 重写与聚合
 src/onesearch.mjs  OneSearch（begamob）lane：JWT、user-header、envelope、TOOL_CALL 翻译
 src/constants.mjs  UA、base URL、lane、协议常量
+src/upstream/      【生成层】上游 catalog.rs 的模型行，脚本写入，勿手改
+src/local/         【本地层】OneSearch 行与裸 id 表，同步器永不写入
+src/patches/       【补丁层】对生成层的手工偏差
+scripts/lib/       extract（抽 Rust 语义）/ differ（三方裁决）/ emit（渲染）/ guard（写入守卫）
 ```
 
 ## 验证
@@ -67,9 +71,11 @@ src/constants.mjs  UA、base URL、lane、协议常量
 
 ```sh
 npm run check    # 每个源码/测试文件 node --check
-npm test         # test:unit（纯函数）+ test:host（宿主侧 30 条目），Node 即可
+npm test         # test:unit（纯函数）+ test:host（宿主侧 30 条目）+ test:upstream-sync（同步机制离线自测），Node 即可
 npm run test:bun # Bun 才有：test-transport（loopback 出口）+ test-integration（真打 mock 上游）
 npm run upstream # 比对上游 zfr-core 的新 commit
+npm run parity   # 门禁：ledger / 生成层指纹 / MANIFEST 对账 / 串层 / 运行时合成
+npm run sync:dry # 走完整同步流程但一个字节都不写
 ```
 
 2026-11-27 在真实上游（`chat-ai.begamob.com`）跑通 OneSearch lane：
@@ -93,7 +99,64 @@ GITHUB_TOKEN=... node scripts/ghpush.mjs \
 
 ## 上游同步
 
-`.upstream.json` 钉住 zfr-core 的基线 commit；GitHub Actions 每天检查上游更新并在有变化时建 issue。上游改了协议字段时，优先看 `src/constants.mjs` 与 `src/fingerprint.mjs`。
+上游是 [`wayne091106-hash/zfr-core`](https://github.com/wayne091106-hash/zfr-core)（Rust）。本项目是它的纯 JS/TS 移植，两边**没有共享文件** —— `git merge` 拿不到 base，只会把 `.rs` 原样堆进来。所以同步做在语义层，不是行级。
+
+### 三层分区
+
+```
+src/upstream/     【生成层】上游 catalog.rs 的模型行，脚本写入，勿手改
+src/local/        【本地层】OneSearch lane 等自有功能，同步器物理上不写
+src/patches/      【补丁层】我们对生成层的手工偏差，一处一文件
+upstream-ledger.json   【裁决表】每个语义键归谁
+```
+
+`src/catalog.mjs` 在运行时把生成层与本地层拼起来，所以上游加模型只动生成层，我们的行永远在本地层——这就是「跟随上游但不被覆盖」的落点。
+
+### 裁决表
+
+`upstream-ledger.json` 里每条语义键有四种归属：
+
+| owner | 同步器行为 |
+|---|---|
+| `adopt-upstream` | 上游变了就改写生成层，跑门禁 |
+| `keep-ours` | 上游变了只写进 PR 描述，一个字节都不动 |
+| `keep-ours-plus-upstream` | 上游新增项合入，`preserve[]` 里锁死的尾部不动 |
+| `local-only` | 连读都不读，整体剔出上游语义面 |
+
+### 四道锁
+
+1. **分区锁** —— `scripts/lib/guard.mjs` 的 `assertWritable()` 只放行 `src/upstream/` 与状态文件；`src/local/`、`src/patches/` 是硬拒绝路径，抛 `GuardViolation` 就退出。
+2. **裁决锁** —— `diff()` 里 `keep-ours` / `local-only` 走 `continue`，物理上不产生写入决定。
+3. **指纹锁** —— 生成层自带 `GENERATED_FINGERPRINT`（行数 + 行 id 序列，必须写字面量）。手改任一字段，`verify-parity` 立刻报红。
+4. **串层锁** —— 门禁反查：本地行出现在生成层、生成层缺上游行、生成层多出上游没有的行，都算违规。
+
+### 自动流程
+
+`.github/workflows/upstream-watch.yml` 每天 `17 3 * * *`：
+
+1. `check-upstream.mjs` 比对 `.upstream.json` 的 sha，无变化直接结束
+2. `upstream-sync.mjs` 拉上游 tarball（走 `api.github.com`，与 `ghpush.mjs` 同一条通路）→ `extract()` 抽成语义单元 → `diff()` 三方裁决 → 只渲染生成层
+3. 跑门禁：`npm run check && npm test && node scripts/verify-parity.mjs`
+4. 全绿 → 开 PR；有 `conflict` / `pending` → 打 `needs-human` 并建工单
+
+**advisory 项不进基线**：`constants`、`resolve_model`、`failover_chain` 这些是手工维护的移植实现，形状与 Rust 不同，机器改写只会毁掉它们。它们上游变过会写进 `.sync-pending.json`，基线不推进，门禁盯着——否则这次变更会被永久标成「已同步」，以后再也检测不到。
+
+### 手工命令
+
+```sh
+npm run upstream            # 只看上游有没有新 commit
+npm run sync:dry            # 全流程但一个字节都不写
+npm run sync                # 真写（受 guard 约束）
+npm run parity              # 门禁：ledger / 指纹 / 对账 / 串层 / 运行时合成
+npm run gate                # check + test + parity
+node scripts/upstream-sync.mjs --offline path/to/catalog.rs   # 网络受限时直接喂源码
+```
+
+需要停一轮同步时，放一个 `.sync-freeze.json`（内容 `{"reason":"..."}`），同步器整轮拒绝写。
+
+### 配 SYNC_PAT
+
+`GITHUB_TOKEN` 开的 PR 不会触发其它 workflow（GitHub 防递归），CI 不跟着跑。建一个 fine-grained PAT，只给本仓库 `Contents: RW` + `Pull requests: RW`，存成 `secrets.SYNC_PAT`。没配也能用，只是 PR 上没有 CI 结果。
 
 ## License
 
