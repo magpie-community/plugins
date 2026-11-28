@@ -311,6 +311,12 @@ function expiresAt(jt) {
   return Date.now() + DAY
 }
 
+// renewedTokens is whether next, what a renewal of a gave, holds another
+// token than a: a new end alone is no new sign-in.
+function renewedTokens(a, next) {
+  return ["access", "refresh", "deviceToken", "deviceRefresh"].some((k) => (a?.[k] ?? "") !== (next?.[k] ?? ""))
+}
+
 // whenSaid is the time a token's end field names, in milliseconds: a date,
 // or an epoch in seconds or milliseconds; 0 for none (absent, 0, unreadable).
 function whenSaid(v) {
@@ -3673,6 +3679,16 @@ const makePlugin = (site) => async ({ client }) => {
     return renewals.has(cred) || was
   }
 
+  // saveRenewed keeps what a renewal of a gave: saved only when it is
+  // another token (a refresh can hand back the one it was asked with, and
+  // a save that changes nothing has magpie read every sign-in again, from a
+  // models listing too: plugins#1670)
+  const saveRenewed = async (a, next) => {
+    if (!renewedTokens(a, next)) return
+    await client.auth.set({ path: { id: ID }, body: next })
+    renewals.add(next)
+  }
+
   // fresh is the account with a live job token, refreshed and saved near
   // its end.
   const fresh = (getAuth) =>
@@ -3684,8 +3700,7 @@ const makePlugin = (site) => async ({ client }) => {
       const a = latest(stored)
       if (a.expires - Date.now() > REFRESH_LEAD) return a
       const next = { ...a, ...(await renew(a)) }
-      await client.auth.set({ path: { id: ID }, body: next })
-      renewals.add(next)
+      await saveRenewed(a, next)
       return next
     })
 
@@ -3710,8 +3725,7 @@ const makePlugin = (site) => async ({ client }) => {
       const now = Date.now()
       for (const v of spent.values()) if (v.got.access === refused && now - v.at < RELOGIN_GAP) return undefined
       const next = { ...a, ...(await renew(a)) }
-      await client.auth.set({ path: { id: ID }, body: next })
-      renewals.add(next)
+      await saveRenewed(a, next)
       return next
     })
 
@@ -4500,7 +4514,10 @@ const makePlugin = (site) => async ({ client }) => {
             } catch (e) {
               if (e?.expired) throw Object.assign(new Error(e.message), { signIn: "expired" })
             }
-            if (next && next.access !== cred.access) {
+            // a renewal that gave the same token back renewed nothing: the
+            // free view is that account's list, as for a renewed token
+            if (next && next.access === cred.access) stillFree.add(cred.access)
+            else if (next) {
               if (renewals.has(next)) unsaid.add(listingKey(next))
               cred = next
               ms = await models(cred, true)
