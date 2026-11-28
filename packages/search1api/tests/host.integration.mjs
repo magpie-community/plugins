@@ -91,7 +91,7 @@ test(
     const rpc = await host(t, f);
     const providers = await rpc("providers");
     assert.equal(providers[0].id, "search1api");
-    assert.equal(providers[0].single, true);
+    assert.notEqual(providers[0].single, true);
     assert.deepEqual(providers[0].models, []);
     assert.deepEqual(
       providers[0].methods.map((m) => m.type),
@@ -209,5 +209,36 @@ test(
       max_results: 6,
       crawl_results: 0,
     });
+  },
+);
+
+test(
+  "actual Magpie Bun host reads every saved account and switches on a refusal",
+  { timeout: 20_000 },
+  async (t) => {
+    assert.ok(hostPath, "Set MAGPIE_HOST_PATH.");
+    const f = await fixture(t);
+    const rpc = await host(t, f);
+    const saved = await rpc("apiKey", {
+      provider: "search1api",
+      method: 1,
+      key: "test-native-api-key",
+    });
+    assert.equal(saved.ok, true);
+    const all = await f.readAuth();
+    all["search1api#b"] = { type: "api", key: "test-second-api-key" };
+    await writeFile(f.authPath, JSON.stringify(all), { mode: 0o600 });
+    f.state.rejectKeys.add("test-native-api-key");
+    const result = await rpc("tool", {
+      spec: "@magpie-community/tools-search1api",
+      name: "news",
+      args: { query: "test" },
+      ms: 5000,
+    });
+    assert.ok(JSON.parse(result.text).results.length);
+    assert.equal(
+      f.calls.at(-1).headers.authorization,
+      "Bearer test-second-api-key",
+    );
   },
 );
