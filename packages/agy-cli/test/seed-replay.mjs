@@ -35,7 +35,7 @@ const prompts = (kit) => kit.acpLog.filter((entry) => entry.method === "session/
 const cancels = (kit) => kit.acpLog.filter((entry) => entry.method === "session/cancel").length
 
 async function withKit(options, fn) {
-  const kit = await createBridgeKit({ agentVersion: "1.5.17", ...options })
+  const kit = await createBridgeKit({ agentVersion: "1.5.19", ...options })
   try {
     return await fn(kit)
   } finally {
@@ -215,8 +215,8 @@ test("a client that leaves mid-seed gets the whole history again next time, neve
   })
 })
 
-test("an agy older than 1.5.17 gets one prompt of 112 KiB, as before", async () => {
-  await withKit({ agentVersion: "1.5.16" }, async (kit) => {
+test("with seed replay disabled, agy gets one prompt of 112 KiB", async () => {
+  await withKit({ env: { AGY_BRIDGE_SEED_REPLAY: "0" } }, async (kit) => {
     agent(kit)
     const { messages } = longConversation(300)
     await readSse(await kit.request(baseBody({ metadata: { user_id: "seed-old" }, messages })))

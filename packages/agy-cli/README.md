@@ -49,8 +49,7 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
 私有的 `nc`，它把这条连接接到插件自己的 MCP 服务上；控制端口只监听本机回环地址，每个进程
 有自己的令牌。
 
-- 这依赖 agy 拨号的方式，不是 agy 公开承诺的接口，已在 1.4.12 和 1.5.0 上验证。agy 低于
-  1.4.12 时，插件会直接报错并提示升级。
+- 工具桥接依赖 agy 调用 `nc` 的方式。插件要求 agy 1.5.19 或更新版本，握手报告更低版本时会报错并提示升级。
 - 这个 `nc` 只对插件启动的 agy 进程生效，但对这些进程来说，它替换了 agy 运行的所有 `nc`。
 - 客户端的每个工具都带 `_meta: {"antigravity/alwaysLoad": true}` 列出。不带的话，agy 会把较大的工具改为按需加载，不放进模型的函数列表，模型就用不到它们（#989）。
 - 模型一次请求多个工具时，agy 也是一个一个发出的：每个桥接工具调用前，agy 都会先跑一遍自己的安全检查（`sir_flash_lite`，约 1.3–2.6 秒），等上一个工具的结果回来才发下一个。所以客户端看到的是一连串只带一个 `tool_use` 的回复（用量里记成 0 token 的请求），每多一个工具多等约 2 秒。这是 agy 自己的行为，插件这边没有开关能改；插件也不会把工具改成 agy 内置工具的名字来绕过这个检查（#1193）。
@@ -81,15 +80,14 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   这一步的工具结果，不会把整段对话再发一遍。切换模型（Claude Code 的 `/model` 会连带改掉系统提示里的
   模型那一行）也留在同一个会话里：agy 原地换模型，只有新模型的第一轮读上下文时没有缓存。agy 的提示缓存跟着它运行的目录走，所以接上的会话
   回到原来的临时目录里运行，缓存照样命中。状态文件只存会话 ID、哈希和这个目录，不存消息原文。
-- **隔离运行**：不读取你的全局 MCP 配置。每个 agy 进程使用临时 agent。agy 为它自己的
-  工具发起的权限请求（shell、写文件、浏览器等）一律拒绝；客户端工具经桥接的 `ide-tools`
-  调用时发起的请求放行一次，这些工具在客户端里运行，受客户端自己的权限管。真正的操作
-  都在客户端侧完成。
+- **隔离运行**：桥接在临时工作区启动 agy 的默认 Agent，不传 `--add-dir`，也不加载全局 MCP
+  配置。模型仍能看到 agy 的内置工具。工作区钩子允许客户端 `ide-tools` 调用，有音频或视频时
+  也允许 agy 的 `read_file` 或 `view_file`。桥接仍检查权限。客户端工具在客户端自己的权限下运行。
 - **助手预填**：以 assistant 结尾的预填请求（SillyTavern 预设、继续写、bot 框架）不再
   400 拒绝：预填留在本轮并渲染为续写载体，会话跨轮保持对齐，见下文「助手预填」。
 - **网页搜索**：给 Magpie 的网页搜索提供 `agy-cli:agy`（`magpie search add agy-cli`），
-  用的是 agy 自己的 `search_web`：插件开一个只有这一个工具的 agy 会话，让它搜这次的查询，
-  从 agy 保存的这一步输出里读出摘要和来源，然后取消这一轮，模型不写回答。搜索由 agy 在
+  用的是 agy 自己的 `search_web`。插件开一个默认 Agent 会话，工作区钩子只允许调用
+  `search_web`，从 agy 保存的搜索步骤里读出摘要和来源，然后取消这一轮，模型不写回答。搜索由 agy 在
   Google 那边完成，插件不直接请求 Google。每条结果的标题是来源的域名，链接是 Google 的
   跳转地址（agy 给出的就是这样），正文是摘要里引用这个来源的句子。按账号搜索时，用的是
   这个账号的 agy 登录。`search_web` 失败、没有运行，或运行了但没留下可读的来源时，
@@ -119,11 +117,9 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   Magpie 0.1.4246 起在 Magpie 里点 Sign in 会先装好它：从 Google 官方安装脚本用的同一个地址下载、
   校验 sha512，放在数据目录里（`$XDG_DATA_HOME/magpie-agy-cli/agy`，没设时是
   `~/.local/share/magpie-agy-cli/agy`；Windows 是 `%LOCALAPPDATA%\magpie-agy-cli\agy.exe`）。
-  容器的数据目录在 /config 卷里，重启后还在。你自己装的 agy 优先。在 Magpie 里登录需要 1.5.0 起的 agy（`agy acp --login`）；更早的版本请先在终端运行一次 `agy` 登录。
-  文本与工具调用已在 1.4.12 和 1.5.0 上验证；图片输入需要 1.5.0。
+  容器的数据目录在 /config 卷里，重启后还在。你自己装的 agy 优先。
 - 支持 OpenCode 风格 provider 插件的 Magpie。额度查询已在 Magpie 0.1.1599 上验证。
-- agy 版本低于 1.4.12 时，会话会被拒绝（见「工具桥接」）；低于 1.1.11 时，额度查询也会被
-  拒绝，以免旧版本把 `/usage` 当成模型提示词。
+- 默认 Agent 会话和额度查询要求 agy 1.5.19 或更新版本。检测到更低版本时，插件会提示更新，并在会话初始化或 `/usage` 版本检查处停止。
 - **自动更新**：插件启动的 agy 进程默认带 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，免得进程池里的
   多个进程同时更新同一个可执行文件。你自己在终端里运行的 agy 不受影响，照常更新。你自己设置了
   `AGY_CLI_DISABLE_AUTO_UPDATE`（包括设为 `false`）时，插件原样使用你的值。只通过本插件使用
@@ -250,7 +246,7 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_MAX_PROCS` | 16 | agy 进程池上限 |
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | **⚠️ 有封号风险，不建议开启。** 设为 `1` 去掉 agy 自带的提示组件，发往上游的请求就和官方 agy 客户端的不一样了；有用户反馈开启几个小时后账号被封。见下文「精简 agent」 |
+| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 已不起作用：所有 agy 会话都跑 agy 的默认 Agent，没有去掉 agy 自带提示组件的开关。设了会在日志里提示一次。见下文「精简 agent」 |
 | `AGY_BRIDGE_TELEMETRY` | 关闭（agy 不上报） | 插件启动 agy 时带上 `--disable-telemetry`（agy 的 `acp --help` 没这个开关就带不上）；设成 `1` 保留 agy 自己的上报 |
 | `AGY_BRIDGE_ALLOW_AGY_TOOLS` | 关闭 | 设为 `1` 让每个 `agy acp` 带 `--dangerously-skip-permissions` 启动，agy 自带的工具（shell、改文件、浏览器）自动放行，不再由 bridge 逐个拒绝 `session/request_permission`。客户端 `ide-tools` 仍在客户端自己的权限下运行。agy 的工具在 magpie 所在的电脑上以你的用户权限运行，凡是到达这个 provider 的请求都能用：另一台机器上的客户端、或持有网关密钥的任何人，都能在这台电脑上执行命令。只有你自己用时才打开 |
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
@@ -273,12 +269,13 @@ macOS 上，以 LaunchDaemon 方式运行的 Magpie 不在你的登录会话里�
 | `AGY_BRIDGE_PREFILL` | 开启 | 设为 `0` 恢复对 assistant 预填尾巴的原生 400 拒绝，见「助手预填」 |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | 英文系统提示行 | 预填片段渲染时的提示行文本（发给模型） |
 
-## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
+## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`，已不起作用）
 
-> **⚠️ 有封号风险，不建议开启。** 开启后，发往上游的请求不再带 agy 自己的系统提示词，和官方
-> agy 客户端发出的请求不一样了；而这个插件的意义正在于请求由官方客户端发出、看起来就是官方客户端。
-> 有用户反馈开启后几个小时账号就被封了。这只是一例反馈，不能证明就是它导致的，但请把这个风险当真。
-> 开启时插件会在日志里打印一行同样的警告（每个进程一次）。已经开了的话，去掉这个变量即可恢复默认。
+> 从 agy 1.5.17 起，自定义 Agent（`--agent`）开的会话按约 4 倍计额度
+> （google-antigravity/antigravity-cli#1890），所以插件的每个 agy 会话都改跑 agy 的默认
+> Agent：桥接指令写进会话目录的 `AGENTS.md`，`.agents/hooks.json` 里的 PreToolUse 钩子按
+> 工作区的工具允许名单拦截调用。默认 Agent 没有 `excludeDefaultComponents` 这样的开关，
+> 这个变量因此不再起作用，设了会在日志里提示一次（每个进程一次），去掉即可。
 
 默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词作为
 `<external_system_instructions>` 放在第一条提示词开头。Antigravity 对附加在 agy 系统提示词
@@ -309,11 +306,6 @@ agy 会把提示词里任何位置的命令名当成用户在运行这个命令�
 agy 不再当它是命令，模型读到的还是同一个词；模型照抄它写出的工具调用，交给客户端时会去掉这个字符。路径、
 URL、`/learn.`、`/Learn`、`` `/learn` `` 和 `/skill:learn` 在 agy 看来不是命令，原样发出。
 
-设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
-agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
-发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的
-不再是 agy 自己的请求形态，有封号风险（见本节开头），所以默认关闭，不建议开启。
-
 ## 常见排查
 
 - **找不到 agy**：在 Magpie 里点 Sign in 让它装一份（需要 Magpie 0.1.4246 起），或设置 `AGY_PATH`
@@ -327,8 +319,8 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 - **HTTP 503**：进程池满。提高 `AGY_BRIDGE_MAX_PROCS` 和 Providers 页的 Concurrency，
   或者减少同时进行的会话。
 - **额度显示 "Limits not available" 或报版本错误**：该窗口没有可测量的数据；版本错误则
-  把 agy 升级到 1.1.11 以上。
-- **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力（需要 1.5.0 以上）。另外只接受
+  把 agy 升级到 1.5.19 或更新版本。
+- **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力。另外只接受
   内联 base64，URL 图片会被拒绝。
 - **文档**：agy 只读文字和图片。文本文档（纯文本，或 base64 的文本/JSON/XML）按文字发过去；
   URL 文档发的是网址，由模型用工具去取。工具读到的 PDF 会变成一条说明，提示模型换个方式

@@ -70,9 +70,8 @@ agy reaches `--ide-mcp-port` by running `nc 127.0.0.1 <port>`. The plugin puts
 a private `nc` first on agy's PATH, which connects that line to the plugin's own
 MCP server. The control port listens on loopback only, with a token per process.
 
-- This rests on how agy dials, not on an interface agy promises. It was checked
-  on 1.4.12 and 1.5.0. On an agy older than 1.4.12 the plugin refuses the session
-  and says to update.
+- The tool bridge relies on how agy invokes `nc`. The plugin requires agy
+  1.5.19 or later and asks you to update if the handshake reports an older version.
 - The private `nc` applies only to the agy processes the plugin starts, but for
   those it stands in for every `nc` agy runs.
 - Every client tool is listed with `_meta: {"antigravity/alwaysLoad": true}`.
@@ -124,22 +123,23 @@ MCP server. The control port listens on loopback only, with a token per process.
   runs in, so a resumed session runs in its own temporary folder again and its
   cache still hits. The state file stores session IDs, hashes and that folder,
   never message text.
-- **Isolation**: your global MCP configuration is never read. Every agy process
-  runs with a temporary agent, and every permission request agy raises for its
-  own tools (shell, file edits, browser) is refused. A request for one of the
-  client's tools on the bridge's `ide-tools` server is allowed once, since that
-  tool runs in the client under the client's own permissions. Real actions
-  happen on the client side. Set `AGY_BRIDGE_ALLOW_AGY_TOOLS=1` to instead start
-  agy with `--dangerously-skip-permissions` and let its own tools through.
+- **Isolation**: the bridge starts agy's default agent in a temporary workspace
+  with no `--add-dir` and keeps global MCP configuration out of the session.
+  agy's built-in tools remain visible to the model. The workspace hook allows
+  client `ide-tools` calls and, for audio or video, agy's `read_file` or
+  `view_file`. The bridge still checks permissions. Client tools run in the
+  client under its own permissions. Set `AGY_BRIDGE_ALLOW_AGY_TOOLS=1` to start
+  the bridge session with `--dangerously-skip-permissions` and let agy's own
+  tools through.
 - **Assistant prefill**: requests that end with a text-only assistant message
   (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
   instead of rejected; the session ledger stays aligned across turns. See
   "Assistant prefill" below.
 - **Web search**: the plugin gives Magpie's web search `agy-cli:agy`
-  (`magpie search add agy-cli`), through agy's own `search_web`: it opens an
-  agy session whose one tool is `search_web`, asks it for the query, reads the
-  summary and sources from the step output agy keeps, and cancels the turn, so
-  the model writes no answer. agy runs the search on Google's side; the plugin
+  (`magpie search add agy-cli`), through agy's own `search_web`. It opens a
+  default-agent session whose workspace hook allows only `search_web`, asks
+  it to run the query, reads the summary and sources from the step output
+  agy keeps, and cancels the turn, so the model writes no answer. agy runs the search on Google's side; the plugin
   never calls Google itself. Each result's title is its source's domain, its
   link is Google's redirect (as agy gives it), and its text is what the summary
   says citing that source. A search as an account uses that account's agy
@@ -182,15 +182,12 @@ turn); the models a client gets remain agy's decision.
   (`$XDG_DATA_HOME/magpie-agy-cli/agy`, else `~/.local/share/magpie-agy-cli/agy`;
   `%LOCALAPPDATA%\magpie-agy-cli\agy.exe` on Windows). In the container that
   folder is on the /config volume, so it survives a restart. An agy you
-  installed yourself comes first. Signing in from Magpie
-  needs agy 1.5.0 or later (`agy acp --login`); with an older one, run `agy` in
-  a terminal once to sign in. Text and tool calls have been verified on 1.4.12
-  and 1.5.0; image input needs 1.5.0.
+  installed yourself comes first.
 - A Magpie build with OpenCode-style provider plugin support. Usage reporting was
   verified on Magpie 0.1.1599.
-- agy older than 1.4.12 is refused for sessions (see "Tool bridge"), and older
-  than 1.1.11 for usage queries too, because those builds can treat `/usage` as
-  an ordinary model prompt.
+- Default-agent sessions and usage queries require agy 1.5.19 or later. When
+  the plugin detects an older version, it asks you to update and stops during
+  session initialization or the `/usage` version check.
 - **Auto-update**: the agy processes the plugin starts get
   `AGY_CLI_DISABLE_AUTO_UPDATE=true` by default, so the processes in the pool
   don't update one binary under each other. agy runs you start yourself are not
@@ -369,7 +366,7 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_MAX_PROCS` | 16 | Maximum number of agy processes in the pool |
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | off | **⚠️ Ban risk, not recommended.** Set to `1` to drop agy's own prompt components, so requests upstream no longer look like the official agy client's; a user reported their account banned within hours of turning it on. See "Minimal agent" below |
+| `AGY_BRIDGE_MINIMAL_AGENT` | off | No longer has an effect: every agy session runs on agy's default agent, which has no switch to drop agy's own prompt components. Setting it logs a note once. See "Minimal agent" below |
 | `AGY_BRIDGE_TELEMETRY` | off (agy reports nothing) | The bridge starts agy with `--disable-telemetry` when agy's `acp --help` lists it; set to `1` to keep agy's own reporting |
 | `AGY_BRIDGE_ALLOW_AGY_TOOLS` | off | Set to `1` to start every `agy acp` with `--dangerously-skip-permissions`, so agy's own tools (shell, file edits, browser) auto-approve instead of the bridge refusing each `session/request_permission`. Client `ide-tools` still run under the client's own permissions. agy's tools run on the computer magpie runs on, with your user's rights, for every request that reaches this provider: a client on another machine, or anyone holding a gateway key, can run commands there. Leave off unless only you use it |
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
@@ -392,16 +389,16 @@ account", which keeps its sign-in in a file.
 | `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | English system note | The note line rendered before a prefill fragment (sent to the model) |
 
-## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
+## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`, no longer has an effect)
 
-> **⚠️ Ban risk, not recommended.** With it on, requests go upstream without
-> agy's own system prompt, so they no longer look like the official agy
-> client's, and the point of this plugin is that requests are sent by the
-> official client and look like it. A user reported their account was banned
-> within hours of turning it on. That is one report, not proof of cause, but
-> treat the risk as real. While it is on, the plugin prints the same warning to its
-> log, once a process. If you turned it on, unset it to go back to the
-> default.
+> From agy 1.5.17 a session of a custom agent (`--agent`) costs about four
+> times the quota (google-antigravity/antigravity-cli#1890), so every agy
+> session the plugin opens runs on agy's default agent: the bridge's
+> instructions go in the session folder's `AGENTS.md`, and a PreToolUse hook
+> in `.agents/hooks.json` enforces that workspace's tool allowlist. The
+> default agent has no switch like `excludeDefaultComponents`, so this
+> variable no longer has an effect; setting it logs a note once a process.
+> Unset it.
 
 By default agy runs every request with its own system prompt, and the
 client's system prompt goes as `<external_system_instructions>` at the start
@@ -457,14 +454,6 @@ model reads as the same word; a tool call that copies it goes to the client
 without it. Paths, URLs, `/learn.`, `/Learn`, `` `/learn` `` and
 `/skill:learn` aren't commands to agy and go as written.
 
-Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
-request that goes upstream then has none of agy's own system prompt, only
-the plugin's one-line tool note and the client's system prompt (sent in one
-of the two ways above). The original author measured about 8,400 input
-tokens per model call with agy's prompt and about 500 without. The cost is
-that upstream no longer sees agy's own request shape, a ban risk (see the
-top of this section), which is why it is off and not recommended.
-
 ## Troubleshooting
 
 - **agy cannot be found**: click Sign in in Magpie to have it installed (Magpie
@@ -483,7 +472,7 @@ top of this section), which is why it is off and not recommended.
 - **HTTP 503**: the pool is full. Raise `AGY_BRIDGE_MAX_PROCS` and the Providers
   page Concurrency, or reduce the number of simultaneous sessions.
 - **Usage shows "Limits not available" or a version error**: that window has no
-  measurable data. For a version error, upgrade agy to 1.1.11 or later.
+  measurable data. For a version error, upgrade agy to 1.5.19 or later.
 - **Image requests return HTTP 400**: the running agy does not advertise image
   support (1.5.0 or later is needed). Only inline base64 is accepted; image URLs
   are rejected.

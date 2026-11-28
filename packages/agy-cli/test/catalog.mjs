@@ -52,7 +52,7 @@ function usageThroughAgy(options, { asked, left = () => 0.9, refuse = () => fals
     return JSON.parse(Buffer.from(String(options.storedSignIn).trim().replace(/^go-keyring-base64:/, ""), "base64").toString()).id_token_email
   }
   return (_file, args, opts) => {
-    if (args[0] === "--version") return { code: 0, stdout: "1.5.12\n" }
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.19\n" }
     if (args[0] !== "-p") return 1
     const email = readBy(opts)
     asked.push(email)
@@ -392,7 +392,7 @@ function writeSignIn(home, value) {
 // file (accountEnv), else the keyring, which is banned@'s
 function usageByAccount(asked) {
   return (_file, args, opts) => {
-    if (args[0] === "--version") return { code: 0, stdout: "1.5.18\n" }
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.19\n" }
     if (args[0] !== "-p") return 1
     const home = opts?.env?.SSH_CONNECTION ? opts.env.HOME : null
     const email = home ? JSON.parse(fs.readFileSync(tokenFile(home), "utf8")).id_token_email : "banned@example.com"
@@ -787,15 +787,15 @@ test("#1064 agyPath 变了，旧 agy 开放的型号不再列出，新 agy 重�
   })
 })
 
-test("握手报出的 agy 版本低于 1.4.12 时拒绝会话并说明原因", async () => {
-  await withKit({ agentVersion: "1.4.11" }, async (kit) => {
+test("握手报出的 agy 版本低于 1.5.19 时拒绝会话并说明原因", async () => {
+  await withKit({ agentVersion: "1.5.18" }, async (kit) => {
     kit.defaultPrompt = async (agent) => {
       await agent.text("ok")
       return { stopReason: "end_turn" }
     }
     const response = await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] }))
     const text = response.status === 200 ? JSON.stringify((await readSse(response)).error) : await response.text()
-    assert.match(text, /agy 1\.4\.11 is older than 1\.4\.12/)
+    assert.match(text, /agy 1\.5\.18 is older than 1\.5\.19/)
     assert.equal(kit.acpLog.filter(entry => entry.method === "session/new").length, 0, "旧版本不应开会话")
   })
 })
@@ -1467,7 +1467,7 @@ test("#1591 app 接到 magpie 时，额度读的是 Google 账号的，不是 ga
   })).toString("base64") + "\n"
   const reads = []
   const onSpawn = (_file, args) => {
-    if (args[0] === "--version") return { code: 0, stdout: "1.5.18\n" }
+    if (args[0] === "--version") return { code: 0, stdout: "1.5.19\n" }
     if (!args.includes("/usage")) return 1
     reads.push(args)
     // agy on a gateway answers SUCCESS with no groups (agy 1.5.18)

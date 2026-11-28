@@ -76,7 +76,15 @@ test("/images/generations 通过隔离 agy 会话生图并在结束后清理临�
       const promptText = agent.prompt.map((p) => p.text).join("\n")
       assert.match(promptText, /AspectRatio` to `3:2`/)
       assert.match(promptText, /A neon lighthouse in heavy rain/)
-      assert.ok(fs.existsSync(path.join(agent.cwd, ".agents", "agents", "magpie-agy-image", "agent.md")))
+      // agy's default agent: instructions in AGENTS.md, a tool gate in place of tools: [...]
+      const spawn = kit.acpSpawns.find(s => s.cwd === agent.cwd)
+      assert.equal(spawn.args[0], "acp")
+      assert.ok(!spawn.args.includes("--agent"))
+      assert.ok(!spawn.args.includes("--add-dir"))
+      assert.ok(!fs.existsSync(path.join(agent.cwd, ".agents", "agents")))
+      assert.match(fs.readFileSync(path.join(agent.cwd, "AGENTS.md"), "utf8"), /built-in image generation capability/)
+      const gate = JSON.parse(fs.readFileSync(path.join(agent.cwd, ".agents", "hooks.json"), "utf8"))["magpie-tool-gate"].PreToolUse[0].hooks[0].command
+      assert.match(gate, /tool-gate\.mjs' 'generate_image' 'invoke_subagent' 'view_file' 'read_file'$/)
       const written = writeBrainImage(kit, agent, "magpie_generated_1.jpg", OUT_JPEG)
       capturedBrain = written.dir
       await agent.text("Generated image.")

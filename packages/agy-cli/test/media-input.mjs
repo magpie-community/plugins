@@ -28,8 +28,14 @@ async function withKit(fn, options) {
 const prompts = (kit) => kit.acpLog.filter((entry) => entry.method === "session/prompt")
 const promptText = (entry) => entry.params.prompt.map((part) => part.text ?? "").join("")
 const workspaceOf = (kit, entry) => kit.acpSpawns[entry.spawn].cwd
-const agentTools = (kit, entry) => /^tools: .*$/m.exec(fs.readFileSync(
-  path.join(workspaceOf(kit, entry), ".agents", "agents", "magpie-bridge", "agent.md"), "utf8"))[0]
+// the tools the session's tool gate lets through (agy's default agent:
+// default-agent.mjs), as its hook command names them
+const agentTools = (kit, entry) => {
+  const command = JSON.parse(fs.readFileSync(path.join(workspaceOf(kit, entry), ".agents", "hooks.json"), "utf8"))["magpie-tool-gate"].PreToolUse[0].hooks[0].command
+  return command.slice(command.indexOf("tool-gate.mjs'") + "tool-gate.mjs'".length).trim().replace(/'/g, "")
+}
+const NO_MEDIA = "mcp_ide-tools_*"
+const WITH_MEDIA = "mcp_ide-tools_* read_file view_file"
 const reply = async (response) => ({ role: "assistant", content: (await readSse(response)).content.map((block) => ({ type: "text", text: block.text })) })
 
 test("a video and an audio go to agy as files in the session's folder, named by their sha256", async () => {
@@ -75,7 +81,7 @@ test("view_file is agy's tool only in a conversation that carries a video or aud
   await withKit(async (kit) => {
     const opening = baseBody({ messages: [{ role: "user", content: "hello" }] })
     const answer = await reply(await kit.request(opening))
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: []")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), NO_MEDIA)
 
     // the conversation's first video: an agy whose agent has view_file, in
     // a new session; a resumed one keeps the tools it was opened with
@@ -83,30 +89,28 @@ test("view_file is agy's tool only in a conversation that carries a video or aud
       { role: "user", content: [media("video", MP4, "video/mp4"), { type: "text", text: "what is in it?" }] }] }
     await readSse(await kit.request(withVideo))
     assert.equal(kit.acpSpawns.length, 2)
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), WITH_MEDIA)
     assert.match(promptText(prompts(kit).at(-1)), /hello[\s\S]*The user attached a video/)
 
     // a request with no video never runs in an agy that has view_file
     const stateless = (content) => baseBody({ stream: false, tools: [], messages: [{ role: "user", content }] })
     const described = await kit.request(stateless([media("audio", MP3, "audio/mpeg"), { type: "text", text: "transcribe" }]))
     assert.equal(described.status, 200, await described.clone().text())
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), WITH_MEDIA)
     const describedIn = prompts(kit).at(-1).spawn
     const plain = await kit.request(stateless("write a title"))
     assert.equal(plain.status, 200, await plain.clone().text())
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: []")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), NO_MEDIA)
     const again = await kit.request(stateless([media("video", MP4, "video/mp4"), { type: "text", text: "describe it" }]))
     assert.equal(again.status, 200, await again.clone().text())
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), WITH_MEDIA)
     // nor in one whose folder holds another conversation's clip
     assert.notEqual(prompts(kit).at(-1).spawn, describedIn)
   }, { sessionResume: true })
 })
 
-// view_file reads unasked what is under an --add-dir folder and in agy's
-// temp folder: a video must not open the caller's named folder, or /tmp
-// with every other session's workspace in it, to the model
-test("an agy for a video gets no --add-dir, and its temp folder is its workspace", async () => {
+// view_file reads unasked from agy's temp folder, so isolate it for video.
+test("plain and video sessions omit --add-dir, and video isolates agy’s temp folder", async () => {
   await withKit(async (kit) => {
     const dir = path.join(kit.tmp, "project")
     fs.mkdirSync(dir)
@@ -117,7 +121,7 @@ test("an agy for a video gets no --add-dir, and its temp folder is its workspace
     const plain = await ask("hello")
     const video = await ask([media("video", MP4, "video/mp4"), { type: "text", text: "what is in it?" }])
     assert.notEqual(plain, video)
-    assert.equal(plain.args[plain.args.indexOf("--add-dir") + 1], dir)
+    assert.equal(plain.args.includes("--add-dir"), false)
     assert.equal(video.args.includes("--add-dir"), false)
     assert.deepEqual([video.env.TMPDIR, video.env.TMP, video.env.TEMP], [video.cwd, video.cwd, video.cwd])
     assert.notEqual(plain.env.TMPDIR, plain.cwd)
@@ -151,7 +155,7 @@ test("a video conversation's files go with its agy, and its parked session resum
 
     await readSse(await kit.request({ ...opening, messages: [...opening.messages, answer, { role: "user", content: "and the colour?" }] }))
     assert.deepEqual(kit.acpLog.filter((entry) => entry.method === "session/resume").map((entry) => entry.params.sessionId), [first.sessionId])
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), WITH_MEDIA)
     assert.deepEqual(fs.readFileSync(video), MP4)
   }, { sessionResume: true })
 })
@@ -182,7 +186,7 @@ test("a spare agy, warmed without view_file, waits for a conversation with no vi
 
     await readSse(await kit.request(baseBody({ system: "two", messages: [{ role: "user", content: [media("video", MP4, "video/mp4"), { type: "text", text: "what is in it?" }] }] })))
     assert.equal(prompts(kit).at(-1).spawn, 2)
-    assert.equal(agentTools(kit, prompts(kit).at(-1)), "tools: [view_file]")
+    assert.equal(agentTools(kit, prompts(kit).at(-1)), WITH_MEDIA)
     await readSse(await kit.request(baseBody({ system: "three", messages: [{ role: "user", content: "hi" }] })))
     assert.equal(prompts(kit).at(-1).spawn, 1)
   }, { env: { AGY_BRIDGE_SPARE: "1" } })

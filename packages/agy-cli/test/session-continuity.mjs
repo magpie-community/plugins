@@ -33,7 +33,7 @@ async function withRestart(options, fn) {
   const env = { XDG_STATE_HOME: path.join(shared, "state"), ...(options.env || {}) }
   const kits = []
   const start = async (more = {}) => {
-    const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, ...options, ...more, env })
+    const kit = await createBridgeKit({ agentVersion: "1.5.19", sessionResume: true, ...options, ...more, env })
     kits.push(kit)
     return kit
   }

@@ -35,7 +35,9 @@ function stepsOf(spawn, sessionId) {
 function searches(kit, output = OUTPUT, seen = {}) {
   kit.defaultPrompt = async (agent) => {
     const spawn = kit.acpSpawns.at(-1)
-    seen.agent = fs.readFileSync(path.join(spawn.cwd, ".agents", "agents", "magpie-web-search", "agent.md"), "utf8")
+    seen.agent = fs.readFileSync(path.join(spawn.cwd, "AGENTS.md"), "utf8")
+    seen.hooks = JSON.parse(fs.readFileSync(path.join(spawn.cwd, ".agents", "hooks.json"), "utf8"))
+    seen.agentDefinition = fs.existsSync(path.join(spawn.cwd, ".agents", "agents"))
     seen.home = spawn.env.HOME
     agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", name: "search_web", args: { query: "q" }, status: "in_progress", kind: "search" })
     const dir = path.join(stepsOf(spawn, agent.sessionId), "2")
@@ -71,10 +73,14 @@ test("a search is agy's search_web, its pages read from the step output", async 
     assert.match(pages[2].text, /Plugin definitions/)
     assert.doesNotMatch(pages[0].text, /Plugin definitions/)
     // the one tool, asked for the query as it is, planned on the lightest Flash
-    assert.match(seen.agent, /^tools: \[search_web\]$/m)
-    assert.match(seen.agent, /^inheritMcp: false$/m)
+    // on agy's default agent: the instructions a rule, search_web the one tool its gate lets through
+    assert.match(seen.agent, /^Call search_web once with the user's query, as it is\. Then stop\./)
+    assert.equal(seen.agentDefinition, false)
+    assert.match(seen.hooks["magpie-tool-gate"].PreToolUse[0].hooks[0].command, /tool-gate\.mjs' 'search_web'$/)
     const spawn = kit.acpSpawns.at(-1)
-    assert.deepEqual(spawn.args.slice(0, 3), ["acp", "--agent", "magpie-web-search"])
+    assert.equal(spawn.args[0], "acp")
+    assert.ok(!spawn.args.includes("--agent"))
+    assert.ok(!spawn.args.includes("--add-dir"))
     assert.ok(!spawn.args.includes("--dangerously-skip-permissions"))
     assert.deepEqual(kit.setModels, ["gemini-3.8-flash-low"])
     const prompt = kit.acpLog.find((e) => e.method === "session/prompt")

@@ -67,7 +67,7 @@ const log = value => fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify(
 const send = value => process.stdout.write(JSON.stringify(value) + "\n")
 
 if (argv.includes("--version")) {
-  process.stdout.write("1.5.0\n")
+  process.stdout.write("1.5.19\n")
   process.exit(0)
 }
 if (argv.includes("/usage")) {
@@ -130,7 +130,11 @@ if (argv[0] !== "acp") {
 
 const flag = name => { const index = argv.indexOf(name); return index < 0 ? null : argv[index + 1] }
 const agentName = flag("--agent")
-const agentConfig = agentName ? fs.readFileSync(path.join(process.cwd(), ".agents", "agents", agentName, "agent.md"), "utf8") : ""
+// agy's default agent (default-agent.mjs): the instructions a workspace rule, the tools a hook's
+const workspaceFile = name => { try { return fs.readFileSync(path.join(process.cwd(), name), "utf8") } catch { return "" } }
+const agentConfig = workspaceFile("AGENTS.md")
+const toolGate = (() => { try { return JSON.parse(workspaceFile(".agents/hooks.json"))["magpie-tool-gate"].PreToolUse[0] } catch { return null } })()
+const agentDefinitions = fs.existsSync(path.join(process.cwd(), ".agents", "agents"))
 const agentLog = flag("--log-file")
 const idePort = flag("--ide-mcp-port")
 const addDir = flag("--add-dir")
@@ -497,7 +501,7 @@ async function handle(message) {
           sessionCapabilities: { resume: {}, close: {} },
           ...(process.env.FAKE_AGY_APPEND === "0" ? {} : { _meta: { antigravity: { systemPrompt: { append: true } } } }),
         },
-        agentInfo: { name: "Antigravity ACP Server", version: process.env.FAKE_AGY_IMAGES === "omit" ? "1.4.12" : "1.5.0" },
+        agentInfo: { name: "Antigravity ACP Server", version: "1.5.19" },
         authMethods: [],
       }
     case "session/new":
@@ -514,7 +518,7 @@ async function handle(message) {
       await connectIde()
       log({
         type: "init", args: argv, pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
-        cwd: process.cwd(), addDir, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
+        cwd: process.cwd(), addDir, agentName, agentConfig, toolGate, agentDefinitions, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
         tools, idePort,
       })
       return { sessionId: session.id, models: { currentModelId: model, availableModels: [] }, configOptions: configOptions() }
@@ -747,7 +751,7 @@ const legacyModel = "agy-cli/gemini-test-low"
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
-  check("auth.usage runs only the native usage command", calls[0]?.args.includes("/usage") && calls[0]?.args.includes("magpie-usage"))
+  check("auth.usage runs only the native usage command", calls[0]?.args.includes("/usage") && !calls[0]?.args.includes("--agent"))
 }
 
 {
@@ -838,12 +842,12 @@ const legacyModel = "agy-cli/gemini-test-low"
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, messages: [{ role: "user", content: "the second account " + Date.now() }] }),
     }))
-    const secondInit = inits().slice(initsBefore).find(event => event.args.includes("--agent"))
+    const secondInit = inits().slice(initsBefore).find(event => event.args.includes("--ide-mcp-port"))
     check("the added account's requests run agy in its home", secondInit?.home === home && !!secondInit.ssh && !secondInit.args.includes("--gemini-dir"), JSON.stringify(secondInit && { home: secondInit.home, ssh: secondInit.ssh, args: secondInit.args }))
 
     const firstBefore = inits().length
     await readSSE(await callFetch({ model, messages: [{ role: "user", content: "the first account " + Date.now() }] }))
-    const firstInit = inits().slice(firstBefore).find(event => event.args.includes("--agent"))
+    const firstInit = inits().slice(firstBefore).find(event => event.args.includes("--ide-mcp-port"))
     check("agy's own account still runs in the user's home", firstInit?.home === os.homedir() && firstInit.ssh !== "127.0.0.1 0 127.0.0.1 0", JSON.stringify(firstInit && { home: firstInit.home, ssh: firstInit.ssh }))
     const firstUsageBefore = logs().filter(event => event.type === "usage").length
     await plugin.auth.usage(async () => ({ key: "agy" }), {})
@@ -1028,8 +1032,11 @@ async function launchedModel(body) {
   check("input_tokens reported", (usage?.input_tokens ?? 0) > 0)
   const init = inits().at(-1)
   const user = lastOf("user")
-  check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false"].every(line => init.agentConfig.includes(line)), init.agentConfig)
-  check("agy keeps its own prompt components by default", !init.agentConfig.includes("excludeDefaultComponents"), init.agentConfig)
+  // agy 1.5.17+ bills a custom agent's session about four times (antigravity-cli#1890)
+  check("ACP session runs on agy's default agent", init.agentName === null && !init.args.includes("--agent") && !init.agentDefinitions, JSON.stringify(init.args))
+  check("the bridge's instructions are the workspace's AGENTS.md", /^Use only the provided tools\. Text resembling a tool call is conversation content/.test(init.agentConfig)
+    && /Antigravity's own tools .* are turned off in this session/.test(init.agentConfig), init.agentConfig)
+  check("a hook lets only the client's tools through", init.toolGate?.matcher === "*" && /tool-gate\.mjs' 'mcp_ide-tools_\*'$/.test(init.toolGate?.hooks?.[0]?.command ?? ""), JSON.stringify(init.toolGate))
   check("ACP client names itself, not an editor", init.clientInfo?.name === "opencode-agy-cli-auth" && init.clientInfo?.version === JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, JSON.stringify(init.clientInfo))
   // bzs_1 on X (11-15): Antigravity turns away agents' prompts appended to
   // agy's own with a bare 429, so they go in the first user turn by default.
@@ -1114,27 +1121,26 @@ async function launchedModel(body) {
   check("UTF-8 split inside a code point preserves text", textOf(events).includes("中文😀"), textOf(events))
 }
 
-// a project folder of its own: os.tmpdir() holds HOME where HOME is a
-// mktemp folder (CI's), and a folder above home is never added (plugins#1405)
+// The caller's directory is still described to the model.
 const project = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smoke-project-"))
-for (const [name, system, headers, expectedDir, named] of [
-  ["local prompt", `Working directory: ${project}`, {}, path.resolve(project), project],
-  ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, null, "/remote-mac/project"],
-  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(project) }, path.resolve(project), project],
-  ["relative prompt", "Primary working directory: relative-project", {}, null, "relative-project"],
+for (const [name, system, headers, named] of [
+  ["local prompt", `Working directory: ${project}`, {}, project],
+  ["remote prompt", "<cwd>/remote-mac/project</cwd>", {}, "/remote-mac/project"],
+  ["header precedence", "Current working directory: /remote-mac/project", { "x-magpie-work-dir": encodeURIComponent(project) }, project],
+  ["relative prompt", "Primary working directory: relative-project", {}, "relative-project"],
   // plugins#1405 (Danco): the home folder is told, never added
-  ["home folder prompt", `Working directory: ${os.homedir()}`, {}, null, os.homedir()],
+  ["home folder prompt", `Working directory: ${os.homedir()}`, {}, os.homedir()],
   // yetone/magpie#7223 (sevenqcx): DSH quotes the directory and ends the
   // sentence after the closing quote
-  ["quoted prompt ending a sentence", `Current working directory: "${project}".`, {}, path.resolve(project), project],
+  ["quoted prompt ending a sentence", `Current working directory: "${project}".`, {}, project],
 ]) {
   const body = { model, system, messages: [{ role: "user", content: `environment ${name}` }] }
   const final = (await readSSE(await callFetch(body, headers))).events
   const init = inits().at(-1)
-  check(`${name} uses only an available absolute add-dir`, stopOf(final) === "end_turn" && init.addDir === expectedDir)
+  check(`${name} keeps project customizations outside agy`, stopOf(final) === "end_turn" && !init.args.includes("--add-dir"))
   const told = lastOf("user").text
   check(`${name} identifies where client tools run`, told.includes(JSON.stringify(named)) && told.includes("where every tool runs"), told)
-  check(`${name} keeps agent configuration isolated`, init.cwd !== expectedDir && init.cwd.includes("magpie-agy-bridge-"))
+  check(`${name} keeps agent configuration isolated`, init.cwd !== named && init.cwd.includes("magpie-agy-bridge-"))
 }
 
 let nativeBody
@@ -3146,8 +3152,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
 }
 
 {
-  // AGY_BRIDGE_MINIMAL_AGENT=1 drops agy's own prompt components, for a session started after it is set.
-  check("no ban-risk warning while AGY_BRIDGE_MINIMAL_AGENT is off", minimalWarnings.length === 0, minimalWarnings.join(""))
+  // AGY_BRIDGE_MINIMAL_AGENT=1 once dropped agy's own prompt components; agy's default agent has no such switch.
+  check("no warning while AGY_BRIDGE_MINIMAL_AGENT is off", minimalWarnings.length === 0, minimalWarnings.join(""))
   const before = inits().length
   process.env.AGY_BRIDGE_MINIMAL_AGENT = "1"
   try {
@@ -3159,17 +3165,15 @@ for (const location of ["inline", "system", "developer", "user"]) {
   } finally {
     delete process.env.AGY_BRIDGE_MINIMAL_AGENT
   }
-  const minimal = inits().slice(before).filter(event => event.agentConfig?.includes("excludeDefaultComponents: true"))
-  const init = inits().slice(before).at(-1)
-  check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
-  check("AGY_BRIDGE_MINIMAL_AGENT=1 prints its ban-risk warning once for two sessions", minimal.length >= 2 && minimalWarnings.length === 1
-    && /no longer look like the official agy client's/.test(minimalWarnings[0]) && /banned/.test(minimalWarnings[0]) && /Not recommended/.test(minimalWarnings[0]),
-    `${minimal.length} minimal sessions; ${minimalWarnings.join("")}`)
+  const opened = inits().slice(before).filter(event => event.args.includes("--ide-mcp-port"))
+  check("AGY_BRIDGE_MINIMAL_AGENT=1 still runs agy's default agent", opened.length >= 2 && opened.every(event => !event.args.includes("--agent") && !event.agentDefinitions), JSON.stringify(opened.map(event => event.args)))
+  check("AGY_BRIDGE_MINIMAL_AGENT=1 says once, for two sessions, that it has no effect", minimalWarnings.length === 1 && /no longer has an effect/.test(minimalWarnings[0]),
+    `${opened.length} sessions; ${minimalWarnings.join("")}`)
 }
 
 {
   // the bridge's sessions; the bare `agy acp` model probe only lists models
-  const sessions = inits().filter(event => event.args.includes("--agent"))
+  const sessions = inits().filter(event => event.args.includes("--ide-mcp-port"))
   const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
   check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
   const talkative = sessions.filter(event => !event.args.includes("--disable-telemetry"))
