@@ -7,7 +7,8 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { agyRefusal, createUsageReader, DUE_FOR_RENEWAL, fetchUsage, GATEWAY_NO_FOLDER, parseStatusLineQuota, parseUsageReport, STILL_READING, verifyLinkIn } from "../usage.mjs"
-import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
+import { catalogRows, familiesInGroup, modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
+import { inAccount } from "../account.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
 // Live data captured from `agy -p /usage --output-format json` (agy 1.5.9,
@@ -168,6 +169,44 @@ test("ids on windows follow the catalog, and names agy adds match nothing until 
   storeCatalogRows([{ id: "a-high", name: "Twin (High)", effort: "high" }, { id: "b", name: "Twin" }, { id: "c", name: "Solo" }])
   assert.deepEqual(modelsInGroup({ description: "Models within this group: Twin, Solo" }), ["c"])
   storeCatalogRows(null)
+})
+
+test("catalogRows and nameIndex stay isolated per account", () => {
+  const ultra = [
+    { id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)", effort: "high" },
+    { id: "claude-sonnet-5-5-low", name: "Claude Sonnet 5.5 (Low)", effort: "low" },
+    { id: "gemini-4-neon-high", name: "Gemini 4 Neon (High)", effort: "high" },
+  ]
+  const pro = [
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { id: "gemini-4-hydrogen-high", name: "Gemini 4 Hydrogen (High)", effort: "high" },
+  ]
+  const claudeGroup = { description: "Models within this group: Claude Sonnet 5.5, Claude Sonnet 4.6" }
+  const homeA = "/tmp/agy-test-home-a"
+  const homeB = "/tmp/agy-test-home-b"
+  try {
+    storeCatalogRows(ultra)
+    inAccount(homeA, () => storeCatalogRows(pro))
+    inAccount(homeB, () => storeCatalogRows([{ id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", effort: "high" }]))
+
+    assert.deepEqual(catalogRows().map(r => r.id), ultra.map(r => r.id))
+    assert.deepEqual(modelsInGroup(claudeGroup), ["claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low"])
+    assert.deepEqual(inAccount(homeA, () => catalogRows().map(r => r.id)), pro.map(r => r.id))
+    assert.deepEqual(inAccount(homeA, () => modelsInGroup(claudeGroup)), ["claude-sonnet-4-6"])
+    assert.deepEqual(inAccount(homeA, () => familiesInGroup(claudeGroup).map(f => f.id)), ["claude-sonnet-4-6"])
+    assert.deepEqual(inAccount(homeB, () => modelsInGroup(claudeGroup)), [])
+
+    // Clearing one account does not clear the others.
+    inAccount(homeA, () => storeCatalogRows(null))
+    assert.equal(inAccount(homeA, () => catalogRows()), null)
+    assert.deepEqual(inAccount(homeA, () => modelsInGroup(claudeGroup)), [])
+    assert.deepEqual(modelsInGroup(claudeGroup), ["claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low"])
+    assert.deepEqual(inAccount(homeB, () => catalogRows().map(r => r.id)), ["gemini-3.8-flash-high"])
+  } finally {
+    storeCatalogRows(null)
+    inAccount(homeA, () => storeCatalogRows(null))
+    inAccount(homeB, () => storeCatalogRows(null))
+  }
 })
 
 const report = groups => ({ status: "SUCCESS", command: { name: "usage", data: { groups } } })
