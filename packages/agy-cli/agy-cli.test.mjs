@@ -29,6 +29,7 @@ for (const [name, mocks] of [
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
+  ["dropped-step.mjs", false],
   ["repeat-batch.mjs", false],
   ["unmatched-results.mjs", false],
   ["conversation-key.mjs", false],
