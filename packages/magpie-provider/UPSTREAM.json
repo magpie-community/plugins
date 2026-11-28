@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/yee94/opencode-magpie-plugin",
+  "baseCommit": "2aa62282e3da728748956e770faca6c67714521d",
+  "snapshot": "working tree including agentID/native-UA changes",
+  "sha256": {
+    "call-ids.ts": "7a4bac1dc74b9f0bc40e57b104d21fcd43a00f55edeffa2f1ed9a85e57af77ba",
+    "catalog-cache.ts": "c60758186129d86c4604476feb37c0ab3a8f0ccd9bd3c8a72a856762e7780887",
+    "catalog.ts": "0d941409a2c6df97fa08968f245390d68a9d3e7d25aeaa8ab4712a46d904a157",
+    "fast-models.ts": "3b52f3ed3397771bd7d839eb0936e2b89d828e77d4eabeaded9573a7f4217137",
+    "gateway.ts": "ef259c79708b0ecc75d5d431e86e389e663a27ff244d71b041bc48482da0534a",
+    "image.ts": "41c6d73c25b2589b5826c4abaf19a84b61297090299781505cffd02e11961f83",
+    "index.ts": "95e7a795e1ad2666df85b560a32a2e3f704399b20658710698d551218539a9c6",
+    "model-pricing.ts": "4355a3bd4902ef89c553acabf8c12449c1f1911b4648dd62197f78400e89dff7",
+    "opencode.ts": "1fe0e50553bd78ada21fa425cee0752c49d8fcbfff224dcf6d04d6832df1b657"
+  }
+}

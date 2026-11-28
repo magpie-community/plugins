@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  yuri-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: reproduce provider bundle
+        run: |
+          cd packages/magpie-provider
+          bun run build
+          git diff --exit-code -- dist/index.mjs
   test:
     runs-on: ubuntu-latest
     steps:
