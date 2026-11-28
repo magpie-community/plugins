@@ -226,7 +226,7 @@ test("多步工具回合：各步 output 之和不超过 ACP 累计 outputTokens
 // ------------------------------------------------------------------ 25 步固定案例
 
 test("25 步/74 工具/累计 4,775,934：各步窗口有界、原始累计保留、求和不守恒反例", async () => {
-  await withKit({}, async (kit) => {
+  await withKit({ env: { AGY_BRIDGE_SEED_REPLAY: "0" } }, async (kit) => {
     const rounds = Array.from({ length: 24 }, (_unused, index) => (index < 22 ? 3 : 4))
     assert.equal(rounds.reduce((sum, value) => sum + value, 0), 74)
     let agentSawResults = 0
@@ -982,7 +982,7 @@ test("LRU 淘汰后 resume 的 agy 跑在原 session 的目录里（agy 的缓�
       const spawn = kit.acpSpawns[item.spawn]
       assert.equal(item.params.cwd, spawn?.cwd ?? item.params.cwd)
     }
-    assert.ok(fs.existsSync(path.join(a, ".agents", "agents")), "目录被删后应重新建好")
+    assert.ok(fs.existsSync(path.join(a, "AGENTS.md")) && fs.existsSync(path.join(a, ".agents", "hooks.json")), "目录被删后应重新建好")
   })
 })
 
@@ -1337,7 +1337,7 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
 })
 
 test("SQLite 空表回退（.pb 冷启动）+ maxInitialPromptBytes（112KiB）历史裁剪：窗口按送达裁剪值封顶，且次轮记住空库不再空等 1s", { skip: !openSqlite }, async () => {
-  await withKit({}, async (kit) => {
+  await withKit({ env: { AGY_BRIDGE_SEED_REPLAY: "0" } }, async (kit) => {
     const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
     fs.mkdirSync(convDir, { recursive: true })
     kit.prompts.push(async (agent) => {

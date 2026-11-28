@@ -40,7 +40,7 @@ function captureStderr() {
 }
 
 async function withKit(options, fn) {
-  const kit = await createBridgeKit({ agentVersion: "1.5.17", ...options })
+  const kit = await createBridgeKit({ agentVersion: "1.5.19", ...options })
   try {
     return await fn(kit)
   } finally {
@@ -192,16 +192,16 @@ test("AGY_BRIDGE_STRICT_REPLAY refuses a replay that would leave history out, be
   }
 })
 
-test("an agy too old to take a replay over several prompts is named: strict refuses, otherwise one warning", async () => {
+test("an agy without a reported version falls back to one prompt: strict refuses, otherwise one warning", async () => {
   const captured = captureStderr()
   try {
-    await withKit({ agentVersion: "1.5.10", env: { AGY_BRIDGE_STRICT_REPLAY: "1" } }, async (kit) => {
+    await withKit({ agentVersion: "", env: { AGY_BRIDGE_STRICT_REPLAY: "1" } }, async (kit) => {
       seedingAgent(kit)
       const response = await kit.request(baseBody({ metadata: { user_id: "old-strict" }, messages: longConversation(200) }))
       assert.equal(response.status, 400)
-      assert.match((await response.json()).error.message, /agy 1\.5\.10 takes one prompt only, agy 1\.5\.17 or newer/)
+      assert.match((await response.json()).error.message, /agy of this version takes one prompt only, agy 1\.5\.17 or newer/)
     })
-    await withKit({ agentVersion: "1.5.10" }, async (kit) => {
+    await withKit({ agentVersion: "" }, async (kit) => {
       seedingAgent(kit)
       for (const user of ["old-a", "old-b"]) {
         const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: user }, messages: longConversation(200) })))
@@ -209,7 +209,7 @@ test("an agy too old to take a replay over several prompts is named: strict refu
       }
       const replay = captured.rows.filter((row) => row.action === "replay" && row.messages_before > 0).at(-1)
       assert.equal(replay.seeded, false)
-      assert.equal(replay.agy_version, "1.5.10")
+      assert.equal(replay.agy_version, "")
       const warnings = captured.text.filter((line) => line.includes("1.5.17 or newer"))
       assert.equal(warnings.length, 1, captured.text.join(""))
     })
@@ -224,7 +224,7 @@ async function withRestart(options, fn) {
   const env = { XDG_STATE_HOME: path.join(shared, "state") }
   const kits = []
   const start = async (more = {}) => {
-    const kit = await createBridgeKit({ agentVersion: "1.5.17", sessionResume: true, ...options, ...more, env })
+    const kit = await createBridgeKit({ agentVersion: "1.5.19", sessionResume: true, ...options, ...more, env })
     kits.push(kit)
     return kit
   }

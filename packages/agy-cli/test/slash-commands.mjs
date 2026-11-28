@@ -111,7 +111,7 @@ test("a tool call copied from a defused prompt reaches the client as the file ha
 })
 
 test("a replay too big for one prompt is defused in every part, the session's own commands too", async () => {
-  await withKit({ ...LINUX, agentVersion: "1.5.17", availableCommands: [{ name: "custom-cmd" }] }, async (kit) => {
+  await withKit({ ...LINUX, agentVersion: "1.5.19", availableCommands: [{ name: "custom-cmd" }] }, async (kit) => {
     const CONTINUES = "[This message continues in the next one.]"
     kit.defaultPrompt = async (agent) => {
       const text = agent.prompt.map((p) => p.text || "").join("")

@@ -48,6 +48,7 @@ export const DOCUMENTS_FILE = path.join(REPO_DIR, "documents.mjs")
 export const IMAGE_FILE = path.join(REPO_DIR, "image.mjs")
 export const ONESHOT_ACP_FILE = path.join(REPO_DIR, "oneshot-acp.mjs")
 export const GATEWAY_FREE_FILE = path.join(REPO_DIR, "gateway-free.mjs")
+export const DEFAULT_AGENT_FILE = path.join(REPO_DIR, "default-agent.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -557,7 +558,7 @@ export async function createBridgeKit(options = {}) {
     listTools: options.listTools ?? true,
     watchTools: options.watchTools ?? true,
     listings: [],
-    agentVersion: options.agentVersion ?? "1.5.0",
+    agentVersion: options.agentVersion ?? "1.5.19",
     setModels: [],
     acpLog: [],
     controlHandler: null,
@@ -699,6 +700,7 @@ export async function createBridgeKit(options = {}) {
   const imageUrl = pathToFileURL(IMAGE_FILE).href
   const oneshotAcpUrl = pathToFileURL(ONESHOT_ACP_FILE).href
   const gatewayFreeUrl = pathToFileURL(GATEWAY_FREE_FILE).href
+  const defaultAgentUrl = pathToFileURL(DEFAULT_AGENT_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -724,7 +726,11 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./image.mjs") module = sourceModule(IMAGE_FILE, "", imageUrl)
     else if (key === "./oneshot-acp.mjs") module = sourceModule(ONESHOT_ACP_FILE, "", oneshotAcpUrl)
     else if (key === "./gateway-free.mjs") module = sourceModule(GATEWAY_FREE_FILE, "", gatewayFreeUrl)
-    else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
+    else if (key === "./default-agent.mjs") module = sourceModule(DEFAULT_AGENT_FILE, "", defaultAgentUrl)
+    else if (key === "./agy-version.mjs") {
+      const file = path.join(REPO_DIR, "agy-version.mjs")
+      module = sourceModule(file, "", pathToFileURL(file).href)
+    } else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)
     return module
