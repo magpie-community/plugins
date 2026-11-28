@@ -80,6 +80,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
 | [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
+| [ua-switcher](packages/ua-switcher) | Switch the User-Agent (and companion identity headers) magpie sends upstream — Codex CLI, Claude Code, pi, ZCode, opencode, Antigravity or a custom profile — from a local web page, effective immediately; its gateway middleware also cleans Anthropic tool schemas' top level |
 | [agentcompass](packages/agentcompass) | [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.6.0 routing: four capability categories (`divergence`, `coding`, `aesthetics`, `tool_operation`) with per-effort time and price, subscription quota economy, and session-affinity routing (`magpie.middleware` + opt-in `/v1/systemone`) |
 
 ```sh
