@@ -123,6 +123,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 | [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
 | [specstream](packages/specstream) | `web_search` (live web answers with the source page of each value) and `extract` (page text from up to 20 URLs a call), with a SpecStream API key; also listed under Web search |
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [memorysql](packages/memorysql) | Cross-agent session archive and project handoff with its own local SQLite knowledge base: local agent conversations are archived by default (`capture: false` opts out), memory injection to chosen agents is off by default, LLM project summaries and memory tidying with undo, 10 memory/session tools and a MemorySQL page; no separate app |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>
