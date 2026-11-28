@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/agent-thinkrail",
+  "version": "0.1.0",
+  "description": "Select ThinkRail's new-chat model and assign MCP servers from Magpie.",
+  "type": "module",
+  "files": ["thinkrail.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "thinkrail", "mcp"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/thinkrail"
+  },
+  "scripts": {
+    "test": "bun test thinkrail.test.mjs"
+  },
+  "magpie": { "agent": "./thinkrail.agent.js", "icon": "https://thinkrail.ai/favicon.svg" }
+}
