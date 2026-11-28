@@ -6986,8 +6986,10 @@ function sessionInstructions(body, callerWorkDir) {
   return parts.join("\n\n")
 }
 
-const QUEUED_PROMPT_PREFIX_RE = /^(?:The user sent (?:a new message while you were working|the following message)|The [^\r\n]+ plugin sent a message while you were working):\n([\s\S]*)$/
-const QUEUED_PROMPT_SUFFIX_RE = /\n\n(?:This is how Claude Code surfaces (?:messages the user sends|prompts [^\r\n]+ submits) mid-turn[\s\S]*|IMPORTANT: After completing your current task, you MUST address the user's message above\. Do not ignore it\.|Please address this message and continue with your tasks\.)\s*$/
+const USER_INTERRUPTION_PREFIX = "(?:The user sent (?:a new message while you were working|the following message)|The [^\\r\\n]+ plugin sent a message while you were working):"
+const USER_INTERRUPTION_RE = new RegExp(USER_INTERRUPTION_PREFIX)
+const QUEUED_PROMPT_PREFIX_RE = new RegExp(`^${USER_INTERRUPTION_PREFIX}(?:\\r?\\n|[ \\t]+)([\\s\\S]*)$`)
+const QUEUED_PROMPT_SUFFIX_RE = /\r?\n\r?\n(?:This is how Claude Code surfaces (?:messages the user sends|prompts [^\r\n]+ submits) mid-turn[\s\S]*|IMPORTANT: After completing your current task, you MUST address the user's message above\. Do not ignore it\.|Please address this message and continue with your tasks\.)\s*$/
 
 function extractQueuedPrompt(raw) {
   if (typeof raw !== "string") return null
@@ -6995,7 +6997,7 @@ function extractQueuedPrompt(raw) {
   const hadPlaceholder = cleanedRaw !== raw
   let trimmed = cleanedRaw.trim()
   const reminder = /^<system-reminder(?:\s[^>]*)?>([\s\S]*)<\/system-reminder(?:\s[^>]*)?>$/.exec(trimmed)
-  if (reminder) trimmed = reminder[1].trim()
+  if (reminder && !asciiLower(reminder[1]).includes("</system-reminder")) trimmed = reminder[1].trim()
   const match = QUEUED_PROMPT_PREFIX_RE.exec(trimmed)
   if (!match) return null
   const unwrapped = match[1].replace(QUEUED_PROMPT_SUFFIX_RE, "").trim()
@@ -7657,21 +7659,72 @@ function isToolResultMessage(message) {
   return Array.isArray(message?.content) && message.content.some((block) => block?.type === "tool_result")
 }
 
+// Mid-turn user prompts absorbed beside a tool_result (Claude Code queues
+// user/plugin messages as text blocks inside the next tool_result message).
+// Non-steer companions (DSH notes, skill instructions, hook output, plain
+// system-reminders, or quotes inside a tool_result body) return [].
+function extractQueuedUserTexts(message) {
+  if (message?.role !== "user" || !isToolResultMessage(message) || !Array.isArray(message.content)) return []
+  const out = []
+  for (const block of message.content) {
+    if (block?.type !== "text" || typeof block.text !== "string") continue
+    const direct = extractQueuedPrompt(block.text)
+    if (direct !== null) {
+      if (!isMetaOnlyUserText(direct)) out.push(direct)
+      continue
+    }
+    if (!asciiLower(block.text).includes("<system-reminder")) continue
+    const rest = block.text.replace(SYSTEM_REMINDER_RE, "").trim()
+    if (!rest || isMetaOnlyUserText(rest)) {
+      for (const match of block.text.matchAll(SYSTEM_REMINDER_RE)) {
+        const inner = extractQueuedPrompt(match[1])
+        if (inner !== null && !isMetaOnlyUserText(inner)) out.push(inner)
+      }
+    } else {
+      const trailing = extractQueuedPrompt(rest)
+      if (trailing !== null && !isMetaOnlyUserText(trailing)) out.push(trailing)
+    }
+  }
+  return out
+}
+
+function hasQueuedUserSteer(message) {
+  return extractQueuedUserTexts(message).length > 0
+}
+
+// Render only the queued mid-turn prompt(s) carried beside a tool_result so
+// a trimmed replay can keep the steer without dragging an oversized (and
+// otherwise omitted) tool_result into the budget.
+function renderQueuedSteerEntry(message, userLimit = HISTORY_BLOCK_CLIP_BYTES) {
+  const texts = extractQueuedUserTexts(message)
+  if (!texts.length) return null
+  const clipped = userLimit > HISTORY_BLOCK_CLIP_BYTES
+    ? texts.map((text) => clipMiddle(text, userLimit))
+    : texts.map(clipHistoryText)
+  const parts = [{ type: "text", text: `Human: ${clipped.join("\n\n")}\n` }]
+  return { parts, bytes: promptTextBytes(parts) }
+}
+
 // Bytes of a user message's own text, without the meta notes around it.
 function userTextBytes(message) {
   if (typeof message?.content === "string") return isMetaOnlyUserText(message.content) ? 0 : utf8Bytes(message.content)
   if (!Array.isArray(message?.content)) return 0
+  if (isToolResultMessage(message)) {
+    return extractQueuedUserTexts(message).reduce((sum, text) => sum + utf8Bytes(text), 0)
+  }
   return message.content.reduce((sum, block) => {
     const text = blockText(block)
     return sum + (text && !isMetaOnlyUserText(text) ? utf8Bytes(text) : 0)
   }, 0)
 }
 
-// A user message with no tool result and something the user wrote or attached.
+// A user message with something the user wrote or attached, including a
+// mid-turn user steer absorbed beside a tool_result.
 function isUserTask(message) {
   if (message?.role !== "user") return false
   if (typeof message.content === "string") return !isMetaOnlyUserText(message.content)
-  if (!Array.isArray(message.content) || isToolResultMessage(message)) return false
+  if (!Array.isArray(message.content)) return false
+  if (isToolResultMessage(message)) return hasQueuedUserSteer(message)
   if (message.content.some((block) => block?.type === "image")) return true
   return message.content.some((block) => !isMetaOnlyUserText(blockText(block)))
 }
@@ -7698,6 +7751,12 @@ function lastCompletedTurnEnd(history) {
 // least one message in it is a user task; null when the run is meta-only.
 function userTurnRun(history, index) {
   if (index < 0 || index >= history.length) return null
+  if (isToolResultMessage(history[index])) {
+    if (!hasQueuedUserSteer(history[index])) return null
+    // Index 0 is already kept as the opening anchor, matching the loop below.
+    const list = index === 0 ? [] : [index]
+    return { all: list, tasks: list, rest: [] }
+  }
   let start = index
   while (start > 0 && history[start - 1].role !== "assistant" && !isToolResultMessage(history[start - 1])) start--
   let end = index + 1
@@ -7862,9 +7921,10 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
   // blocks clipped first (#1055).
   let entries = raw
   let keptIndices = entries.map((_, i) => i)
+  let blockLimit = HISTORY_BLOCK_CLIP_BYTES
   const sessionState = overRoom(entries) ? sessionStateIndices(history, current) : { priority: [], set: new Set() }
   if (overRoom(entries)) {
-    const blockLimit = Math.max(HISTORY_BLOCK_CLIP_BYTES, Math.floor(room / 3))
+    blockLimit = Math.max(HISTORY_BLOCK_CLIP_BYTES, Math.floor(room / 3))
     entries = history.map((message, i) => render(clipHistoryMessage(message, blockLimit, sessionState.set.has(i))))
   }
   let kept = entries
@@ -7889,12 +7949,27 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
       if (entries.length && keptSliceBytes([0], entries.length, entries, noteBytes) <= room) {
         keep.push(0)
       }
+      const steerCache = new Map()
+      const steerEntryFor = (idx) => {
+        if (!steerCache.has(idx)) steerCache.set(idx, renderQueuedSteerEntry(history[idx], blockLimit))
+        return steerCache.get(idx)
+      }
+      const swappedSteers = new Map()
       // Mid tool loop, the user's prompt run that started it says what the loop is
       // for (plus any later user steer run): keep it after the anchor, with a note
       // for each gap (#1053, #1055).
       if (inToolLoop) {
         const runs = [loopOpeningRun(history, loopStart), latestLoopTaskRun(history, loopStart)].filter(Boolean)
-        const whole = [...new Set([...keep, ...runs.flatMap((run) => run.all)])].sort((a, b) => a - b)
+        const runIndices = [...new Set(runs.flatMap((run) => run.all))]
+        for (const idx of runIndices) {
+          if (keep.includes(idx)) continue
+          const steerEntry = steerEntryFor(idx)
+          if (steerEntry) {
+            swappedSteers.set(idx, entries[idx])
+            entries[idx] = steerEntry
+          }
+        }
+        const whole = [...new Set([...keep, ...runIndices])].sort((a, b) => a - b)
         if (whole.length > keep.length && keptSliceBytes(whole, entries.length, entries, noteBytes) <= room) {
           keep = whole
         } else {
@@ -7903,6 +7978,12 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
             if (keep.includes(idx)) continue
             const nextKeep = [...keep, idx].sort((a, b) => a - b)
             if (keptSliceBytes(nextKeep, entries.length, entries, noteBytes) <= room) keep = nextKeep
+          }
+        }
+        for (const [idx, full] of swappedSteers) {
+          if (!keep.includes(idx)) {
+            entries[idx] = full
+            swappedSteers.delete(idx)
           }
         }
       }
@@ -7922,7 +8003,10 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
       for (let i = entries.length - 1; i > 0 && pinTarget < 0; i--) {
         if (!keep.includes(i) && isUserTask(history[i])) pinTarget = i
       }
-      const pinFirstBytes = Math.max(PINNED_USER_TASK_CLIP_BYTES, pinTarget > 0 ? entries[pinTarget].bytes : 0)
+      const pinFirstBytes = Math.max(
+        PINNED_USER_TASK_CLIP_BYTES,
+        pinTarget > 0 ? (steerEntryFor(pinTarget)?.bytes ?? entries[pinTarget].bytes) : 0,
+      )
       const pinReserve = newestBytes >= 0 && newestBytes <= NUDGE_MAX_BYTES
         ? Math.min(PINNED_USER_TASKS_BYTES - PINNED_USER_TASK_CLIP_BYTES + pinFirstBytes,
           Math.floor(room / (pinFirstBytes > PINNED_USER_TASK_CLIP_BYTES ? 3 : 4)))
@@ -7986,9 +8070,10 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
         for (let idx = (tail.length ? tail[0] : entries.length) - 1; idx > 0 && pinned < PINNED_USER_TASKS_MAX; idx--) {
           if (keep.includes(idx) || tail.includes(idx) || !isUserTask(history[idx])) continue
           const saved = entries[idx]
+          const base = steerEntryFor(idx) ?? saved
           // the first (newest) pin may take what the reserve has left; older ones are clipped
           const limit = pinned ? PINNED_USER_TASK_CLIP_BYTES : Math.max(PINNED_USER_TASK_CLIP_BYTES, pinReserve - pinnedBytes)
-          if (saved.bytes > limit) entries[idx] = clipHistoryEntry(saved, limit)
+          entries[idx] = base.bytes > limit ? clipHistoryEntry(base, limit) : base
           const nextKeep = [...keep, idx].sort((x, y) => x - y)
           if (pinnedBytes + entries[idx].bytes <= pinReserve && combinedFits(nextKeep)) {
             keep = nextKeep
@@ -7998,6 +8083,14 @@ function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserve
             entries[idx] = saved
           }
         }
+      }
+      // If a pinned mixed tool_result+steer entry sits right against the kept
+      // tail with no gap and its full entry still fits, restore the tool_result.
+      for (const [idx, full] of swappedSteers) {
+        if (idx !== entries.length - 1 && (!tail.length || idx !== tail[0] - 1)) continue
+        const steerOnly = entries[idx]
+        entries[idx] = full
+        if (!combinedFits(keep)) entries[idx] = steerOnly
       }
       // Mid tool loop the tail stops at the task that opened the loop, so the
       // turns before it got only their user tasks: a 500 KB history kept 10 KB,
@@ -8232,7 +8325,7 @@ function inspectToolTurn(results, body) {
   let resultIndex = -1
   const stoppedByHookOrUser = out.some((item) => item.result?.isError &&
     /^(?:The user doesn't want to proceed with this tool use\.|User rejected tool use\b|Operation stopped by hook\b|Execution stopped by hook\b|Blocked by PreToolUse hook\b|Hook PreToolUse:\S+ denied\b|API Error: Request was aborted\.|\[Request interrupted by user\b)/.test(resultText(item.result).trim()))
-  const userInterruption = /(?:The user sent (?:a new message while you were working|the following message)|The [^\r\n]+ plugin sent a message while you were working):/
+  const userInterruption = USER_INTERRUPTION_RE
   const nonUserSourceNotice = /^\[MESSAGE FROM NON-USER SOURCE - NOT USER INPUT\]\s*\n/
   const skillCompanion = /^\s*(?:Base directory for this skill:|ARGUMENTS:|Skill arguments:) /
   const imageCompanion = /^\[Image(?: source)?: [^\r\n]+\]$/
