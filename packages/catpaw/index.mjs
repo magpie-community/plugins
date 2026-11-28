@@ -178,6 +178,33 @@ const configModel = (id, m) => ({
 const errorResponse = (status, message, fields = {}, headers = {}) =>
   new Response(JSON.stringify({ error: { message, ...fields } }), { status, headers: { "content-type": "application/json", ...headers } })
 
+// turn 的最后一帧（message.finished=true）带 contextInfo.usage —— 真机抓包
+// 实证 2026-11-28：prompt_tokens 36 / completion_tokens 63 /
+// cache_read_tokens 19200。上游的 prompt_tokens 不含 cache_read，而
+// OpenAI 口径含，所以这里先折回；否则网关会以为输入只有 36 token。
+// 旧的"会话协议不返回 token 数"注释是错的，别再照抄。
+function usageFromFrame(frame) {
+  const u = frame?.contextInfo?.usage
+  if (!u || typeof u !== "object") return null
+  const n = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
+  const prompt = n(u.prompt_tokens)
+  const completion = n(u.completion_tokens)
+  const cached = n(u.cache_read_tokens)
+  if (!prompt && !completion && !cached) return null
+  return { prompt_tokens: prompt + cached, completion_tokens: completion, cached_tokens: cached }
+}
+
+// forced tool_choice 会再打一次上游，两次都烧 token；只记最后一次会少算
+function addUsage(a, b) {
+  if (!a) return b
+  if (!b) return a
+  return {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    cached_tokens: (a.cached_tokens ?? 0) + (b.cached_tokens ?? 0),
+  }
+}
+
 // Refused is a failure with the status the agent should see: out of credit
 // a 402 (magpie rests the account for credit, not as broken), a rate limit
 // a 429 with its wait, a lost sign-in a 401 — each with a sentence to read
@@ -756,6 +783,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   let prevReasoning = ""
   let finalText = ""
   let finalReasoning = ""
+  let finalUsage = null
   let frameCount = 0
   // kimi-k3.1-pro intermittently skips the instructed JSON and emits
   // NATIVE tool_use blocks instead; the latest cumulative params per
@@ -780,7 +808,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
       const data = line.slice(5).trim()
       if (data === "[DONE]") {
         yield* held()
-        yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()] }
+        yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()], usage: finalUsage }
         return
       }
       let frame
@@ -790,6 +818,9 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
         continue
       }
       frameCount++
+      // 用量只在收尾帧出现，且是累计值：同一轮里取最后一次，不能相加
+      const frameUsage = usageFromFrame(frame)
+      if (frameUsage) finalUsage = frameUsage
       if (frame.error) {
         const said = String(frame.error.message || "")
         if (said.includes("余额不足")) throw outOfCredit(said)
@@ -838,7 +869,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   // the stream ended without [DONE]
   if (finalText === "" && frameCount === 0) throw new Error("妙手 SSE 流结束但没有任何帧")
   yield* held()
-  yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()] }
+  yield { done: true, text: finalText, reasoning: finalReasoning, toolUses: [...toolUses.values()], usage: finalUsage }
 }
 
 // ── the plugin ─────────────────────────────────────────────────────────────
@@ -936,6 +967,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 let text = ""
                 let reasoning = ""
                 let toolUses = []
+                let usage = null
                 for await (const ev of runConversation(token, { ...chat, messages }, init.signal, spec?.type)) {
                   if (ev.delta) text += ev.delta
                   if (ev.reasoningDelta) reasoning += ev.reasoningDelta
@@ -943,20 +975,23 @@ export async function CatPawAuthPlugin({ client } = {}) {
                     text = ev.text
                     reasoning = ev.reasoning
                     toolUses = Array.isArray(ev.toolUses) ? ev.toolUses : []
+                    usage = ev.usage ?? null
                   }
                 }
-                return { text, reasoning, toolUses }
+                return { text, reasoning, toolUses, usage }
               }
               if (!chat.stream) {
                 // buffered: collect the whole turn, parse, retry once if a
                 // forced tool_choice went unanswered
                 let text = ""
                 let reasoning = ""
+                let usage = null
                 let calls = []
                 try {
                   const out = await runTurn(baseMessages)
                   text = out.text
                   reasoning = out.reasoning
+                  usage = out.usage
                   if (wantsTools) {
                     // native tool_use blocks win; the instructed-JSON text
                     // path stays as the fallback
@@ -973,6 +1008,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                       ])
                       text = retried.text
                       reasoning = retried.reasoning
+                      usage = addUsage(usage, retried.usage)
                       calls = toolCallsFromUses(retried.toolUses, chat.tools, chat.tool_choice)
                       if (!calls.length) calls = toolCallsFromText(text, chat.tools, chat.tool_choice)
                     }
@@ -993,6 +1029,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                     created,
                     model,
                     choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : "stop" }],
+                    ...(usage ? { usage } : {}),
                   }),
                   { status: 200, headers: { "content-type": "application/json" } },
                 )
@@ -1022,6 +1059,8 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta: { tool_calls: [part] }, finish_reason: finish ?? null }] })}\n\n`,
                 )
               const doneFrame = encoder.encode("data: [DONE]\n\n")
+              const usageChunk = (usage) =>
+                encoder.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`)
               const stream = new ReadableStream({
                 async start(controller) {
                   let closed = false
@@ -1060,6 +1099,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   let fullText = ""
                   let calls = []
                   let nativeUses = []
+                  let usage = null
                   try {
                     for await (const ev of events) {
                       if (closed) return
@@ -1084,6 +1124,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                       if (ev.done) {
                         fullText = ev.text
                         nativeUses = Array.isArray(ev.toolUses) ? ev.toolUses : []
+                        usage = ev.usage ?? null
                       }
                     }
                     // native tool_use blocks win, and count after prose
@@ -1105,6 +1146,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                           { role: "user", content: forcedToolRetryMessage(chat.tool_choice) },
                         ])
                         fullText = retried.text
+                        usage = addUsage(usage, retried.usage)
                         calls = toolCallsFromUses(retried.toolUses, chat.tools, chat.tool_choice)
                         if (!calls.length) calls = toolCallsFromText(fullText, chat.tools, chat.tool_choice)
                       }
@@ -1127,6 +1169,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                     stop()
                     return
                   }
+                  if (usage) push(usageChunk(usage))
                   push(doneFrame)
                   stop()
                 },
@@ -1150,15 +1193,20 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices })}\n\n`,
                 )
               }
+              const usageChunk = (usage) =>
+                encoder.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`)
               const stream = new ReadableStream({
                 async start(controller) {
                   controller.enqueue(chunk(null, null)) // the role frame
+                  let usage = null
                   try {
                     for await (const ev of events) {
                       if (ev.delta) controller.enqueue(chunk(ev.delta, null))
                       if (ev.reasoningDelta) controller.enqueue(chunk(null, null, ev.reasoningDelta))
                       if (ev.done) {
+                        usage = ev.usage ?? null
                         controller.enqueue(chunk(null, "stop"))
+                        if (usage) controller.enqueue(usageChunk(usage))
                         controller.enqueue(encoder.encode("data: [DONE]\n\n"))
                       }
                     }
@@ -1176,11 +1224,13 @@ export async function CatPawAuthPlugin({ client } = {}) {
 
             let text = ""
             let reasoning = ""
+            let usage = null
             try {
               for await (const ev of runConversation(token, chat, init.signal, spec?.type)) {
                 if (ev.done) {
                   text = ev.text
                   reasoning = ev.reasoning
+                  usage = ev.usage ?? null
                 }
               }
             } catch (e) {
@@ -1193,8 +1243,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 created,
                 model,
                 choices: [{ index: 0, message: { role: "assistant", content: text, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: "stop" }],
-                // no usage block: the conversation protocol returns no token
-                // counts, and zeros would read as real ones
+                ...(usage ? { usage } : {}),
               }),
               { status: 200, headers: { "content-type": "application/json" } },
             )
@@ -1446,4 +1495,4 @@ export async function CatPawAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, primed, forgetLive: () => liveLists.clear(), toolCallsFromUses, repairJsonControlChars, resolveToolName }
+export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, primed, forgetLive: () => liveLists.clear(), toolCallsFromUses, repairJsonControlChars, resolveToolName, usageFromFrame, addUsage }
