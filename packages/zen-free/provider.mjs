@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -467,10 +467,23 @@ function renameRefused(body, protocol) {
 const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
-// is `...`". Only an absolute path counts.
-const ABSOLUTE = String.raw`((?:~?/|[A-Za-z]:[\\/]|\\\\)[^\s\x60'"<>]*)`;
+// is `...`". Only an absolute path counts. A folder's name may hold spaces
+// (a home of "C:\\Users\\First Last", "~/My Project"), so a path inside
+// `<cwd>` or backticks, or one that ends its line, is taken whole; one in a
+// sentence still ends at its first space. OpenCode's own block, which
+// addEnvironment writes and the request's project is read back from, is
+// the line-ending case (#1668). A line-ending path with a space counts only
+// when that folder is there, so "Working directory: /src (a git repo)"
+// still names /src.
+const ROOT = String.raw`(?:~?/|[A-Za-z]:[\\/]|\\\\)`;
+const ABSOLUTE = String.raw`(${ROOT}[^\s\x60'"<>]*)`;
 const STATED_DIRECTORY = [
-  new RegExp(String.raw`<cwd>\s*${ABSOLUTE}\s*</cwd>`),
+  new RegExp(String.raw`<cwd>\s*(${ROOT}[^\n\x60'"<>]*?)\s*</cwd>`),
+  new RegExp(String.raw`working directory(?: is)?:?[ \t]+\x60(${ROOT}[^\n\x60]*?)\x60`, "i"),
+  Object.assign(
+    new RegExp(String.raw`working directory(?: is)?:?[ \t]+(${ROOT}[^\n\x60'"<>]*?)[ \t]*(?:\r?$)`, "im"),
+    { onDisk: true },
+  ),
   new RegExp(String.raw`working directory(?: is)?:?\s+\x60?${ABSOLUTE}`, "i"),
 ];
 
@@ -497,6 +510,7 @@ export function statedDirectory(body, protocol) {
   for (const text of texts) {
     for (const pattern of STATED_DIRECTORY) {
       const found = pattern.exec(text)?.[1]?.replace(/[.,;:)\]]+$/, "");
+      if (pattern.onDisk && /\s/.test(found ?? "") && !existsSync(localDirectory(found))) continue;
       if (found && found !== "/" && found !== "~/") return found;
     }
   }

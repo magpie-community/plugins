@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { protocols, declaredTools, toolReply } from "./tool-fixtures.mjs";
-import { addEnvironment, environment, latestVersion, projectID, traceHeaders, userAgent } from "./provider.mjs";
+import { addEnvironment, environment, latestVersion, projectID, statedDirectory, traceHeaders, userAgent } from "./provider.mjs";
 
 const subject = import("./index.mjs").then((module) => ({
   default: { server: module.ZenFreePlugin },
@@ -226,6 +226,42 @@ test("names the project as OpenCode does: the stated folder, or its repository's
   const env = environment(join(bare, "sub"));
   assert.match(env, /Is directory a git repo: yes/);
   assert.match(env, new RegExp(`Workspace root folder: ${bare}\\n`));
+});
+
+// A folder's name may hold a space (a Windows home "C:\Users\First Last").
+// OpenCode's block names it whole, and the project read back from that block
+// is the folder's, not the part before the space (#1668).
+test("a working directory with a space in its name is read whole", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "zen-space-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const spaced = join(root, "First Last");
+  mkdirSync(spaced);
+  const chat = (system) => ({ messages: [{ role: "system", content: system }, { role: "user", content: "hi" }] });
+  // OpenCode's own block, as addEnvironment writes it
+  assert.equal(statedDirectory(chat(environment(spaced)), "chat"), spaced);
+  const body = chat("Be brief.");
+  addEnvironment(body, "chat", spaced);
+  assert.equal(statedDirectory(body, "chat"), spaced);
+  assert.match(body.messages[0].content, new RegExp(`Working directory: ${spaced}\n`));
+  // Codex's <cwd>, Kimi's backticks and Claude Code's line, each whole
+  assert.equal(statedDirectory(chat(`<cwd>${spaced}</cwd>`), "chat"), spaced);
+  assert.equal(statedDirectory(chat(`The current working directory is \`C:\\Users\\First Last\\app\`.`), "chat"), "C:\\Users\\First Last\\app");
+  assert.equal(statedDirectory(chat(`Working directory: ${spaced}\r\nIs a git repo: no`), "chat"), spaced);
+  // a line-ending path with a space counts only when the folder is there,
+  // so words after the path on its line are not taken for part of it
+  assert.equal(statedDirectory(chat(`Working directory: ${root}/src (a git repo)`), "chat"), `${root}/src`);
+  assert.equal(statedDirectory(chat("Your working directory is /srv/app and nothing else."), "chat"), "/srv/app");
+  // and the request is sent as that folder's project
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", stream: true, ...chat(`Working directory: ${spaced}`) }),
+  });
+  await response.text();
+  assert.equal(state.calls.at(-1).headers["x-opencode-project"], projectID(spaced));
+  assert.match(state.calls.at(-1).body.messages[0].content, new RegExp(`  Working directory: ${spaced}\n`));
 });
 
 // OpenCode's version is the one its own updater is told is latest; a
