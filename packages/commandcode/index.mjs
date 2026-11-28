@@ -335,7 +335,22 @@ function withJev(out) {
 // of pictures: a model takes them as the default list or the CLI's table (GO_MODELS)
 // says, and every Claude model does; of any other nothing is said, and
 // magpie answers from models.dev.
-async function liveModels(key) {
+// endpointChoice is which API a live model is served through, from the
+// endpoints it lists (#271). magpie's own order is chat completions first, as
+// the built-in picks it; a caller that asks for the native Responses API gets
+// that one where the model offers both, because a client that already speaks
+// Responses need not have its request converted. null when none of the three
+// is named, so the caller keeps what it decided for the model's family.
+export function endpointChoice(eps, preferResponses = false) {
+  const has = (name) => eps.includes(name)
+  if (preferResponses && has("/responses")) return RESPONSES
+  if (has("/chat/completions")) return CHAT
+  if (has("/responses")) return RESPONSES
+  if (has("/messages")) return MESSAGES
+  return null
+}
+
+async function liveModels(key, preferResponses = false) {
   const res = await fetch(BASE + "/models", { headers: { Authorization: `Bearer ${key}`, "x-api-key": key } })
   if (!res.ok) throw new Error(`models: ${res.status}`)
   const body = await res.json()
@@ -351,7 +366,7 @@ async function liveModels(key) {
     let npm = isClaude(m.id) ? MESSAGES : CHAT
     // the first of the APIs it is served on, in magpie's order (chat
     // completions, Responses, Messages), as the built-in picks it
-    if (eps.length) npm = eps.includes("/chat/completions") ? CHAT : eps.includes("/responses") ? RESPONSES : eps.includes("/messages") ? MESSAGES : CHAT
+    npm = endpointChoice(eps, preferResponses) ?? npm
     const ctx = Number(m.context_length)
     out.push({
       id: m.id,
