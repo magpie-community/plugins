@@ -1015,6 +1015,38 @@ test("version/report hangs time out, terminate the process, and leave no workspa
   }
 })
 
+// plugins#856: a --version that takes the whole deadline (a loaded machine,
+// or a slow agy start as in plugins#1544) leaves the report run no time to
+// start. That is the same timeout as one that runs out while it reads: the
+// read says it didn't finish, and is held back as a slow one.
+test("a deadline spent by --version is the report's timeout, not a bare error", async t => {
+  const f = await fixture(t)
+  const originalSpawn = childProcess.spawn
+  const originalNow = Date.now
+  try {
+    childProcess.spawn = (file, args, options) => {
+      const child = originalSpawn(file, args, options)
+      // the clock passes the deadline once --version has answered
+      if ([file, ...args].some(arg => String(arg).includes("--version"))) {
+        child.once("exit", () => { Date.now = () => originalNow() + 60 * 60_000 })
+      }
+      return child
+    }
+    syncBuiltinESMExports()
+    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 15_000 }), error => {
+      assert.match(error.message, /^agy's own usage read didn't finish in 15s\./)
+      assert.equal(error.kind, "timeout")
+      return true
+    })
+  } finally {
+    Date.now = originalNow
+    childProcess.spawn = originalSpawn
+    syncBuiltinESMExports()
+  }
+  assert.deepEqual((await f.logs()).map(call => call.args[0]), ["--version"], "the report run never started")
+  await f.assertClean()
+})
+
 test("cancellation stops a running report and cleans its private workspace", async t => {
   const f = await fixture(t, { TEST_MODE: "hang" })
   const controller = new AbortController()
