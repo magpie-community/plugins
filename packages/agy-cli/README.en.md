@@ -315,8 +315,14 @@ UI in a terminal of its own, with a status line for that run only
 (`--settings`, never saved), takes the quota agy hands the status line, and
 stops agy; nothing is typed into it and no prompt is sent. The model list
 then comes from what agy acp offers (plugins#1602). With no tier, the
-account shows agy's refusal and no numbers. On Windows, where the plugin has
-no terminal to give agy, the refusal stays.
+account shows agy's refusal and no numbers. On Windows (0.1.158 on,
+plugins#1637) the terminal is Bun's ConPTY, the status line is a
+`status-line.cmd` of the run's (PowerShell writing what agy hands it to a
+file), and agy's "Do you trust the contents of this project?" is answered
+only in the plugin's own empty folder (`magpie-agy-tui` in the temp folder),
+the same folder each time, so agy is told to trust that one folder once.
+Where the plugin host's Bun has no terminal (`Bun.Terminal`), the refusal
+stays.
 
 While Antigravity's app has its gateway on (`gateway.enabled` in
 `~/.gemini/config/config.json`, as when magpie takes over Antigravity), agy

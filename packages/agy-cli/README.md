@@ -217,8 +217,11 @@ agy 因地区拒绝 `/usage`（"not currently available in your location"）时�
 免费档位）；agy 的打印模式和 `agy models` 只因这一条就拒绝，agy 的 ACP 和终端界面却照常服务这个账号。
 有档位时，插件在自己的终端里启动 agy 的终端界面，带一个只用于这一次的状态栏（`--settings`，不保存），
 取 agy 交给状态栏的额度后关掉 agy；不往里输入任何东西，也不发提示词。型号列表这时用 agy acp 开放的型号
-（plugins#1602）。没有档位时，账号显示 agy 的拒绝原因，不显示数字。Windows 上插件没有终端可给 agy，
-仍显示拒绝。
+（plugins#1602）。没有档位时，账号显示 agy 的拒绝原因，不显示数字。Windows 上同样如此（0.1.158 起，
+plugins#1637），终端用 Bun 的 ConPTY：状态栏是这次读取自己的 `status-line.cmd`（PowerShell 把 agy
+给的内容写进文件）；agy 在 Windows 上会先问“是否信任这个项目的内容”，插件只在自己的固定空文件夹
+（临时目录下的 `magpie-agy-tui`）里回答一次“信任”，每次都用这个文件夹，所以 agy 只记下这一个文件夹。
+插件宿主的 Bun 没有终端（`Bun.Terminal`）时仍显示拒绝。
 
 Antigravity 应用的网关打开时（`~/.gemini/config/config.json` 里 `gateway.enabled`，例如 Magpie
 接管了 Antigravity），agy 读同一个文件，会走网关而不是你的 Google 账号，`/usage` 只得到

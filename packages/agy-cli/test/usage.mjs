@@ -345,7 +345,9 @@ const mode = process.env.TEST_MODE
 // plugins#1602: print mode refuses at the eligibility check (agy 1.5.18's
 // bytes); agy acp's session/new names TEST_TIER; the TUI, in a terminal,
 // asks for the cursor first and then hands its statusLine command agy's
-// payloads, TEST_QUOTA in the second.
+// payloads, TEST_QUOTA in the second. With TEST_TRUST (Windows' agy,
+// plugins#1637) it first asks whether to trust a folder not yet in
+// TEST_TRUSTED, and runs no statusLine before Enter.
 if (mode === "eligibility" && !version) {
   const note = extra => fs.appendFileSync(process.env.TEST_LOG, JSON.stringify({ pid: process.pid, ...extra }) + "\n")
   if (args[0] === "acp") {
@@ -371,21 +373,45 @@ if (mode === "eligibility" && !version) {
     process.exit()
   } else {
     const settings = JSON.parse(args[args.indexOf("--settings") + 1])
-    note({ tty: Boolean(process.stdin.isTTY && process.stdout.isTTY), settings })
+    note({ tty: Boolean(process.stdin.isTTY && process.stdout.isTTY), settings, tuiCwd: process.cwd() })
     process.stdin.setRawMode?.(true)
     process.stdout.write("\x1b[6n")
+    // agy runs the statusLine through cmd /c on Windows
+    const statusLine = input => process.platform === "win32"
+      ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", settings.statusLine.command], { input, windowsHide: true })
+      : spawnSync("/bin/sh", ["-c", settings.statusLine.command], { input })
+    const trusted = () => { try { return fs.readFileSync(process.env.TEST_TRUSTED, "utf8").split("\n").filter(Boolean) } catch { return [] } }
     let heard = ""
-    process.stdin.on("data", chunk => {
-      heard += chunk
-      if (!heard.includes("\x1b[1;1R") || heard.includes("done")) return
-      heard += "done"
-      note({ answered: true })
+    let state = "handshake"
+    const run = () => {
+      state = "done"
       const payload = state => JSON.stringify({ cwd: process.cwd(), version: "1.5.18", product: "antigravity", agent_state: state, terminal_width: 120 })
-      spawnSync("/bin/sh", ["-c", settings.statusLine.command], { input: payload("authenticating") })
+      const first = statusLine(payload("authenticating"))
+      if (first.status !== 0) note({ statusLineFailed: first.status, stderr: String(first.stderr) })
       if (process.env.TEST_QUOTA) {
         const quota = JSON.parse(payload("initializing"))
         quota.quota = JSON.parse(process.env.TEST_QUOTA)
-        spawnSync("/bin/sh", ["-c", settings.statusLine.command], { input: JSON.stringify(quota) })
+        statusLine(JSON.stringify(quota))
+      }
+    }
+    process.stdin.on("data", chunk => {
+      heard += chunk
+      if (state === "handshake") {
+        // a pty hands back the plugin's answer; ConPTY may answer itself
+        if (!/\x1b\[\d+;\d+R/.test(heard)) return
+        note({ answered: true })
+        heard = ""
+        if (process.env.TEST_TRUST && !trusted().includes(process.cwd())) {
+          state = "trust"
+          note({ trustAsked: process.cwd() })
+          process.stdout.write("\x1b[2J\x1b[3;2H Do\x1b[1Cyou trust the contents of this project?\r\n\x1b[5;2H> Yes, I trust this folder\r\n   No, exit\r\n")
+          return
+        }
+        run()
+      } else if (state === "trust" && heard.includes("\r")) {
+        fs.appendFileSync(process.env.TEST_TRUSTED, process.cwd() + "\n")
+        note({ trusted: process.cwd() })
+        run()
       }
     })
   }
@@ -1095,7 +1121,7 @@ test("a quota read and a refusal alike go through agy -p, never a request of the
   assert.match(no.error, /not eligible/)
   assert.equal(no.signIn, "kept")
   // agy acp is asked for the account's tier (plugins#1602), and names none
-  assert.deepEqual((await refused.logs()).map(l => l.args[0]), process.platform !== "win32" && typeof globalThis.Bun?.Terminal === "function" ? ["--version", "-p", "acp"] : ["--version", "-p"])
+  assert.deepEqual((await refused.logs()).map(l => l.args[0]), typeof globalThis.Bun?.Terminal === "function" ? ["--version", "-p", "acp"] : ["--version", "-p"])
   assert.deepEqual(asked, [])
   await f.assertClean()
   await refused.assertClean()
@@ -1118,7 +1144,9 @@ const STATUS_QUOTA = {
   "3p-5h": { remaining_amount: 0, reset_time: "1970-01-01T00:00:00Z", reset_in_seconds: 0 },
   "gemini-argon-wtu-weekly": { remaining_fraction: 0.53, reset_time: "2026-11-30T11:19:33Z", reset_in_seconds: 300000, disabled: true },
 }
-const PTY = process.platform !== "win32" && typeof globalThis.Bun?.Terminal === "function"
+// a pty on POSIX, ConPTY on Windows (plugins#1637)
+const PTY = typeof globalThis.Bun?.Terminal === "function"
+const CONPTY = PTY && process.platform === "win32"
 
 test("the statusLine's buckets read as /usage's groups, by the same names and the catalog's models", () => {
   storeCatalogRows(LIVE_MODEL_ROWS)
@@ -1218,6 +1246,58 @@ test("on the app's gateway, agy acp and its TUI read the folder without it too",
   assert.deepEqual(runs[2], ["acp", "--gemini-dir", folder])
   assert.deepEqual(runs[3].slice(0, 3), ["--gemini_dir", folder, "--settings"])
   for (const pid of await f.pids([])) await waitForPidExit(pid)
+})
+
+// plugins#1637 (haizhiw: agy 1.5.18, Windows 11, Google AI Pro): on
+// Windows agy runs the statusLine through cmd /c and asks whether to trust
+// the folder before it runs it. The statusLine is a .cmd of the run's,
+// found on its PATH, and the question is answered in the plugin's own
+// folder, the same one each time, so agy is told to trust one folder once.
+test("on Windows, the TUI's trust question is answered once, in the plugin's own folder, and the quota is read through status-line.cmd", { skip: !CONPTY }, async t => {
+  const asked = noFetch(t)
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  t.after(() => storeCatalogRows(null))
+  const trustedList = path.join(os.tmpdir(), `agy-trusted-${process.pid}-${Date.now()}.txt`)
+  t.after(() => fs.rm(trustedList, { force: true }))
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA), TEST_VERSION: "1.5.18", TEST_TRUST: "1", TEST_TRUSTED: trustedList })
+  const tuiDir = path.join(path.dirname(f.env.TEST_LOG), "magpie-agy-tui")
+  for (let read = 0; read < 2; read++) {
+    const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 30_000 })
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.windows.filter(w => !w.model).map(w => [w.pool, w.name, w.used]), [
+      ["Gemini", "7 days", 25], ["Gemini", "5 hours", 50], ["Claude & GPT", "7 days", 100], ["Claude & GPT", "5 hours", undefined],
+    ])
+  }
+  const logs = await f.logs()
+  assert.deepEqual(logs.filter(l => l.args).map(l => l.args[0]), ["--version", "-p", "acp", "--settings", "-p", "acp", "--settings"])
+  const tuis = logs.filter(l => l.settings)
+  for (const tui of tuis) {
+    assert.equal(tui.tty, true)
+    assert.deepEqual(tui.settings, { statusLine: { type: "command", command: "status-line.cmd" } })
+    assert.equal(path.resolve(tui.tuiCwd).toLowerCase(), path.resolve(tuiDir).toLowerCase())
+  }
+  assert.ok(!logs.some(l => l.statusLineFailed), JSON.stringify(logs.find(l => l.statusLineFailed)))
+  // asked once, answered once, for that one folder
+  assert.equal(logs.filter(l => l.trustAsked).length, 1)
+  assert.deepEqual((await fs.readFile(trustedList, "utf8")).trim().split("\n").map(d => path.resolve(d).toLowerCase()), [path.resolve(tuiDir).toLowerCase()])
+  // the folder holds nothing of a run's, and nothing agy ran outlives it
+  assert.deepEqual(await fs.readdir(tuiDir), [])
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
+  await f.assertClean()
+  assert.deepEqual(asked, [])
+})
+
+test("on Windows, a link where the plugin's folder goes starts no TUI, and the refusal stands", { skip: !CONPTY }, async t => {
+  const f = await fixture(t, { TEST_MODE: "eligibility", TEST_TIER: PRO_TIER, TEST_QUOTA: JSON.stringify(STATUS_QUOTA), TEST_TRUST: "1", TEST_TRUSTED: path.join(os.tmpdir(), `agy-trusted-${process.pid}-${Date.now()}.txt`) })
+  const elsewhere = path.join(path.dirname(f.env.TEST_LOG), "elsewhere")
+  await fs.mkdir(elsewhere)
+  await fs.symlink(elsewhere, path.join(path.dirname(f.env.TEST_LOG), "magpie-agy-tui"), "junction")
+  await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 20_000 }), /not eligible for Antigravity/)
+  const logs = await f.logs()
+  assert.deepEqual(logs.filter(l => l.args).map(l => l.args[0]), ["--version", "-p", "acp"])
+  assert.ok(!logs.some(l => l.trustAsked))
+  for (const pid of await f.pids([])) await waitForPidExit(pid)
+  await f.assertClean()
 })
 
 // plugins#1234 (qiankun229): agy run for usage with an ended access token

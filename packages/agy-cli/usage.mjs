@@ -422,24 +422,75 @@ const NO_GEMINI_DIR_FLAG = /flags? provided but not defined:\s*-+gemini[-_]dir/i
 // 2. agy's TUI, run in a terminal of the plugin's with a statusLine of
 //    this run only (--settings, never saved), hands that command the
 //    quota agy read, as JSON on its stdin (agy's documented statusLine).
-//    agy is stopped once it has. It comes while agy's first screen
-//    (onboarding, the folder's trust) is still up: nothing is typed or
-//    agreed to, and no prompt goes to a model.
+//    agy is stopped once it has. On POSIX it comes while agy's first
+//    screen (onboarding, the folder's trust) is still up: nothing is typed
+//    or agreed to. On Windows only the folder's trust is answered (below).
+//    No prompt goes to a model.
 //
 // Each request Google sees is one agy makes at its own start; nothing is
 // asked of Google here (U7). The terminal is Bun's (the plugin host runs
-// Bun), so this is POSIX only: on Windows the error stays.
+// Bun): a pty on POSIX, ConPTY on Windows (Bun 1.3.14 on). Without
+// Bun.Terminal the error stays.
+//
+// On Windows (plugins#1637, haizhiw: agy 1.5.18, Windows 11, Google AI
+// Pro) agy runs the statusLine through cmd /c, and its TUI asks "Do you
+// trust the contents of this project?" before the statusLine runs at all.
+// So there the statusLine is a .cmd of this run's, found on the run's PATH
+// (status-line.cmd, PowerShell writing its stdin to a file), and the TUI
+// runs in one folder of the plugin's own, magpie-agy-tui beside this run's
+// folder in the user's temp folder, where that question alone is answered
+// (Enter, agy's "Yes, I trust this folder"). agy remembers the folder it
+// was told to trust, so it is the same folder every time: one entry in
+// agy's trusted folders, not one a read, and the question is asked once.
+// The folder is empty, and nothing else is typed.
 const STATUS_LINE_POLL_MS = 100
+const TUI_FOLDER = "magpie-agy-tui"
+const TRUST_QUESTION = "Doyoutrustthecontentsofthisproject?"
 
 function terminalSpawn() {
   const bun = globalThis.Bun
-  return process.platform !== "win32" && typeof bun?.spawn === "function" && typeof bun?.Terminal === "function" ? bun.spawn : null
+  return typeof bun?.spawn === "function" && typeof bun?.Terminal === "function" ? bun.spawn : null
 }
 
-function killGroup(pid) {
-  try { process.kill(-pid, "SIGKILL") } catch {
-    try { process.kill(pid, "SIGKILL") } catch {}
+// killTree stops a child and whatever it started: its process group on
+// POSIX; on Windows, which has no process groups, its tree through
+// taskkill /T /F (while the child still lives: /T finds the tree through
+// it), then the child itself. It resolves once taskkill is done, 5s at most.
+function killTree(child) {
+  const pid = child?.pid
+  if (!pid) return Promise.resolve()
+  if (process.platform !== "win32") {
+    try { process.kill(-pid, "SIGKILL") } catch {
+      try { process.kill(pid, "SIGKILL") } catch {}
+    }
+    return Promise.resolve()
   }
+  return new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer)
+      try { child.kill() } catch {}
+      resolve()
+    }
+    const timer = setTimeout(done, 5000)
+    timer.unref?.()
+    try {
+      const killer = spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true })
+      killer.once("error", done)
+      killer.once("close", done)
+    } catch {
+      done()
+    }
+  })
+}
+
+// the screen's text with its escapes and every blank gone: ConPTY draws a
+// run of blanks as a cursor move, so words come without the spaces between
+export function screenText(said) {
+  return said
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?<>=]*[ -\/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/\s+/g, "")
 }
 
 // acpTier is the tier agy acp's session/new names for the signed-in
@@ -455,14 +506,14 @@ export function acpTier(file, folderArgs, { cwd, env, deadline, signal }) {
       done = true
       clearTimeout(timer)
       signal?.removeEventListener("abort", abortNow)
-      if (child?.pid) killGroup(child.pid)
       child?.stdout?.destroy()
-      resolve(tier)
+      killTree(child).then(() => resolve(tier))
     }
     const abortNow = () => finish(null)
     if (signal?.aborted || Date.now() >= deadline) return finish(null)
     try {
-      child = spawn(file, ["acp", ...folderArgs], { cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"] })
+      const command = agySpawnSpec(file, ["acp", ...folderArgs])
+      child = spawn(command.file, command.args, { cwd, env, detached: process.platform !== "win32", ...command.options, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] })
     } catch {
       return finish(null)
     }
@@ -520,20 +571,57 @@ const TERMINAL_ANSWERS = [
 export async function statusLineQuota(file, folderArgs, { cwd, env, deadline, signal }) {
   const start = terminalSpawn()
   if (!start || signal?.aborted || Date.now() >= deadline) return null
-  // a file of the plugin's own: the command is its quoted path, read by
-  // any shell agy runs it with
-  const script = path.join(cwd, "status-line")
+  const windows = process.platform === "win32"
   const out = path.join(cwd, "status-line.json")
-  if (/['\\\n\r]/.test(script)) return null
-  await fs.writeFile(script, '#!/bin/sh\nd=$(dirname "$0")\ncat > "$d/status-line.$$" && mv -f "$d/status-line.$$" "$d/status-line.json"\n', { mode: 0o700 })
-  const settings = JSON.stringify({ statusLine: { type: "command", command: `'${script}'` } })
+  let command
+  let tuiDir = cwd
+  if (windows) {
+    // a .cmd of this run's, which cmd finds on the run's PATH (this run's
+    // folder comes first in it): agy's cmd /c broke a full path to
+    // powershell -File (haizhiw)
+    await fs.writeFile(path.join(cwd, "status-line.ps1"), [
+      "$ErrorActionPreference = 'Stop'",
+      "$utf8 = New-Object System.Text.UTF8Encoding $false",
+      "[Console]::InputEncoding = $utf8",
+      "$d = Split-Path -Parent $MyInvocation.MyCommand.Path",
+      "$t = Join-Path $d ('status-line.' + $PID)",
+      "[System.IO.File]::WriteAllText($t, [Console]::In.ReadToEnd(), $utf8)",
+      "Move-Item -LiteralPath $t -Destination (Join-Path $d 'status-line.json') -Force",
+      "",
+    ].join("\r\n"))
+    await fs.writeFile(path.join(cwd, "status-line.cmd"), '@echo off\r\npowershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0status-line.ps1"\r\n')
+    command = "status-line.cmd"
+    tuiDir = path.join(path.dirname(cwd), TUI_FOLDER)
+    try {
+      await fs.mkdir(tuiDir, { recursive: true })
+      // a real folder of the plugin's, not a link or junction to elsewhere
+      const stat = await fs.lstat(tuiDir)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return null
+    } catch {
+      return null
+    }
+  } else {
+    // a file of the plugin's own: the command is its quoted path, read by
+    // any shell agy runs it with
+    const script = path.join(cwd, "status-line")
+    if (/['\\\n\r]/.test(script)) return null
+    await fs.writeFile(script, '#!/bin/sh\nd=$(dirname "$0")\ncat > "$d/status-line.$$" && mv -f "$d/status-line.$$" "$d/status-line.json"\n', { mode: 0o700 })
+    command = `'${script}'`
+  }
+  const settings = JSON.stringify({ statusLine: { type: "command", command } })
+  // only in the plugin's own folder, and once
+  let trust = windows && path.basename(tuiDir) === TUI_FOLDER
+  let screen = ""
   let proc
   let exited = false
   let tail = ""
   try {
-    proc = start([file, ...folderArgs, "--settings", settings], {
-      cwd,
+    const spec = agySpawnSpec(file, [...folderArgs, "--settings", settings])
+    proc = start([spec.file, ...spec.args], {
+      cwd: tuiDir,
       env,
+      ...(spec.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      windowsHide: true,
       terminal: {
         cols: 120,
         rows: 40,
@@ -547,6 +635,13 @@ export async function statusLineQuota(file, folderArgs, { cwd, env, deadline, si
             }
           }
           tail = said.slice(-16)
+          if (trust) {
+            screen = (screen + screenText(Buffer.from(data).toString("utf8"))).slice(-4096)
+            if (screen.includes(TRUST_QUESTION)) {
+              trust = false
+              try { term.write("\r") } catch {}
+            }
+          }
         },
       },
     })
@@ -564,7 +659,9 @@ export async function statusLineQuota(file, folderArgs, { cwd, env, deadline, si
     }
     return null
   } finally {
-    if (proc?.pid) killGroup(proc.pid)
+    // Windows: the tree first, while agy still lives, then the terminal
+    // (closing it waits for the child on older Windows)
+    await killTree(proc)
     try { proc?.terminal?.close?.() } catch {}
     await proc?.exited?.catch?.(() => {})
   }
