@@ -1,0 +1,139 @@
+/* 启动页：在跳转到插件服务前展示。配色优先使用 Magpie 桥接脚本写入的 --magpie-* 变量，
+   取不到时跟随系统明暗。 */
+:root {
+  color-scheme: light dark;
+  --bg: var(--magpie-bg, #f4f4f6);
+  --fg: var(--magpie-fg, #1c1c21);
+  --muted: var(--magpie-muted, #85858d);
+  --line: var(--magpie-line, #e3e3e8);
+  --danger: var(--magpie-red, #d64545);
+  --brand: #22d3a5;
+  --font: var(--magpie-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", system-ui, sans-serif);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: var(--magpie-bg, #1a1a1e);
+    --fg: var(--magpie-fg, #ededf1);
+    --muted: var(--magpie-muted, #9c9ca6);
+    --line: var(--magpie-line, #333339);
+    --danger: var(--magpie-red, #f28b82);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: var(--magpie-bg, #1a1a1e);
+  --fg: var(--magpie-fg, #ededf1);
+  --muted: var(--magpie-muted, #9c9ca6);
+  --line: var(--magpie-line, #333339);
+  --danger: var(--magpie-red, #f28b82);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+html, body { background: var(--bg); }
+body {
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+
+.boot {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px 12vh;
+  text-align: center;
+  animation: enter .5s var(--ease) both;
+}
+
+/* Logo：四段圆弧依次点亮，中间的 % 轻微呼吸 */
+.logo { position: relative; width: 88px; height: 88px; margin-bottom: 22px; }
+.logo svg { position: relative; display: block; overflow: visible; }
+.halo {
+  position: absolute;
+  inset: -18px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--brand) 32%, transparent), transparent);
+  opacity: .55;
+  filter: blur(6px);
+  animation: halo 2.4s ease-in-out infinite;
+}
+.arc { animation: arc 1.6s var(--ease) infinite; }
+.a1 { animation-delay: 0s; }
+.a2 { animation-delay: .4s; }
+.a3 { animation-delay: .8s; }
+.a4 { animation-delay: 1.2s; }
+.mark { transform-origin: 32px 32px; animation: breathe 2.4s ease-in-out infinite; }
+
+.title { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .02em; }
+.tagline { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+
+.progress {
+  position: relative;
+  width: 148px;
+  height: 3px;
+  margin: 26px 0 12px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.progress i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  animation: slide 1.3s ease-in-out infinite;
+}
+
+.status { margin: 0; min-height: 1.5em; font-size: 12px; color: var(--muted); }
+.status::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dots 1.2s steps(4, end) infinite; }
+.hint { max-width: 320px; margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+
+.retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 7px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease);
+}
+.retry:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); border-color: color-mix(in srgb, var(--brand) 50%, var(--line)); }
+.retry:active { transform: scale(.97); }
+.retry:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* 服务较慢：保持动画，同时提供重试 */
+.boot[data-state="slow"] .status::after { content: "…"; animation: none; }
+
+/* 出错：停止动画，Logo 淡化，文案使用警示色 */
+.boot[data-state="error"] .arc,
+.boot[data-state="error"] .mark,
+.boot[data-state="error"] .halo { animation: none; }
+.boot[data-state="error"] .logo { opacity: .45; filter: grayscale(.85); animation: shake .4s var(--ease); }
+.boot[data-state="error"] .halo { opacity: 0; }
+.boot[data-state="error"] .progress { visibility: hidden; }
+.boot[data-state="error"] .status { color: var(--danger); font-size: 13px; }
+.boot[data-state="error"] .status::after { content: none; animation: none; }
+
+@keyframes enter { from { opacity: 0; transform: translateY(6px); } }
+@keyframes arc { 0%, 100% { opacity: .28; } 30% { opacity: 1; } 60% { opacity: .55; } }
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(.92); } }
+@keyframes halo { 0%, 100% { opacity: .35; transform: scale(.92); } 50% { opacity: .7; transform: scale(1.04); } }
+@keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+@keyframes shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot, .arc, .mark, .halo, .progress i, .status::after { animation: none !important; }
+  .progress i { left: 30%; }
+}

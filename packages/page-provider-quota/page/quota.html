@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>账号额度</title>
+  <link rel="stylesheet" href="boot.css">
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js" defer></script>
+</head>
+<body>
+  <main class="boot" id="boot" data-state="loading" aria-busy="true">
+    <div class="logo" aria-hidden="true">
+      <div class="halo"></div>
+      <svg viewBox="0 0 64 64" width="88" height="88">
+        <defs>
+          <linearGradient id="boot-ring" x1="12" y1="6" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#3ff0c2"/>
+            <stop offset="1" stop-color="#14b48b"/>
+          </linearGradient>
+          <linearGradient id="boot-rest" x1="56" y1="34" x2="34" y2="58" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#94a5b3"/>
+            <stop offset="1" stop-color="#5c6976"/>
+          </linearGradient>
+          <linearGradient id="boot-mark" x1="22" y1="20" x2="42" y2="46" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#86f8d6"/>
+            <stop offset="1" stop-color="#37e2b0"/>
+          </linearGradient>
+        </defs>
+        <g class="arcs" fill="none" stroke-linecap="round" stroke-width="7">
+          <path class="arc a1" stroke="url(#boot-ring)" d="M37.4 8.62A24 24 0 0 1 55.38 26.6"/>
+          <path class="arc a2" stroke="url(#boot-rest)" d="M55.38 37.4A24 24 0 0 1 37.4 55.38"/>
+          <path class="arc a3" stroke="url(#boot-ring)" d="M26.6 55.38A24 24 0 0 1 8.62 37.4"/>
+          <path class="arc a4" stroke="url(#boot-ring)" d="M8.62 26.6A24 24 0 0 1 26.6 8.62"/>
+        </g>
+        <g class="mark" fill="none" stroke="url(#boot-mark)" stroke-linecap="round">
+          <path stroke-width="4.6" d="M23.4 43.4 40.6 20.6"/>
+          <circle stroke-width="3.4" cx="25.2" cy="25.6" r="3.9"/>
+          <circle stroke-width="3.4" cx="38.8" cy="38.4" r="3.9"/>
+        </g>
+      </svg>
+    </div>
+
+    <h1 class="title">账号额度</h1>
+    <p class="tagline">订阅、套餐与 API 余额，一处查看</p>
+
+    <div class="progress" aria-hidden="true"><i></i></div>
+    <p id="status" class="status" role="status" aria-live="polite">正在连接 Magpie</p>
+    <p id="hint" class="hint" hidden></p>
+    <button id="retry" class="retry" type="button" hidden>
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 7v5h-5M4 17v-5h5"/>
+        <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/>
+      </svg>
+      <span>重试</span>
+    </button>
+  </main>
+</body>
+</html>
