@@ -33,6 +33,11 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
+// ZCode 3.16 has two more lanes, both hidden in its picker (#400): the
+// idle plan is served off-peak, the card at full speed, and each ids its
+// plans by the site they came from.
+const OFF_PEAK_BASE = ZCODE + "/api/v1/off-peak/anthropic"
+const HIGHSPEED_BASE = ZCODE + "/api/v1/highspeed/anthropic"
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
 const MODELS = [
@@ -2188,22 +2193,37 @@ function ownTeam(store, key) {
   return null
 }
 
+// planBases is which providers ZCode's config.json may hold a coding plan key
+// for, and the lane each is served on (#400): a plan's own site, or the two
+// lanes 3.16 added - off-peak for an idle plan, full speed for a card. A plan
+// reached on the wrong lane is refused there, so the base is read with the key.
+export function planBases() {
+  return [
+    { ids: ["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], base: ZAI_BASE, site: "zai" },
+    { ids: ["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], base: BIGMODEL_BASE, site: "bigmodel" },
+    // the two lanes 3.16 added share one base between the two sites, so the
+    // plan's own id is what names the site: reading it off the base would
+    // call a BigModel idle plan Z.ai's (#1662's review)
+    { ids: ["account:zai-offpeak-idle-plan"], base: OFF_PEAK_BASE, site: "zai" },
+    { ids: ["account:bigmodel-offpeak-idle-plan"], base: OFF_PEAK_BASE, site: "bigmodel" },
+    { ids: ["account:zai-highspeed-card"], base: HIGHSPEED_BASE, site: "zai" },
+    { ids: ["account:bigmodel-highspeed-card"], base: HIGHSPEED_BASE, site: "bigmodel" },
+  ]
+}
+
 // configKey is the coding plan key ZCode's config.json gives its built-in
 // coding plan provider, Z.ai's first, as ZCode lists them; ZCode reads it
 // as it is, and one written encrypted is read too.
 function configKey(key) {
   const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
   if (!providers || typeof providers !== "object") return null
-  for (const [ids, base] of [
-    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
-    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
-  ]) {
+  for (const { ids, base, site } of planBases()) {
     for (const id of ids) {
       let k = providers[id]?.options?.apiKey
       if (typeof k !== "string") continue
       k = k.trim()
       if (k.startsWith("enc:")) k = first(decrypt(key, k))
-      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base }
+      if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base, site }
     }
   }
   return null
@@ -2391,7 +2411,7 @@ function ownSignIn() {
   const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
-  else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
+  else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.site || (s.base === BIGMODEL_BASE ? "bigmodel" : "zai") }
   if (!s.key && !s.jwt && !isTeam(s)) return null
   let info = {}
   // The JWT belongs to the app's active sign-in. Cached profiles from
