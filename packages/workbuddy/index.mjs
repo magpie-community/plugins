@@ -387,12 +387,22 @@ function renew(site, a, save) {
       if (!got?.accessToken) throw Object.assign(new Error("WorkBuddy gave no refreshed token"), { bare: true })
       const next = merge(a, got)
       renewed.set(key, { next, at: Date.now() })
-      await save?.(next)
+      // saved only when WorkBuddy gave another token: a refresh that hands
+      // back the same one changes nothing worth a save, and a save in a
+      // models listing has magpie read every sign-in again (plugins#1670)
+      if (renewedTokens(a, next)) await save?.(next)
       return next
     })().finally(() => renewing.delete(key))
     renewing.set(key, r)
   }
   return r.then((next) => merged(a, next))
+}
+
+// renewedTokens is whether next, what a refresh of a gave, holds another
+// token than a: its expiry alone, worked out again from the answer, is
+// no new sign-in.
+function renewedTokens(a, next) {
+  return ["access", "refresh", "domain", "tokenType"].some((k) => (a?.[k] ?? "") !== (next?.[k] ?? ""))
 }
 
 // merged is a with the tokens another's refresh gave over it.
@@ -423,7 +433,11 @@ async function fresh(site, client, a) {
         await client?.auth?.set?.({ path: { id: site.id }, body: next })
       } catch {}
     })
-    aheadHeld.delete(key)
+    // an ahead renewal that gave the same access token back renewed
+    // nothing: it is held as a failed one is, so the next use (a listing
+    // of models, a request) doesn't ask WorkBuddy again at once
+    if (early && next.access === a.access) aheadFailed(key)
+    else aheadHeld.delete(key)
     return next
   } catch (e) {
     if (early) aheadFailed(key)
@@ -5957,4 +5971,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { SPEAKER, LISTENER, speechRoute, speechHeaders, spokenParts, speechAsk, spokenPcm, resampled, wavOf, speechAnswer, hearAsk, heardAnswer, speechModels, speechConfig, callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, messagesHint, mergeExtraFields, extraTap, extraKept, extraFieldsOn, extraScope, extraConversation, keepExtra, withoutExtraFields, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { SPEAKER, LISTENER, speechRoute, speechHeaders, spokenParts, speechAsk, spokenPcm, resampled, wavOf, speechAnswer, hearAsk, heardAnswer, speechModels, speechConfig, callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, coalesced, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, messagesHint, mergeExtraFields, extraTap, extraKept, extraFieldsOn, extraScope, extraConversation, keepExtra, withoutExtraFields, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, ahead, lifeOf, ageOf, merge, renewedTokens, AHEAD_MS, AGED_MS, aheadHeld, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, aiWindowApplies, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
