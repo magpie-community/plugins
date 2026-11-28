@@ -44,11 +44,14 @@ const RETRY = 60 * 1000
 // Devin's list as `devin models list --format json` gave it (2026-11-05),
 // less Adaptive and Fusion, which route between models inside Devin's own
 // agent and aren't served by the API: family id, label, aliases, and each
-// variant's id, label, context and output. Models gone from that list —
+// variant's id, label, context and output. SWE-2.1 is from 2026-11-27's
+// GetCliModelConfigs (its model_info's window, as every window since:
+// limitsFrom). Models gone from that list —
 // Inkling, Claude Sonnet 4.5, SWE-1.7 Lightning and the rest at the end —
 // stay for the accounts still offered them. The account's own list, from
 // Devin (GetCliModelConfigs) or else the CLI, replaces it.
 const SNAPSHOT = [
+  ["swe-2-1","SWE-2.1",[],[["swe-2-1-medium","SWE-2.1 Medium",262144,65536],["swe-2-1","SWE-2.1",262144,65536],["swe-2-1-low","SWE-2.1 Low",262144,65536],["swe-2-1-high","SWE-2.1 High",262144,65536],["swe-2-1-xhigh","SWE-2.1 XHigh",262144,65536],["swe-2-1-max","SWE-2.1 Max",262144,65536]]],
   ["swe-2","SWE-2",["swe"],[["swe-2-high","SWE-2 High",262000,128000],["swe-2-medium","SWE-2 Medium",262000,128000],["swe-2-max","SWE-2 Max",262000,128000]]],
   ["swe-2-flash","SWE-2 Flash",[],[["swe-2-flash-medium","SWE-2 Flash Medium",262144,131072],["swe-2-flash-high","SWE-2 Flash High",262144,131072],["swe-2-flash-max","SWE-2 Flash Max",262144,131072]]],
   ["claude-fable-5-1","Claude Fable 5.1",["fable"],[["claude-fable-5-1-medium","Claude Fable 5.1 Medium",1000000,128000],["claude-fable-5-1-low","Claude Fable 5.1 Low",1000000,128000],["claude-fable-5-1-high","Claude Fable 5.1 High",1000000,128000],["claude-fable-5-1-xhigh","Claude Fable 5.1 XHigh",1000000,128000],["claude-fable-5-1-max","Claude Fable 5.1 Max",1000000,128000]]],
@@ -112,6 +115,22 @@ const SNAPSHOT = [
 const familiesOf = (rows) => rows.map(([uid, label, aliases, vs]) => ({ uid, label, aliases, models: vs.map(([id, name, context, output]) => ({ id, name, context, output })) }))
 const SNAPSHOT_FAMILIES = familiesOf(SNAPSHOT)
 
+// SNAPSHOT_LIMITS is each SNAPSHOT variant's [context, output].
+const SNAPSHOT_LIMITS = new Map(SNAPSHOT.flatMap(([, , , vs]) => vs.map(([id, , context, output]) => [id, [context, output]])))
+
+// limitsFrom fills a variant's context or output its list left out with
+// SNAPSHOT's for the same id. Since 2026-11 Devin leaves the config's own
+// max_context_tokens (18) out for all but two of its models, so `devin
+// models list` names no window for them (swe-2-1, swe-2-high, every
+// Claude); a 0 went to the client as the model's window, and magpie's
+// Ollama /api/show told 32768 for SWE-2.1, which Hermes turns away under
+// its 64K floor (@noting_ever on X). An id SNAPSHOT doesn't have stays
+// unknown (0): no window is made up.
+function limitsFrom(m) {
+  const [context, output] = SNAPSHOT_LIMITS.get(m.id) ?? [0, 0]
+  return { ...m, context: m.context || context, output: m.output || output }
+}
+
 // parseFamilies reads `devin models list --format json`.
 function parseFamilies(text) {
   let list
@@ -131,7 +150,7 @@ function parseFamilies(text) {
       aliases: f.aliases ?? [],
       models: (f.variants ?? [])
         .filter((v) => v?.model_uid)
-        .map((v) => ({ id: v.model_uid, name: v.label || v.model_uid, context: v.max_context_tokens || 0, output: v.max_output_tokens || 0 })),
+        .map((v) => limitsFrom({ id: v.model_uid, name: v.label || v.model_uid, context: v.max_context_tokens || 0, output: v.max_output_tokens || 0 })),
     })
   }
   return out
@@ -432,8 +451,11 @@ function parsePrices(b) {
 
 // parseConfigFamilies reads the same response as the families `devin
 // models list` makes of it, in its order: each config's label (1), context
-// (18), and model_info (23) with its output (13) and family uid (23); the
-// family's label is its family_metadata's (30) first field. A config that
+// (18), and model_info (23) with its window (4), output (13) and family uid
+// (23); the family's label is its family_metadata's (30) first field. The
+// context is the config's own, else model_info's window: Devin sent both,
+// always the same, until 2026-11, and now sends model_info's alone for
+// all but two of its 319 configs (2026-11-27: swe-2-1's is 262144). A config that
 // names no family is a family of its own under its label, as the CLI makes
 // MODEL_PRIVATE_11 "Claude Haiku 4.5". The aliases are the CLI's own, so
 // they are taken from SNAPSHOT's family of the same id.
@@ -444,6 +466,7 @@ function parseConfigFamilies(b) {
     let uid = ""
     let name = ""
     let context = 0
+    let window = 0
     let output = 0
     let fam = ""
     let famLabel = ""
@@ -454,6 +477,7 @@ function parseConfigFamilies(b) {
       else if (g.num === 23 && g.wire === 2) {
         for (const h of fields(g.data)) {
           if (h.num === 13 && h.wire === 0) output = h.n
+          else if (h.num === 4 && h.wire === 0) window = h.n
           else if (h.num === 23 && h.wire === 2) fam = dec.decode(h.data)
         }
       } else if (g.num === 30 && g.wire === 2) {
@@ -469,7 +493,7 @@ function parseConfigFamilies(b) {
       const known = SNAPSHOT.find(([u]) => u === id)
       fams.set(id, (e = { uid: id, label: famLabel || name || id, aliases: known ? known[2] : [], models: [] }))
     }
-    e.models.push({ id: uid, name: name || uid, context, output })
+    e.models.push(limitsFrom({ id: uid, name: name || uid, context: context || window, output }))
   }
   return [...fams.values()]
 }
@@ -1397,6 +1421,50 @@ function foldRoot(root, ps, depth) {
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v)
 
+// describedTool is a tool with its parameters' descriptions moved out of
+// its schema and into its own description, which goes to
+// <tool_descriptions>. Devin answers "Unable to process request due to an
+// MCP configuration issue" (permission_denied) to a schema carrying some
+// agents' own words in its descriptions, however the tool is named:
+// Cursor's Read, Grep, Glob, WebSearch, ReadLints and EditNotebook were each
+// refused alone, and went through with the same schema bare. The model
+// still reads every word, under the tool's entry; the schema keeps its
+// shape. Only schema keywords are walked: a parameter named description, or
+// an enum, default or example holding one, stays. A tool with nothing to
+// move is returned as it came; the caller's own is never changed.
+function describedTool(t) {
+  const notes = []
+  const schema = bareSchema(t.schema, "", notes, 0)
+  if (!notes.length) return t
+  const lines = [...new Set(notes.map(([at, words]) => (at ? `- ${at}: ` : "") + words.trim().replace(/\n/g, "\n  ")))]
+  return { ...t, schema, description: joinNonEmpty(t.description.trim(), "Parameters:\n" + lines.join("\n")) }
+}
+
+// the keywords whose value is a schema, a list of them, or a map of them by
+// name: nothing else in a schema is walked
+const ONE_SCHEMA = ["items", "additionalProperties", "additionalItems", "contains", "not", "if", "then", "else", "propertyNames", "unevaluatedProperties", "unevaluatedItems"]
+const SCHEMA_LIST = ["anyOf", "oneOf", "allOf", "prefixItems"]
+const SCHEMA_MAP = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]
+
+function bareSchema(s, at, notes, depth) {
+  if (!isObj(s) || depth > 32) return s
+  const out = {}
+  for (const [k, v] of Object.entries(s)) {
+    if (k === "description" && typeof v === "string") {
+      if (v.trim()) notes.push([at, v])
+    } else if (SCHEMA_MAP.includes(k) && isObj(v)) {
+      out[k] = Object.fromEntries(
+        Object.entries(v).map(([name, sub]) => [name, bareSchema(sub, k === "properties" ? (at ? `${at}.${name}` : name) : `${k}.${name}`, notes, depth + 1)]),
+      )
+    } else if (SCHEMA_LIST.includes(k) && Array.isArray(v)) {
+      out[k] = v.map((sub) => bareSchema(sub, k === "prefixItems" ? `${at}[]` : at, notes, depth + 1))
+    } else if (ONE_SCHEMA.includes(k)) {
+      out[k] = Array.isArray(v) ? v.map((sub) => bareSchema(sub, `${at}[]`, notes, depth + 1)) : bareSchema(v, k === "items" ? `${at}[]` : at, notes, depth + 1)
+    } else out[k] = v
+  }
+  return out
+}
+
 // geminiSchema is a tool's parameters as Devin's Gemini models take them.
 // Devin answers "There is an issue with this request, please try a
 // different model" (invalid_argument) to a Gemini model offered a tool
@@ -1665,7 +1733,7 @@ function build(chat, uid, key, opts = {}) {
   // describe themselves, and the same words in a message go through
   let tools = (chat.tools ?? [])
     .filter((t) => (!t?.type || t.type === "function") && t.function?.name)
-    .map((t) => ({ name: t.function.name, description: t.function.description ?? "", schema: objectRoot(t.function.parameters) }))
+    .map((t) => describedTool({ name: t.function.name, description: t.function.description ?? "", schema: objectRoot(t.function.parameters) }))
   if (chat.tool_choice === "none") tools = []
   if (/gemini/i.test(uid)) tools = tools.map((t) => ({ ...t, schema: geminiSchema(t.schema) }))
   const instructions = joinNonEmpty(system.join("\n\n"), toolDescriptions(tools))
@@ -1841,6 +1909,9 @@ function failure(status, text) {
   // Devin turns away some system prompts outright; sent again, the same
   // one is turned away again
   if (low.includes("content policy")) return { status: 400, message: msg }
+  // permission_denied for the request's tools, not the account: the same
+  // tools are refused again on every account (describedTool)
+  if (low.includes("mcp configuration issue")) return { status: 400, message: msg }
   if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
     return { status: 400, message: "input is too long for the model's context: " + msg }
   if (code === "invalid_argument") return { status: 400, message: msg, code }
@@ -2304,7 +2375,7 @@ function buildMessages(req, uid, key, opts = {}) {
   if (format) system.push({ role: USER, text: format })
   let tools = (req.tools ?? [])
     .filter((t) => (!t?.type || t.type === "custom") && t.name)
-    .map((t) => ({ name: t.name, description: t.description ?? "", schema: objectRoot(t.input_schema) }))
+    .map((t) => describedTool({ name: t.name, description: t.description ?? "", schema: objectRoot(t.input_schema) }))
   if (req.tool_choice?.type === "none") tools = []
   const described = toolDescriptions(tools)
   if (described) system.unshift({ role: USER, text: described, cache: false })
@@ -3447,4 +3518,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { describedTool, quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

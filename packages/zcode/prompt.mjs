@@ -6,7 +6,8 @@
 // dressed request away again with 405/3012 "request has been blocked due
 // to unusual activity" while the ZCode app's own requests go through on
 // the same machine and account, and 0.1.46 had begun saying
-// X-ZCode-App-Version 3.17.2 with these 3.14.3 texts still in the body.
+// X-ZCode-App-Version 3.17.2 with these 3.14.3 texts still in the body (4.0.0
+// since 0.1.74, plugins#1639, with the same texts).
 // The desktop section keeps the no-directory branch of
 // sections/desktop.ts: the plugin knows of no Gen UI output directory.
 // SHA-256, first 16 hex bits: cliPrefix 7779642ea44a4696,

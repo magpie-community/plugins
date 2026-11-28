@@ -196,11 +196,15 @@ moves. As of 2026-11-18 it holds Claude Code's `Bash`, `Write`, `Agent` and
 `StrReplace`, and the names first used in their place (`BashTool`,
 `bash_tool`, ...). On 2026-11-19 two accounts also saw `web_search`,
 `read_file` and `execute_command` refused, and each of these names behind
-leading underscores (`_read`); dsh declares seven of them. The plugin
+leading underscores (`_read`); dsh declares seven of them. On 2026-11-28
+`advisor` and `advisor_tool` were refused while `ADVISOR` and `Advisor` were
+taken: Factory matches some names as a prefix, case-sensitively. The plugin
 declares such a tool under droid's own name for the job (`Execute` for `Bash`, `Create` for `Write`,
 `Task` for `Agent`, `Read` for `read`, ...), or, when droid has none or the
-request already declares it, under its own name with a suffix drawn from the
-process (`TaskCreate_3f9a`). It renames the tool's earlier calls and
+request already declares it, under its name in capitals with a suffix drawn
+from the process (`TASKCREATE_3f9a`, `ADVISOR_3f9a`), so the alias never
+begins with a refused name (a name already in capitals goes in title case,
+`Advisor_3f9a`). It renames the tool's earlier calls and
 `tool_choice` to match and gives the caller its own name back in every reply,
 streamed or not. The lists are in `tool-names.mjs`.
 

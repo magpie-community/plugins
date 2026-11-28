@@ -113,6 +113,22 @@ const asAgentSDK = (text) => text.replace(CLAUDE_CODE_LINE, AGENT_SDK_LINE)
 const HARNESS_OPENER = /(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b/gi
 const harnessComma = (text) => text.replace(HARNESS_OPENER, "$1, $2")
 
+// Qoder CN parks a request in the same never-moving 10605 queue when its
+// system prompt holds another agent's name, as written, then a comma: "You
+// are ZCode, an interactive agent" (every ZCode request) and "You are
+// Codex, based on GPT-5." both waited at every resend on the free hmodel,
+// while "You are ZCode. You are an interactive agent", "You are Zcode, ..."
+// or "You are opencode, ..." were answered at once (duiniwukenaihe's bisect
+// on #1667: the match is case-sensitive, and tools, size or a trailing
+// period changed nothing). Rather than a list that grows with each agent
+// found, any capitalized name in "You are <Name>, a/an/the/based/built/
+// powered/running ..." goes as two sentences, "You are <Name>. You are
+// a ...", which says the same; Qoder's own names are left alone. Like the
+// two above, only the system text Qoder is sent changes; the user's own
+// messages go as written.
+const AGENT_NAMED = /\bYou are ((?!Qoder\b|Lingma\b|QwenWork\b)[A-Z][\w.+-]*(?:[ \t][A-Z][\w.+-]*){0,2}),[ \t]*(?=(?:an?|the|based|built|powered|running|made|created|developed|trained)\b)/g
+const nameAlone = (text) => text.replace(AGENT_NAMED, "You are $1. You are ")
+
 const hexID = () => randomUUID().replaceAll("-", "")
 
 // ---- the COSY envelope --------------------------------------------------------
@@ -1585,7 +1601,7 @@ const APP_CHAT = { stream: true, chat_task: "FREE_INPUT", is_reply: true, is_ret
 // passes itself last.
 function qoderBody(chat, m, named = "", task, site) {
   const given = (chat.messages ?? []).filter((x) => x.role === "system" || x.role === "developer").map((x) => textOf(x.content)).filter(Boolean).join("\n\n")
-  const system = harnessComma(asAgentSDK(given))
+  const system = nameAlone(harnessComma(asAgentSDK(given)))
   const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function" && t.function?.name) : []
   const baseSystem = site?.systemPrompt ?? QODER_SYS
   let sysText = system ? baseSystem + "\n\n" + system : baseSystem
@@ -4568,4 +4584,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, orgOf, teamOf, cardNameOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, orgOf, teamOf, cardNameOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, asAgentSDK, harnessComma, nameAlone, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState, queueReady }

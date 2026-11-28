@@ -184,7 +184,9 @@ const ATTEMPT_LINE = /^⚠ API error \(attempt \d+\): ?(.*)$/
 // quota is left. agy 1.5.9 retries it in the same turn with a banner each
 // time, and only ends the turn after its last retry: to the client the turn
 // hung (Lmohn39 on X, pi through agy-cli, 11-14). A banner with it ends the
-// turn at once, as the 429 ending would.
+// turn at once, as the 429 ending would. agy 1.5.13 and later retry it
+// silently, saying so only in their log, and the log's line ends it
+// (#watchRetries).
 const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail)
 // agy writes this into the reply when the model's first call came back with
 // neither text nor tool calls, then calls the model again in the same turn.
@@ -1126,11 +1128,17 @@ async function searchAsAccount(query, count, email, abort) {
         if (!output) await new Promise((resolve) => setTimeout(resolve, 100))
       }
       if (how !== "ended") conn.notify("session/cancel", { sessionId })
-      if (!output) {
-        const why = how === "failed" ? "agy's search_web failed" : "agy didn't search the web"
+      // a search that ran but left no source to read is said as that, not
+      // as no search: its step output had no "Sources:" (agy found none), or
+      // none of its lines read as one (plugins#1675)
+      const pages = output ? pagesOfSearchWeb(output, count) : []
+      if (!pages.length) {
+        const why = how === "failed" ? "agy's search_web failed"
+          : how === "completed" || output ? "agy's search_web found no sources"
+          : "agy didn't search the web"
         throw new Error(stderr.trim() ? `${why}: ${stderr.trim().slice(-300)}` : why)
       }
-      return pagesOfSearchWeb(output, count)
+      return pages
     })()])
   } finally {
     clearTimeout(timer)
@@ -3320,7 +3328,7 @@ class Proc {
         this.sessionPrompts++
         if (turn.promptSentAt == null) turn.promptSentAt = Date.now()
         let result
-        const capacityWatch = this.#watchCapacity(turn)
+        const retryWatch = this.#watchRetries(turn)
         try {
           result = await this.conn.request("session/prompt", {
             sessionId: this.sessionId,
@@ -3328,7 +3336,7 @@ class Proc {
           })
         } finally {
           turn.promptInFlight = false
-          clearInterval(capacityWatch)
+          clearInterval(retryWatch)
         }
         if (promptNumber === 1) {
           // how long agy took to answer, beside the session row's start-up steps
@@ -3484,17 +3492,34 @@ class Proc {
   // A try Antigravity answered with the bare 429 ends the turn now, with the
   // same error as agy's own 429 ending, instead of after agy's retries: the
   // process goes, as on a timeout, since agy is still retrying in it.
-  // Reads agy's log while nothing has reached the client, for the retry of
-  // a "no capacity" 503 (noCapacity).
-  #watchCapacity(turn) {
+  // Reads the lines agy adds to its log while the prompt runs: since agy
+  // 1.5.13 its retries are silent (its changelog: "retries are now silent
+  // … the chat shows an error only when every retry fails"), so the bare 429
+  // is no longer an attempt banner in the reply (refusedDetail) but only a
+  // log line, "Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429):
+  // Resource has been exhausted (e.g. check quota).), retrying in 4s", and
+  // agy tried 8 times over ~155s before its 429 ending (#1151's log): to the
+  // client, Claude Code and pi through agy-cli sat silent for minutes, then
+  // failed (lanmao on linux.do, herryhengAI on X, 11-22). The retry of a "no
+  // capacity" 503 (noCapacity) ends the turn only while nothing has reached
+  // the client, so a reply is never cut off for it.
+  #watchRetries(turn) {
     let reading = false
+    let from = turn.logOffset
     const quiet = () => !turn.done && turn.firstOutputAt == null && !turn.calls.length
     const timer = setInterval(async () => {
-      if (reading || !quiet()) return
+      if (reading || turn.done) return
       reading = true
       try {
-        const detail = await lastAgentError(this.logPath, turn.logOffset)
-        if (noCapacity(detail) && quiet()) this.capacityTurn(turn, detail)
+        const read = await logLines(this.logPath, from)
+        from = read.next
+        const details = agentErrorsIn(read.text)
+        const refused = details.find((detail) => refused429(detail))
+        if (refused) this.refuseTurn(turn, refused)
+        else {
+          const busy = details.findLast((detail) => noCapacity(detail))
+          if (busy && quiet()) this.capacityTurn(turn, busy)
+        }
       } finally {
         reading = false
       }
@@ -3734,6 +3759,31 @@ class Proc {
     }
     if (!sameCallIds(req.matches, last.callIds) || !req.requestDigest || req.requestDigest !== last.requestDigest) return null
     return last
+  }
+
+  // The step agy emitted last that a client dropped (plugins#1644): it merged
+  // a new message into the running step, so it never ran or stored the step's
+  // calls, and sent the session's history up to them again with only user
+  // text added. The step is only those calls, none answered or seen by the
+  // client, and they are every call the turn still waits for. Returns them,
+  // or null when anything differs (the caller keeps its guards and replay).
+  droppedNextStep(turn, messages) {
+    if (this.dead || this.stopping || this.retiring || this.historyInvalid || this.turn !== turn) return null
+    if (!turn || turn.done || turn.finalized || turn.attached || turn.steering || turn.cancelRequested) return null
+    const expected = this.expectedMessages
+    if (!Array.isArray(expected) || expected.length < 2 || !Array.isArray(messages)) return null
+    const step = expected.at(-1)
+    if (step?.role !== "assistant" || !Array.isArray(step.content)) return null
+    const uses = step.content.filter((block) => block?.type === "tool_use")
+    // a step that said something too is a reply the client never had: a fork
+    if (!uses.length || step.content.some((block) => block?.type !== "tool_use" &&
+      block?.type !== "thinking" && block?.type !== "redacted_thinking")) return null
+    const calls = uses.map((block) => turn.calls.find((call) => call.id === block.id))
+    if (calls.some((call) => !call || call.result || call.clientSeen || call.mcpResponded || call.deferred ||
+      this.#selfPollCapped(turn, call))) return null
+    const pending = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded)
+    if (pending.length !== calls.length) return null
+    return appendedUserText(historyRows(expected.slice(0, -1)), historyRows(messages)) ? calls : null
   }
 
   #respondMcp(call, payload) {
@@ -4002,20 +4052,47 @@ async function logTail(file, offset) {
   }
 }
 
-// agy writes the real upstream error only to its log; read what this turn added.
-async function lastAgentError(file, offset) {
-  const text = await logTail(file, offset)
-  if (!text) return ""
-  let found = ""
-  for (const line of text.split("\n")) {
+// The whole lines agy logged from offset (its last LOG_TAIL_BYTES at most),
+// and the offset after them: a line still being written is read next time.
+async function logLines(file, offset) {
+  try {
+    if ((await fs.promises.stat(file)).size <= offset) return { text: "", next: offset }
+    const handle = await fs.promises.open(file, "r")
+    try {
+      const size = (await handle.stat()).size
+      const start = Math.max(offset, size - LOG_TAIL_BYTES)
+      const buffer = Buffer.alloc(Math.max(0, size - start))
+      await handle.read(buffer, 0, buffer.length, start)
+      const last = buffer.lastIndexOf(0x0a)
+      if (last < 0) return { text: "", next: offset }
+      return { text: buffer.subarray(0, last + 1).toString("utf8"), next: start + last + 1 }
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { text: "", next: offset }
+  }
+}
+
+// The upstream errors in text, agy's log, in the order agy logged them
+function agentErrorsIn(text) {
+  const out = []
+  for (const line of String(text || "").split("\n")) {
     const match = /\] (?:agent executor error|failed to construct executor|inference connection failed[^:]*): (.+)$/.exec(line) ||
       /\] (?:Run|CallWithRetry): attempt \d+ failed \((.+)\), retrying in /.exec(line)
-    if (match) found = match[1]
+    if (!match) continue
+    let found = match[1]
+    const cut = found.lastIndexOf("generating and executing: ")
+    if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
+    found = found.trim().slice(0, 1000)
+    if (found) out.push(found)
   }
-  if (!found) return ""
-  const cut = found.lastIndexOf("generating and executing: ")
-  if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
-  return found.trim().slice(0, 1000)
+  return out
+}
+
+// agy writes the real upstream error only to its log; read what this turn added.
+async function lastAgentError(file, offset) {
+  return agentErrorsIn(await logTail(file, offset)).at(-1) || ""
 }
 
 // Where agy's three-line notice (the output cap's, a malformed call's) ends,
@@ -4881,6 +4958,28 @@ function droppedPendingCalls(turn, expected, base, history) {
   return historyKey(stripped) === historyKey(history)
 }
 
+// The client's rows are the session's, tool results included, with only user
+// text added after its last row: the step's tool results (plugins#1644).
+function appendedUserText(want, got) {
+  if (!want.length || got.length !== want.length) return false
+  const n = want.length - 1
+  if (stableJSON(want.slice(0, n)) !== stableJSON(got.slice(0, n))) return false
+  const a = want[n].content
+  const b = got[n].content
+  if (want[n].role !== "user" || got[n].role !== "user" || b.length < a.length) return false
+  if (!a.some((block) => block.type === "tool_result")) return false
+  const k = a.length - 1
+  if (stableJSON(a.slice(0, k)) !== stableJSON(b.slice(0, k))) return false
+  let extra = b.slice(k + 1)
+  if (stableJSON(a[k]) !== stableJSON(b[k])) {
+    // the new text joins a text the results already ended with
+    if (a[k].type !== "text" || b[k].type !== "text" || !b[k].text.startsWith(a[k].text) ||
+      !b[k].text.slice(a[k].text.length).trim()) return false
+    extra = [b[k], ...extra]
+  }
+  return extra.length > 0 && extra.every((block) => block.type === "text")
+}
+
 // Every tool_use of the turn's calls in messages has a tool_result after it.
 function carriedAnswered(messages, ids) {
   const open = new Set()
@@ -4935,6 +5034,31 @@ async function keepDroppedTurn(proc, turn, opts) {
   } catch {
     return false
   }
+}
+
+// A step the client dropped (droppedNextStep, plugins#1644) is answered as
+// cancelled and the session goes on with the client's new message, as
+// keepDroppedTurn does for #1231, instead of replaying the conversation into
+// a new session with no cache. "kept", "failed" (the session is left
+// behind; the caller replays) or null (not such a step).
+async function keepDroppedStep(ctx) {
+  return withAcquireLock(ctx.convKey, async () => {
+    const { proc, turn } = ctx
+    if (pool.get(ctx.convKey) !== proc || proc.turn !== turn) return null
+    const calls = proc.droppedNextStep(turn, ctx.messages)
+    if (!calls || proc.workDir !== ctx.acquireOpts.workDir ||
+      !sameInstructions(proc.instructions, ctx.acquireOpts.instructions)) return null
+    const kept = await keepDroppedTurn(proc, turn, ctx.acquireOpts)
+    logBridgeEvent(proc, turn, kept ? "kept" : "keep_failed", "dropped_step", ctx.acquireOpts, { calls: calls.length })
+    if (kept) return "kept"
+    if (proc.turn === turn) await reclaimStaleTurn(proc, turn, SUPERSEDED_NOTE)
+    else {
+      proc.historyInvalid = true
+      dropFromPool(proc)
+      await proc.stop().catch(() => {})
+    }
+    return "failed"
+  })
 }
 
 async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn closed") {
@@ -9970,7 +10094,18 @@ export const AntigravityBridgePlugin = async () => {
                   // history replayed into a new one with no cache, once per
                   // ToolSearch load (plugins#1371, _paper_hands on X).
                   const grew = proc.toolsGrew(tools)
-                  if (!prefillAfterResults && (interrupted || imageResult || grew) && historyMatches && proc.workDir === workDir &&
+                  // The step after these results that the client dropped, a new
+                  // message in its place (plugins#1644): cancelled, the session
+                  // goes on.
+                  const droppedStep = !prefillAfterResults && !historyMatches
+                    ? await keepDroppedStep({ convKey, proc, turn, messages: body.messages, acquireOpts })
+                    : null
+                  if (droppedStep === "kept") {
+                    keptSession = true
+                    answeredIds = new Set(resultBlocks.map((block) => block.tool_use_id))
+                  } else if (droppedStep === "failed") {
+                    acquireOpts.dropReason = "dropped_step"
+                  } else if (!prefillAfterResults && (interrupted || imageResult || grew) && historyMatches && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
@@ -10033,7 +10168,17 @@ export const AntigravityBridgePlugin = async () => {
                   }
                 }
                 const held = pool.get(convKey)
-                if (held?.turn && !held.turn.cancelRequested) {
+                // results under ids the client renamed reach no live call, the
+                // step it dropped after them included (plugins#1644)
+                const droppedStep = !found.length && !prefillAfterResults && held?.turn && !held.turn.cancelRequested
+                  ? await keepDroppedStep({ convKey, proc: held, turn: held.turn, messages: body.messages, acquireOpts })
+                  : null
+                if (droppedStep === "kept") {
+                  keptSession = true
+                  answeredIds = new Set(resultBlocks.map((block) => block.tool_use_id))
+                } else if (droppedStep === "failed") {
+                  acquireOpts.dropReason = "dropped_step"
+                } else if (held?.turn && !held.turn.cancelRequested) {
                   // No live MCP call waits for these results, but the
                   // conversation's session holds a turn. A turn streaming to
                   // another request is busy for now (503, the client tries

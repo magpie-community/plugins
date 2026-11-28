@@ -1,7 +1,7 @@
 // 纯渲染逻辑（无 DOM/网络）。浏览器里作为 classic <script> 执行，挂到 window.FTView；
 // Bun 单测 import 时挂到 globalThis.FTView（无导出，纯副作用）。
 (function (root) {
-  const KIND = { daily: "每天", monthly: "每月", once: "新人", limited: "限时", free: "免费" };
+  const KIND = { daily: "每天", weekly: "每周", monthly: "每月", once: "新人", limited: "限时", free: "免费" };
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const safeUrl = (u) => { try { const x = new URL(String(u || "")); return x.protocol === "https:" ? x.href : null; } catch { return null; } };
   const colorFor = (n) => { const P = ["#4f46e5", "#0d9488", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#15803d", "#c2410c", "#9333ea", "#0f766e", "#b91c1c", "#1d4ed8"]; let h = 0; for (const c of String(n)) h = (h * 31 + c.codePointAt(0)) >>> 0; return P[h % P.length]; };

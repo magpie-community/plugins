@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-bailucode-auth",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "BAILU AI (白鹿, bailucode.com) for OpenCode and magpie: an API key or a browser sign-in that fetches one, live models, the 白鹿通行证 quota (credits, tokens, per-protocol packs) and the portal's daily check-in",
   "type": "module",
   "main": "./opencode.mjs",

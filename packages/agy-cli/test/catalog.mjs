@@ -1527,3 +1527,22 @@ test("config names the provider, keeping the user's own name", async () => {
     assert.deepEqual(own.provider["agy-cli"], { name: "My agy", npm: "x", options: { x: 1 } })
   })
 })
+
+// #1620：agy models 列出 gemini-3.1-flash-image 的 -high/-low 档位时，图片型号不能当聊天家族。
+// 否则 agy 自己的标题模型 gemini-3.1-flash-lite-preview（以及别的 flash 别名）
+// 会按 /flash/ 先匹配到图片家族，聊天请求被开到图片模型上。
+test("列表里有 flash-image 档位时，flash 别名仍落到聊天用的 flash 型号", async () => {
+  const rows = [
+    ["gemini-3.1-flash-image-high", "Gemini 3.1 Flash Image (High)"],
+    ["gemini-3.1-flash-image-low", "Gemini 3.1 Flash Image (Low)"],
+    ...BASE_MODEL_ROWS,
+  ]
+  await withKit({ modelsBehavior: { stdout: modelsOutput(rows) } }, async (kit) => {
+    kit.defaultPrompt = async (agent) => { await agent.text("ok"); return { stopReason: "end_turn" } }
+    for (const model of ["gemini-3.1-flash-lite-preview", "gemini-3.1-flash", "claude-haiku-4-5"]) {
+      const res = await kit.request(baseBody({ stream: false, model: "agy-cli/" + model }))
+      assert.equal(res.status, 200, await res.clone().text())
+      assert.match(kit.setModels.at(-1) ?? "", /^gemini-3\.8-flash-(?:low|high)$/, model + " → " + JSON.stringify(kit.setModels))
+    }
+  })
+})

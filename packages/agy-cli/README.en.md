@@ -135,6 +135,16 @@ MCP server. The control port listens on loopback only, with a token per process.
   (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
   instead of rejected; the session ledger stays aligned across turns. See
   "Assistant prefill" below.
+- **Web search**: the plugin gives Magpie's web search `agy-cli:agy`
+  (`magpie search add agy-cli`), through agy's own `search_web`: it opens an
+  agy session whose one tool is `search_web`, asks it for the query, reads the
+  summary and sources from the step output agy keeps, and cancels the turn, so
+  the model writes no answer. agy runs the search on Google's side; the plugin
+  never calls Google itself. Each result's title is its source's domain, its
+  link is Google's redirect (as agy gives it), and its text is what the summary
+  says citing that source. A search as an account uses that account's agy
+  sign-in. When `search_web` failed, never ran, or ran and left no source to
+  read, the search is an error that says which (since 0.1.160).
 - **Usage visibility**: Magpie shows the agy subscription usage windows. Each
   model's window (its pool's most used one) is what Magpie's routing weighs the
   account by for that model, so a routing group puts it by what it has left,
@@ -421,7 +431,11 @@ since 11-14 Google's check reads past them. Reworded in the first user turn
 (the default), Claude Code's prompt is answered; in agy's session
 instructions (`AGY_BRIDGE_SYSTEM_APPEND=1`) it is still turned away. So a
 bare 429 there is reported as a 400 about the prompt, and in the user turn
-as a rate limit the client can retry or another account can take.
+as a rate limit the client can retry or another account can take. Either
+way it ends the turn on the first try that got it: since agy 1.5.13 retries
+it silently for minutes (eight tries over about two and a half), writing it
+only to its log, so the plugin reads that log while the prompt runs instead
+of waiting for agy to give up.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider

@@ -92,7 +92,8 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   从 agy 保存的这一步输出里读出摘要和来源，然后取消这一轮，模型不写回答。搜索由 agy 在
   Google 那边完成，插件不直接请求 Google。每条结果的标题是来源的域名，链接是 Google 的
   跳转地址（agy 给出的就是这样），正文是摘要里引用这个来源的句子。按账号搜索时，用的是
-  这个账号的 agy 登录。
+  这个账号的 agy 登录。`search_web` 失败、没有运行，或运行了但没留下可读的来源时，
+  搜索返回错误并说明是哪一种（0.1.160 起）。
 - **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口。每个模型的窗口（它所在额度池用得最多的那个）也是 Magpie 路由给这个模型排账号的依据：路由组按剩余额度排它，额度池用完的模型会让给下一个成员。agy 的 `/usage` 报告不带账号套餐，所以不显示套餐。
 
 ## 助手预填（assistant prefill）
@@ -292,7 +293,8 @@ Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent S
 和 pi 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
 agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"RFC 2119 key words: …"、"You're Hermes Agent / OpenCode / a coding agent running in the Codex CLI"、"running within pi"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。Codex 的两句 GPT-5 行（"You are Codex, a coding agent based on GPT-5"、"You are Codex, an agent based on GPT-5"）出现在用户的轮次里（AGENTS.md、`<system-reminder>`）也会被拒，所以用户轮次里也换成 "built on GPT-5"。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。改写后放在第一条用户消息里（默认做法），Claude Code
 的提示词能正常回答；放在 agy 的会话指令里（`AGY_BRIDGE_SYSTEM_APPEND=1`）仍然被拒。所以后者回的 429 报成针对
-提示词的 400，前者报成限流，客户端可以重试，或交给别的账号。
+提示词的 400，前者报成限流，客户端可以重试，或交给别的账号。两种情况都在第一次被拒时就结束本轮：agy 1.5.13
+起会静默重试几分钟（约两分半内 8 次），只写在它的日志里，所以插件在提示词运行期间读这份日志，不再等 agy 放弃。
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
 换成同义的说法再发：原文照发时 `gemini-4-argon` 大多很快答完、不思考、只走一步（#1028）。

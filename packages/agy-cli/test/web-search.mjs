@@ -107,6 +107,36 @@ test("a turn that searched nothing is an error, not an empty list", async () => 
   })
 })
 
+// plugins#1675: a search_web that failed, or ran and left no source to
+// read, is an error that says so, never pages without a source
+test("a search_web that failed is an error that says so", async () => {
+  await withKit(async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", name: "search_web", args: { query: "q" }, status: "in_progress", kind: "search" })
+      agent.update({ sessionUpdate: "tool_call_update", toolCallId: "c1", name: "search_web", status: "failed", kind: "search" })
+      await agent.waitCancel()
+      return { stopReason: "cancelled" }
+    }
+    await assert.rejects(kit.plugin.search.agy.execute({ query: "x" }, {}), /agy's search_web failed/)
+    assert.ok(kit.acpLog.some((e) => e.method === "session/cancel"))
+  })
+})
+
+test("a search_web that ran and left no source to read is an error that says so", async () => {
+  // no "Sources:" in the step output, and a "Sources:" none of whose lines
+  // reads as a source
+  const summary = OUTPUT.slice(0, OUTPUT.lastIndexOf("\nSources:\n") + 1)
+  for (const output of [summary, summary + "\nSources:\nnothing to read here\n"]) {
+    await withKit(async (kit) => {
+      searches(kit, output)
+      const error = await kit.plugin.search.agy.execute({ query: "x" }, {}).catch((e) => e)
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /agy's search_web found no sources/)
+      assert.doesNotMatch(error.message, /didn't search/)
+    })
+  }
+})
+
 test("agy not signed in is the account refused, for magpie to rest", async () => {
   await withKit(async (kit) => {
     const error = await kit.plugin.search.agy.execute({ query: "x" }, {}).catch((e) => e)
