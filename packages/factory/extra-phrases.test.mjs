@@ -6,7 +6,8 @@ import { extraPhrases, sanitizeBody } from "./index.mjs"
 // policy check reads the whole conversation, and the \uXXXX form is what the
 // model still reads and the check does not.
 test("extraPhrases takes only named, non-empty strings", () => {
-  assert.deepEqual(extraPhrases({ redact_phrases: ["Secret Project", "", "  "] }), ["Secret Project", "  "])
+  // a phrase of nothing but space is refused: it would rewrite every run of it
+  assert.deepEqual(extraPhrases({ redact_phrases: ["Secret Project", "", "  ", " \t "] }), ["Secret Project"])
   assert.deepEqual(extraPhrases({}), [])
   assert.deepEqual(extraPhrases({ redact_phrases: "not-a-list" }), [])
   assert.deepEqual(extraPhrases({ redact_phrases: [1, null, "ok"] }), ["ok"])

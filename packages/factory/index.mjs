@@ -1785,7 +1785,9 @@ function escapeDeep(value, phrases = PI_QUOTED_IN_TOOL) {
 // match, or the group that names it). That is a design call, not a default.
 export function extraPhrases(options = {}) {
   const named = Array.isArray(options.redact_phrases) ? options.redact_phrases : []
-  return named.filter((p) => typeof p === "string" && p.length > 0)
+  // a phrase of nothing but space would rewrite every run of it in every
+  // message, code and tool output included: it needs a character of its own
+  return named.filter((p) => typeof p === "string" && p.trim().length > 0)
 }
 
 export function sanitizeBody(body, extra = []) {
