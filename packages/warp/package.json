@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-warp-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode provider plugin: Warp (the terminal) AI credits through the Warp app's sign-in",
   "type": "module",
   "main": "./opencode.mjs",

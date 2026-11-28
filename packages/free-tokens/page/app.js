@@ -40,13 +40,15 @@
     $$(".avatar.logo img", list).forEach((img) => img.addEventListener("error", () => { const d = img.parentNode; d.className = "avatar gen"; d.style.background = d.getAttribute("data-col") || "#4f46e5"; d.textContent = d.getAttribute("data-ini") || "?"; }));
     $$("[data-act]", list).forEach((btn) => btn.addEventListener("click", (e) => { e.stopPropagation(); onAction(btn); }));
   }
+  function bjTime(t) { try { return new Date(t).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }); } catch { return String(t); } }
   function render() {
     if (!deals) return;
     const c = counts(deals, mapping, demoState); renderSummary(c); renderBuckets(c);
     $("#tabhint").innerHTML = esc(TAB_HINT[state.tab] || ""); renderList();
-    let when = ""; try { when = new Date(meta.generatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }); } catch { when = String(meta.generatedAt); }
+    const when = bjTime(meta.generatedAt);
     const warn = demoState.configKnown ? "" : " · 读取本机 magpie 配置失败，档位可能不准";
-    $("#footNote").textContent = `三档：已配置可用 / 有插件待配置 / 暂无插件；数据取自 AIHOT 实时 · ${when}（北京时间）${warn}。数据源：AIHOT · https://aihot.news/free-tokens`;
+    const src = meta.stale ? `AIHOT 这次没读到，显示的是 ${bjTime(meta.fetchedAt)} 读到的数据` : `数据取自 AIHOT 实时 · ${when}`;
+    $("#footNote").textContent = `三档：已配置可用 / 有插件待配置 / 暂无插件；${src}（北京时间）${warn}。数据源：AIHOT · https://aihot.news/free-tokens`;
   }
   function showMessage(msg) { $("#list").innerHTML = `<div class="empty">${esc(msg)}</div>`; $("#empty").style.display = "none"; }
 

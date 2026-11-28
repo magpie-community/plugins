@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-openai-decisions-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Expose OpenAI Decisions through Magpie's native System One decision API.",
   "type": "module",
   "main": "./opencode.mjs",

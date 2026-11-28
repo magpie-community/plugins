@@ -334,3 +334,80 @@ test("a plugin with nothing warming is read once at startup", async () => {
   expect(state.reads).toBe(1)
   stop()
 })
+
+// an account's list read through its workspace config, which can hide a
+// bundled model (plugins#1642, anice520): a read that fails keeps the list
+// that account last read, never the bundled one or another account's
+function workspace(state) {
+  return {
+    WorkspacePlugin: async () => ({
+      auth: { provider: "ws", methods: [{ type: "api", label: "Workspace key" }] },
+      config: async (cfg) => {
+        cfg.provider.ws = { npm: "@ai-sdk/openai-compatible", name: "Workspace", models: { m1: { name: "M1" }, m2: { name: "M2" }, m3: { name: "M3" } } }
+      },
+      provider: {
+        id: "ws",
+        models: async (p, { auth }) => {
+          state.reads.push(auth.key)
+          const answer = state.answers[auth.key]
+          if (answer instanceof Error) throw answer
+          return answer
+        },
+      },
+    }),
+  }
+}
+
+test("a failed read keeps the list that account last read, not the bundled one (plugins#1642)", async () => {
+  const { setup } = await import(join(packages, "trae", "opencode2.mjs"))
+  const state = { reads: [], answers: { "sk-a": { m1: { name: "M1" } }, "sk-b": { m2: { name: "M2" }, m3: { name: "M3" } } } }
+  const f = fakeContext()
+  const A = { connection: { type: "credential", id: "cred_a" }, value: { type: "key", key: "sk-a" } }
+  const B = { connection: { type: "credential", id: "cred_b" }, value: { type: "key", key: "sk-b" } }
+  const names = () => f.providers()[0].models.map((m) => m.name)
+  const switchTo = async (acct) => {
+    const n = f.reloads.model
+    f.conns.set("ws", acct)
+    f.emit({ type: "credential.switched", data: { integrationID: "ws", credentialID: acct.connection.id } })
+    await until(() => f.reloads.model > n)
+  }
+  f.conns.set("ws", A)
+  const stop = await setup(f.ctx, workspace(state))
+  await until(() => f.reloads.model === 1)
+  // A's workspace hides M2 and M3
+  expect(names()).toEqual(["M1"])
+  await switchTo(B)
+  expect(names()).toEqual(["M2", "M3"])
+  // back to A, whose workspace config answers 503 this time
+  state.answers["sk-a"] = new Error("HTTP 503")
+  await switchTo(A)
+  expect(state.reads).toEqual(["sk-a", "sk-b", "sk-a"])
+  expect(names()).toEqual(["M1"])
+  // and B's list is still B's when its read fails too
+  state.answers["sk-b"] = new Error("HTTP 503")
+  await switchTo(B)
+  expect(names()).toEqual(["M2", "M3"])
+  // an empty list read is an empty list, kept as such
+  state.answers["sk-a"] = {}
+  await switchTo(A)
+  expect(names()).toEqual([])
+  state.answers["sk-a"] = new Error("HTTP 503")
+  await switchTo(B)
+  await switchTo(A)
+  expect(names()).toEqual([])
+  stop()
+})
+
+test("an account whose list was never read gets the bundled list when its read fails (plugins#1642)", async () => {
+  const { setup } = await import(join(packages, "trae", "opencode2.mjs"))
+  const state = { reads: [], answers: { "sk-a": { m1: { name: "M1" } }, "sk-c": new Error("HTTP 503") } }
+  const f = fakeContext()
+  f.conns.set("ws", { connection: { type: "credential", id: "cred_a" }, value: { type: "key", key: "sk-a" } })
+  const stop = await setup(f.ctx, workspace(state))
+  await until(() => f.reloads.model === 1)
+  f.conns.set("ws", { connection: { type: "credential", id: "cred_c" }, value: { type: "key", key: "sk-c" } })
+  f.emit({ type: "credential.switched", data: { integrationID: "ws", credentialID: "cred_c" } })
+  await until(() => f.reloads.model === 2)
+  expect(f.providers()[0].models.map((m) => m.name)).toEqual(["M1", "M2", "M3"])
+  stop()
+})
