@@ -323,6 +323,11 @@ function runShell(command, dir, timeoutMs) {
       cwd: dir,
       detached: true,
       windowsHide: true,
+      // cmd.exe gets the command as one verbatim argument: without this libuv
+      // quotes it the MSVCRT way, so a " in the command reaches cmd.exe
+      // backslash-escaped and the command is not the one that was asked for
+      // (#1325, review)
+      windowsVerbatimArguments: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: sh.env,
     })
