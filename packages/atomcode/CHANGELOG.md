@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. The format follows
 Keep a Changelog and the project uses semantic versioning.
 
+## 0.3.2 - 2026-11-20
+
+### Fixed
+
+- A failing OAuth broker refresh (HTTP 502, other 5xx, or a network error) no
+  longer runs again on every host poll. Each account waits on an exponential
+  backoff with ±20% jitter, capped at 10 minutes, and one in-flight refresh is
+  shared. While that wait is in effect and the access token is already stale,
+  `models`, `usage`, and later requests skip the broker and CodingPlan, so a
+  dead token cannot pin the plugin host.
+- An access token CodingPlan or the gateway rejects with HTTP 401 is remembered
+  on that wait even when `expires` is still in the future (including inside the
+  30s refresh skew). The poll that discovers it tries one refresh. If the
+  broker fails or the wait is already armed, later polls skip both the broker
+  and CodingPlan and return the fallback catalog instead of throwing
+  `CodingPlan returned HTTP 401`. A token CodingPlan still accepts keeps
+  serving live models and signed requests through a broker 502.
+- The wait is cleared as soon as a refresh succeeds, or the account's refresh
+  token, access token, or expiry changes. A browser or CLI sign-in that keeps
+  the same refresh token but issues a new access token is probed immediately.
+- A 400/401/403, or an `invalid_grant` / `invalid_token` body on any status,
+  is not probed again until that credential changes. Holds are capped so a
+  long-lived process drops the oldest entry instead of retaining one per
+  account forever.
+
 ## 0.3.1 - 2026-11-15
 
 ### Fixed
