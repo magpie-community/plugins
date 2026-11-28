@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-xiaoyunque-auth", "name": "小云雀", "providers": ["xiaoyunque"], "community": true,
+      "summary": { "en": "Use XiaoYunQue image and video models directly in Magpie with browser sign-in or an Access Key. View account credits, generate media, recover tasks, download results, upgrade Draft videos and run video super-resolution or subtitle removal.", "zh": "通过网页登录或 Access Key 在 Magpie 直接使用小云雀图片和视频模型，支持查看账号积分、生成媒体、恢复任务、下载结果、升级 Draft 视频以及视频超分和擦字幕。" } },
     { "package": "@magpie-community/opencode-v0-auth", "name": "Vercel v0", "providers": ["v0"], "community": true,
       "summary": { "en": "Vercel v0 Mini, Pro, Max and Max Fast through the official v0 Platform API.", "zh": "通过 v0 官方 Platform API 接入 Mini、Pro、Max 和 Max Fast。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
