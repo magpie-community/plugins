@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>积分与 Token 余量</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-head"><h1>积分与 Token 余量</h1><button id="refresh" type="button">刷新</button></header>
+    <p class="error" id="error" role="alert" hidden></p>
+    <section id="report" aria-busy="true" hidden>
+      <div class="controls">
+        <div class="segmented" id="views" role="group" aria-label="查看方式">
+          <button type="button" data-view="credits" aria-pressed="true">折合积分</button>
+          <button type="button" data-view="tokens" aria-pressed="false">按型号看 Token</button>
+          <button type="button" data-view="spend" aria-pressed="false">积分消耗</button>
+        </div>
+        <div class="segmented" id="periods" role="group" aria-label="计费时段">
+          <button type="button" data-period="peak">峰谷对照</button>
+          <button type="button" data-period="recent">近期实测</button>
+        </div>
+        <div class="segmented" id="spend-windows" role="group" aria-label="消耗统计窗口" hidden>
+          <button type="button" data-window="24h" aria-pressed="true">近 24 小时</button>
+          <button type="button" data-window="7d" aria-pressed="false">最近 7 日</button>
+          <button type="button" data-window="30d" aria-pressed="false">最近 30 日</button>
+        </div>
+      </div>
+      <div class="summary">
+        <div>
+          <h2 id="total-label">折合积分</h2>
+          <div class="total" id="total">—</div>
+          <div class="dual" id="dual" hidden>
+            <div><span class="minor" id="peak-label">高峰可用</span><strong id="peak-total">—</strong></div>
+            <div><span class="minor" id="offpeak-label">低峰可用</span><strong id="offpeak-total">—</strong></div>
+          </div>
+          <p id="coverage"></p>
+        </div>
+        <div class="filters">
+          <label id="base-field">基准供应商<select id="base"></select></label>
+          <label id="base-model-field">基准精确型号<select id="base-model"></select></label>
+          <div id="model-field" hidden>
+            <label>搜索型号<input id="search" autocomplete="off" placeholder="MiniMax、GLM、DeepSeek…"></label>
+            <label>精确型号<select id="model"></select></label>
+          </div>
+          <p id="raw"></p>
+        </div>
+      </div>
+      <p id="mapping-hint" class="note"></p>
+      <div class="table-head"><h2>供应商</h2><button id="match-models" type="button" hidden>填入同名型号</button><span id="updated"></span></div>
+      <div id="rows"></div>
+      <p id="note" class="note"></p>
+    </section>
+    <p id="loading" role="status">正在读取 Magpie 余额与近 7 天用量…</p>
+  </main>
+  <dialog id="editor">
+    <form id="rate-form">
+      <div class="page-head"><h2 id="editor-title">设置费率</h2><button id="close-editor" type="button" aria-label="关闭">关闭</button></div>
+      <label>精确型号<select id="edit-model"></select></label>
+      <label>口径<select id="edit-period"><option value="recent">近期实测</option><option value="peak">高峰</option><option value="offpeak">低峰</option></select></label>
+      <label>积分／百万 Token<input id="rate" type="number" step="any" min="0.00000001" max="1000000000" placeholder="例如 50" required></label>
+      <p id="rate-origin" class="note"></p>
+      <p id="rate-hint" class="note"></p>
+      <div class="dialog-actions"><button id="clear-rate" type="button">清除手填值</button><button class="primary" type="submit">保存</button></div>
+      <p id="rate-error" class="error" role="alert" hidden></p>
+    </form>
+  </dialog>
+</body>
+</html>
