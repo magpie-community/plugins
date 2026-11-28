@@ -1,0 +1,6 @@
+{
+  "name": "magpie-design-mcp-runtime",
+  "private": true,
+  "type": "module",
+  "main": "./mcp-runtime.mjs"
+}

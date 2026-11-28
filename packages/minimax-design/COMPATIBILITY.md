@@ -1,13 +1,150 @@
 # Compatibility record
 
-**This plugin is Windows only.** Its `config` and `dir` fields lean on `%APPDATA%` and `%LOCALAPPDATA%`, environment variables that don't exist on macOS or Linux — there the paths would expand to `/@hilo/desktop/hub-config.json` and `/Programs/MiniMax Design`, where nothing is written and Design is never detected.
+## Current acceptance — November 14, 2026
 
-## Windows — verified
+0.4.3 adds source-declared speech discovery and native Windows/macOS regression
+jobs. Local Node and Bun suites each pass 37 tests. The installed Design media
+executor passes image editing, four-reference forwarding, video fixture polling
+and content, and speech fixture output checks.
 
-- Windows 11 (workstation), MiniMax Design 3.0.17, official magpie 0.1.20xx (Oct 2026).
-- Verified with real end-to-end use: connect writes `config.customModels.user-custom-magpie` into `hub-config.json` with magpie's full model list; Design's model menu shows the Magpie entry; real inference requests flow through magpie's gateway and are attributed to `minimax-design` in Usage; existing custom-model entries are preserved.
-- Magpie's own agent-plugin sandbox checks also passed: dotted nested key paths with intermediate-object creation, object values and object-array values, `$VAR` expansion (`$APPDATA`, `$LOCALAPPDATA`), preservation of unrelated keys.
+Real Design MCP text-to-image and reference-image editing completed. A local
+Ming speech task completed, placed its output in a Composition and saved a WAV.
+This verifies execution and output delivery; listening acceptance is pending.
+Real Grok video returned HTTP 403 for credits/subscription, and MiniMax H3
+returned HTTP 502 with a quota/credits explanation. Neither produced a video.
+No automatic retry or alternate paid-provider fallback followed those failures.
+Native Windows desktop acceptance remains pending; CI tests alone do not
+establish it. The sections below retain version-specific historical evidence.
 
-## macOS — not supported in this version
+## macOS — verified on November 13, 2026
 
-MiniMax Design ships for macOS 13+, and its userData path there would be electron's default `~/Library/Application Support/@hilo/desktop/hub-config.json` — but that path is unconfirmed, and the agent-plugin `config` field takes a single path with `~`/`$VAR` expansion, so one package can't carry both. If you can test on macOS, open an issue or PR with the observed path and a verification note and the plugin can grow a per-platform form.
+MiniMax Design 4.0.10, domestic production build, Apple Silicon macOS.
+The Agent uses `~/.minimax-design`, linked automatically by the companion to
+the native data directory. It does not require `magpie.platform` or a patched
+host. Windows uses a directory junction; native Windows execution remains
+unverified.
+
+| Purpose | Observed path |
+| --- | --- |
+| Desktop configuration and detection | `~/Library/Application Support/@hilo/desktop/hub-config.json` |
+| User skills | `~/Movies/Hub/skills/<name>/SKILL.md` |
+| Isolated agent's global MCP configuration | `~/Library/Application Support/@hilo/desktop/ai-runtime/config-home/opencode/opencode.json` |
+
+The bundle and running process confirmed the desktop data path. Design's
+packaged gateway and skill loader confirmed the user-skill directory.
+Its bundled OpenCode 1.18.18 merges its isolated global configuration with
+the desktop's generated configuration.
+
+`acceptance.mjs` uses disposable homes, the actual packaged gateway and
+OpenCode executable, and local model/MCP fixtures. It verifies:
+
+1. Magpie discovers and connects Design, preserving existing providers/settings.
+2. Design 4.0.10's own model validator accepts the generated provider.
+   Its packaged provider converter builds the actual OpenCode configuration,
+   retaining the desktop's provider IDs and tool support.
+3. Library distributes and withdraws a user skill and HTTP MCP server.
+4. Design's actual gateway lists the skill, enables it through its normal
+   permission API, and stops listing it after Library withdraws it.
+5. Bundled OpenCode merges and connects the MCP beside user/bundled servers.
+6. The generated provider key routes inference through sandbox Magpie.
+7. A bundled-agent turn calls the MCP tool and sends its result back through
+   Magpie to the model.
+8. Disconnect restores existing custom providers. Existing MCP entries and
+   the desktop's encrypted `customMcpVault` remain intact.
+9. A 101-model catalog passes the desktop validator and bundled OpenCode
+   loader across three providers, then shrinks to one without stale groups.
+   An existing `user-custom-magpie` entry is restored on disconnect.
+
+No account credentials or paid inference are used. These checks exercise
+the installed app's real gateway and agent executables; they do not claim
+GUI interaction, image/video generation or live vendor inference.
+
+## Native media bridge — 0.3.0
+
+`media-native.mjs` validates the generated media store and adapter using
+Design 4.0.10's installed gateway code and Electron Node runtime, in a
+disposable home. It loads the packaged module with automatic gateway
+startup suppressed and invokes its actual media store, sandbox and executor.
+HTTP responses are fixture responses, not live vendor generation.
+
+Passed: image/video model loading, image output resolution, reference-image
+editing, video submission/polling and authenticated content fetch. The video
+fixture checks byte transport, not playback or a usable generated clip.
+This test does not prove canvas insertion or desktop GUI selection.
+
+Version 0.3.1 parses generated enum/default/reference limits with Design's
+actual parser and runs generated per-model adapters. It verifies multi-image
+editing, a legal Hailuo preset, and an invalid 1080P/10-second request rejected
+before the HTTP fixture is called. See MEDIA-PARAMETERS.md for model-specific
+controls and sources. Custom specs do not expose dynamic cross-field rules;
+combined presets and submission validation enforce those restrictions.
+Video/audio references and native Windows media execution remain untested.
+
+Version 0.3.2 restricts OpenRouter resolution presets to the verified
+Seedream Images API route. Chat image routes retain ratio controls, because
+the tested gateway does not pass their resolution override. Video reference
+metadata cannot expand beyond the adapter's verified frame/subject modes.
+Both regressions have generated-adapter tests.
+
+The live desktop model-access settings displayed all 29 synchronized media
+entries and the generated Hailuo options. This verifies settings discovery;
+canvas generation selection, live inference and output insertion remain
+unaccepted. See MANAGEMENT.md for the wider management audit.
+
+## Speech bridge — 0.4.0
+
+Node and Bun regression coverage includes discovery exclusions, explicit
+voice/format/speed schemas, automatic Ming defaults, parameter rejection and
+non-audio response rejection. The installed Design 4.0.10 loader, spec parser,
+adapter sandbox and executor load a native speech model and return exact WAV
+fixture bytes. These are simulated network responses, not a generated voice
+or listening acceptance. Music streaming and voice cloning remain unsupported.
+
+## Windows
+
+The existing `%APPDATA%\@hilo\desktop\hub-config.json` model path is retained.
+Release 0.1.0 recorded real Windows 11 / Design 3.0.17 model inference.
+This change tests the Windows descriptor and model conversion, but does not
+claim a new native Windows run or Library support on Design 3.x. Library
+paths follow the observed Design 4.x layout.
+
+## Boundaries
+
+- Linux is refused explicitly; Windows paths are not expanded there.
+- The tested desktop is the domestic production edition. Global, staging,
+  test and development profiles have separate storage and are not targeted.
+- New user skills may initially be disabled by Design. Library manages
+  placement/removal; Design retains its own permission toggle.
+- V3 requires a separate native connector proxy registration. The companion
+  installs a workspace runtime bridge; plain OpenCode configuration alone
+  does not make tools callable by Design. The encrypted vault is not edited.
+  Restart once after bridge installation; subsequent Library changes sync
+  every five seconds. Disabled/withdrawn entries lose their callable grants.
+- Global instructions are not advertised: Design disables ordinary
+  project/Claude config discovery and has its own optional memory system.
+- Models without positive integer context/output limits are omitted.
+  Empty eligible catalogs fail explicitly; no guessed limits are written.
+- Model IDs must satisfy Design's validator: nonempty strings without
+  whitespace/control characters or its reserved reasoning prefix. Duplicate
+  IDs keep the first eligible model before providers are split.
+- Design permits at most 50 models per provider. Larger catalogs are
+  split into `user-custom-magpie`, `user-custom-magpie-2`, etc.
+  Magpie restores obsolete entries when a catalog shrinks.
+
+## V3 MCP regression — November 13, 2026
+
+Node and Bun each pass 31 tests. `mcp-loader.mjs` uses the installed
+OpenCode 1.18.18 to verify actual plugin loading from the global configuration,
+direct-MCP suppression and gateway registration. `mcp-native.mjs` uses
+Design 4.0.10's packaged ConnectorToolProxyService and ConnectorCapabilityService
+with a real localhost MCP fixture to cover discovery, calls, disable and withdrawal.
+
+Both existing live workspace gateways (8002 and 8003) were hot-registered
+without restarting Design. Seven configured endpoints report connected.
+The native `/api/connectors/tools/call` endpoint successfully called
+Eagle `get_app_info` in both workspaces and Resolve `get_resolve_status`.
+Eagle initially refused connections because the application was not running;
+starting Eagle restored its MCP listener on 41596. Existing chat transcripts
+were not rewritten and no generation or content mutation was submitted.
+The runtime watcher will load on the next normal Design relaunch; live
+hot-registration proves current access, not a completed desktop restart.
