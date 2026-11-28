@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { estimateAccount, pricesFrom, priceRecord } from "../estimate.mjs";
+import { estimateAccount, pricesFrom, priceRecord } from "../page/estimate.mjs";
 
 const now = Date.parse("2026-10-21T09:00:00Z");
 const prices = pricesFrom({ openai: { models: { "gpt-test": { cost: {

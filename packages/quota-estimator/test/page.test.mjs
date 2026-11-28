@@ -11,7 +11,7 @@ test("page-only package has no host entry, collector or generated resource", asy
   assert.equal(pkg.exports, undefined);
   assert.equal(pkg.scripts.collect, undefined);
   assert.deepEqual(pkg.magpie.permissions, []);
-  assert.deepEqual(pkg.files, ["estimate.mjs", "page/index.html", "page/app.js", "page/style.css", "README.md", "LICENSE"]);
+  assert.deepEqual(pkg.files, ["page/estimate.mjs", "page/index.html", "page/app.js", "page/style.css", "README.md", "LICENSE"]);
   for (const path of ["index.mjs", "collector.mjs", "claude-native.mjs", "page/snapshot.js"]) {
     await assert.rejects(access(new URL(path, root)), { code: "ENOENT" });
   }

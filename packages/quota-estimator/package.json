@@ -23,7 +23,7 @@
     "cost"
   ],
   "files": [
-    "estimate.mjs",
+    "page/estimate.mjs",
     "page/index.html",
     "page/app.js",
     "page/style.css",

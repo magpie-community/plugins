@@ -2,7 +2,7 @@
 
 **Blocked on a permissioned Magpie page read. This revision does not produce live estimates and is not listed in the community registry.**
 
-The intended page estimates the Token capacity and API-equivalent USD value of a full 5-hour or weekly allowance, separately for local Codex, local Claude Code and Remote magpie. Its calculation functions and tests remain in `estimate.mjs`. Estimates are observations that may understate capacity, not provider-guaranteed limits or subscription bills.
+The intended page estimates the Token capacity and API-equivalent USD value of a full 5-hour or weekly allowance, separately for local Codex, local Claude Code and Remote magpie. Its calculation functions and tests remain in `page/estimate.mjs`. Estimates are observations that may understate capacity, not provider-guaranteed limits or subscription bills.
 
 ## Page boundary
 
@@ -37,4 +37,4 @@ The tests use synthetic data and need no personal configuration. `npm pack --dry
 
 这是等待官方权限接口的纯页面草稿，目前不提供实时预估，也未列入社区市场。旧后台采集、原生日志扫描、Remote key 读取和安装目录快照写入均已移除。页面只接收主题与语言，不读取任何用量数据。
 
-完整功能需要 Magpie 提供按账号、额度窗口和采样时间对齐的匿名汇总接口；现有用量总计不能代替。原生 Claude 与 Remote 的身份核对和数据导入应由宿主负责。接口获准并发布后，才声明对应权限、接入预估并恢复市场条目。现有 `estimate.mjs` 及计算测试保留，未把缺少的数据猜成满额数字。
+完整功能需要 Magpie 提供按账号、额度窗口和采样时间对齐的匿名汇总接口；现有用量总计不能代替。原生 Claude 与 Remote 的身份核对和数据导入应由宿主负责。接口获准并发布后，才声明对应权限、接入预估并恢复市场条目。现有 `page/estimate.mjs` 及计算测试保留，未把缺少的数据猜成满额数字。

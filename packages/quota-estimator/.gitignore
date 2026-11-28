@@ -1,5 +1,3 @@
 node_modules/
-page/snapshot.js
-page/snapshot.js.*.tmp
 *.tgz
 .DS_Store
