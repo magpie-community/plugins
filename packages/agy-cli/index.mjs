@@ -1128,11 +1128,17 @@ async function searchAsAccount(query, count, email, abort) {
         if (!output) await new Promise((resolve) => setTimeout(resolve, 100))
       }
       if (how !== "ended") conn.notify("session/cancel", { sessionId })
-      if (!output) {
-        const why = how === "failed" ? "agy's search_web failed" : "agy didn't search the web"
+      // a search that ran but left no source to read is said as that, not
+      // as no search: its step output had no "Sources:" (agy found none), or
+      // none of its lines read as one (plugins#1675)
+      const pages = output ? pagesOfSearchWeb(output, count) : []
+      if (!pages.length) {
+        const why = how === "failed" ? "agy's search_web failed"
+          : how === "completed" || output ? "agy's search_web found no sources"
+          : "agy didn't search the web"
         throw new Error(stderr.trim() ? `${why}: ${stderr.trim().slice(-300)}` : why)
       }
-      return pagesOfSearchWeb(output, count)
+      return pages
     })()])
   } finally {
     clearTimeout(timer)

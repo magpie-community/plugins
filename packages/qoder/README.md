@@ -116,6 +116,11 @@ itself.
     powered by DeepSeek Harness.`, goes with a comma before `powered by`
     (since 0.2.73, #1517): Qoder CN puts a request whose system prompt
     holds that line, as written, in a queue that never moves.
+  - Another agent's name before a comma, such as ZCode's `You are ZCode, an
+    interactive agent` or Codex's `You are Codex, based on GPT-5.`, goes as
+    two sentences, `You are ZCode. You are an interactive agent` (since
+    0.2.79, #1667): Qoder CN parks a request with the name and comma as
+    written in the same queue. Qoder's own names stay as they are.
   - Messages become text and image blocks.
   - Tool calls and results become OpenAI tool turns. Images a tool returned
     follow in a user turn.

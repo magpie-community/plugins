@@ -58,6 +58,14 @@ The plugin's `fetch` handles this:
     block, and the tool is sent with a pointer to it. Devin answers "an
     internal error occurred" to some agents' tool descriptions when they
     are sent as the tools' own.
+  - Each parameter's description goes there as well, under the tool's
+    entry ("Parameters:", one line per parameter path), and the schema is
+    sent without them (since 0.1.47). Devin answers "Unable to process
+    request due to an MCP configuration issue" to schemas carrying some
+    agents' own parameter descriptions, whatever the tool is named:
+    Cursor's Read, Grep, Glob, WebSearch, ReadLints and EditNotebook were
+    each refused alone. That refusal is a 400, as the same tools are
+    refused again on any account.
   - A tool call the conversation never answered is answered with "Tool use
     was interrupted and did not produce a result."
   - Images must be inline (`data:` URLs). The images a tool returned go
