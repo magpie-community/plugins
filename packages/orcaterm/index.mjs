@@ -868,8 +868,9 @@ function proseWithTrailingEnvelope(prose, tail) {
  * Two jobs, then:
  *   - `taskCompletion` is the answer, so that is what comes out;
  *   - every other action (`review`, tool traffic) is not prose an OpenAI client
- *     can use, and there is none of it in practice here — the request declares
- *     no tools — so the raw text is kept rather than invented into prose.
+ *     can use; a `tool` payload is an error the gateway can fail over on
+ *     (TOOL_ENVELOPE below), and anything else is kept as written rather than
+ *     invented into prose.
  *
  * A reply that is not an envelope at all is returned untouched: the model may
  * well answer with braces of its own.
@@ -1051,6 +1052,25 @@ function jsonCallHold(line) {
 const TEXT_CALL =
   "the model wrote a tool call as text; OrcaTerm was sent no tools, so it can't be run, and it is not sent on as the answer"
 
+/** A tool action envelope the model answered with, with nothing left to send.
+ *
+ * The assistant behind OrcaTerm has tools of its own, and a prompt that makes
+ * it act (an agent turn asking for a command, a file, a page) is answered with
+ * the envelope its own client runs tools from:
+ *
+ *   {"action": "review", "ph_1": "--", "tool": {"type": "mcp", …}}
+ *
+ * The request went up with no tools (`tools: []`, see toUpstreamBody), so the
+ * `tool` it asks for cannot be run here, and the object is that client's own
+ * protocol, not an answer an OpenAI client can use — measured 2026-11-19:
+ * glm-5.3 answered a whole pi agent turn as exactly that envelope, and it
+ * reached the agent as text with a 200, which nothing could fail over on. The
+ * reply is held (an envelope never streams before it is whole) and the turn
+ * ends as an error instead, the same treatment as TEXT_CALL above.
+ */
+const TOOL_ENVELOPE =
+  "the model answered with a tool action envelope (a review with a tool payload); OrcaTerm was sent no tools, so it can't be run, and it is not sent on as the answer"
+
 /**
  * The answer inside the assistant's action envelope, for a reply that is still
  * arriving.
@@ -1217,6 +1237,70 @@ function isActionEnvelope(obj) {
   return typeof (obj.taskCompletion ?? obj.TaskCompletion) === "string"
 }
 
+/**
+ * Whether a parsed object is the assistant's own tool traffic: an action
+ * envelope carrying a `tool` payload and no answer of its own. A
+ * `taskCompletion` is an answer whatever the verb (a review can carry one;
+ * `answerField` reads it), so such an envelope is not this.
+ */
+function isToolActionEnvelope(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false
+  const action = obj.action ?? obj.Action
+  if (typeof action !== "string") return false
+  if (typeof (obj.taskCompletion ?? obj.TaskCompletion) === "string") return false
+  const tool = obj.tool ?? obj.Tool
+  return Boolean(tool && typeof tool === "object")
+}
+
+/**
+ * Where a tool action envelope begins in `s` — as the whole reply, or as its
+ * tail after prose — or -1 when there is none.
+ *
+ * The same trailing scan `stripTrailingEnvelope` makes, judged on tool traffic:
+ * from the last `{"action":` backwards, the first whose tail parses and is a
+ * tool envelope, with nothing allowed to follow the object. An envelope the
+ * reply opens with counts as position 0 (leading whitespace aside), which is
+ * the whole-reply case.
+ *
+ * A model with more than one thing to ask for writes the envelopes one after
+ * another — measured 2026-11-19, a reply of two of them, back to back — so an
+ * envelope that ends exactly where another begins extends the run to where
+ * the first of them starts, and that is the position returned.
+ */
+function toolEnvelopeAt(s) {
+  const raw = String(s ?? "")
+  const opening = /\{\s*"action"\s*:/gi
+  const starts = []
+  let m
+  while ((m = opening.exec(raw))) starts.push(m.index)
+  for (let k = starts.length - 1; k >= 0; k--) {
+    const idx = starts[k]
+    const tail = raw
+      .slice(idx)
+      .trim()
+      .replace(/\s*```$/, "")
+      .trim()
+    let obj
+    try {
+      obj = JSON.parse(tail)
+    } catch {
+      continue
+    }
+    if (!isToolActionEnvelope(obj)) continue
+    // a fence in front of the object belongs to it, not to the prose
+    const before = raw.slice(0, idx)
+    const fence = before.match(/```(?:json)?\s*$/i)
+    const start = fence ? before.length - fence[0].length : idx
+    const head = raw.slice(0, start)
+    if (!head.trim()) return 0
+    // the run may have begun earlier: another envelope ends exactly where this
+    // one begins, and the whole run is tool traffic, so start where it starts
+    const earlier = toolEnvelopeAt(head)
+    return earlier >= 0 ? earlier : start
+  }
+  return -1
+}
+
 /** The last position where an envelope opening starts and is followed by nothing. */
 function envelopeTailAt(s) {
   const opening = /\{\s*"action"\s*:/gi
@@ -1254,6 +1338,40 @@ function appendedEnvelopeAt(s) {
 }
 
 /**
+ * The position of the outermost `{` that nothing after it has closed, or -1.
+ *
+ * Braces inside JSON strings (`"ls {x}"`) do not count, so the scan tracks
+ * strings and escapes as it goes.
+ */
+function outermostOpenBrace(s) {
+  let inString = false
+  let escaped = false
+  let depth = 0
+  let outermost = -1
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === "\\") escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === "{") {
+      if (depth === 0) outermost = i
+      depth++
+    } else if (c === "}") {
+      if (depth > 0) depth--
+      if (depth === 0) outermost = -1
+    }
+  }
+  return depth > 0 ? outermost : -1
+}
+
+/**
  * Where a *still-arriving* envelope begins, or -1.
  *
  * While the object is incomplete it cannot be judged, and letting the opening go
@@ -1262,30 +1380,56 @@ function appendedEnvelopeAt(s) {
  * ordinary text and must flow again.
  */
 function appendedEnvelopePendingAt(s) {
+  // A complete tool envelope already at the tail: `appendedEnvelopeAt` never
+  // matches it (it carries no answer of its own), so hold it here — from where
+  // it begins, fence included — until more text demotes it to an example or
+  // the stream ends and `textCall()` turns it into the error.
+  const tool = toolEnvelopeAt(s)
+  if (tool > 0 && s.slice(0, tool).trim()) return tool
+  // Otherwise the trailing object is still arriving. Two independent signs of
+  // "an object begins here and has not ended": a brace nothing has closed
+  // (string-aware, so an envelope's nested `tool`/`args` objects are attributed
+  // to the object that opened first, not leaked past as prose), and an
+  // `{"action":` opening whose remainder does not parse — incomplete, or loose
+  // the way #564 measured, with its bare newlines and unescaped quotes. Hold
+  // from the earliest position either sign gives: a later one is nested inside
+  // an earlier still-open envelope, and releasing to it leaked the envelope's
+  // own opening as prose (measured 2026-11-19).
+  let hold = -1
+  const open = outermostOpenBrace(s)
+  if (open >= 0 && couldBeEnvelope(s.slice(open))) hold = open
   const starts = envelopeTailAt(s)
-  // The opening can itself span more than ENVELOPE_TAIL characters (for
-  // example, a pretty-printed object with a long whitespace prefix). Hold
-  // a partial opening before its action key is complete as well.
   const partial = s.lastIndexOf("{")
   if (partial > 0 && !starts.includes(partial) && couldBeEnvelope(s.slice(partial))) starts.push(partial)
-  if (!starts.length) return -1
-  const at = starts[starts.length - 1]
-  const tail = s
-    .slice(at)
-    .trim()
-    .replace(/\s*```$/, "")
-    .trim()
-  try {
-    JSON.parse(tail)
-    return -1 // complete, and `appendedEnvelopeAt` already rejected it
-  } catch {
-    /* still arriving */
+  for (let k = starts.length - 1; k >= 0; k--) {
+    const at = starts[k]
+    const tail = s
+      .slice(at)
+      .trim()
+      .replace(/\s*```$/, "")
+      .trim()
+    try {
+      JSON.parse(tail)
+      continue // complete and not an envelope: an example, closed
+    } catch {
+      /* still arriving */
+    }
+    if (!couldBeEnvelope(tail)) continue
+    hold = hold < 0 ? at : Math.min(hold, at)
+    break // earlier starts are nested inside this one, or separate examples
   }
-  if (!couldBeEnvelope(tail)) return -1
-  const before = s.slice(0, at)
+  if (hold < 0) return -1
+  const before = s.slice(0, hold)
   const fence = before.match(/```(?:json)?\s*$/i)
-  const start = fence ? before.length - fence[0].length : at
-  return s.slice(0, start).trim() ? start : -1
+  const start = fence ? before.length - fence[0].length : hold
+  // The opening being held may sit right after a complete tool envelope — or
+  // several, back to back: the run began earlier, and none of it may stream
+  // out either, so hold from where the first of them begins. When nothing
+  // precedes the run there is nothing to hold for, and the reply starts with
+  // the opening instead — `couldBeEnvelope` holds that whole case.
+  const run = toolEnvelopeAt(s.slice(0, start))
+  const from = run >= 0 ? run : start
+  return s.slice(0, from).trim() ? from : -1
 }
 
 function createAnswerExtractor() {
@@ -1299,6 +1443,8 @@ function createAnswerExtractor() {
   let final = false
   /** Where the call the model wrote as text begins, once one is seen. */
   let callAt = -1
+  /** True when the reply is (or ends with) a tool action envelope. */
+  let toolEnvelope = false
 
   /**
    * What the answer should be, given everything received so far.
@@ -1312,6 +1458,14 @@ function createAnswerExtractor() {
     if (couldBeEnvelope(raw)) {
       if (!final) return ""
       if (isEnvelope(raw)) return unwrapAnswer(raw)
+      // The reply is a tool action envelope — a review with a `tool` payload —
+      // the assistant asking its own client to run something. Nothing here can
+      // run it and the raw object is not an answer, so nothing of it goes out
+      // and the turn ends as the error in `textCall()` (TOOL_ENVELOPE).
+      if (toolEnvelopeAt(raw) === 0) {
+        toolEnvelope = true
+        return ""
+      }
       const loose = looseEnvelopeAnswer(raw)
       if (loose !== null) return loose
       // Preserve the decoded prefix if upstream ended inside the answer string.
@@ -1322,6 +1476,15 @@ function createAnswerExtractor() {
       if (start >= 0) {
         const decoded = decodeJsonString(raw.slice(start))
         if (!decoded.ended) return decoded.text
+      }
+      // The stream ended inside a later member of a run of tool envelopes —
+      // measured 2026-11-19, two of them back to back — so a complete one ends
+      // exactly where the truncated one opens: all of it is tool traffic, and
+      // none of it goes out as text.
+      const partial = outermostOpenBrace(raw)
+      if (partial > 0 && toolEnvelopeAt(raw.slice(0, partial)) === 0) {
+        toolEnvelope = true
+        return ""
       }
       return stripTrailingEnvelope(raw)
     }
@@ -1347,7 +1510,31 @@ function createAnswerExtractor() {
     }
 
     // no envelope at all: the reply is its own answer
-    if (final) return stripTrailingEnvelope(raw)
+    if (final) {
+      // prose first, a tool action envelope after it: the answer is cut where
+      // the envelope begins, and the turn ends as the error in `textCall()`
+      // (TOOL_ENVELOPE) — the same cut a DSML block written after prose gets
+      const toolAt = toolEnvelopeAt(raw)
+      if (toolAt >= 0) {
+        toolEnvelope = true
+        return raw.slice(0, toolAt)
+      }
+      // The stream can end inside a later member of a run instead: complete
+      // tool envelopes ending where the truncated one opens are tool traffic
+      // too, and treating them as text would leak them out. A truncated
+      // opening with nothing tool-shaped in front of it keeps the original
+      // treatment: it stays text, like a truncated answer.
+      const pendingAt = appendedEnvelopePendingAt(raw)
+      if (pendingAt >= 0) {
+        const run = raw.slice(pendingAt)
+        const partial = outermostOpenBrace(run)
+        if (partial > 0 && toolEnvelopeAt(run.slice(0, partial)) >= 0) {
+          toolEnvelope = true
+          return raw.slice(0, pendingAt)
+        }
+      }
+      return stripTrailingEnvelope(raw)
+    }
     return raw.slice(0, Math.max(0, raw.length - ENVELOPE_TAIL))
   }
 
@@ -1414,7 +1601,8 @@ function createAnswerExtractor() {
      * itself has.
      */
     textCall() {
-      return callAt >= 0 ? TEXT_CALL : ""
+      if (callAt >= 0) return TEXT_CALL
+      return toolEnvelope ? TOOL_ENVELOPE : ""
     },
   }
 }
@@ -1762,7 +1950,7 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
           const ans = answerAndCall(sentReasoning)
           if (ans.call) {
             tail = ans.text
-            written = TEXT_CALL
+            written = ans.call
           } else {
             tail = ans.text || sentReasoning
           }
@@ -1961,7 +2149,7 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
   let finalContent = visible.trimEnd()
   if (!finalContent && reasoning) {
     const ans = answerAndCall(reasoning)
-    if (ans.call) return openaiError(502, `OrcaTerm: ${TEXT_CALL}`, "text_tool_call")
+    if (ans.call) return openaiError(502, `OrcaTerm: ${ans.call}`, "text_tool_call")
     finalContent = (ans.text || reasoning).trimEnd()
   }
   if (!finalContent) finalContent = "(OrcaTerm returned an empty reply)"
@@ -2711,6 +2899,9 @@ export const _internal = {
   textCallIn,
   quoted,
   TEXT_CALL,
+  TOOL_ENVELOPE,
+  isToolActionEnvelope,
+  toolEnvelopeAt,
   csrfCode,
   parseTicket,
   cookieHeader,
