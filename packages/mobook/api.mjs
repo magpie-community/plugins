@@ -63,6 +63,18 @@ export class MoBookError extends Error {
   }
 }
 
+// MoBookCaptchaError：手机号登录被要求人机验证（阿里云验证码）时抛出。
+// 插件是纯 Node 环境，弹不出阿里云滑块；调用方据此引导用户改用「粘贴整段 Cookie」登录
+// （浏览器里登录并完成人机验证，再把 _tk/_uid 拿回来），那条路完全不需要验证码。
+export class MoBookCaptchaError extends MoBookError {
+  constructor(message, config = null) {
+    super(message)
+    this.name = 'MoBookCaptchaError'
+    this.captcha = true
+    this.config = config
+  }
+}
+
 // apiCall 发一个带签名的网页接口请求，返回 data。
 // code !== 0 一律抛 MoBookError；401/未登录映射成 signIn: 'expired'。
 export async function apiCall(cred, path, data = {}, { method = 'POST', fetchImpl = fetch, timeoutMs = 20000, signal } = {}) {
@@ -1232,10 +1244,34 @@ export async function generateImage(cred, { model, prompt, size, image, response
 }
 // ---- 手机号 + 短信验证码登录 ----
 
+// fetchVerifyConfig 读登录风控配置。captchaEnable 为 true 时，网页登录页会先弹
+// 阿里云验证码（滑块），拿到 captchaVerifyParam 再调 /user/verifyIntelligentCaptcha，
+// 通过后才调 /user/generateCode 发短信。插件是纯 Node 环境，无法渲染这个滑块。
+export async function fetchVerifyConfig(deps = {}) {
+  const data = await apiCall({ tk: '', uid: '' }, '/user/verifyConfig', {}, deps)
+  return {
+    captchaEnable: data?.captchaEnable === true,
+    prefix: String(data?.prefix ?? ''),
+    sceneId: String(data?.sceneId ?? ''),
+    region: String(data?.region ?? ''),
+  }
+}
+
 // sendSmsCode 给手机号发验证码。这一步不需要登录态：只有签名和 appKey。
 export async function sendSmsCode(mobileNo, deps = {}) {
   const phone = String(mobileNo ?? '').replace(/\D/g, '')
   if (!/^1[3-9]\d{9}$/.test(phone)) throw new MoBookError('手机号格式不对：要 11 位大陆手机号')
+  // 先看这次登录要不要人机验证：要就明确抛 MoBookCaptchaError，让界面引导改用 Cookie 登录，
+  // 不要傻发 /user/generateCode 吃一个看不懂的风控错误。
+  const verify = await fetchVerifyConfig(deps).catch(() => null)
+  if (verify?.captchaEnable) {
+    throw new MoBookCaptchaError(
+      '墨宝对本次手机号登录要求人机验证（阿里云滑块验证码），插件里无法弹出滑块。' +
+        '请改用「粘贴整段 Cookie」方式：浏览器打开 https://mobook.me 用手机号登录（在那里完成人机验证），' +
+        '再按 F12 → Application/存储 → Cookies → https://mobook.me，把 _tk 与 _uid 复制成 `_tk=…; _uid=…` 粘回来。',
+      verify,
+    )
+  }
   // 桌面端客户端 appId=100→接口 40，故发码用 web 应用作用域（与桌面端一致）。
   const data = await apiCall({ tk: '', uid: '' }, '/user/generateCode', { mobileNo: phone }, deps)
   return { mobileNo: phone, data }

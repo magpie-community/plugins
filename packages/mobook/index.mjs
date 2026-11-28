@@ -1300,6 +1300,19 @@ export const MoBookAuthPlugin = async ({ magpie, directory } = {}) => {
             try {
               await sendSmsCode(phone)
             } catch (error) {
+              // 人机验证（阿里云滑块）拦住了发码：插件弹不出滑块，改为引导用户走 Cookie 登录，
+              // 并直接把浏览器打开到登录页——用户在那里完成验证后把 _tk/_uid 粘回来即可。
+              if (error?.captcha) {
+                return {
+                  url: SIGN_IN_PAGE,
+                  method: 'code',
+                  instructions:
+                    '墨宝对手机号登录启用了人机验证（阿里云滑块验证码），插件里无法弹出滑块。' +
+                    '已用浏览器打开 ' + SIGN_IN_PAGE + '：请在那里用手机号登录并完成人机验证，' +
+                    '然后按 F12 → Application/存储 → Cookies → https://mobook.me，把 _tk 与 _uid 两行复制成 `_tk=…; _uid=…` 粘到下面的输入框。',
+                  callback: async (code) => authorizeBySession(String(code ?? '')),
+                }
+              }
               const message = '验证码发送失败：' + (error?.message ?? error)
               return { url: '', instructions: message, method: 'auto', callback: async () => ({ type: 'failed', error: message }) }
             }

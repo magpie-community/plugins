@@ -26,7 +26,7 @@ check-in; drive the growth-plan task list; and use image generation, TTS and rea
 ## Install
 
 ```
-magpie plugin add @magpie-community/opencode-mobook-auth
+magpie plugin add C:\Projects\magpie-mobook\packages\mobook
 magpie plugin on mobook
 ```
 
@@ -40,6 +40,8 @@ itself, so the native gateway, images, TTS and ASR work without the desktop clie
 | Phone + SMS | no (`deviceToken` registers a client session) | reuses an existing client, registers one only when the list is empty |
 | Whole Cookie (opens the sign-in page first) | no (pure reuse) | no |
 | Imported local client state | no (reuses the client's bot token) | no |
+
+If the SMS route is answered with **human verification (Aliyun slider captcha)**, the plugin cannot show it: MoBook's `/user/verifyConfig` says `captchaEnable` and the web app runs the Aliyun widget before sending the code. The plugin detects that and opens the sign-in page instead — log in there (complete the slider), then paste `_tk` / `_uid` as the Whole Cookie route; that route never needs a captcha.
 
 All three routes return the same oauth-shaped credential (`access` = `_tk`, `refresh` = `''`, `expires`,
 `accountId` = nickname, `uid`). The host keeps `accountId`/`uid` only for that shape, so two accounts stay
@@ -193,7 +195,7 @@ and from `done.json`, so a day with only them left counts as done.
 ## Tests
 
 ```
-bun test   # 117 tests (93 + 24 for the task runner)
+node --test index.test.mjs task-runner.test.mjs   # 118 tests (94 + 24 for the task runner)
 ```
 
 ## 中文
@@ -216,7 +218,7 @@ bun test   # 117 tests (93 + 24 for the task runner)
 ### 安装
 
 ```
-magpie plugin add @magpie-community/opencode-mobook-auth
+magpie plugin add C:\Projects\magpie-mobook\packages\mobook
 magpie plugin on mobook
 ```
 
@@ -230,6 +232,8 @@ magpie plugin on mobook
 | 手机号（客户端登记） | 否 | 已有客户端就复用，没有才登记一台 |
 | 粘贴 Cookie（会先打开登录页） | 否（纯复用） | 否 |
 | 导入本机客户端登录态 | 否（复用客户端 botToken） | 否 |
+
+如果短信登录被要求**人机验证（阿里云滑块）**：插件是纯 Node 环境，弹不出滑块（网页端会先读 `/user/verifyConfig` 的 `captchaEnable`，再加载阿里云验证码，通过后才发码）。插件会识别这种情况并直接打开登录页——在浏览器里用手机号登录（完成滑块），再把 `_tk` / `_uid` 按「粘贴 Cookie」方式粘回来即可；Cookie 方式不需要验证码。
 
 三种方式都返回 oauth 形状的凭据（`access` = `_tk`、`refresh` = `''`、`expires`、`accountId` = 昵称、
 `uid`）：宿主只对这个形状保留账号身份，两个账号能分开（`mobook` + `mobook#…`），后台续期也生效。
@@ -353,5 +357,5 @@ magpie 把插件工具挂到内置 MCP 服务器 `http://127.0.0.1:3425/mcp/magp
 ### 测试
 
 ```
-bun test   # 117 个用例（93 + 24），约 2 秒
+node --test index.test.mjs task-runner.test.mjs   # 118 个用例（94 + 24），约 2 秒
 ```

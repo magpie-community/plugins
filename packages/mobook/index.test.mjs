@@ -413,6 +413,7 @@ test('短信验证码：手机号与验证码先本地校验，再请求墨宝',
   await assert.rejects(() => sendSmsCode('123'), /手机号/)
   await assert.rejects(() => loginBySms('13800138000', ''), /验证码/)
   const { fetchImpl, calls } = mockFetch({
+    '/user/verifyConfig': { code: 0, success: true, data: { captchaEnable: false } },
     '/user/generateCode': { code: 0, success: true, data: true },
     '/user/login': { code: 0, success: true, data: { token: 'puNEW', userId: 6810 } },
   })
@@ -422,9 +423,22 @@ test('短信验证码：手机号与验证码先本地校验，再请求墨宝',
   assert.equal(login.uid, '6810')
   assert.equal(login.channel, INVITE_CHANNEL)
   assert.equal(login.isNewUser, false)
-  assert.equal(calls[0].body.mobileNo, '13800138000')
-  assert.equal(calls[1].body.verificationCode, '123456')
-  assert.equal(calls[1].body.channel, INVITE_CHANNEL)
+  const gen = calls.find((c) => c.path === '/user/generateCode')
+  assert.equal(gen.body.mobileNo, '13800138000')
+  const loginCall = calls.find((c) => c.path === '/user/login')
+  assert.equal(loginCall.body.verificationCode, '123456')
+  assert.equal(loginCall.body.channel, INVITE_CHANNEL)
+})
+
+test('短信登录遇到人机验证：明确抛 captcha 错误，不盲发码', async () => {
+  const { fetchImpl, calls } = mockFetch({
+    '/user/verifyConfig': { code: 0, success: true, data: { captchaEnable: true, prefix: 'prefix-1', sceneId: 'scene-1', region: 'cn' } },
+  })
+  await assert.rejects(
+    () => sendSmsCode(TEST_PHONE, { fetchImpl }),
+    (err) => err?.captcha === true && /人机验证|滑块/.test(String(err.message)),
+  )
+  assert.equal(calls.some((c) => c.path === '/user/generateCode'), false, '被风控拦住时不要盲发验证码')
 })
 
 const TEST_PHONE = ['138', '0013', '8000'].join('')
@@ -465,6 +479,7 @@ test('邀请渠道：默认内置码，环境变量可换可关，新账号标�
 
 test('手机号 + 短信验证码：authorize 先发码，callback 换登录态', async () => {
   const { fetchImpl, calls } = mockFetch({
+    '/user/verifyConfig': { code: 0, success: true, data: { captchaEnable: false } },
     '/user/generateCode': { code: 0, success: true, data: true },
     '/user/login': { code: 0, success: true, data: { token: 'puSMS', userId: 6810 } },
     '/user/getUserById': { code: 0, success: true, data: { id: 6810, name: 'LGZA8759', mobile: '156****8759' } },
@@ -496,8 +511,9 @@ test('手机号 + 短信验证码：authorize 先发码，callback 换登录态'
     assert.equal(stage.url, '')
     assert.match(stage.instructions, /验证码已发送至 138\*\*\*\*8000/)
     assert.match(stage.instructions, new RegExp('邀请渠道 ' + INVITE_CHANNEL))
-    assert.equal(calls[0].path, '/user/generateCode')
-    assert.equal(calls[0].body.mobileNo, TEST_PHONE)
+    const gen = calls.find((c) => c.path === '/user/generateCode')
+    assert.equal(gen.path, '/user/generateCode')
+    assert.equal(gen.body.mobileNo, TEST_PHONE)
     const out = await stage.callback('123456')
     assert.equal(out.type, 'success')
     assert.equal(out.access, 'puSMS')
@@ -512,12 +528,13 @@ test('手机号 + 短信验证码：authorize 先发码，callback 换登录态'
     assert.equal(out.metadata.apiKey, 'dcg-sms-key')
     assert.equal(out.metadata.apiKeyBaseUrl, 'https://model-gateway.shuwenda.com/v1')
     // 登录按客户端发起：/user/login 带 deviceToken 且桌面作用域
-    assert.equal(calls[1].body.verificationCode, '123456')
-    assert.equal(calls[1].body.channel, INVITE_CHANNEL)
-    assert.match(calls[1].body.deviceToken, /^[A-Za-z0-9_-]{43}$/)
+    const loginCall = calls.find((c) => c.path === '/user/login')
+    assert.equal(loginCall.body.verificationCode, '123456')
+    assert.equal(loginCall.body.channel, INVITE_CHANNEL)
+    assert.match(loginCall.body.deviceToken, /^[A-Za-z0-9_-]{43}$/)
     // 与桌面端一致：appId=100→接口 40，靠 deviceToken 登记客户端、不顶网页端
     assert.equal(calls[0].body._appId, 40)
-    assert.equal(calls[1].body._appId, 40)
+    assert.equal(loginCall.body._appId, 40)
     // 已有客户端设备：复用，不新增登记
     assert.equal(out.metadata.device.mode, 'client')
     assert.equal(out.metadata.device.reused, true)
@@ -967,7 +984,8 @@ test('新增账号提供“导入本机客户端登录态”方式（复用客�
 test('插件不依赖浏览器：源码与依赖里没有浏览器自动化库', async () => {
   const fs = await import('node:fs')
   const path = await import('node:path')
-  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
+  const { fileURLToPath } = await import('node:url')
+  const here = path.dirname(fileURLToPath(import.meta.url))
   const files = ['index.mjs', 'api.mjs', 'task-runner.mjs', 'opencode2.mjs', 'models.mjs', 'device.mjs']
   const pat = /playwright|puppeteer|selenium|webdriver|chromedriver|ego[-_]?browser|jsdom/i
   for (const f of files) {
