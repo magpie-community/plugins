@@ -1,0 +1,7 @@
+event: metadata
+id: conv-tool
+data: {"rounds":1}
+
+data: <tool_call>{"name":"read","arguments":{"path":"a.txt"}}</tool_call>
+
+data: [DONE]

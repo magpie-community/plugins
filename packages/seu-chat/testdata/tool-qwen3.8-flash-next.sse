@@ -1,0 +1,55 @@
+event: metadata
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: {"now":1795766844151,"exists":false,"fileResponseList":[],"fileContents":[],"searchResults":null,"uuid":"b31c2f99-a523-4b78-8e81-d2848fd97bee","enableSearch":false,"rounds":1}
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: {"
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: name
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: ":
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: [space]"
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: get
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: _weather
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: ",
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: [space]"
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: arguments
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: ":
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: [space]{"
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: city
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: ":
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: [space]"
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: 北京
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: "}}
+
+id: b31c2f99-a523-4b78-8e81-d2848fd97bee
+data: [DONE]
+

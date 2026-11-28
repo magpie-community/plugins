@@ -1,0 +1,14 @@
+event: metadata
+id: conv-7f3a
+data: {"rounds":1}
+
+data: <思考内
+
+data: 容>Let me think[line]hard</思考
+
+data: 内容>Hello[line]world[space]again
+
+event: heartbeat
+data: ping
+
+data: [DONE]

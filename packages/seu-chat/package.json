@@ -1,0 +1,51 @@
+{
+  "name": "@magpie-community/opencode-seu-chat-auth",
+  "version": "0.1.1",
+  "description": "ChatSEU (chatseu.seu.edu.cn), Southeast University's on-campus model chat web app, as a model provider: your university SSO signed in through a browser window of its own, each request one streamed call to the app's own endpoint",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "sse.mjs",
+    "seu.mjs",
+    "browser.mjs",
+    "prompt.mjs",
+    "openai.mjs",
+    "probe.mjs",
+    "errors.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "seu",
+    "chatseu",
+    "southeast-university",
+    "东南大学",
+    "glm",
+    "qwen"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/seu-chat"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node --check sse.mjs && node --check seu.mjs && node --check browser.mjs && node --check index.mjs && node --check opencode.mjs && node --check probe.mjs",
+    "test": "node --test"
+  },
+  "magpie": {
+    "maxConcurrency": 1
+  }
+}

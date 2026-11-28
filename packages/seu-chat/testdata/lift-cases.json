@@ -1,0 +1,14 @@
+[
+  { "label": "inline-after-sentence", "text": "先确认系统里有没有可用的 Python：{\"name\":\"codemode\",\"arguments\":{\"code\":\"x\"}}", "tools": ["bash","codemode"], "calls": [["codemode", {"code":"x"}]], "text_after": "先确认系统里有没有可用的 Python：" },
+  { "label": "fenced-json", "text": "好的，我来查：\n```json\n{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}\n```", "tools": ["bash"], "calls": [["bash", {"command":"ls"}]], "text_after": "好的，我来查：" },
+  { "label": "fenced-xml", "text": "```xml\n<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>\n```", "tools": ["bash"], "calls": [["bash", {"command":"ls"}]], "text_after": "" },
+  { "label": "json-array", "text": "[{\"name\":\"bash\",\"arguments\":{\"command\":\"a\"}},{\"name\":\"read\",\"arguments\":{\"path\":\"x\"}}]", "tools": ["bash","read"], "calls": [["bash",{"command":"a"}],["read",{"path":"x"}]], "text_after": "" },
+  { "label": "trailing-comma", "text": "{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\",},}", "tools": ["bash"], "calls": [["bash",{"command":"ls"}]], "text_after": "" },
+  { "label": "case-drift", "text": "{\"name\":\"Read\",\"arguments\":{\"path\":\"x\"}}", "tools": ["bash","read"], "calls": [["read",{"path":"x"}]], "text_after": "" },
+  { "label": "namespaced", "text": "{\"name\":\"functions.bash\",\"arguments\":{\"command\":\"ls\"}}", "tools": ["bash"], "calls": [["bash",{"command":"ls"}]], "text_after": "" },
+  { "label": "flat-args", "text": "{\"name\":\"bash\",\"command\":\"ls -la\"}", "tools": ["bash"], "calls": [["bash",{"command":"ls -la"}]], "text_after": "" },
+  { "label": "bold-prefix", "text": "**调用工具**：{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}", "tools": ["bash"], "calls": [["bash",{"command":"ls"}]], "text_after": "**调用工具**：" },
+  { "label": "plain-json-answer", "text": "{\"name\":\"Alice\",\"score\":5}", "tools": ["bash"], "calls": [], "text_after": "{\"name\":\"Alice\",\"score\":5}" },
+  { "label": "no-tools-declared", "text": "{\"name\":\"bash\",\"command\":\"ls\"}", "tools": [], "calls": [], "text_after": "{\"name\":\"bash\",\"command\":\"ls\"}" },
+  { "label": "truncated-call", "text": "我来查：\n{\"name\":\"bash\",\"arguments\":{\"command\":\"ls -la ~/Des", "tools": ["bash"], "calls": [], "text_after": "我来查：", "unreadable": 1 }
+]
