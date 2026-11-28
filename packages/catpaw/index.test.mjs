@@ -1346,3 +1346,82 @@ describe("out of credits (plugins#933)", () => {
     await expect(it.next()).rejects.toThrow("late")
   })
 })
+
+describe("contextInfo.usage passthrough", () => {
+  const USAGE = {
+    prompt_tokens: 36,
+    completion_tokens: 18,
+    total_tokens: 19254,
+    cache_read_tokens: 19200,
+    cache_write_tokens: 0,
+    credit_cost: 0,
+  }
+  const frames = (usage) => [
+    { message: { content: [{ type: "text", text: "ok" }] } },
+    {
+      message: { content: [{ type: "text", text: "ok" }], finished: true },
+      ...(usage ? { contextInfo: { usage } } : {}),
+    },
+  ]
+  const ask = async (body) => {
+    const loader = await plugin.auth.loader(getAuth)
+    return loader.fetch("https://ai.catpaw.meituan.com/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "hi" }], ...body }),
+    })
+  }
+
+  test("prompt excludes cache_read: fold it back into the OpenAI prompt_tokens", () => {
+    expect(_internal.usageFromFrame({ contextInfo: { usage: USAGE } })).toEqual({
+      prompt_tokens: 19236,
+      completion_tokens: 18,
+      cached_tokens: 19200,
+    })
+  })
+
+  test("a frame without usage returns null, never a fabricated zero", () => {
+    expect(_internal.usageFromFrame({ contextInfo: {} })).toBeNull()
+    expect(_internal.usageFromFrame({})).toBeNull()
+    expect(_internal.usageFromFrame({ contextInfo: { usage: {} } })).toBeNull()
+  })
+
+  test("forced tool_choice retries add both turns instead of overwriting", () => {
+    const a = _internal.usageFromFrame({ contextInfo: { usage: USAGE } })
+    const b = _internal.usageFromFrame({ contextInfo: { usage: { ...USAGE, completion_tokens: 20 } } })
+    expect(_internal.addUsage(a, b)).toEqual({
+      prompt_tokens: 38472,
+      completion_tokens: 38,
+      cached_tokens: 38400,
+    })
+    expect(_internal.addUsage(a, null)).toEqual(a)
+  })
+
+  test("non-stream replies carry a usage block", async () => {
+    fake.state.turnFramesQueue = [frames(USAGE)]
+    const res = await ask({})
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.usage).toEqual({ prompt_tokens: 19236, completion_tokens: 18, cached_tokens: 19200 })
+  })
+
+  test("stream replies emit a choices:[] usage frame before [DONE]", async () => {
+    fake.state.turnFramesQueue = [frames(USAGE)]
+    const res = await ask({ stream: true })
+    const text = await res.text()
+    const parsed = text.split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+      .map((l) => JSON.parse(l.slice(6)))
+    const withUsage = parsed.filter((f) => f.usage)
+    expect(withUsage).toHaveLength(1)
+    expect(withUsage[0].choices).toEqual([])
+    expect(withUsage[0].usage).toEqual({ prompt_tokens: 19236, completion_tokens: 18, cached_tokens: 19200 })
+    expect(text).toContain("data: [DONE]")
+    expect(text.indexOf('"usage"')).toBeLessThan(text.indexOf("[DONE]"))
+  })
+
+  test("no upstream usage means no fabricated numbers", async () => {
+    fake.state.turnFramesQueue = [frames(null)]
+    const res = await ask({})
+    const body = await res.json()
+    expect(body.usage).toBeUndefined()
+  })
+})
