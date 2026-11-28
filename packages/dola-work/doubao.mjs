@@ -422,7 +422,7 @@ const js = (body) => `(async () => { ${LIB}\n${body} })()`
 
 export const STATE = js(`
   const sb = $("[data-testid=sidebar_bottom]");
-  const login = sb ? $$("button, [role=button]", sb).some((b) => b.innerText.trim() === "登录") : false;
+  const login = sb ? $$("button, [role=button]", sb).some((b) => /^(登录|sign in|log in|signin)$/i.test(b.innerText.trim())) : false;
   const out = location.href.includes("from_logout");
   return { url: location.href, signedIn: !!sb && !login && !out, name: sb ? sb.innerText.split("\\n")[0].trim() : "",
     input: !!($(".ProseMirror") && $(".ProseMirror").editor), sends: $$("[data-testid=send_message]").length };
@@ -490,28 +490,34 @@ export const pickModel = (label) =>
 // under the model's name ("自动\n中"); otherwise the model menu's 推理强度
 // row opens a submenu (hovered, then ArrowRight, as Radix opens one) and
 // the level is pressed there.
-export const EFFORT = (name) =>
-  js(`
+const EFFORT_EN = Object.fromEntries(EFFORTS)
+
+export const EFFORT = (name) => {
+  const en = EFFORT_EN[name] || ""
+  return js(`
   const name = ${JSON.stringify(name)};
+  const en = ${JSON.stringify(en)};
+  const want = (t) => t === name || (en && t === en);
   const b = $("[data-testid=chat_input_action_model]");
   if (!b) return "no model button";
   const now = () => b.innerText.split("\\n").map((x) => x.trim()).filter(Boolean)[1] || "";
-  if (now() === name) return "";
+  if (want(now())) return "";
   const esc = () => { for (let i = 0; i < 2; i++) document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); };
   press(b);
   let row;
-  for (let i = 0; i < 20 && !row; i++) { await wait(100); row = $$("[role=menu] [role=menuitem]").find((e) => e.getAttribute("aria-haspopup") === "menu" && e.innerText.includes("推理强度")); }
-  if (!row) { esc(); return "no 推理强度 in the model menu"; }
+  for (let i = 0; i < 20 && !row; i++) { await wait(100); row = $$("[role=menu] [role=menuitem]").find((e) => e.getAttribute("aria-haspopup") === "menu" && /推理强度|reasoning/i.test(e.innerText)); }
+  if (!row) { esc(); return "no 推理强度/reasoning in the model menu"; }
   for (const t of ["pointerenter", "pointermove", "pointerover"]) row.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerType: "mouse" }));
   row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
   let it;
-  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu]").filter((m) => !m.contains(row)).flatMap((m) => $$("[role=menuitem]", m)).find((e) => e.innerText.split("\\n")[0].trim() === name); }
-  if (!it) { esc(); return "no " + name + " under 推理强度"; }
+  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu]").filter((m) => !m.contains(row)).flatMap((m) => $$("[role=menuitem]", m)).find((e) => want(e.innerText.split("\\n")[0].trim())); }
+  if (!it) { esc(); return "no " + name + " under 推理强度/reasoning"; }
   press(it);
-  for (let i = 0; i < 10 && now() !== name; i++) await wait(100);
+  for (let i = 0; i < 10 && !want(now()); i++) await wait(100);
   await dismiss();
-  return now() === name ? "" : "推理强度 stayed " + now();
+  return want(now()) ? "" : "推理强度 stayed " + now();
 `)
+}
 
 // MENU reads the model list off the app's own menu: press the model button,
 // wait for the menu that has rows, and take the first line of each row.
@@ -530,7 +536,7 @@ export const MENU = js(`
   await wait(250);
   const rows = $$("[role=menuitem]", menu)
     .filter((e) => e.getAttribute("aria-haspopup") !== "menu")
-    .map((e) => { const l = e.innerText.split("\\n").map((x) => x.trim()).filter(Boolean); return { label: l[0] || "", lines: l.slice(1), upgrade: e.innerText.includes("升级") }; })
+    .map((e) => { const l = e.innerText.split("\\n").map((x) => x.trim()).filter(Boolean); return { label: l[0] || "", lines: l.slice(1), upgrade: /升级|upgrade/i.test(e.innerText) }; })
     .filter((r) => r.label);
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return { rows };
