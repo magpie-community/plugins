@@ -51,12 +51,183 @@ test('model 剥 provider 前缀并归一到 gemini-decision-1', () => {
   assert.equal(parsed.model, 'gemini-decision-1')
 })
 
-test('model 是 jev-latest（Octop 习惯值）-> 强制 gemini-decision-1', () => {
+test('model 是未知裸值（非 gemini-decision 开头）-> 强制 gemini-decision-1', () => {
   const { body } = _internal.normalizeDecisionBody(
-    enc({ state: 'x', questions: {}, model: 'jev-latest' }),
+    enc({ state: 'x', questions: {}, model: 'some-random-model' }),
   )
   const parsed = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
   assert.equal(parsed.model, 'gemini-decision-1')
+})
+
+// ---- noul criteria 键名映射 ----
+
+test('noul criteria {true,false} -> {true_description,false_description}', () => {
+  const questions = {
+    urgent: { type: 'noul', instructions: 'i', criteria: { true: 'Urgent', false: 'Not urgent' } },
+  }
+  const { body } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const parsed = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  assert.deepEqual(parsed.questions.urgent.criteria, {
+    true_description: 'Urgent',
+    false_description: 'Not urgent',
+  })
+})
+
+test('noul criteria 为 null/undefined 描述 -> 空串（含 true/false 键）', () => {
+  const questions = {
+    urgent: { type: 'noul', instructions: 'i', criteria: { true: null, false: null } },
+  }
+  const { body } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const parsed = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  assert.deepEqual(parsed.questions.urgent.criteria, {
+    true_description: '',
+    false_description: '',
+  })
+})
+
+test('choice criteria 不做键名映射，null 值转空串', () => {
+  const questions = {
+    dept: { type: 'choice', instructions: 'i', criteria: { billing: null, tech: 'Tech' } },
+  }
+  const { body } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const parsed = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  assert.deepEqual(parsed.questions.dept.criteria, { billing: '', tech: 'Tech' })
+})
+
+// ---- question id 清洗与还原 ----
+
+test('非法字符 id 清洗（tool:Agent -> tool_Agent）且 idMap 返回', () => {
+  const questions = { 'tool:Agent': { type: 'noul', instructions: 'i' } }
+  const { body, idMap } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const p = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  assert.ok(p.questions['tool_Agent'], '清洗后的键应存在')
+  assert.equal(p.questions['tool:Agent'], undefined)
+  assert.equal(idMap['tool_Agent'], 'tool:Agent')
+})
+
+test('清洗后撞名追加序号 suffix', () => {
+  const questions = {
+    'tool:Agent': { type: 'noul', instructions: 'i' },
+    'tool_Agent': { type: 'noul', instructions: 'i' },
+  }
+  const { body, idMap } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const p = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  const keys = Object.keys(p.questions)
+  assert.equal(keys.length, 2)
+  assert.ok(keys.includes('tool_Agent'))
+  assert.ok(keys.includes('tool_Agent_2'), '撞名的第二个应得到 _2 后缀')
+  assert.equal(idMap['tool_Agent'], 'tool:Agent')
+  assert.equal(idMap['tool_Agent_2'], 'tool_Agent')
+})
+
+test('64 字符以上的 id 清洗后仍带 suffix 且不超 64', () => {
+  const longA = 'k'.repeat(70)
+  const longB = 'k'.repeat(69) + 'x' // 清洗前不同，截断后相同
+  const longC = 'k'.repeat(69) + 'y'
+  const questions = {
+    [longA]: { type: 'noul', instructions: 'i' },
+    [longB]: { type: 'noul', instructions: 'i' },
+    [longC]: { type: 'noul', instructions: 'i' },
+  }
+  const { body, idMap } = _internal.normalizeDecisionBody(enc({ state: 'x', questions, model: 'm' }))
+  const p = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  const keys = Object.keys(p.questions)
+  assert.equal(keys.length, 3)
+  for (const key of keys) {
+    assert.ok(key.length <= 64, `id ${key.length} chars 必须 ≤ 64`)
+    assert.ok(/^[A-Za-z0-9_-]+$/.test(key), 'id 必须符合谷歌字符集')
+  }
+  assert.ok(idMap, '应产生 idMap')
+  assert.equal(Object.keys(idMap).length, 3)
+  // 映射表是 清洗后id -> 原始id，必须一一对应且可逆
+  const restored = keys.map((k) => idMap[k])
+  assert.deepEqual(new Set(restored), new Set([longA, longB, longC]))
+})
+
+test('restoreAnswerIds 把清洗后的键换回原始 id', () => {
+  const idMap = { tool_Agent: 'tool:Agent' }
+  const text = enc({ answers: { tool_Agent: { type: 'noul', noul: 0.5 } }, usage: {} })
+  const out = JSON.parse(_internal.restoreAnswerIds(text, idMap))
+  assert.equal(out.answers['tool:Agent'].noul, 0.5)
+  assert.equal(out.answers['tool_Agent'], undefined)
+})
+
+// ---- usage 映射 ----
+
+test('mapUsageInBody 把 total_input_tokens 映射成 input_tokens，output_tokens 为 0', () => {
+  const text = enc({
+    answers: {},
+    usage: { total_input_tokens: 120, total_output_tokens: 5, total_tokens: 125 },
+  })
+  const out = JSON.parse(_internal.mapUsageInBody(text))
+  assert.equal(out.usage.input_tokens, 120)
+  assert.equal(out.usage.output_tokens, 0)
+  assert.equal(out.usage.total_input_tokens, 120, '谷歌原字段保留')
+})
+
+test('mapUsage 处理缺失/空 usage', () => {
+  assert.deepEqual(_internal.mapUsage(null), { input_tokens: 0, output_tokens: 0 })
+  assert.deepEqual(_internal.mapUsage({}), { input_tokens: 0, output_tokens: 0 })
+})
+
+// ---- 媒体 / assets 转换 ----
+
+test('https png 图片 URL 猜测 mime_type 为 image/png（不是 jpeg）', () => {
+  const item = { type: 'image_url', image_url: { url: 'https://example.com/cat.png?x=1' } }
+  const block = _internal.convertStatePart(item, {})
+  assert.equal(block.type, 'image')
+  assert.equal(block.uri, 'https://example.com/cat.png?x=1')
+  assert.equal(block.mime_type, 'image/png')
+})
+
+test('未知扩展名的图片 URL 不带 mime_type（不臆造 jpeg）', () => {
+  const item = { type: 'image_url', image_url: { url: 'https://example.com/image' } }
+  const block = _internal.convertStatePart(item, {})
+  assert.equal(block.type, 'image')
+  assert.equal(block.mime_type, undefined)
+})
+
+test('webm 视频 URL 猜测 video/webm，mp4 为 video/mp4', () => {
+  const webm = _internal.convertStatePart({ type: 'video_url', video_url: { url: 'https://x/a.webm' } }, {})
+  assert.equal(webm.mime_type, 'video/webm')
+  const mp4 = _internal.convertStatePart({ type: 'video_url', video_url: { url: 'https://x/a.mp4' } }, {})
+  assert.equal(mp4.mime_type, 'video/mp4')
+})
+
+test('csv input_file URL 猜测 text/csv（不是 pdf）', () => {
+  const item = { type: 'input_file', input_file: { file_data: 'https://x/data.csv' } }
+  const block = _internal.convertStatePart(item, {})
+  assert.equal(block.type, 'document')
+  assert.equal(block.mime_type, 'text/csv')
+})
+
+test('data URL 媒体按 data URL 自带 mime 转换', () => {
+  const item = { type: 'image_url', image_url: { url: 'data:image/png;base64,aGk=' } }
+  const block = _internal.convertStatePart(item, {})
+  assert.equal(block.data, 'aGk=')
+  assert.equal(block.mime_type, 'image/png')
+})
+
+test('assets 表解析：state 字符串引用 asset 键 -> 媒体块', () => {
+  const { body } = _internal.normalizeDecisionBody(enc({
+    state: ['look at this', 'img1'],
+    assets: { img1: { data: 'aGk=', mime_type: 'image/png' } },
+    questions: {},
+    model: 'm',
+  }))
+  const parsed = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body))
+  assert.equal(parsed.assets, undefined)
+  assert.equal(parsed.input[0].type, 'text')
+  assert.equal(parsed.input[1].type, 'image')
+  assert.equal(parsed.input[1].data, 'aGk=')
+  assert.equal(parsed.input[1].mime_type, 'image/png')
+})
+
+test('assets data URL 形式 -> 拆出 mime 与字节', () => {
+  const blocks = _internal.parseAssets({ a: { data: 'data:audio/mpeg;base64,AAAA' } })
+  assert.equal(blocks.a.type, 'audio')
+  assert.equal(blocks.a.mime_type, 'audio/mpeg')
+  assert.equal(blocks.a.data, 'AAAA')
 })
 
 test('questions 原样透传不被改写', () => {
@@ -132,6 +303,9 @@ test('端到端：/systemone 经 loader.fetch 打到 /decisions，x-goog-api-key
     const data = await res.json()
     assert.equal(data.answers.urgent.noul, 0.87)
     assert.equal(data.answers.dept.choice, 'billing')
+    // usage：谷歌的蛇形 total_input_tokens 必须映射成 magpie 读的 input_tokens/output_tokens
+    assert.equal(data.usage.input_tokens, 120, 'usage.input_tokens 来自 total_input_tokens')
+    assert.equal(data.usage.output_tokens, 0)
 
     // 校验上游实际收到的报文
     const upstreamReq = mock.requests.find((r) => r.url.endsWith('/decisions'))
@@ -172,9 +346,71 @@ test('端到端：未知路径返回 404', async () => {
     const loader = await hooks.auth.loader(async () => ({ key: 'test-key' }), {})
     const res = await loader.fetch(`${mock.url}/something-else`, { method: 'GET' })
     assert.equal(res.status, 404)
+    const body = await res.json()
+    assert.match(body.error.message, /gemini-decision/)
+    assert.doesNotMatch(body.error.message, /typesafe-jev/)
   } finally {
     await mock.close()
   }
+})
+
+test('端到端：非法 question id 清洗后发出，answers 键还原为原 id', async () => {
+  const mock = await startMockUpstream({ validKey: 'k' })
+  try {
+    const hooks = await plugin({}, { baseURL: mock.url })
+    const loader = await hooks.auth.loader(async () => ({ key: 'k' }), {})
+    const res = await loader.fetch(`${mock.url}/systemone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: enc({
+        state: 'x',
+        questions: { 'tool:Agent': { type: 'noul', instructions: 'i' } },
+        model: 'm',
+      }),
+    })
+    assert.equal(res.status, 200)
+    const data = await res.json()
+    // 响应侧键名还原
+    assert.ok(data.answers['tool:Agent'], 'answers 应还原为原始 id')
+    assert.equal(data.answers['tool_Agent'], undefined)
+    // 上游实际收到的是清洗后的键
+    const upstreamReq = mock.requests.find((r) => r.url.endsWith('/decisions'))
+    const sent = JSON.parse(upstreamReq.body)
+    assert.ok(sent.questions['tool_Agent'])
+    assert.equal(sent.questions['tool:Agent'], undefined)
+  } finally {
+    await mock.close()
+  }
+})
+
+// ---- models hook ----
+
+test('models hook：剥 models/ 前缀、分页、只保留 gemini-decision-*', async () => {
+  const mock = await startMockUpstream({ validKey: 'k' })
+  try {
+    const hooks = await plugin({}, { baseURL: mock.url })
+    const models = await hooks.provider.models({}, { auth: async () => ({ key: 'k' }) })
+    assert.ok(models['gemini-decision-1'], '决策模型必须存在')
+    assert.equal(models['gemini-decision-1'].decides, true)
+    assert.equal(models['gemini-decision-1'].description, 'The decision model')
+    // 普通聊天/embedding 模型不能混进来
+    assert.equal(models['gemini-2.5-flash'], undefined)
+    assert.equal(models['text-embedding-004'], undefined)
+    assert.equal(models['gemini-2.5-flash-lite'], undefined)
+    // id 不应残留 models/ 前缀
+    assert.equal(models['models/gemini-decision-1'], undefined)
+    // 分页确实发生了（page1 + page2 两个请求）
+    const modelReqs = mock.requests.filter((r) => r.url.includes('/models'))
+    assert.ok(modelReqs.length >= 2, '应翻页拉完 models 列表')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('models hook：无 key 回退静态表', async () => {
+  const hooks = await plugin({}, {})
+  const models = await hooks.provider.models({ models: { existing: { id: 'existing' } } }, { auth: async () => ({}) })
+  assert.deepEqual(models, { models: { existing: { id: 'existing' } } }.models)
 })
 
 // ---- 运行 ----

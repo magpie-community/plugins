@@ -67,9 +67,25 @@ export function startMockUpstream({ port = 0, validKey = 'test-key' } = {}) {
         return
       }
 
-      if (req.method === 'GET' && req.url.endsWith('/models')) {
+      if (req.method === 'GET' && req.url.includes('/models')) {
+        // 谷歌的真实形状：name 带 "models/" 前缀，列表里混着普通聊天/embedding 模型。
+        // 第一页给 nextPageToken，第二页收尾，供分页逻辑测试。
+        const isPage2 = req.url.includes('pageToken=page2')
+        const page1 = {
+          models: [
+            { name: 'models/gemini-2.5-flash', description: 'chat model' },
+            { name: 'models/text-embedding-004', description: 'embedding model' },
+          ],
+          nextPageToken: 'page2',
+        }
+        const page2 = {
+          models: [
+            { name: 'models/gemini-decision-1', description: 'The decision model' },
+            { name: 'models/gemini-2.5-flash-lite', description: 'another chat model' },
+          ],
+        }
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ models: [{ name: 'gemini-decision-1' }] }))
+        res.end(JSON.stringify(isPage2 ? page2 : page1))
         return
       }
 

@@ -1,11 +1,12 @@
 /**
- * magpie plugin —— TypeSafe Jev 决策模型 provider。
+ * magpie plugin —— Google Gemini Decision 决策模型 provider。
  *
  * 设计要点（详见 README.md）：
- *  1. provider id 固定为 `typesafe-jev`，带 `decide: true`；jev-* 模型带 `decides: true`，
- *     于是 magpie 会把决策请求以 `POST {baseURL}/systemone` 经 loader 的 fetch 发出来。
+ *  1. provider id 固定为 `gemini-decision`，带 `decide: true`；`gemini-decision-1` 模型带
+ *     `decides: true`，于是 magpie 会把决策请求以 `POST {baseURL}/systemone` 经 loader 的
+ *     fetch 发出来，本插件再转成谷歌的 `POST /v1beta/decisions`。
  *  2. loader 的 fetch 只做三件事：统一鉴权、按路径分流、把上游 status/headers/body 原样回传
- *     （绝不改写上游 body 其它字段，绝不打印请求体 / state）。
+ *     （除 question-id 还原与 usage 字段映射外绝不改写上游 body，绝不打印请求体 / state）。
  *
  * 本文件零第三方依赖，唯一入口，导出只有 `default`（插件主函数）与 `_internal`（对象，非函数）。
  */
@@ -14,19 +15,23 @@
  * 常量
  * ------------------------------------------------------------------ */
 
-/** provider id：刻意不用 `typesafe`，避免撞上 谷歌 AI Studio / 内置预设导致 `??=` 不生效、`decide` 落不下去。 */
+/** provider id：与谷歌官方 Gemini API 区分，避免撞上内置预设导致 `??=` 不生效、`decide` 落不下去。 */
 const PROVIDER_ID = 'gemini-decision';
 const PROVIDER_NAME = 'Gemini Decision';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-/** chat 兼容层请求里拿不到 jev 模型名时使用的兜底决策模型。 */
-const DEFAULT_JEV_MODEL = 'gemini-decision-1';
-/** 静态登记的 jev 决策模型。 */
-const JEV_MODEL_IDS = Object.freeze(['gemini-decision-1']);
-/** 每请求 64k / 每问题 32k；这里按单问题上限保守登记。 */
-const MODEL_LIMIT = Object.freeze({ context: 32768, output: 2048 });
-/** $42 / Btok 输入，输出免费 —— 谷歌 AI Studio 口径是「每百万 token」。 */
-const MODEL_COST = Object.freeze({ input: 0.042, output: 0 });
-const MODEL_MODALITIES = Object.freeze({ input: Object.freeze(['text']), output: Object.freeze(['text']) });
+/** chat 兼容层请求里拿不到模型名时使用的兜底决策模型。 */
+const DEFAULT_DECISION_MODEL = 'gemini-decision-1';
+/** 静态登记的决策模型。 */
+const DECISION_MODEL_IDS = Object.freeze(['gemini-decision-1']);
+/** 决策模型上下文窗口 262144（Google 文档口径）。 */
+const MODEL_LIMIT = Object.freeze({ context: 262144, output: 2048 });
+/** 每百万输入 token $0.10，输出免费（决策返回原生概率，无输出 token）。 */
+const MODEL_COST = Object.freeze({ input: 0.10, output: 0 });
+/** 输入支持文本、图片、音频、视频与 PDF 文档（与 README 一致）。 */
+const MODEL_MODALITIES = Object.freeze({
+  input: Object.freeze(['text', 'image', 'audio', 'video', 'file']),
+  output: Object.freeze(['text']),
+});
 /** 由我们自己重建 body / 重算长度的请求头，转发时必须摘掉。 */
 const REBUILT_BODY_HEADERS = Object.freeze([
   'content-length',
@@ -120,7 +125,7 @@ function encodeBodyText(text, originalBody) {
  * ------------------------------------------------------------------ */
 
 /**
- * 构造一个「非决策」模型条目（不带 `decides`）：供上游 /models 返回的非 `jev-` 模型使用。
+ * 构造一个「非决策」模型条目（不带 `decides`）。
  *
  * @param {string} id 模型 id。
  * @param {string} name 展示名。
@@ -139,13 +144,13 @@ function plainModel(id, name) {
 }
 
 /**
- * 构造一个 jev 决策模型条目。
+ * 构造一个决策模型条目。
  *
  * @param {string} id 模型 id。
  * @param {string} name 展示名。
  * @returns {Record<string, unknown>} 模型配置。
  */
-function baseJevModel(id, name) {
+function baseDecisionModel(id, name) {
   return { ...plainModel(id, name), decides: true };
 }
 
@@ -157,7 +162,7 @@ function baseJevModel(id, name) {
  */
 function staticModels(api) {
   const models = {};
-  models['gemini-decision-1'] = baseJevModel('gemini-decision-1', 'Gemini Decision 1');
+  models['gemini-decision-1'] = baseDecisionModel('gemini-decision-1', 'Gemini Decision 1');
   return models;
 }
 
@@ -197,7 +202,7 @@ function normalizeModels(value) {
 function forceDecides(models) {
   for (const [key, entry] of Object.entries(models)) {
     const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : key;
-    if (id.startsWith('gemini-decision') || JEV_MODEL_IDS.includes(id)) {
+    if (id.startsWith('gemini-decision') || DECISION_MODEL_IDS.includes(id)) {
       entry.decides = true;
     }
   }
@@ -209,7 +214,11 @@ function forceDecides(models) {
  * ------------------------------------------------------------------ */
 
 /**
- * 解析 baseURL，优先级：插件 options.baseURL → input.magpie.option.baseURL → 环境变量 → 默认值。
+ * 解析 baseURL，优先级：插件 options.baseURL → input.magpie.option.baseURL → 默认值。
+ *
+ * 刻意不读环境变量：baseURL 决定用户的 Google key 发往哪台主机，环境变量形式的
+ * override（GEMINI_DECISION_BASE_URL）会把 key 转向任意主机，故完全移除。
+ * 剩下的两个来源都是用户自己在 magpie 配置里写的显式选择。
  *
  * @param {Record<string, unknown>} input magpie 传给插件主函数的 input。
  * @param {Record<string, unknown>} options plugins.json 中该条目的 options。
@@ -219,11 +228,9 @@ function resolveBaseURL(input, options) {
   const magpieOption = isPlainObject(input) && isPlainObject(input.magpie) && isPlainObject(input.magpie.option)
     ? input.magpie.option
     : {};
-  const envValue = typeof process !== 'undefined' && process && process.env ? process.env.GEMINI_DECISION_BASE_URL : undefined;
   const candidates = [
     isPlainObject(options) ? options.baseURL : undefined,
     magpieOption.baseURL,
-    envValue,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.trim()) return trimTrailingSlash(candidate.trim());
@@ -316,19 +323,6 @@ function classifyTarget(rawUrl) {
   return { kind: 'unknown', pathname };
 }
 
-/**
- * 直通前对决策请求体做最小规范化：仅当 `model` 形如 `<providerId>/<model>` 时剥掉 provider 前缀。
- *
- * magpie 侧的模型 id 是 `<provider>/<model>`，而 TypeSafe 只认裸 `jev-*`。
- *
- * 入参的 body 形态一律先归一成字符串再判断（`Uint8Array` / `ArrayBuffer` / `ArrayBufferView`
- * 用 `TextDecoder` 解码），剥完前缀后再按**原形态**回填（原来字节就 `TextEncoder().encode()` 回去）。
- * 没有前缀时**原样返回同一个 body 对象**（字节路径也不重新编码、不重新序列化），
- * 因此 `changed === false` 时上游收到的字节与调用方发出的完全一致；幂等：裸 `jev-latest` 不会被二次处理。
- *
- * @param {unknown} rawBody 原始请求体（字符串或字节形态）。
- * @returns {{body: unknown, changed: boolean}} 处理后的 body 与是否发生变化。
- */
 /* ------------------------------------------------------------------ *
  * OpenRouter System One part -> 谷歌 content block 转换
  * ------------------------------------------------------------------ */
@@ -349,6 +343,43 @@ function parseDataUrl(url) {
   if (!/^[-\w.]+\/[-\w.+]+$/.test(mime)) return null;
   return { mime, data: url.slice(comma + 1) };
 }
+
+/**
+ * 从 URL 的扩展名猜 mime 类型；猜不到返回 null（不臆造）。
+ *
+ * @param {string} url 原始 URL。
+ * @param {Record<string, string>} table 扩展名 → mime 映射表。
+ * @returns {string|null} mime 类型或 null。
+ */
+function mimeFromUrlExt(url, table) {
+  try {
+    const path = new URL(url).pathname;
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    return table[ext] || null;
+  } catch {
+    const clean = String(url).split('?')[0].split('#')[0];
+    const ext = (clean.split('.').pop() || '').toLowerCase();
+    return table[ext] || null;
+  }
+}
+
+/** 图片扩展名 → mime。 */
+const IMAGE_EXT_MIME = Object.freeze({
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', tiff: 'image/tiff', heic: 'image/heic',
+});
+
+/** 视频扩展名 → mime。 */
+const VIDEO_EXT_MIME = Object.freeze({
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg', '3gp': 'video/3gpp', flv: 'video/x-flv',
+});
+
+/** 文档扩展名 → mime。 */
+const DOC_EXT_MIME = Object.freeze({
+  pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain', md: 'text/markdown',
+  html: 'text/html', json: 'application/json', xml: 'application/xml',
+});
 
 /**
  * 音频 format -> mime 映射（OpenRouter input_audio.format 枚举）。
@@ -396,7 +427,12 @@ function convertStatePart(item, assetBlocks) {
       if (detail === 'low' || detail === 'high') block.resolution = detail === 'high' ? 'high' : 'low';
       return block;
     }
-    if (/^https?:\/\//.test(url)) return { type: 'image', uri: url, mime_type: 'image/jpeg' };
+    if (/^https?:\/\//.test(url)) {
+      const block = { type: 'image', uri: url };
+      const mime = mimeFromUrlExt(url, IMAGE_EXT_MIME);
+      if (mime) block.mime_type = mime;
+      return block;
+    }
     return null;
   }
 
@@ -417,7 +453,12 @@ function convertStatePart(item, assetBlocks) {
     if (typeof url !== 'string') return null;
     const parsed = parseDataUrl(url);
     if (parsed) return { type: 'video', data: parsed.data, mime_type: parsed.mime };
-    if (/^https?:\/\//.test(url)) return { type: 'video', uri: url, mime_type: 'video/mp4' };
+    if (/^https?:\/\//.test(url)) {
+      const block = { type: 'video', uri: url };
+      const mime = mimeFromUrlExt(url, VIDEO_EXT_MIME);
+      if (mime) block.mime_type = mime;
+      return block;
+    }
     return null;
   }
 
@@ -428,10 +469,10 @@ function convertStatePart(item, assetBlocks) {
     const parsed = parseDataUrl(fileData);
     if (parsed) return { type: 'document', data: parsed.data, mime_type: parsed.mime };
     if (/^https?:\/\//.test(fileData)) {
-      // 从扩展名猜 mime
-      const ext = (fileData.split('?')[0].split('.').pop() || '').toLowerCase();
-      const mimes = { pdf: 'application/pdf', csv: 'text/csv' };
-      return { type: 'document', uri: fileData, mime_type: mimes[ext] || 'application/pdf' };
+      const block = { type: 'document', uri: fileData };
+      const mime = mimeFromUrlExt(fileData, DOC_EXT_MIME);
+      if (mime) block.mime_type = mime;
+      return block;
     }
     return null;
   }
@@ -469,6 +510,18 @@ function parseAssets(assets) {
   return out;
 }
 
+/**
+ * 把 System One（OpenRouter Decisions schema）决策请求体改写成谷歌 Gemini Decisions API 的形状：
+ * `state` → `input`（含 content block 转换与 assets 展开）、model 剥 provider 前缀并归一到
+ * `gemini-decision-1`、noul criteria 键名映射、question id 按谷歌字符集清洗。
+ *
+ * 入参的 body 形态一律先归一成字符串再判断（`Uint8Array` / `ArrayBuffer` / `ArrayBufferView`
+ * 用 `TextDecoder` 解码），处理完后再按**原形态**回填。非 JSON 体原样返回（`changed === false`）。
+ *
+ * @param {unknown} rawBody 原始请求体（字符串或字节形态）。
+ * @returns {{body: unknown, changed: boolean, idMap: Record<string, string>|null}} 处理后的 body、
+ *   是否发生变化，以及清洗后 id → 原始 id 的映射（无清洗时为 null）。
+ */
 function normalizeDecisionBody(rawBody) {
   const empty = { body: rawBody, changed: false, idMap: null };
   const text = decodeBodyText(rawBody);
@@ -481,17 +534,17 @@ function normalizeDecisionBody(rawBody) {
   }
   if (!isPlainObject(parsed)) return empty;
 
-  // Gemini Decisions API 协议改写（JEV System One → Gemini）：
+  // Gemini Decisions API 协议改写（OpenRouter System One → Gemini）：
   //   1. state          -> input（字符串原样；对象/数组序列化为 text 块）
   //   2. model 剥 provider 前缀后强制为 gemini-decision-1（谷歌目前只有这一个决策模型）
-  //   3. noul criteria 键名映射：Jev 的 {true,false} -> 谷歌的 {true_description,false_description}
+  //   3. noul criteria 键名映射：System One 的 {true,false} -> 谷歌的 {true_description,false_description}
   const out = { ...parsed };
 
   // model：剥掉 `<providerId>/` 前缀；无论剥完是什么都归一到 gemini-decision-1
   const model = typeof out.model === 'string' ? out.model.trim() : '';
   const prefix = `${PROVIDER_ID}/`;
   const bare = model.startsWith(prefix) ? model.slice(prefix.length).trim() : model;
-  out.model = bare.startsWith('gemini-decision') ? bare : DEFAULT_JEV_MODEL;
+  out.model = bare.startsWith('gemini-decision') ? bare : DEFAULT_DECISION_MODEL;
 
   // assets：解析成 block 表并从顶层删除（谷歌没有这个字段）
   const assetBlocks = parseAssets(out.assets);
@@ -513,7 +566,7 @@ function normalizeDecisionBody(rawBody) {
     }
   }
 
-  // noul criteria 键名映射：Jev 用 {true, false}，谷歌用 {true_description, false_description}
+  // noul criteria 键名映射：System One 用 {true, false}，谷歌用 {true_description, false_description}
   if (isPlainObject(out.questions)) {
     for (const q of Object.values(out.questions)) {
       if (!isPlainObject(q) || !isPlainObject(q.criteria)) continue;
@@ -535,7 +588,7 @@ function normalizeDecisionBody(rawBody) {
     }
   }
 
-  // question id 清洗：谷歌只允许 [A-Za-z0-9_-]{1,64}，Jev 风格的 tool:Agent 会被 400。
+  // question id 清洗：谷歌只允许 [A-Za-z0-9_-]{1,64}，System One 风格的 tool:Agent 会被 400。
   // 非法字符替换为 _，记录映射表以便响应侧还原。
   let idMap = null;
   if (isPlainObject(out.questions)) {
@@ -545,9 +598,10 @@ function normalizeDecisionBody(rawBody) {
     const seen = new Set();
     for (const [qid, q] of Object.entries(out.questions)) {
       let nid = qid.replace(/[^A-Za-z0-9_-]/g, '_');
-      if (nid.length > 64) nid = nid.slice(0, 64);
+      // 截断时给「_序号」防撞后缀留出空间：谷歌上限 64 字符，截到 64 再加 "_2" 就超了。
+      if (nid.length > 60) nid = nid.slice(0, 60);
       if (nid === '') nid = 'q';
-      // 防撞车：如果清洗后撞名，追加序号
+      // 防撞车：如果清洗后撞名，追加序号（60 截断 + "_99" 也仍在 64 内）
       let unique = nid, n = 2;
       while (seen.has(unique)) { unique = `${nid}_${n++}`; }
       seen.add(unique);
@@ -584,6 +638,39 @@ function restoreAnswerIds(text, idMap) {
     restored[idMap[key] || key] = val;
   }
   parsed.answers = restored;
+  return JSON.stringify(parsed);
+}
+
+/**
+ * 把谷歌的 usage 形状映射成 magpie System One 读取的形状。
+ *
+ * 谷歌回答 `usage.total_input_tokens`（加蛇形的 total_output_tokens / total_tokens），
+ * magpie 读 `usage.input_tokens` / `output_tokens`；不映射的话 usage 会整个丢失。
+ * output_tokens 固定为 0：决策返回原生概率，不产生输出 token。
+ * 谷歌自己的字段原样保留。
+ *
+ * @param {unknown} usage 上游 usage 对象。
+ * @returns {Record<string, unknown>} 映射后的 usage。
+ */
+function mapUsage(usage) {
+  if (!isPlainObject(usage)) return { input_tokens: 0, output_tokens: 0 };
+  const input = typeof usage.total_input_tokens === 'number'
+    ? usage.total_input_tokens
+    : typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+  return { ...usage, input_tokens: input, output_tokens: 0 };
+}
+
+/**
+ * 把 usage 映射应用到一个响应体文本上；解析失败或无 usage 时原样返回。
+ *
+ * @param {string} text 上游响应体文本。
+ * @returns {string} 处理后的文本。
+ */
+function mapUsageInBody(text) {
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return text; }
+  if (!isPlainObject(parsed)) return text;
+  parsed.usage = mapUsage(parsed.usage);
   return JSON.stringify(parsed);
 }
 
@@ -665,7 +752,7 @@ function toPassthroughResponse(upstream) {
  *
  * @param {string} targetUrl 目标完整 URL。
  * @param {{method: string, headers: Headers, body: unknown, signal: unknown}} request 请求描述。
- * @param {string} apiKey TypeSafe API key。
+ * @param {string} apiKey Google AI Studio API key。
  * @returns {Promise<Response>} 上游响应。
  */
 async function callUpstream(targetUrl, request, apiKey) {
@@ -705,13 +792,15 @@ function createGatewayFetch(config) {
       const normalized = normalizeDecisionBody(request.body);
       const forwarded = { ...request, method: 'POST', body: normalized.body };
       const upstream = await callUpstream(`${config.baseURL}/decisions`, forwarded, config.apiKey);
-      // 无 id 清洗时原样透传（零拷贝）；有清洗时读全量、还原 answers 键名再回传
-      if (!normalized.idMap || !upstream.body) return toPassthroughResponse(upstream);
+      // usage 总是要从谷歌的蛇形键映射成 magpie 读的 input_tokens/output_tokens，
+      // 所以决策响应不再走零拷贝透传，而是读全量：映射 usage、按需还原 answers 键名再回传。
+      // 成功（2xx JSON）响应才解析；错误体（4xx/5xx）原样透传。
+      if (!upstream.body || !upstream.ok) return toPassthroughResponse(upstream);
       const text = await upstream.text();
       const headers = copyUpstreamHeaders(upstream.headers);
-      if (upstream.status === 401) headers.set('X-Magpie-Sign-In', 'expired');
       headers.delete('content-length');
-      return new Response(restoreAnswerIds(text, normalized.idMap), {
+      const restored = restoreAnswerIds(mapUsageInBody(text), normalized.idMap);
+      return new Response(restored, {
         status: upstream.status,
         statusText: upstream.statusText,
         headers,
@@ -727,7 +816,7 @@ function createGatewayFetch(config) {
 
     return openAiError(
       404,
-      `magpie typesafe-jev: endpoint "${target.pathname || request.url}" is not implemented. `
+      `magpie gemini-decision: endpoint "${target.pathname || request.url}" is not implemented. `
         + 'Only /systemone and /models are served; upstream paths are never guessed.',
       'unsupported_endpoint',
     );
@@ -740,6 +829,9 @@ function createGatewayFetch(config) {
 
 /**
  * `config` hook：登记 provider 与模型，无条件写 `decide: true`。
+ *
+ * npm 按仓库其它决策 provider 的约定登记为 `@ai-sdk/openai-compatible`；它只是解析请求
+ * 通道的包名，决定模型语义的是 `decide`/`decides`，不是 npm。
  *
  * @param {Record<string, unknown>} cfg magpie 的配置对象（原地修改）。
  * @param {{baseURL: string}} shared 插件级共享配置。
@@ -757,15 +849,24 @@ function configHook(cfg, shared) {
   Object.assign(models, normalizeModels(existing.models));
   forceDecides(models);
 
-  cfg.provider[PROVIDER_ID] = {
+  // npm 只写一次（`??=`）：与仓库其它决策 provider（如 openai-decisions）的约定一致，
+  // 且保留用户自己写的选择。npm 只是 magpie/OpenCode 解析该 provider 请求通道的包名；
+  // gemini-decision-1 是否能 chat 由 decides/decide 语义决定，不由 npm 决定。
+  const npm = typeof existing.npm === 'string' && existing.npm.trim()
+    ? existing.npm
+    : '@ai-sdk/openai-compatible';
+
+  const provider = {
     ...existing,
     name: typeof existing.name === 'string' && existing.name.trim() ? existing.name : PROVIDER_NAME,
-    npm: typeof existing.npm === 'string' && existing.npm.trim() ? existing.npm : '@ai-sdk/openai-compatible',
+    npm,
     api,
     // 无条件写入：即使预设里已经有同名 provider，也要保证决策语义成立。
     decide: true,
     models,
   };
+
+  cfg.provider[PROVIDER_ID] = provider;
   return cfg.provider[PROVIDER_ID];
 }
 
@@ -799,19 +900,31 @@ async function modelsHook(provider, ctx, shared) {
   const apiKey = await resolveApiKey(context.auth);
   if (!apiKey) return fallback;
 
-  let payload = null;
+  // 逐页拉取（GET /v1beta/models 用 nextPageToken 分页）；每页请求带 10s 超时，
+  // 任何一页失败都整表回退静态登记，绝不返回半截列表。
+  const rows = [];
+  let pageToken = '';
   try {
-    const response = await fetch(`${shared.baseURL}/models`, {
-      method: 'GET',
-      headers: { 'x-goog-api-key': apiKey, accept: 'application/json' },
-    });
-    if (!response.ok) return fallback;
-    payload = await response.json();
+    for (let page = 0; page < 10; page++) {
+      const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : '';
+      const response = await fetch(`${shared.baseURL}/models${query}`, {
+        method: 'GET',
+        headers: { 'x-goog-api-key': apiKey, accept: 'application/json' },
+        signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+          ? AbortSignal.timeout(10000)
+          : undefined,
+      });
+      if (!response.ok) return fallback;
+      const payload = await response.json();
+      if (!isPlainObject(payload) || !Array.isArray(payload.models)) return fallback;
+      rows.push(...payload.models);
+      pageToken = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : '';
+      if (!pageToken) break;
+    }
   } catch {
     return fallback;
   }
 
-  const rows = isPlainObject(payload) && Array.isArray(payload.models) ? payload.models : [];
   if (rows.length === 0) return fallback;
 
   const merged = normalizeModels(staticModels(shared.baseURL));
@@ -819,19 +932,22 @@ async function modelsHook(provider, ctx, shared) {
 
   for (const row of rows) {
     if (!isPlainObject(row)) continue;
-    const id = typeof row.name === 'string' && row.name.trim()
+    // 谷歌 /models 的 name 形如 "models/gemini-2.5-flash"，登记时剥掉 "models/" 前缀。
+    const rawId = typeof row.name === 'string' && row.name.trim()
       ? row.name.trim()
       : typeof row.id === 'string' && row.id.trim() ? row.id.trim() : '';
+    const id = rawId.replace(/^models\//, '');
     if (!id) continue;
-    // 只有 id 以 `jev-` 开头才算决策模型；其它上游模型保持原样（不写 decides）。
+    // 只把 gemini-decision-* 收进来：上游列表里全是 embedding / 普通 gemini 聊天模型，
+    // 原样并入会让 magpie 把不能 chat / 不能决策的模型当成这个 provider 的模型提供出去。
     const isDecisionModel = id.startsWith('gemini-decision');
-    const base = isPlainObject(merged[id])
-      ? merged[id]
-      : (isDecisionModel ? baseJevModel(id, id) : plainModel(id, id));
+    if (!isDecisionModel && !isPlainObject(merged[id])) continue;
+    if (!isDecisionModel) continue;
+    const base = isPlainObject(merged[id]) ? merged[id] : baseDecisionModel(id, id);
     const entry = { ...base, id };
     if (typeof row.description === 'string' && row.description.trim()) entry.description = row.description.trim();
     if (typeof row.release_date === 'string' && row.release_date.trim()) entry.release_date = row.release_date.trim();
-    if (isDecisionModel) entry.decides = true;
+    entry.decides = true;
     merged[id] = entry;
   }
 
@@ -861,8 +977,7 @@ export default async function geminiDecisionPlugin(input, options) {
         {
           type: 'api',
           label: 'Google AI Studio API key',
-          // TypeSafe 文档未规定 key 前缀，这里只给中性提示，不臆造 `ts_...` 之类格式。
-          placeholder: '粘贴 AI Studio 的 API key（免费层即可）',
+          placeholder: 'Paste your Google AI Studio API key / 粘贴 AI Studio 的 API key',
         },
       ],
       loader: (getAuth, provider) => loaderHook(getAuth, provider, shared),
@@ -881,17 +996,18 @@ export const _internal = {
   PROVIDER_ID,
   PROVIDER_NAME,
   DEFAULT_BASE_URL,
-  DEFAULT_JEV_MODEL,
-  JEV_MODEL_IDS,
+  DEFAULT_DECISION_MODEL,
+  DECISION_MODEL_IDS,
   MODEL_LIMIT,
   MODEL_COST,
+  MODEL_MODALITIES,
   isPlainObject,
   trimTrailingSlash,
   readBodyString,
   decodeBodyText,
   encodeBodyText,
   plainModel,
-  baseJevModel,
+  baseDecisionModel,
   staticModels,
   normalizeModels,
   forceDecides,
@@ -901,7 +1017,10 @@ export const _internal = {
   classifyTarget,
   normalizeDecisionBody,
   restoreAnswerIds,
+  mapUsage,
+  mapUsageInBody,
   parseDataUrl,
+  mimeFromUrlExt,
   convertStatePart,
   parseAssets,
   jsonResponse,

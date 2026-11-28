@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-gemini-decision-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Expose Google Gemini Decision 1 through Magpie's native System One decision API (OpenRouter schema).",
   "type": "module",
   "main": "./opencode.mjs",

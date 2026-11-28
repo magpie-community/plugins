@@ -11,23 +11,30 @@ Magpie already speaks System One for compatible decision providers. Google
 uses a different endpoint and a few different field shapes, which this
 plugin converts. The plugin calls
 `POST https://generativelanguage.googleapis.com/v1beta/decisions` and
-returns native probabilities — output tokens are always zero, and input
-tokens are free of charge on the Gemini API free tier.
+returns native probabilities — output tokens are always zero.
 
 ## Install and sign in
 
-From a source checkout:
+From the npm registry:
 
 ```sh
-magpie plugin add ./magpie-gemini-decision
+magpie plugin add @magpie-community/opencode-gemini-decision-auth
 magpie plugin login gemini-decision
 ```
 
-Sign in with a Google AI Studio API key. The free tier is enough:
-200 requests/minute and 10,000 requests/day per project. Note that the
+From a source checkout of this repository:
+
+```sh
+magpie plugin add ./packages/gemini-decision
+magpie plugin login gemini-decision
+```
+
+Sign in with a Google AI Studio API key. Note that the
 Decisions API is rolled out per Google Cloud project — some projects
 report a zero quota; test a fresh key with one direct curl before adding
-it. Register several keys in magpie for failover and pooling.
+it. Register several keys in magpie for failover and pooling. Check
+Google's rate-limit documentation for the quotas that apply to your
+project and tier.
 
 ### Credentials and compatibility
 
@@ -91,18 +98,19 @@ states, no keys.
 
 ### Not supported
 
-- **`box` questions** (visual object localization): Google has no such
-  primitive. Requests containing one are rejected upstream with a 400,
-  which lets magpie fail over to a TypeSafe Jev provider that does support
-  them — run both and let routing pick.
+- **`box` questions** (visual object localization): Google's Decisions API
+  has no box question type. Requests containing one are rejected upstream
+  with a 400.
 - `output_modalities` other than decisions: the model generates zero text.
 
 ## Models and limits
 
 One model: `gemini-decision-1` (context 262,144 tokens, input text,
-image, audio, video and PDF documents). Google rate limits are per
-project; the free tier allows 200 RPM / 10,000 RPD. Free-tier traffic is
-used by Google for training — don't send sensitive data on it.
+image, audio, video and PDF documents; input costs $0.10 per 1M tokens).
+Google rate limits are per project — check Google's rate-limit
+documentation for the quotas that apply to your project and tier.
+Free-tier traffic may be used by Google to improve its products — don't
+send sensitive data on it.
 
 ## Testing
 
@@ -110,10 +118,13 @@ used by Google for training — don't send sensitive data on it.
 node test/run.mjs
 ```
 
-15 cases run against a local mock upstream (no network, no real key):
-config registration, state conversion, model normalization, auth header,
-error passthrough, 404 for unknown paths, key sanitizing round-trips and
-the export contract.
+34 cases run against a local mock upstream (no network, no real key):
+config registration, state conversion, model normalization, noul criteria
+key mapping, null-criteria fallback, question-id sanitizing round-trips
+(including collisions and the 64-character limit), usage mapping, media
+and assets conversion, the live models hook (pagination, `models/` prefix
+stripping, decision-model filtering), auth header, error passthrough, 404
+for unknown paths, and the export contract.
 
 ## License
 
