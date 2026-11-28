@@ -2069,7 +2069,25 @@ const eventName = (s) =>
 const CACHE_NAMED = ["cache_read_input_tokens", "cacheReadInputTokens", "cache_creation_input_tokens", "cacheCreationInputTokens", "prompt_cache_hit_tokens", "cached_tokens"]
 const namesCache = (u) =>
   CACHE_NAMED.some((k) => u[k] != null) || u.prompt_tokens_details?.cached_tokens != null || u.input_tokens_details?.cached_tokens != null
-function tokensOf(u) {
+// estimateCached is the opt-in cache-hit estimate (#1266): when the vendor
+// says nothing of a cache at all, a caller may ask for one worked out from
+// prompt_tokens and a rate the user sets, so a cost or a hit rate is not
+// 0% for want of a field. A real figure always wins, and it is applied only
+// where the vendor was silent - never beside a figure it did give.
+function estimateCached(out, rate) {
+  if (!out || !out.magpie_cache_unknown) return out
+  const r = Number(rate)
+  if (!(r > 0) || r > 1) return out
+  const p = Number(out.prompt_tokens) || 0
+  if (p <= 0) return out
+  return {
+    ...out,
+    prompt_tokens_details: { ...(out.prompt_tokens_details || {}), cached_tokens: Math.round(p * r) },
+    magpie_cache_estimated: r,
+  }
+}
+
+function tokensOf(u, estimateRate) {
   if (!u || typeof u !== "object") return null
   const n = (...v) => Number(v.find((x) => x != null) ?? 0) || 0
   const p = n(u.prompt_tokens, u.input_tokens, u.promptTokens, u.inputTokens)
@@ -2089,7 +2107,7 @@ function tokensOf(u) {
   }
   const thought = n(u.reasoning_tokens, u.completion_tokens_details?.reasoning_tokens)
   if (thought) out.completion_tokens_details = { reasoning_tokens: thought }
-  return out
+  return estimateRate ? estimateCached(out, estimateRate) : out
 }
 
 // A turn's settled charge is the only place Trae names what it really spent:
@@ -5279,4 +5297,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling, twinId }
+export const _internal = { estimateCached, tokensOf, chatModel, cutFinish, ending, TRAE_CUT, continued, addUsage, GO_ON, THINK_ON, reasoned, CUT_ROUNDS, THOUGHT_ROUNDS, tune, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf, directOf, directBody, directParts, directRefused, turnBilling, twinId }
