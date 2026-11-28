@@ -4,9 +4,26 @@
   "description": "OpenCode provider plugin: signs in to Z.ai's or BigModel's (智谱) GLM Coding Plan as ZCode does, including team seats and ZCode's Start Plan, and claims its gift plans daily",
   "type": "module",
   "main": "./opencode.mjs",
-  "exports": { ".": "./opencode2.mjs" },
-  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "prompt.mjs", "README.md"],
-  "keywords": ["opencode", "opencode-plugin", "magpie", "zcode", "z.ai", "bigmodel", "glm", "coding-plan"],
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "prompt.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "zcode",
+    "z.ai",
+    "bigmodel",
+    "glm",
+    "coding-plan"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

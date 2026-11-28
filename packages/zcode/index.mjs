@@ -33,6 +33,11 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
+// ZCode 3.16 has two more lanes, both hidden in its picker (#400): the
+// idle plan is served off-peak, the card at full speed, and each ids its
+// plans by the site they came from.
+const OFF_PEAK_BASE = ZCODE + "/api/v1/off-peak/anthropic"
+const HIGHSPEED_BASE = ZCODE + "/api/v1/highspeed/anthropic"
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
 const MODELS = [
@@ -2188,16 +2193,26 @@ function ownTeam(store, key) {
   return null
 }
 
+// planBases is which providers ZCode's config.json may hold a coding plan key
+// for, and the lane each is served on (#400): a plan's own site, or the two
+// lanes 3.16 added - off-peak for an idle plan, full speed for a card. A plan
+// reached on the wrong lane is refused there, so the base is read with the key.
+export function planBases() {
+  return [
+    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
+    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
+    [["account:zai-offpeak-idle-plan", "account:bigmodel-offpeak-idle-plan"], OFF_PEAK_BASE],
+    [["account:zai-highspeed-card", "account:bigmodel-highspeed-card"], HIGHSPEED_BASE],
+  ]
+}
+
 // configKey is the coding plan key ZCode's config.json gives its built-in
 // coding plan provider, Z.ai's first, as ZCode lists them; ZCode reads it
 // as it is, and one written encrypted is read too.
 function configKey(key) {
   const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
   if (!providers || typeof providers !== "object") return null
-  for (const [ids, base] of [
-    [["builtin:zai-coding-plan", "account:zai-individual-coding-plan"], ZAI_BASE],
-    [["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"], BIGMODEL_BASE],
-  ]) {
+  for (const [ids, base] of planBases()) {
     for (const id of ids) {
       let k = providers[id]?.options?.apiKey
       if (typeof k !== "string") continue
