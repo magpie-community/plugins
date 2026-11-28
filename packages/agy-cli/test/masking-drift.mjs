@@ -358,3 +358,104 @@ test("session_new for a changed history says where, as the history key reads it,
     stderr.restore()
   }
 })
+
+const PLACEHOLDER_NOTE = "Values written like {{NAME_ab12cd34}} are placeholders for real values. Use them exactly as written, in replies and in tool calls alike: they are filled in with the real values before anything runs. Don't ask to verify them, and don't replace them with examples."
+const WRAPPED_PLACEHOLDER_NOTE = `<system-reminder>\n${PLACEHOLDER_NOTE}\n</system-reminder>`
+
+test("wrapped <system-reminder> placeholder note appearing and disappearing keeps the live session", async () => {
+  // Simulates Responses -> Anthropic translation of Magpie's developer placeholder note:
+  // steps 0..1 unmasked; step 2 masking starts and appends the wrapped note to message[2];
+  // step 3 masking turns off and the wrapped note disappears.
+  const { drops } = await run({
+    mask: (text, step) => step === 2 ? text.replaceAll("Alice Johnson", "{{NAME_a2b3c4d5}}") : text,
+    extra: (messages, i) => i !== 2 ? messages : messages.map((message, index) => index !== 2 ? message
+      : { ...message, content: [...message.content, { type: "text", text: WRAPPED_PLACEHOLDER_NOTE }] }),
+  })
+  assert.deepEqual(drops, [], JSON.stringify(drops))
+})
+
+test("placeholder note appearing and disappearing in system prompt keeps the live session", async () => {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      await agent.tool("Read", { path: "/repo/a.txt" })
+      await agent.tool("Read", { path: "/repo/b.txt" })
+      await agent.text("all done")
+      return { stopReason: "end_turn" }
+    }
+    const baseSystem = "You are a test agent."
+    const opening = baseBody({ system: baseSystem, messages: [{ role: "user", content: "read a and b" }] })
+    const step1 = await readSse(await kit.request(opening))
+    assert.equal(step1.stopReason, "tool_use")
+    const call1 = step1.content.find((b) => b.type === "tool_use")
+
+    // Step 2: masking adds the placeholder note to system.
+    const req1 = baseBody({
+      system: `${baseSystem}\n\n${PLACEHOLDER_NOTE}`,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: step1.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call1.id, content: "ok" }] },
+      ],
+    })
+    const step2 = await readSse(await kit.request(req1))
+    assert.equal(step2.stopReason, "tool_use")
+    const call2 = step2.content.find((b) => b.type === "tool_use")
+
+    // Step 3: masking turns off and the note disappears from system.
+    const req2 = baseBody({
+      system: baseSystem,
+      messages: [
+        ...req1.messages,
+        { role: "assistant", content: step2.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: call2.id, content: "ok2" }] },
+      ],
+    })
+    const done = await readSse(await kit.request(req2))
+    assert.equal(done.stopReason, "end_turn")
+    const drops = stderr.lines.filter((row) => row.action === "drop_live")
+    assert.deepEqual(drops, [], JSON.stringify(drops))
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/new").length, 1)
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+})
+
+test("wrapped <system-reminder> placeholder note before tool_result does not trigger user steer", async () => {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  try {
+    kit.defaultPrompt = async (agent) => {
+      await agent.tool("Read", { path: "/repo/a.txt" })
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    }
+    const opening = baseBody({ messages: [{ role: "user", content: "read a" }] })
+    const step1 = await readSse(await kit.request(opening))
+    assert.equal(step1.stopReason, "tool_use")
+    const call1 = step1.content.find((b) => b.type === "tool_use")
+
+    const req1 = baseBody({
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: step1.content },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: WRAPPED_PLACEHOLDER_NOTE },
+            { type: "tool_result", tool_use_id: call1.id, content: "ok" },
+          ],
+        },
+      ],
+    })
+    const done = await readSse(await kit.request(req1))
+    assert.equal(done.stopReason, "end_turn")
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/new").length, 1)
+    assert.equal(kit.acpLog.filter((entry) => entry.method === "session/prompt").length, 1)
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+})

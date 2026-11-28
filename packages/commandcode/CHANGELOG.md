@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.25
+
+- A tool whose schema has a `pattern` naming a UTF-16 surrogate, as REA's
+  path guard `^[^\uD800-\uDFFF]*$` does, is sent without that pattern.
+  Command Code turned the whole request away for it, with 400 "Invalid
+  schema for function "mcp__rea__close_binary": a surrogate-range regex is
+  not a valid regex" (Roing, #1604). It applies on the Provider API
+  and on Go's `/alpha/generate`, for every model. Every other keyword,
+  `$schema`, `allOf`, `anyOf` and `oneOf` among them, and every other
+  pattern go as they came, and so does a property named `pattern`
+  (Claude Code's Grep). The tool's own server still checks the guard.
+
 ## 0.1.24
 
 - A Go, GOAT or Pro account's Credits window tells its count as well as

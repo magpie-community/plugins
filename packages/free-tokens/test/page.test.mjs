@@ -46,3 +46,8 @@ test("package declares page + NOTICE", () => {
 test("app.js delegates click decisions to view.actionOf", () => {
   assert.match(app, /actionOf\(btn\.dataset\)/);
 });
+test("install opens the plugin's sheet where magpie has openPlugin, the copy popover only where it hasn't", () => {
+  assert.match(app, /typeof window\.magpie\.openPlugin === "function"/);
+  assert.match(app, /window\.magpie\.openPlugin\(ds\.npm\)/);
+  assert.ok(!app.includes("页面无法直接跳转安装"), "the page says it can't open the install");
+});

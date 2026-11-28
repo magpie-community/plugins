@@ -18,6 +18,9 @@ beforeEach(async () => {
   await nativeSessions.clear()
   _internal.resetH1()
   Object.assign(_internal.STEP_WAIT, { first: 0, every: 5, until: 40, ask: 250, owedAt: 1000 })
+  // the fake sends no count after a step's tool count unless ownCounts
+  // says so: the wait for it stays short here
+  NATIVE_LIMITS.usageWait = 50
 })
 afterEach(async () => {
   await nativeSessions.clear()
@@ -167,6 +170,9 @@ async function agent(options = {}) {
       if (options.countAfter) listed()
       if (options.truncated || options.cleanNoCount) return stream.end(end())
       state(true)
+      // ownCounts: each model call's count where Cursor sends it, a
+      // checkpoint after the step's tool count (plugins#635's traces)
+      if (options.ownCounts?.[0]) delay(() => send(update(31, options.ownCounts[0])), 10)
       if (options.serverAbort) delay(() => send(abortExec(7)), 35)
     }
     const advance = () => {
@@ -185,6 +191,7 @@ async function agent(options = {}) {
         send(tool(8, "call_a__fc_b", marker, { name: options.name })) // call-before-count in phase two
         if (!options.secondNoCount) send(update(27, uint(1, 1)))
         state(true)
+        if (options.ownCounts?.[1]) delay(() => send(update(31, options.ownCounts[1])), 10)
         return
       }
       marker = options.finalAfterFirst ? received.get(firstID).content[0].text : options.parallel ? [7, 8].map((id) => received.get(id).content[0].text).join("|") : received.get(8).content[0].text
@@ -195,6 +202,7 @@ async function agent(options = {}) {
       send(update(4, text(1, "native final thinking")))
       send(update(1, text(1, marker)))
       if (options.stepUsages?.[2]) send(update(31, options.stepUsages[2]))
+      if (options.ownCounts?.[2]) send(update(31, options.ownCounts[2]))
       const usage = options.turnUsage ?? (options.zeroUsage ? message(uint(1, 0), uint(2, 0), uint(5, 0)) : message(uint(1, 23), uint(2, 7), uint(3, 10), uint(4, 0), uint(5, 4)))
       send(update(14, usage))
       state(false, true) // late state after TurnEnded must still be retained
@@ -383,6 +391,71 @@ test("native accounting: ModelCallCompletedUpdate (31) gives the final step its 
       cache_write_tokens: 29980,
     },
   })
+})
+
+// plugins#1615 (easyku): every tool step of a Cursor turn said 0 used,
+// input, output and cache, so a relay reading each step's usage (sub2api)
+// billed it nothing. Cursor sends each model call's count just after the
+// step's tool count; the step hands its calls over with it, and the final
+// leaves the steps billed out of the turn's totals.
+const ownCounts = [
+  message(text(1, "mc-1"), uint(2, 50000), uint(3, 600), uint(4, 25000), uint(5, 24990), uint(6, 200)),
+  message(text(1, "mc-2"), uint(2, 55000), uint(3, 800), uint(4, 50000), uint(5, 4990), uint(6, 300)),
+  message(text(1, "mc-3"), uint(2, 61000), uint(3, 700), uint(4, 55000), uint(5, 5980), uint(6, 400)),
+]
+test("native accounting: each tool step reports the count Cursor sent after its tool count (plugins#1615)", async () => {
+  const turnUsage = message(uint(1, 166000), uint(2, 2100), uint(3, 130000), uint(4, 35960), uint(5, 900))
+  const a = await agent({ ownCounts, turnUsage }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  expect(first.body.usage).toEqual({
+    prompt_tokens: 50000,
+    completion_tokens: 600,
+    total_tokens: 50600,
+    prompt_tokens_details: { cached_tokens: 25000, cache_write_tokens: 24990 },
+    completion_tokens_details: { reasoning_tokens: 200 },
+  })
+  const next = continueWith(chat, first.body, ["one"])
+  const second = await a.ask(account, next)
+  expect(second.body.usage).toEqual({
+    prompt_tokens: 55000,
+    completion_tokens: 800,
+    total_tokens: 55800,
+    prompt_tokens_details: { cached_tokens: 50000, cache_write_tokens: 4990 },
+    completion_tokens_details: { reasoning_tokens: 300 },
+  })
+  const final = await a.ask(account, continueWith(next, second.body, ["two"]))
+  expect(final.status).toBe(200)
+  expect(a.runs).toHaveLength(1)
+  // the turn's totals less the two steps billed: nothing left to defer
+  expect(final.body.usage).toEqual({
+    prompt_tokens: 61000,
+    completion_tokens: 700,
+    total_tokens: 61700,
+    prompt_tokens_details: { cached_tokens: 55000, cache_write_tokens: 5980 },
+    completion_tokens_details: { reasoning_tokens: 400 },
+  })
+  // a Run whose steps were billed owes the dashboard nothing
+  expect(_internal.owed.size).toBe(0)
+  expect(a.dashboardRequests).toEqual([])
+})
+
+test("native accounting: a step whose count never comes is handed over pending after usageWait, the final defers it (plugins#1615)", async () => {
+  NATIVE_LIMITS.usageWait = 60
+  const turnUsage = message(uint(1, 166000), uint(2, 2100), uint(3, 130000), uint(4, 35960), uint(5, 900))
+  // the second step's count is lost; the first's and the final's come
+  const a = await agent({ ownCounts: [ownCounts[0], null, ownCounts[2]], turnUsage }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.body.usage).toMatchObject({ prompt_tokens: 50000, completion_tokens: 600 })
+  const next = continueWith(chat, first.body, ["one"])
+  const t0 = Date.now()
+  const second = await a.ask(account, next)
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(55)
+  expect(second.body.usage).toMatchObject({ prompt_tokens: 0, completion_tokens: 0, magpie_native: { accounting: "pending" } })
+  const final = await a.ask(account, continueWith(next, second.body, ["two"]))
+  // the second step's share is what is left of the turn: deferred, once
+  expect(final.body.usage.prompt_tokens).toBe(61000)
+  expect(final.body.usage.magpie_deferred).toEqual({ prompt_tokens: 55000, completion_tokens: 800, cached_tokens: 50000, cache_write_tokens: 4990 })
 })
 
 test("native retention: Task parent awaiting results permits a child sharing session with different first user", async () => {
@@ -1528,6 +1601,19 @@ for (const timing of ["ready", "after close"]) test(`native accounting: full cap
   expect(a.results).toEqual([])
   expect(a.closes).toEqual([])
   expect(a.errors).toEqual([])
+})
+
+// plugins#1615: a handoff billed with its own count owes no dashboard
+// event when its Run is lost, since that event would bill the step again
+test("native accounting: a lost Run whose handoff was billed by its own count owes nothing", async () => {
+  const a = await agent({ ownCounts })
+  const account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.body.usage).toMatchObject({ prompt_tokens: 50000, completion_tokens: 600 })
+  const owner = [...nativeSessions.entries][0]
+  owner.fail({ status: 502, message: "synthetic abandoned billed Run" })
+  nativeSessions.forget(owner)
+  expect(_internal.owed.size).toBe(0)
 })
 
 for (const loss of ["expiry", "failure", "cancellation", "forget"]) test(`native accounting: pending handoff ${loss} enrolls E1 once for stateless history E2`, async () => {

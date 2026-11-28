@@ -94,6 +94,51 @@ test("a model's Max is a model of its own and reasons too", async () => {
   expect(ms["deepseek-v4-flash-0731-max-max"].limit.context).toBe(1_000_000)
 })
 
+test("a Max window is the model's context, not Trae's dev budget (yetone/magpie#5809)", async () => {
+  // the list says dev 116000, max 1000000: 116000 is what Trae's own agent
+  // asks with, but the model takes the larger prompt (a 1,047,836-token one
+  // was served), so the context an OpenCode host reads is the Max window
+  const m = { config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+    display_config: { display_name: "DeepSeek-V4.1-Flash" },
+    context_window_tokens: { dev: 116000, max: 1_000_000 },
+    model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 16000 },
+      { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] }
+  const ms = await live([m])
+  expect(ms["deepseek-v4.1-flash"].limit).toEqual({ context: 1_000_000, output: 16000 })
+  expect(ms["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
+})
+
+test("a model without evidence keeps its dev budget on the base entry (yetone/magpie#5809)", async () => {
+  // only the models in WIDENED were measured serving a prompt past their dev
+  // budget; a model with no such evidence keeps dev, which cannot overstate
+  const m = { config_name: "glm-5.5", usage: "chat_completion",
+    display_config: { display_name: "GLM-5.5" },
+    context_window_tokens: { dev: 116000, max: 1_000_000 },
+    model_detail_list: [{ model_name: "glm-5.5__dev", max_tokens: 16000 },
+      { model_name: "glm-5.5__max", max_tokens: 64000 }] }
+  const ms = await live([m])
+  expect(ms["glm-5.5"].limit).toEqual({ context: 116000, output: 16000 })
+  expect(ms["glm-5.5-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
+})
+
+test("Trae Global keeps the dev budget: only Trae CN's models were measured (yetone/magpie#5809)", async () => {
+  // the same list on Trae Global: its deployment was never asked a prompt
+  // past dev, so the base entry stays at dev while its Max entry has the window
+  f = fakeTrae("trae-global")
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [{ config_name: "deepseek-v4.1-flash", usage: "chat_completion",
+      display_config: { display_name: "DeepSeek-V4.1-Flash" },
+      context_window_tokens: { dev: 116000, max: 1_000_000 },
+      model_detail_list: [{ model_name: "deepseek-v4.1-flash__dev", max_tokens: 16000 },
+        { model_name: "deepseek-v4.1-flash__max", max_tokens: 64000 }] }] },
+  ] }))
+  const { TraeGlobalAuthPlugin } = await import("./index.mjs")
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(ms["deepseek-v4.1-flash"].limit).toEqual({ context: 116000, output: 16000 })
+  expect(ms["deepseek-v4.1-flash-max"].limit).toEqual({ context: 1_000_000, output: 64000 })
+})
+
 // The two realms share the machinery, so the fix is one: Trae Global's
 // models carry capabilities too.
 test("Trae Global's models carry capabilities as well", async () => {

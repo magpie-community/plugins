@@ -507,6 +507,14 @@ async function setupPlugin(ctx, fn, live) {
   // the account the list was last read for: a credential.updated that
   // leaves it as it was reads nothing again
   let readFor = null
+  // the last list each account's own read gave, by the account it was read
+  // for: a read that fails (a workspace config answering 503) keeps the
+  // list that same account last read rather than the bundled one, which
+  // brought back models its workspace hides (plugins#1642). Another
+  // account's list is never used, a read that gave an empty list is kept
+  // as empty, and the bundled list stands in only for an account whose
+  // list was never read.
+  const lists = new Map()
   const stateOf = async () => {
     const c = await ctx.integration.connection.active(authID).catch(() => undefined)
     const a = c ? await getAuth(authID) : undefined
@@ -523,7 +531,8 @@ async function setupPlugin(ctx, fn, live) {
         const s = source.get(authID)
         const connection = await ctx.integration.connection.active(authID).catch(() => undefined)
         const a = connection ? await getAuth(authID) : undefined
-        readFor = connKey(connection) + "\0" + (a ? fingerprint(a) : "")
+        const readingFor = connKey(connection) + "\0" + (a ? fingerprint(a) : "")
+        readFor = readingFor
         if (!a || listID !== authID || typeof hooks.provider?.models !== "function") {
           if (s.connection || s.models) {
             s.connection = undefined
@@ -544,7 +553,12 @@ async function setupPlugin(ctx, fn, live) {
           return
         }
         s.connection = connection
-        s.models = got && typeof got === "object" ? Object.entries(got).map(([k, m]) => modelOf(authID, s.prov, k, record(m))) : null
+        if (got && typeof got === "object") {
+          s.models = Object.entries(got).map(([k, m]) => modelOf(authID, s.prov, k, record(m)))
+          lists.delete(readingFor)
+          lists.set(readingFor, s.models)
+          if (lists.size > 32) lists.delete(lists.keys().next().value)
+        } else s.models = lists.get(readingFor) ?? null
         await ctx.provider.reload()
         await ctx.model?.reload?.()
       } finally {

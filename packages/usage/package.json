@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-usage",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A page in magpie's window with your usage at a glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models that took them",
   "files": ["page", "README.md"],
   "keywords": ["magpie", "magpie-page", "usage", "tokens", "cost"],

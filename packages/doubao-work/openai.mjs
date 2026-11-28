@@ -61,8 +61,11 @@ const chunk = (id, model, delta, finish = null, extra = {}) =>
 // sse runs ask(onUpdate, signal) and streams what it reads. It resolves
 // once the reply has begun, so a failure before that (not signed in, a
 // control not found, the model refused) throws here and goes back as an
-// HTTP error, not as a 200 stream.
-export async function sse({ id, model, ask, signal, promptTokens = () => 0, newId }) {
+// HTTP error, not as a 200 stream. hold(text) says the text so far may
+// still turn out to be a failure the app words as a reply (Doubao's spent
+// allowance): such text is not shown, and with nothing else read the reply
+// has not begun.
+export async function sse({ id, model, ask, signal, promptTokens = () => 0, newId, hold = () => false }) {
   const st = new Streamer()
   const abort = new AbortController()
   const both = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal
@@ -82,9 +85,11 @@ export async function sse({ id, model, ask, signal, promptTokens = () => 0, newI
   ;(async () => {
     try {
       const final = await ask((r) => {
+        const held = hold(r.text ?? "")
+        if (held && !begun && !r.reasoning) return
         begun = true
         onFirst()
-        deltas(st.update(r))
+        deltas(st.update(held ? { ...r, text: "" } : r))
       }, both)
       begun = true
       deltas(st.update(final))
@@ -96,7 +101,7 @@ export async function sse({ id, model, ask, signal, promptTokens = () => 0, newI
       push(enc.encode("data: [DONE]\n\n"))
     } catch (e) {
       failure = e
-      if (begun && !both.aborted) push(enc.encode("data: " + JSON.stringify({ error: { message: String(e?.message ?? e), type: e?.code ?? "doubao_error" } }) + "\n\n"))
+      if (begun && !both.aborted) push(enc.encode("data: " + JSON.stringify({ error: errorOf(e) }) + "\n\n"))
     } finally {
       ended = true
       onFirst()
@@ -116,6 +121,17 @@ export async function sse({ id, model, ask, signal, promptTokens = () => 0, newI
     },
   })
   return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } })
+}
+
+// errorOf is a failure as an OpenAI error object: its words, its code as
+// the type, and, for one with a status of its own (a spent allowance's
+// 429), that status and when it is back (resets_at, in seconds), as a
+// frame after the stream began can only say them there.
+export function errorOf(e) {
+  const out = { message: String(e?.message ?? e), type: e?.code ?? "doubao_error" }
+  if (Number(e?.status) >= 400) out.status = Number(e.status)
+  if (Number(e?.resetsAt) > 0) out.resets_at = Math.ceil(Number(e.resetsAt) / 1000)
+  return out
 }
 
 export function completion({ id, model, final, promptTokens, newId }) {

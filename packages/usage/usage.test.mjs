@@ -91,6 +91,34 @@ test("models sort by tokens, calls or cost, the bar a share of the first", () =>
   expect(V.rows(summary, "nope", "en")[0].name).toBe("claude-sonnet-4-5")
 })
 
+// usage:summary has an entry for each provider a model went through, each
+// named by the model alone (#1580). These models are what magpie's
+// summary gave for deepseek-v4 through three providers and gpt-5.5 on one
+// provider's two accounts (one entry: accounts aren't split), in its order;
+// the costs are added, as those calls weren't priced
+const split = {
+  period: "today", since: "2026-11-26T00:00:00+08:00", calls: 5, errors: 0,
+  input: 2300, output: 230, cacheRead: 0, cost: 0,
+  models: [
+    { model: "deepseek-v4", calls: 1, input: 1000, output: 100, cost: 0.4 },
+    { model: "gpt-5.5", calls: 2, input: 600, output: 60, cost: 0 },
+    { model: "deepseek-v4", calls: 1, input: 500, output: 50, cost: 0.2 },
+    { model: "deepseek-v4", calls: 1, input: 200, output: 20, cost: 0.1 },
+  ],
+}
+
+test("a model served by several providers is one row, their sum", () => {
+  expect(V.rows(split, "tokens", "en")).toEqual([
+    { name: "deepseek-v4", value: "1,870", detail: "3 calls", share: 1 },
+    { name: "gpt-5.5", value: "660", detail: "2 calls", share: 660 / 1870 },
+  ])
+  const byCalls = V.rows(split, "calls", "en")
+  expect(byCalls.map((r) => [r.name, r.value, r.detail])).toEqual([["deepseek-v4", "3", "$0.70"], ["gpt-5.5", "2", "$0"]])
+  expect(V.rows(split, "cost", "en").map((r) => r.value)).toEqual(["$0.70", "$0"])
+  // an entry with no name is still counted, once, as "?"
+  expect(V.rows({ models: [{ calls: 1 }, { model: "", calls: 2 }] }, "calls", "en")).toEqual([{ name: "?", value: "3", detail: "$0", share: 1 }])
+})
+
 test("numbers read short", () => {
   expect([V.count(999), V.count(12345), V.count(123456), V.count(1234567), V.count(12345678), V.count(2.5e9)]).toEqual(["999", "12,345", "123K", "1.23M", "12.3M", "2.50B"])
   expect([V.money(0), V.money(0.004), V.money(1234.5)]).toEqual(["$0", "<$0.01", "$1,234.50"])

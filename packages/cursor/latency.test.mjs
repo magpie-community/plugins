@@ -24,12 +24,16 @@ const SHOWS = 4500 / SCALE
 const real = globalThis.fetch
 const wait = { ...STEP_WAIT }
 const retained = NATIVE_LIMITS.perProcess
+const usageWait = NATIVE_LIMITS.usageWait
 beforeEach(async () => {
   await nativeSessions.clear()
   // This server closes each tool Run to publish dashboard usage. Exercise the
   // production stateless fallback explicitly; native same-Run totals have
   // separate roundtrip coverage in native-e2e/native-http1.
   NATIVE_LIMITS.perProcess = 0
+  // this server sends no count after a step's tool count: none is waited
+  // for (plugins#1615)
+  NATIVE_LIMITS.usageWait = 0
   // the times, not the counts; a debt is let go as before
   for (const k of ["first", "every", "until", "ask", "owedAt"]) if (k in wait) STEP_WAIT[k] = wait[k] / SCALE
   _internal.owed?.clear()
@@ -39,6 +43,7 @@ beforeEach(async () => {
 afterEach(() => {
   far = true
   NATIVE_LIMITS.perProcess = retained
+  NATIVE_LIMITS.usageWait = usageWait
   globalThis.fetch = real
   Object.assign(STEP_WAIT, wait)
 })

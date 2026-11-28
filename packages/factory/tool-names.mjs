@@ -34,7 +34,7 @@ export function refusedName(name) {
 
 // TAKEN_NAMES are names Factory took as declared in the same probes (droid's
 // own among them). A request renamed in full (aliasToolNames' every) keeps
-// these, and mcp__ tools, as they are.
+// these as they are.
 export const TAKEN_NAMES = new Set(["Read", "Edit", "Glob", "Grep", "Task", "WebSearch", "TodoWrite", "Execute", "Create"])
 
 // DROID_NAMES is the tool of Factory's own client, droid, that does the
@@ -127,9 +127,9 @@ function uses(request) {
 // later mention of it in the request, to a name it takes: droid's own for
 // the job (Execute for Bash, Create for Write, ...), else a suffixed one,
 // never one the request already declares. With every, it renames each
-// declared tool but TAKEN_NAMES and mcp__ ones the same way: Factory's list
-// keeps growing, and a request refused for a name not on ours yet goes once
-// more so. It returns the body and the names to restore in the reply
+// declared tool but TAKEN_NAMES the same way: Factory's list keeps growing,
+// and a request refused for a name not on ours yet goes once more so. It
+// returns the body and the names to restore in the reply
 // (alias → original). A body with nothing to rename goes on byte for byte.
 export function aliasToolNames(body, every = false) {
   const aliases = new Map()
@@ -139,7 +139,7 @@ export function aliasToolNames(body, every = false) {
   try { request = parseToolJSON(raw) } catch { return { body, aliases } }
   if (!isObject(request)) return { body, aliases }
   const decl = declared(request)
-  const renames = (name) => refusedName(name) || (every && typeof name === "string" && !TAKEN_NAMES.has(name) && !name.startsWith("mcp__"))
+  const renames = (name) => refusedName(name) || (every && typeof name === "string" && !TAKEN_NAMES.has(name))
   if (!decl.some(([h, k]) => renames(h[k]))) return { body, aliases }
   const taken = new Set(decl.map(([h, k]) => h[k]))
   const renamed = new Map()

@@ -73,10 +73,8 @@ test("validateBody serves a prefill tail and rejects the unsupported shapes", ()
   validateBody({ messages: [U("1"), A("p1"), A("r1"), U("2"), A("p2")] })
   assert.throws(() => validateBody({ messages: [A("r"), A("p")] }), /no user turn to continue from/)
   assert.throws(() => validateBody({ messages: [U("1"), toolUseTail()] }), /not from the user or a tool-result/)
-  assert.throws(
-    () => validateBody({ messages: [U("1"), A("r1"), { role: "user", content: [{ type: "tool_result", tool_use_id: "call_a", content: "done" }] }, A("p")] }),
-    /tool_result with an assistant prefill/,
-  )
+  // magpie going on from a reply cut after a tool round (plugins#1512)
+  validateBody({ messages: [U("1"), toolUseTail(), { role: "user", content: [{ type: "tool_result", tool_use_id: "call_a", content: "done" }] }, A("p")] })
 })
 
 test("a trailing prefill run renders as a continuation carrier, not a system reminder", () => {

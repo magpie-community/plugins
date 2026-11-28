@@ -768,12 +768,24 @@ function screenshotHistory(data) {
 }
 
 test("historyKey keys a tool_result image by its hash, not its bytes", () => {
-  const data = "A".repeat(200_000)
+  const data = "iVBORw0KGgoAAAAN" + "A".repeat(200_000)
   const key = historyKey(screenshotHistory(data))
   assert.ok(key.length < 2_000, `key is ${key.length} chars`)
   assert.ok(!key.includes("AAAAAAAAAAAAAAAA"))
-  assert.notEqual(key, historyKey(screenshotHistory("B".repeat(200_000))))
+  assert.notEqual(key, historyKey(screenshotHistory("iVBORw0KGgoAAAAN" + "B".repeat(200_000))))
   assert.equal(key, historyKey(screenshotHistory(data)))
+})
+
+test("historyKey keys a user's video or audio by its hash, not its bytes", () => {
+  const clip = (type, data) => [{ role: "user", content: [
+    { type, source: { type: "base64", media_type: `${type}/mp4`, data } }, { type: "text", text: "what is in it?" }] }]
+  for (const type of ["video", "audio"]) {
+    const data = "AAAAGGZ0eXBpc29t" + "A".repeat(200_000)
+    const key = historyKey(clip(type, data))
+    assert.ok(key.length < 2_000, `key is ${key.length} chars`)
+    assert.notEqual(key, historyKey(clip(type, "AAAAGGZ0eXBpc29t" + "B".repeat(200_000))))
+    assert.equal(key, historyKey(clip(type, data)))
+  }
 })
 
 test("a turn lets go of each earlier request body once the next one arrives", () => {

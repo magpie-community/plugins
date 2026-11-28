@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-kimi-work-auth",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "type": "module",
   "main": "./opencode.mjs",
   "files": [

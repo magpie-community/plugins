@@ -5,7 +5,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ownMcp } from "./gateway.mjs";
+import { gatewayMcp, relayed } from "./gateway.mjs";
 
 export function configDir() {
   const xdg = process.env.XDG_CONFIG_HOME;
@@ -78,18 +78,22 @@ export async function readSkills(dir = configDir()) {
 
 export async function readMcp(dir = configDir(), opts = {}) {
   // magpie 的 MCP 列表在配置目录的 library.json（library/ 里放的是指令和技能的正文）
-  const [lib, own] = await Promise.all([readJson(join(dir, "library.json"), {}), ownMcp(opts)]);
+  const [lib, { own, signedIn }] = await Promise.all([readJson(join(dir, "library.json"), {}), gatewayMcp(opts)]);
   const list = Array.isArray(lib.mcp) ? lib.mcp : [];
-  const mine = list.map((m) => ({
-    name: m.name || m.url || m.command || "mcp",
-    transport: m.transport === "stdio" ? "stdio" : "http",
-    url: m.url,
-    headers: m.headers && typeof m.headers === "object" ? m.headers : undefined,
-    command: m.command,
-    args: Array.isArray(m.args) ? m.args : undefined,
-    env: m.env && typeof m.env === "object" ? m.env : undefined,
-    detail: m.url || [m.command, ...(m.args || [])].join(" "),
-  }));
+  const mine = list.map((m) => {
+    // magpie 登录了的服务器走网关，带 magpie 的登录（plugins#873）
+    const via = relayed(m, signedIn);
+    return {
+      name: m.name || m.url || m.command || "mcp",
+      transport: m.transport === "stdio" ? "stdio" : "http",
+      url: via ? via.url : m.url,
+      headers: via ? via.headers : m.headers && typeof m.headers === "object" ? m.headers : undefined,
+      command: m.command,
+      args: Array.isArray(m.args) ? m.args : undefined,
+      env: m.env && typeof m.env === "object" ? m.env : undefined,
+      detail: m.url || [m.command, ...(m.args || [])].join(" "),
+    };
+  });
   // 再加上 magpie 自己开着的那几个；Library 里装了同名的（比如 magpie-image）就用 Library 的
   const names = new Set(mine.map((m) => m.name));
   return [...mine, ...own.filter((m) => !names.has(m.name))];

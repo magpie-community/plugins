@@ -6,7 +6,7 @@
 // international one, whose hosts and usage page differ.
 import { _internal } from "./index.mjs"
 
-const HOST_KEYS = ["web", "auth", "api", "console", "us", "pay", "usPay"]
+const HOST_KEYS = ["web", "auth", "api", "console", "us", "pay", "usPay", "billing"]
 
 // no test reads this machine's own Trae CN client: one that wants a
 // client points ownClient.paths at a file of its own
@@ -33,6 +33,9 @@ export function fakeTrae(siteId = "trae-cn") {
   const hosts = _internal.SITES[siteId].hosts
   const was = { ...hosts }
   Object.assign(hosts, { web: origin, auth: origin, api: origin, console: origin, us: origin, pay: origin, usPay: origin })
+  // a realm with a billing host of its own (Trae CN) reads the settlement
+  // there; one without it (Trae Global) must see none here either
+  if ("billing" in was) hosts.billing = origin
   return {
     origin,
     site: _internal.SITES[siteId],

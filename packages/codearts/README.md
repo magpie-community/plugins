@@ -151,10 +151,15 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
   `mcp__plugin_android-emulator_android-emulator__android_discover_project`) goes as its first
   55 characters, `_` and 8 hex of its SHA-256, and the tool calls in the answer, streamed or
   not, carry the agent's own name again.
-- Every model is listed as text only (`modalities.input: ["text"]`, `image: false`): CodeArts
-  answers an image with `InferHub.001001020.406` "The request model is not multimodal". Since
-  0.2.4 magpie is told so, and describes an image for the model or leaves it out. That refusal,
-  inside a `200` or with any status, comes back as a `400`, not a `502` an agent would ask again.
+- The five models CodeArts' agent kernel declares in `multimodalModels` (`deepseek-v4.1-flash-1017`,
+  `glm-5.3-flash`, `deepseek-v4.1-flash`, `kimi-k3.1-pro`, `kimi-k3`; measured on CodeArts 0.2.9,
+  2026-11-23) are listed as taking images (`modalities.input: ["text", "image"]`); the kernel sends
+  the image to the same `/api/v2/chat/completions` endpoint as a data URL, and all five answered one
+  on a real account. Every other model is listed as text only (`modalities.input: ["text"]`,
+  `image: false`): CodeArts answers an image with `InferHub.001001020.406` "The request model is not
+  multimodal". Since 0.2.4 magpie is told so, and describes an image for a text-only model or leaves
+  it out. That refusal, inside a `200` or with any status, comes back as a `400`, not a `502` an agent
+  would ask again.
 
 ## Usage and check-in
 
@@ -329,7 +334,10 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   只对流式回答计量积分），调用方要非流式时折叠回 JSON；默认注入 `thinking: { type: "enabled" }`，思考与
   正文分开；200 里内嵌的错误换算为 `429` / `400` / `502` 并带厂商原话；码道只接受不超过 64 个字符的工具名，
   更长的（如 MCP 工具名）发出时缩为前 55 个字符 + `_` + 8 位 SHA-256，回答（流式与非流式）里的工具调用再换回原名。
-  0.2.4 起所有模型都声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
+  码道 0.2.9 的 agent kernel 在 `multimodalModels` 里声明了五个可收图片的模型（`deepseek-v4.1-flash-1017`、
+  `glm-5.3-flash`、`deepseek-v4.1-flash`、`kimi-k3.1-pro`、`kimi-k3`；2026-11-23 实测），它们声明为
+  `modalities.input: ["text", "image"]`；kernel 也是把图片以 data URL 发到同一个 `/api/v2/chat/completions`，
+  五个模型都能读图。其余模型仍声明为只收文本（码道对图片回 `InferHub.001001020.406`「The request model is not multimodal」），
   magpie 会替模型描述图片或把图片略去；这个拒绝不论放在 200 里还是带别的状态码，都换算为 `400`，而不是让智能体反复重试的 `502`。
 - **用量与签到**：总积分决定账号是否可用，其余积分桶只做明细；另有每日免费额度窗口。各批积分的到期
   时间读自码道控制台同一批接口，读不到时退回插件的签到账本 `~/.config/magpie/codearts-checkins.json`
@@ -360,7 +368,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
 - **OfficeAce 的模型**：目录 `/v2/models` 是注册表（26 条，多数对话时回 `404 ModelArts.81009 Invalid model`），
   插件只保留计费清单（`/v1/model-token-rates`，9 条）里的，并永不列出三个实测必 404 的 id；倍率表读取失败时保留上
   一份好表（空表会让不可调的 id 全部回到用户面前）；未登录时用 10 个内置模型兜底。模型名带上倍率（`GLM-5.3 · x0.18`），
-  上游 `model_name` 的尾部换行会去掉。
+  上游 `model_name` 的尾部换行会去掉。目录读取被拒（`401`/`403`，华为在 `client-permission-validate` 换发 Basic 对子，
+  另一个客户端续期就作废这一份）**只回退静态表，不当登录失效**：这条读的是 MaaS 的 Basic 对子，聊天会自己续期后照常
+  200，真失效由聊天、用量与签到各自的 401 / `signIn: "expired"` 去说。
 - **OfficeAce 的请求**：MaaS 要 `Authorization: Basic base64(appKey:appSecret)`，插件把 SDK 的 Bearer 改写掉，
   去掉 `officeace/` 前缀，发到凭据里自带的 MaaS 地址（为空时用官方直连）。`401`（或 4xx 但报文点名这对 Basic 凭据）
   会先续期一次再重发，**但只有续期真的换了这对凭据时才重发**。已登录但没开通 MaaS 的账号会得到一条说清原因的 `400`，

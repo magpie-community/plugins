@@ -4,7 +4,7 @@
 // auth.refresh.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { MiniMaxCodeAuthPlugin, _internal } from "./index.mjs"
+import { MiniMaxCodeAuthPlugin, MiniMaxCodeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeMiniMax, json } from "./fake.mjs"
 
 let f
@@ -225,4 +225,36 @@ test("a token turned away when a newer one is saved goes again with that one, no
   const res = await chat(await hooks.auth.loader(s.getAuth))
   expect(res.status).toBe(200)
   expect(f.seen.filter((r) => r.path === "/oauth2/token").length).toBe(0)
+})
+
+test("magpie's renewal whose save never reached the disk isn't followed by the spent token, however late (Tiemo404 on X)", async () => {
+  for (const site of ["minimax-code", "minimax-code-global"]) {
+    f = fakeMiniMax()
+    // MiniMax spends a refresh token once: asked again it is invalid_grant
+    const spent = new Set()
+    let n = 0
+    f.route("POST /oauth2/token", (r) => {
+      if (spent.has(r.form.refresh_token)) return json({ error: "invalid_grant", error_description: "this refresh token can no longer be used, start a new authorization" }, 400)
+      spent.add(r.form.refresh_token)
+      n++
+      return json({ access_token: "a" + n, refresh_token: "r" + (n + 1), token_type: "Bearer", expires_in: 3600 })
+    })
+    const plugin = site === "minimax-code" ? MiniMaxCodeAuthPlugin : MiniMaxCodeGlobalAuthPlugin
+    const hooks = await plugin({ client: {} })
+    const was = { type: "oauth", access: "a0", refresh: "r1", expires: Date.now() + 5 * 60_000 }
+    expect(await hooks.auth.refresh({ ...was }, site)).toMatchObject({ access: "a1", refresh: "r2" })
+    // magpie's write failed: the store still has r1, and the next renewal
+    // comes a backoff later, past the minute the result used to be kept
+    for (const d of _internal.renewed.values()) d.at -= 5 * 60_000
+    const again = await hooks.auth.refresh({ ...was }, site).catch((e) => e)
+    expect(again).toMatchObject({ access: "a1", refresh: "r2" })
+    expect(f.seen.filter((r) => r.path === "/oauth2/token").map((r) => r.form.refresh_token)).toEqual(["r1"])
+    // due again, it is r2 that is spent, never r1
+    for (const d of _internal.renewed.values()) d.got.expires = Date.now() + 60_000
+    expect(await hooks.auth.refresh({ ...was }, site)).toMatchObject({ access: "a2", refresh: "r3" })
+    expect(f.seen.filter((r) => r.path === "/oauth2/token").map((r) => r.form.refresh_token)).toEqual(["r1", "r2"])
+    f.close()
+    f = undefined
+    _internal.renewed.clear()
+  }
 })

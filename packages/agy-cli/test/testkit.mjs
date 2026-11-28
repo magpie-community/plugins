@@ -45,6 +45,9 @@ export const INSTALL_FILE = path.join(REPO_DIR, "install.mjs")
 export const ACCOUNT_FILE = path.join(REPO_DIR, "account.mjs")
 export const IMPORT_FILE = path.join(REPO_DIR, "import.mjs")
 export const DOCUMENTS_FILE = path.join(REPO_DIR, "documents.mjs")
+export const IMAGE_FILE = path.join(REPO_DIR, "image.mjs")
+export const ONESHOT_ACP_FILE = path.join(REPO_DIR, "oneshot-acp.mjs")
+export const GATEWAY_FREE_FILE = path.join(REPO_DIR, "gateway-free.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -216,11 +219,14 @@ class FakeAgy {
   constructor(kit, child, opts) {
     this.kit = kit
     this.child = child
+    this.cwd = opts?.cwd || ""
     this.env = opts?.env || {}
     this.token = this.env.AGY_BRIDGE_TOKEN
     this.spawnIndex = kit.acpSpawns.length - 1
     this.sessionId = null
     this.buffer = ""
+    this.pendingClient = new Map()
+    this.clientReqSerial = 0
     this.cancelWaiters = []
     this.cancelPending = false
     child.onStdin = (chunk) => this.onStdin(chunk)
@@ -249,6 +255,11 @@ class FakeAgy {
       if (!line.trim()) continue
       const message = JSON.parse(line)
       if (typeof message.method === "string") this.onMessage(message)
+      else if (message.id !== undefined && this.pendingClient.has(message.id)) {
+        const resolve = this.pendingClient.get(message.id)
+        this.pendingClient.delete(message.id)
+        resolve(message)
+      }
     }
   }
 
@@ -258,6 +269,14 @@ class FakeAgy {
   }
 
   respond(id, result) { this.send({ id, result }) }
+
+  request(method, params) {
+    const id = `fake-req-${++this.clientReqSerial}`
+    return new Promise((resolve) => {
+      this.pendingClient.set(id, resolve)
+      this.send({ id, method, params })
+    })
+  }
 
   onMessage(message) {
     const { id, method, params } = message
@@ -285,6 +304,8 @@ class FakeAgy {
     } else if (method === "session/new" && this.kit.sessionNewError) {
       // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
       this.send({ id, error: this.kit.sessionNewError })
+    } else if (method === "session/resume" && this.kit.sessionResume && this.kit.sessionResumeError) {
+      this.send({ id, error: this.kit.sessionResumeError })
     } else if (method === "session/resume" && this.kit.sessionResume && params?.sessionId) {
       this.sessionId = params.sessionId
       if (this.token && this.listsTools()) this.listAndWatch()
@@ -300,10 +321,23 @@ class FakeAgy {
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
+      const sendNew = () => {
+        // the tier agy acp names for the signed-in account (agy 1.5.18)
+        this.respond(id, { sessionId: this.sessionId, models, ...(this.kit.sessionTier ? { _meta: { antigravity: { tier: this.kit.sessionTier } } } : {}) })
+        if (Array.isArray(this.kit.availableCommands)) {
+          this.send({
+            method: "session/update",
+            params: {
+              sessionId: this.sessionId,
+              update: { sessionUpdate: "available_commands_update", availableCommands: this.kit.availableCommands },
+            },
+          })
+        }
+      }
       const delay = (this.kit.sessionNewDelayMs || 0) + (this.booted ? 0 : this.kit.bootDelayMs || 0)
       this.booted = true
-      if (delay) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), delay)
-      else this.respond(id, { sessionId: this.sessionId, models })
+      if (delay) setTimeout(sendNew, delay)
+      else sendNew()
     } else if (method === "session/close" && this.kit.sessionClose) {
       this.respond(id, {})
     } else if (method === "session/set_model") {
@@ -381,6 +415,18 @@ class FakeAgy {
       index,
       prompt: params.prompt,
       sessionId: this.sessionId,
+      cwd: this.cwd,
+      env: this.env,
+      requestPermission(toolCall, options) {
+        return self.request("session/request_permission", {
+          sessionId: self.sessionId,
+          toolCall,
+          options: options ?? [
+            { optionId: "allow", name: "Allow once", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        })
+      },
       get cancelPending() { return self.cancelPending },
       update(u) { self.update(u) },
       async text(text) { self.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }); await tick() },
@@ -490,15 +536,18 @@ export async function createBridgeKit(options = {}) {
     prompts: [],
     promptSerial: 0,
     defaultPrompt: null,
+    availableCommands: options.availableCommands ?? null,
     sessionSerial: 0,
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    sessionTier: options.sessionTier ?? null,
     setModelError: options.setModelError ?? null,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    sessionResumeError: options.sessionResumeError ?? null,
     // agy 1.5.14 lists session/close, and boots its backend on a
     // process's first session/new only (~3s signed in; later ones ~10ms)
     sessionClose: options.sessionClose ?? false,
@@ -593,6 +642,11 @@ export async function createBridgeKit(options = {}) {
   const execFile = (file, args = [], opts, callback) => {
     if (typeof opts === "function") callback = opts
     kit.execFiles.push({ file, args })
+    // the keychains `security` searches (options.keychains, its output)
+    if (args[0] === "list-keychains" && options.keychains !== undefined) {
+      setImmediate(() => callback(null, options.keychains, ""))
+      return
+    }
     const stored = options.storedSignIn
     setImmediate(() => stored === "missing" || stored === undefined
       ? callback(Object.assign(new Error("not found (test)"), { code: 44 }), "", "")
@@ -642,6 +696,9 @@ export async function createBridgeKit(options = {}) {
   const accountUrl = pathToFileURL(ACCOUNT_FILE).href
   const importUrl = pathToFileURL(IMPORT_FILE).href
   const documentsUrl = pathToFileURL(DOCUMENTS_FILE).href
+  const imageUrl = pathToFileURL(IMAGE_FILE).href
+  const oneshotAcpUrl = pathToFileURL(ONESHOT_ACP_FILE).href
+  const gatewayFreeUrl = pathToFileURL(GATEWAY_FREE_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -664,6 +721,9 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./account.mjs") module = sourceModule(ACCOUNT_FILE, "", accountUrl)
     else if (key === "./import.mjs") module = sourceModule(IMPORT_FILE, "", importUrl)
     else if (key === "./documents.mjs") module = sourceModule(DOCUMENTS_FILE, "", documentsUrl)
+    else if (key === "./image.mjs") module = sourceModule(IMAGE_FILE, "", imageUrl)
+    else if (key === "./oneshot-acp.mjs") module = sourceModule(ONESHOT_ACP_FILE, "", oneshotAcpUrl)
+    else if (key === "./gateway-free.mjs") module = sourceModule(GATEWAY_FREE_FILE, "", gatewayFreeUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)

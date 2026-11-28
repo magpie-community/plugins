@@ -55,7 +55,9 @@ Refreshing:
 - Only one refresh runs at a time for an account. Requests that arrive
   meanwhile wait for it and use its token. When saving the new token
   fails, the plugin keeps it in memory and goes on with it, rather than
-  with the spent one on disk.
+  with the spent one on disk. That holds for as long as the process runs,
+  so a later renewal that still starts from the spent token gets the kept
+  one back instead of sending it to MiniMax again.
 - A refresh token someone else spent first (another magpie process) isn't a
   sign-out when the new one they saved is there: that one is used.
 - The account counts as signed out only when MiniMax answers the refresh

@@ -19,6 +19,8 @@ Both providers support magpie's multi-account pools, failover, automatic token r
 - `zai_glm-5.3-flash` (fast reasoning, reasoning variants)
 - `zaicoding_glm-5.3` (GLM-5.3 coding, reasoning variants)
 
+Like the official client (AutoClaw 2.5.3), the model list is read live from the upstream managed gateway (`GET /autoclaw-proxy/proxy/autoclaw-model-config`; `autoglm-api.autoglm.ai` for the international side, `autoglm-acceleration-api.zhipuai.cn` for CN). A model upstream adds (a new GLM, say) shows once you are signed in, with no plugin release; models gated off by client version or channel, and Anthropic-wire models, are left out. When the list can't be read (not signed in, network failure, 401, an unexpected shape), the 4 models above stay. The catalog's `creditCostFactor` — what one request costs in points — becomes the row's `rate`, so the card and `routing=cheap` can tell an expensive model from a cheap one; a missing, zero or non-numeric factor adds no `rate`, rather than claiming the model is free.
+
 > Note: the old `zai_glm-5-turbo` and the Doubao DeepSeek mappings `tdpsk_deepseek-v4-flash-202605` / `tdpsk_deepseek-v4-pro-202606` were taken offline upstream (every call returns `400 illegal model`) and have been removed from the model list.
 
 ## Signing in
@@ -48,8 +50,34 @@ OpenCode works the same way (`opencode auth login`). Sign-ins are kept in magpie
 - **Current spend** (aside, display-only, never routed): the upstream has no per-model credit ledger (wallets.v2 carries balances only), so it is computed from local balance deltas — each `usage()` records the cycle peak, `peak − current = spent this cycle`; **any rise** (relative to the last seen balance, including a rise from 0 — check-ins, gifts, redemptions) opens a new cycle. Since a daily check-in opens one every day, "current" ≈ "since today's check-in".
 - **Campaign points** (aside): when the account has campaign ledger activity, one extra row at the end — see [Daily check-in](#daily-check-in) below.
 - A `total_balance` that is null / empty / non-numeric is treated as unknown ("积分响应异常") and not recorded.
+- **A row only for a model that is exhausted** (see below): `{ name, models: [id], used: 100, … }` — it blocks only that model; healthy models add no row.
 
 State is kept per account (keyed by `signinAccountKey`, #254: uid, or a hash of the refresh token when there is none) as JSON. Address precedence: `AUTOCLAW_USAGE_STATE_FILE` (explicit override) → `$XDG_CONFIG_HOME/magpie/` → `$HOME/.config/magpie/` (on Windows HOME is usually unset, so `USERPROFILE` next, `os.homedir()` last — never the drive root `C:\.config\magpie`) → file name `autoclaw-usage.json`. Writes go through a temp file + rename; entries untouched for 30 days are pruned; plugin updates do not lose it. Tests can point it elsewhere with `_internal.setUsageStatePath`.
+
+## Per-model free quota
+
+**Why**: the upstream's free quota is judged **per model**. On 2026-11-26, same account, same minute: `zai_glm-x-preview` (GLM-5.4) answered `403 810000 "free quota used up"` while `zaicoding_glm-5.3` and `zai_glm-5.3-flash` both answered 200. The original plugin turned that into an **account-level** 429, so magpie rested the whole account (~15 min by default), stopping the models that still worked; when the rest ended it asked again and was rested again. That is where the repeated retries came from — and it rested the wrong thing.
+
+**What the upstream does and does not give** (read-only probes of `autoclaw-model-config` and `wallets.v2`):
+
+| Reading | Available | Notes |
+|---|---|---|
+| Per-model "quota exhausted" notice `metadata.forbiddenNotice` | **yes** | Auto-Fast says "resets in 24 hours"; the GLM ones only offer membership, no time |
+| Per-model credit factor `creditCostFactor` | **yes** | "What one request costs in points"; not the same thing as the free quota. It becomes the row's `rate` (see "Models" above) |
+| Per-model numeric **cap / used / reset time** | **no** | wallets.v2 carries only the point total and its sub-wallets; the catalog has no quota numbers |
+
+So the plugin **invents no cap numbers**; it reports only what is true:
+
+1. **Per-model windows, only when a model is really exhausted**: a healthy account's card is exactly what it was before (check-in / credit balance / campaign points) — **no "unknown" row per model**, because with no denominator upstream there is no ZCode-style `3,000,000 / 3,000,000 · 100%` bar to draw and a row would be pure noise. When the vendor says a model's free quota is used up, one row appears, `{ name, models: [id], used: 100 }`; `models` pins it to that one model, so **an exhausted model no longer takes the account's other models down with it**. A period the vendor states becomes `resetsAt` (Auto-Fast 24h); otherwise the row carries a local re-check time, labelled "the upstream gave no reset time, re-checked at HH:MM".
+2. **Only the model that was actually asked**: the model named in the vendor's refusal text is not necessarily the one refused — Flash's own official template reads "GLM5.3 free quota used up" while Flash itself still works. Booking by the text would block GLM-5.3, which was never asked, and that window is 100%, so a later success cannot clear it. Only the request body's `model` counts.
+3. **The retries stop through magpie's own per-model rest**: the window carries `models: [id]` and `used: 100`, so magpie writes the rest as `by: "window"`, `key: <account>/<model>` and rests only that model. **Nothing is short-circuited in `loader.fetch`** — doing that would turn a 401 "sign-in expired" into a 429 and hide a genuinely signed-out account. One successful call clears the mark.
+4. **The re-check starts short and backs off**: 15 minutes at first (the same order as magpie's own quota rest), doubling on each further refusal of the same sentence, capped at 6 hours. In 7 days of local `usage.jsonl`, no model that was answered 429 came back with a 200 within the observation window (up to ~28 h), so there is no real recovery interval to copy; starting short means someone who just bought a membership waits at most 15 minutes, while repeated refusals never become a question per minute.
+5. **The first refusal still rests the account**: magpie decides whether a rest can be narrowed to a model from the **cached** quota reading, and on the first refusal that reading has no such row yet — so that one still rests the account (~15 min). Once the next reading carries the per-model window, later rests hit only that model. This follows from the `narrowWhenRead` condition in magpie, not something the plugin can bypass.
+6. **Nothing lost across processes**: the per-model ledger and the catalog facts both live in `autoclaw-usage.json` (`models` / `catalog` nodes, same 0600, same temp-file + rename). magpie starts a **new plugin host process** for each quota read, so memory-only state would degrade the card to "unknown".
+
+**Display name ≠ routeModelId**: the vendor says "GLM-5.4" while its id is `zai_glm-x-preview` (no 5.4 in the id); GLM-5.3's id is `zaicoding_glm-5.3`. The name shown on the card always comes from the catalog's official `name`, never guessed from the id.
+
+Regression tests are the `quota:` cases in `index.test.mjs` (zero network, zero inference). One of them goes through `loader.fetch → usage()` end to end — a 403 adds the row, the same model's 200 removes it, and another account is untouched; removing those booking calls turns it red.
 
 ## Daily check-in
 
@@ -121,7 +149,7 @@ A 406's upstream body is empty and magpie keeps only token counts — diagnosing
 ## Known behavior
 
 - Phone-number accounts only ever use the CN host (managed gateway; 401/403 mark the sign-in expired); z.ai/Google accounts only the international host (401/403 retries the other side, both refusing marks it expired). Exception: on an exact bare `403 forbidden`, the plugin checks the credits route: a healthy credential keeps the sign-in and surfaces the client-fingerprint refusal; a credential refused there expires; a failed check passes the upstream 403 through without guessing the sign-in state.
-- An exhausted quota is not a signed-out account: a `403` + `{"code":810000,"message":"GLM-5.3 免费额度已用完,…"}` answer (or a 403 body about quotas/balances) becomes a `429` carrying the upstream's own words, the sign-in is kept (`X-Magpie-Sign-In: kept`), and the international side stops host-hopping (plugins#274).
+- An exhausted quota is not a signed-out account: a `403` + `{"code":810000,"message":"GLM-5.3 免费额度已用完,…"}` answer (or a 403 body about quotas/balances) becomes a `429` carrying the upstream's own words, the sign-in is kept (`X-Magpie-Sign-In: kept`), and the international side stops host-hopping (plugins#274). That sentence is also booked to **the model that was asked** (see [Per-model free quota](#per-model-free-quota)), so only that model is rested and the account's other models keep serving.
 - A banned account is not a signed-out account: a `403` + `{"code":410004,"message":"The account has been banned"}` answer (or code/message fields saying banned / 封禁 / 账号异常 / 账号被冻结) flows through on chat, refresh, credits and check-in with the upstream's own words; chat becomes a `403 permission_error`, the sign-in is kept, no host-hopping. Other 401/403s still mark the sign-in expired.
 - A request too large is not a signed-out account (plugins#891): the CN gateway answers a ~200k-token request `401 AutoClaw 登录状态失效` while the same token's smaller requests seconds before and after get 200. A 401/403 for a body larger than the largest this process has seen answered has its sign-in checked on the credits route: a sign-in that holds turns it into `413 request_too_large` with the sign-in kept, so magpie tries another route or has the agent compact. A sign-in refused there too, a check that fails, or a body no larger than one answered is still the sign-in. No threshold is guessed; the comparison is with the largest request answered.
 - DeepSeek Harness is masked throughout system, not only in its identity line (plugins#924): the gateway refuses the name anywhere in system or developer text, so every `DeepSeek Harness` there becomes `DeepSeek`, and the identity line (with or without a comma) becomes `You are an AI agent powered by a local coding harness.` A `powered by the glm-<x> model` sentence in any case is written in the `GLM-<x>` form. User messages and tool arguments are never changed.
