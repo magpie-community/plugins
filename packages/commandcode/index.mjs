@@ -1221,6 +1221,19 @@ function generateBody(chat, place = {}) {
 // ZDR is the header that asks for Zero Data Retention, and ZDR_OPTION the
 // provider's switch for it in magpie (auth.options, read through
 // input.magpie.option).
+const RESPONSES_OPTION = "preferResponses"
+// the magpie the plugin was made with, for switches read at each request
+let madeWith = null
+// preferResponsesOn is magpie's switch for this provider (#271): a model that
+// offers both APIs goes as native Responses rather than as chat completions.
+// Read at each request, as zdrOn reads its own, so a change needs no restart.
+function preferResponsesOn() {
+  try {
+    if (madeWith?.option?.(ID, RESPONSES_OPTION) === true) return true
+  } catch {}
+  return false
+}
+
 const ZDR = "x-cmd-zdr"
 const ZDR_OPTION = "zdr"
 
@@ -1576,9 +1589,10 @@ async function systemOne(key, init, input, place, zdr) {
 
 // ---- the plugin ---------------------------------------------------------------
 
-export const _internal = { googleSchema, noSurrogatePatterns, isGoogle, JEV, reasoningAsked, NO_THOUGHT, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn }
+export const _internal = { googleSchema, noSurrogatePatterns, isGoogle, JEV, reasoningAsked, NO_THOUGHT, projectSlug, subsSeen, extraSeen, waits, liveKey, failure, goModels, refuses, GO_MODELS, GO_REFUSED, zdrOn, preferResponsesOn }
 
 export async function CommandCodePlugin({ client, magpie } = {}) {
+  madeWith = magpie ?? null
   // isGo keeps a key as Go's, for its models and endpoint: in the
   // subscriptions seen, and saved with the key as usage saves the plan read
   async function isGo(key, auth) {
@@ -1678,6 +1692,13 @@ export async function CommandCodePlugin({ client, magpie } = {}) {
             "Sends x-cmd-zdr: 1, as the CLI's CMD_ZDR=1 does: requests go only to upstreams that keep no prompts or replies. They usually cost more, and a model with no such upstream fails (422 cmd_zdr_no_providers).",
           confirm: "ZDR requests usually cost more, and a model with no zero-data-retention upstream fails instead of falling back.",
         },
+        {
+          key: RESPONSES_OPTION,
+          label: "Native Responses",
+          default: false,
+          description:
+            "A model that offers both APIs goes as native Responses rather than as chat completions (#271). Off by default: chat completions stay the path every model has.",
+        },
       ],
       methods: [
         { type: "oauth", label: "Command Code (browser)", authorize: browserSignIn },
@@ -1746,7 +1767,7 @@ export async function CommandCodePlugin({ client, magpie } = {}) {
           return withJev(out)
         }
         try {
-          const out = Object.fromEntries((await liveModels(key)).filter((m) => keep(m.id)).map((m) => [m.id, runtimeModel(m)]))
+          const out = Object.fromEntries((await liveModels(key, preferResponsesOn())).filter((m) => keep(m.id)).map((m) => [m.id, runtimeModel(m)]))
           if (Object.keys(out).length) return withJev(out)
         } catch {}
         // the default list stands in, less what the plan refuses

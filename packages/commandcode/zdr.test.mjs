@@ -65,11 +65,15 @@ async function ask(magpie, plan, model = "deepseek/deepseek-v4-flash") {
 test("the plugin declares a Zero Data Retention switch, off unless turned on", async () => {
   const hooks = await CommandCodePlugin()
   const o = hooks.auth.options
-  expect(o.map((x) => x.key)).toEqual(["zdr"])
+  expect(o.map((x) => x.key)).toEqual(["zdr", "preferResponses"])
   expect(o[0].label).toBe("Zero Data Retention")
   expect(o[0].default).not.toBe(true)
   expect(o[0].description).toContain("x-cmd-zdr: 1")
   expect(o[0].description.length).toBeLessThanOrEqual(300)
+  // the Responses switch beside it (#271): off by default, a sentence long
+  expect(o[1].label).toBe("Native Responses")
+  expect(o[1].default).toBe(false)
+  expect(o[1].description.length).toBeLessThanOrEqual(300)
 })
 
 test("the Provider API is sent x-cmd-zdr: 1 while the switch is on, read at each request", async () => {
