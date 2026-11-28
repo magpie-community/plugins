@@ -11,7 +11,13 @@ afterEach(() => (globalThis.fetch = real))
 const SSE_STOP = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":8,"total_tokens":128,"prompt_tokens_details":{"cached_tokens":100}}}\n\ndata: [DONE]\n\n'
 const SSE_TOOLS = 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":5,"total_tokens":55}}\n\ndata: [DONE]\n\n'
 
+// Each chat signs in as a user of its own, and its fake keeps only that
+// user's reports: a report another chat sends late (its body read after
+// its test moved on) goes through whichever fetch is in place then, and
+// must not be taken for this chat's (plugins#1594).
+let chats = 0
 async function chatThrough(plugin, body, reply, { read = true, status = 200, source } = {}) {
+  const uid = `u${++chats}`
   const sent = []
   const reports = []
   let done
@@ -19,6 +25,7 @@ async function chatThrough(plugin, body, reply, { read = true, status = 200, sou
   globalThis.fetch = async (url, init) => {
     const u = String(url)
     if (u.endsWith("/v2/report")) {
+      if (new Headers(init.headers).get("x-user-id") !== uid) return Response.json({ code: 0, msg: "OK" })
       reports.push({ url: u, headers: new Headers(init.headers), body: JSON.parse(init.body) })
       if (reports.length === 3 || reports.some((r) => r.body.some((e) => e.eventCode === "chat_response_complete")) || (reports.length === 2 && !reports[1].body.some((e) => e.eventCode === "chat_request_response"))) done()
       return Response.json({ code: 0, msg: "OK" })
@@ -27,19 +34,19 @@ async function chatThrough(plugin, body, reply, { read = true, status = 200, sou
     return new Response(reply, { status, headers: { "content-type": "text/event-stream" } })
   }
   const hooks = await plugin({ client: {} })
-  const auth = source === "key" ? { type: "api", key: "sk-test" } : { type: "oauth", access: "tok", uid: "u1", name: "小明", expires: Date.now() + 3600_000 }
+  const auth = source === "key" ? { type: "api", key: "sk-test" } : { type: "oauth", access: "tok", uid, name: "小明", expires: Date.now() + 3600_000 }
   const l = await hooks.auth.loader(async () => auth)
   const res = await l.fetch("https://www.workbuddy.ai/v2/chat/completions", { method: "POST", headers: new Headers(), body: JSON.stringify(body) })
   if (read) await res.text()
   await Promise.race([all, new Promise((r) => setTimeout(r, 300))])
-  return { res, sent, reports }
+  return { res, sent, reports, uid }
 }
 
 const send = { model: "glm-5.3", stream: true, messages: [{ role: "system", content: "s" }, { role: "user", content: "你好呀" }] }
 const call = { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] }
 
 test("a user's send answered to its end is reported as the client reports it", async () => {
-  const { reports } = await chatThrough(WorkBuddyAIAuthPlugin, send, SSE_STOP)
+  const { reports, uid } = await chatThrough(WorkBuddyAIAuthPlugin, send, SSE_STOP)
   expect(reports.map((r) => r.body.map((e) => e.eventCode))).toEqual([
     ["chat_message_send"],
     ["chat_request_send", "chat_message_response", "chat_message_status", "chat_request_response"],
@@ -48,10 +55,10 @@ test("a user's send answered to its end is reported as the client reports it", a
   const [first, second] = reports
   expect(first.url).toBe("https://www.workbuddy.ai/v2/report")
   expect(first.headers.get("authorization")).toBe("Bearer tok")
-  expect(first.headers.get("x-user-id")).toBe("u1")
+  expect(first.headers.get("x-user-id")).toBe(uid)
   expect(first.headers.get("x-product")).toBe("SaaS")
   const msg = first.body[0]
-  expect(msg.userId).toBe("u1")
+  expect(msg.userId).toBe(uid)
   expect(msg.username).toBe("小明")
   expect(msg.machineId).toMatch(/^[0-9a-f]{64}$/)
   expect(msg.conversationId).toMatch(/^[0-9a-f]{32}$/)

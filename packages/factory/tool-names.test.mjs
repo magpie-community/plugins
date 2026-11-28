@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { FactoryAuthPlugin, _internal } from "./index.mjs"
-import { refusedName, suffixed } from "./tool-names.mjs"
+import { refusedName, salted } from "./tool-names.mjs"
 
 const real = globalThis.fetch
 afterEach(() => { globalThis.fetch = real; _internal.renamedInFull.clear() })
@@ -19,7 +19,12 @@ const SEEN_REFUSED = new Set([
   "AgentTool", "BashTool", "WriteTool", "bash_tool", "edit_tool", "read_tool", "write_tool",
   "web_search", "read_file", "execute_command",
 ])
-const seenRefused = (n) => typeof n === "string" && (SEEN_REFUSED.has(n) || SEEN_REFUSED.has(n.replace(/^_+/, "")))
+// SEEN_REFUSED_PREFIX is what Factory refuses as a prefix (plugins#1676,
+// hahhforest, 2026-11-28): advisor and advisor_tool refused, ADVISOR and
+// Advisor taken, and the full-rename retry's advisor_3f9a refused again.
+const SEEN_REFUSED_PREFIX = ["advisor"]
+const seenRefused = (n) => typeof n === "string" && (SEEN_REFUSED.has(n) || SEEN_REFUSED.has(n.replace(/^_+/, "")) ||
+  SEEN_REFUSED_PREFIX.some((p) => n.replace(/^_+/, "").startsWith(p)))
 
 // refusing stands in for Factory: a declared refused name is a 403.
 function refusing(names) {
@@ -146,9 +151,9 @@ test("chat completions: a refused function name and its history are renamed and 
   expect((await res.json()).choices[0].message.tool_calls[0].function.name).toBe("edit")
 })
 
-test("an alias never takes a name the request already declares: the droid name taken, the tool goes out suffixed", async () => {
-  const alias = suffixed("Bash")
-  expect(alias).toMatch(/^Bash_[0-9a-f]{4}$/)
+test("an alias never takes a name the request already declares: the droid name taken, the tool goes out salted", async () => {
+  const alias = salted("Bash")
+  expect(alias).toMatch(/^BASH_[0-9a-f]{4}$/)
   const { l, seen } = await loaded((sent) => refusing(sent.tools.map((t) => t.name)) ?? Response.json({
     type: "message", content: [{ type: "tool_use", id: "a", name: alias, input: {} }, { type: "tool_use", id: "b", name: "Execute", input: {} }],
   }))
@@ -157,13 +162,13 @@ test("an alias never takes a name the request already declares: the droid name t
   expect((await res.json()).content.map((b) => b.name)).toEqual(["Bash", "Execute"])
 })
 
-test("a refused tool droid has no name for goes out suffixed, the same in every request of the process", async () => {
+test("a refused tool droid has no name for goes out salted, the same in every request of the process", async () => {
   const { l, seen } = await loaded((sent) => refusing(sent.tools.map((t) => t.name)) ?? Response.json({ type: "message", content: [] }))
   const body = JSON.stringify({ model: "claude-opus-5-5", max_tokens: 8, tools: [{ name: "TaskCreate", input_schema: schema }, { name: "bash", input_schema: schema }, { name: "run_shell", input_schema: schema }], messages: [{ role: "user", content: "hi" }] })
   for (let i = 0; i < 2; i++) expect((await l.fetch(A, { method: "POST", body })).status).toBe(200)
   const names = seen.map((s) => JSON.parse(s.body).tools.map((t) => t.name))
   // two refused tools with one droid name: the first takes it
-  expect(names[0]).toEqual([suffixed("TaskCreate"), "Execute", suffixed("run_shell")])
+  expect(names[0]).toEqual([salted("TaskCreate"), "Execute", salted("run_shell")])
   expect(names[1]).toEqual(names[0])
   expect(names[0].some((n) => seenRefused(n))).toBe(false)
 })
@@ -306,7 +311,7 @@ test("a request refused for a name not listed yet goes once more with every tool
   const second = JSON.parse(seen[1].body).tools.map((t) => t.function.name)
   expect(first).toContain("web_fetch")
   expect(second).not.toContain("web_fetch")
-  expect(second).toContain(suffixed("web_fetch"))
+  expect(second).toContain(salted("web_fetch"))
   // droid's names stay as they are; dsh's others are renamed too
   expect(second).toContain("Execute")
   expect(second.filter((n) => dshNames.includes(n))).toEqual([])
@@ -363,7 +368,8 @@ test("Cowork's five built-in MCP tool names go through full retry, and their cal
   const second = JSON.parse(seen[1].body).tools.map((t) => t.name)
   expect(first).toEqual(COWORK_MCP_NAMES)
   expect(second).not.toEqual(first)
-  expect(second.every((name, i) => name.startsWith(COWORK_MCP_NAMES[i] + "_"))).toBe(true)
+  expect(second).toEqual(COWORK_MCP_NAMES.map(salted))
+  expect(second.some((name, i) => name.startsWith(COWORK_MCP_NAMES[i]))).toBe(false)
   expect((await res.json()).content[0].name).toBe(COWORK_MCP_NAMES[0])
 })
 
@@ -372,4 +378,115 @@ test("a refused request that declares no tools is not sent again", async () => {
   const res = await l.fetch(C, { method: "POST", body: JSON.stringify({ model: "glm-5.3", messages: [{ role: "user", content: "hi" }] }) })
   expect(res.status).toBe(400)
   expect(seen.length).toBe(1)
+})
+
+// plugins#1676 (hahhforest): Factory refused a tool declared as advisor, on
+// the Anthropic Messages route with claude-opus-5-5, and refused the
+// full-rename retry's advisor_3f9a again, since it matches advisor as a
+// prefix; ADVISOR and Advisor were taken.
+const advisorTool = { name: "advisor", description: "", input_schema: { type: "object", properties: {} } }
+
+test("advisor goes out in capitals on the first try, and its call comes back as advisor, whole and streamed", async () => {
+  const alias = salted("advisor")
+  expect(alias).toMatch(/^ADVISOR_[0-9a-f]{4}$/)
+  for (const stream of [false, true]) {
+    const { l, seen } = await loaded((sent) => {
+      const names = sent.tools.map((t) => t.name)
+      if (refusing(names)) return refusing(names)
+      const block = { type: "tool_use", id: "t1", name: names[0], input: {} }
+      return stream
+        ? sse([
+          { type: "message_start", message: { id: "m1", type: "message", role: "assistant", content: [] } },
+          { type: "content_block_start", index: 0, content_block: block },
+          { type: "content_block_stop", index: 0 },
+          { type: "message_stop" },
+        ])
+        : Response.json({ id: "m1", type: "message", role: "assistant", stop_reason: "tool_use", content: [block] })
+    })
+    const res = await l.fetch(A, { method: "POST", body: JSON.stringify({
+      model: "claude-opus-5-5", max_tokens: 64, stream, tools: [advisorTool],
+      messages: [{ role: "user", content: "ask" }, { role: "assistant", content: [{ type: "tool_use", id: "t0", name: "advisor", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t0", content: "ok" }] }],
+    }) })
+    expect(res.status).toBe(200)
+    expect(seen.length).toBe(1)
+    const sent = JSON.parse(seen[0].body)
+    expect(sent.tools.map((t) => t.name)).toEqual([alias])
+    expect(sent.messages[1].content[0].name).toBe(alias)
+    const name = stream
+      ? (await res.text()).split("\n").filter((x) => x.startsWith("data: ")).map((x) => JSON.parse(x.slice(6))).find((e) => e.type === "content_block_start").content_block.name
+      : (await res.json()).content[0].name
+    expect(name).toBe("advisor")
+  }
+})
+
+// refusingPrefix stands in for Factory refusing a name the plugin doesn't
+// list yet, matched as a prefix, as it matches advisor.
+const refusingPrefix = (prefix) => (names) => names.some((n) => seenRefused(n) || n.startsWith(prefix))
+  ? Response.json({ code: "content_policy_rejected", detail: "This request was blocked by Factory's usage policy check." }, { status: 403 })
+  : null
+
+test("a name Factory refuses as a prefix, not listed yet, is taken on the full-rename retry, since no alias begins with it", async () => {
+  const refuse = refusingPrefix("consult")
+  const { l, seen } = await loaded((sent) => refuse(sent.tools.map((t) => t.name)) ?? sse([
+    { type: "message_start", message: { id: "m1", type: "message", role: "assistant", content: [] } },
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: sent.tools[1].name, input: {} } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_stop" },
+  ]))
+  const tools = ["consult", "consult_docs", "Read"].map((name) => ({ name, input_schema: schema }))
+  const res = await l.fetch(A, { method: "POST", body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 64, stream: true, tools, messages: [{ role: "user", content: "hi" }] }) })
+  expect(res.status).toBe(200)
+  expect(seen.length).toBe(2)
+  expect(JSON.parse(seen[1].body).tools.map((t) => t.name)).toEqual([salted("consult"), salted("consult_docs"), "Read"])
+  const got = (await res.text()).split("\n").filter((x) => x.startsWith("data: ")).map((x) => JSON.parse(x.slice(6)))
+  expect(got.find((e) => e.type === "content_block_start").content_block.name).toBe("consult_docs")
+})
+
+test("tools that differ from advisor only by case, or are named as its alias, each keep a name of their own and come back as themselves", async () => {
+  const declared = ["advisor", "Advisor", "ADVISOR", salted("advisor"), "web_fetch"]
+  // web_fetch, refused by this fake only, sends the request renamed in full
+  for (const every of [false, true]) {
+    _internal.renamedInFull.clear()
+    const refuse = refusingAlso(every ? ["web_fetch"] : [])
+    for (const stream of [false, true]) {
+      const { l, seen } = await loaded((sent) => {
+        const names = sent.tools.map((t) => t.name)
+        if (refuse(names)) return refuse(names)
+        const blocks = names.map((name, i) => ({ type: "tool_use", id: "t" + i, name, input: {} }))
+        return stream
+          ? sse([
+            { type: "message_start", message: { id: "m1", type: "message", role: "assistant", content: [] } },
+            ...blocks.flatMap((b, i) => [{ type: "content_block_start", index: i, content_block: b }, { type: "content_block_stop", index: i }]),
+            { type: "message_stop" },
+          ])
+          : Response.json({ id: "m1", type: "message", role: "assistant", stop_reason: "tool_use", content: blocks })
+      })
+      const res = await l.fetch(A, { method: "POST", body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 64, stream, tools: declared.map((name) => ({ name, input_schema: schema })), messages: [{ role: "user", content: "hi" }] }) })
+      expect(res.status).toBe(200)
+      const sent = JSON.parse(seen.at(-1).body).tools.map((t) => t.name)
+      expect(new Set(sent).size).toBe(declared.length)
+      expect(sent.some((n) => seenRefused(n))).toBe(false)
+      expect(sent[0]).not.toStartWith("advisor")
+      if (every) expect(sent.filter((n) => declared.includes(n))).toEqual([])
+      else expect(sent.slice(1, 4)).toEqual(declared.slice(1, 4))
+      const names = stream
+        ? (await res.text()).split("\n").filter((x) => x.startsWith("data: ")).map((x) => JSON.parse(x.slice(6))).filter((e) => e.type === "content_block_start").map((e) => e.content_block.name)
+        : (await res.json()).content.map((b) => b.name)
+      expect(names).toEqual(declared)
+    }
+  }
+})
+
+test("a salted alias never begins with the name it stands for, nor with a refused name", () => {
+  const names = ["advisor", "ADVISOR", "Advisor", "_ADVISOR", "advisor_tool", "TaskCreate", "write_file", "WRITE", "Writer", "mcp__workspace__bash", "123", "Tool_", "Fn_Tool_", ""]
+  for (const name of names) {
+    const alias = salted(name)
+    expect(alias).toMatch(/_[0-9a-f]{4}$/)
+    if (name) expect(alias.startsWith(name)).toBe(false)
+    expect(refusedName(alias)).toBe(false)
+    expect(seenRefused(alias)).toBe(false)
+    for (const r of SEEN_REFUSED) expect(alias.replace(/^_+/, "").startsWith(r)).toBe(false)
+    expect(salted(name)).toBe(alias)
+  }
 })
