@@ -104,11 +104,24 @@ export async function runGcloud(args, options = {}) {
     })
     return stdout.trim()
   } catch (error) {
-    if (error.code === "ENOENT") throw new Error("gcloud CLI was not found; install Google Cloud CLI and make it available on PATH")
-    if (error.killed) throw new Error("gcloud timed out while reading Google Cloud credentials; retry after checking connectivity")
+    const said = stderrTail(error.stderr)
+    const why = said ? ": " + said : ""
+    if (error.code === "ENOENT") throw new Error("gcloud CLI was not found; install Google Cloud CLI and make it available on PATH" + why)
+    if (error.killed) throw new Error("gcloud timed out while reading Google Cloud credentials; retry after checking connectivity" + why)
     const adc = args.includes("application-default")
-    throw new Error(`gcloud could not read Google Cloud credentials or configuration. Run ${adc ? "gcloud auth application-default login" : "gcloud auth login"} yourself in a terminal, and check the active gcloud configuration.`)
+    throw new Error(`gcloud could not read Google Cloud credentials or configuration. Run ${adc ? "gcloud auth application-default login" : "gcloud auth login"} yourself in a terminal, and check the active gcloud configuration${why}.`)
   }
+}
+
+// stderrTail is what gcloud itself said, as the tail of it: the sentence a
+// caller is given should not replace it (#403) - on Windows the batch file
+// reports why it refused, and that reason is the only thing that says which
+// of the account, the project, or the install is wrong. The last ms bytes
+// go, because gcloud's own preamble comes first and the reason last.
+export function stderrTail(stderr, max = 800) {
+  const text = String(stderr ?? "").trim()
+  if (!text) return ""
+  return text.length <= max ? text : "…" + text.slice(text.length - max)
 }
 
 function configured(value) {
