@@ -360,7 +360,9 @@ function run(file, args, { cwd, env, deadline, signal, maxOutputBytes, onTreeKil
       kind: "timeout", output: Buffer.concat(stdout).toString("utf8") + "\n" + Buffer.concat(stderr).toString("utf8"),
     }))
     if (signal?.aborted) return abort()
-    if (Date.now() >= deadline) return finish(new UsageError("agy usage query timed out."))
+    // A deadline spent before this child starts (a slow --version, plugins#856)
+    // is the same timeout as one spent while it runs.
+    if (Date.now() >= deadline) return finish(new UsageError("agy usage query timed out.", { kind: "timeout" }))
     try {
       const command = agySpawnSpec(file, args)
       child = spawn(command.file, command.args, {
