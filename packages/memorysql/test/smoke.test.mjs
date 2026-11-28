@@ -2,7 +2,24 @@ import { expect, test } from "bun:test"
 import { createEmbeddedBackend } from "../lib/backend/embedded.mjs"
 
 test("embedded store imports a session, searches it, and injects nothing by default", async () => {
-  const backend = await createEmbeddedBackend({ memory: true })
+  const fetchCalls = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    fetchCalls.push(String(url))
+    throw new Error(`network call in test: ${url}`)
+  }
+  const llm = {
+    async models() {
+      return [{ id: "test/model", name: "Test Model" }]
+    },
+    async resolveModel() {
+      return "test/model"
+    },
+    async chat() {
+      return { model: "test/model", content: "{}" }
+    }
+  }
+  const backend = await createEmbeddedBackend({ memory: true, llm })
   try {
     expect(backend.recallConfig()).toEqual({ inject: false, all: true, agents: [] })
     const imported = JSON.parse(
@@ -25,7 +42,9 @@ test("embedded store imports a session, searches it, and injects nothing by defa
 
     await backend.ui.setDistill({ inject: true, injectAll: false, injectAgents: [] })
     expect(backend.recallConfig()).toEqual({ inject: true, all: false, agents: [] })
+    expect(fetchCalls).toEqual([])
   } finally {
+    globalThis.fetch = realFetch
     backend.close()
   }
 })
