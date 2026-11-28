@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-v0-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use Vercel v0 Platform API models in Magpie",
   "type": "module",
   "main": "./opencode.mjs",
