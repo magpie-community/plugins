@@ -9,9 +9,9 @@
 复用你在 Magpie 中**已登录**的个人账号，一站式完成成长任务、微信小程序链式任务、运营活动、猫猫旅行、夜猫子、Buddy 盲盒与连登管家，并提供本地可视化看板、北京时间小时排程与 8 个 MCP 智能体工具。
 
 [![GitHub Stars](https://img.shields.io/github/stars/jichie/magpie-workbuddy-tasks?style=flat-square&logo=github&color=f59e0b)](https://github.com/jichie/magpie-workbuddy-tasks/stargazers)
-[![Version](https://img.shields.io/badge/version-0.4.3-10b981?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.4-10b981?style=flat-square)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-697%20passing-success?style=flat-square)](#目录与测试)
+[![Tests](https://img.shields.io/badge/tests-699%20passing-success?style=flat-square)](#目录与测试)
 [![Magpie Plugin](https://img.shields.io/badge/magpie-plugin-6366f1?style=flat-square)](https://usemagpie.ai/docs/zh/plugins)
 
 ```bash
@@ -346,7 +346,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 └── tests-e2e/         # 全链路集成测试（假上游 + 可注入时钟）
 ```
 
-运行完整测试套件（零真实网络请求，全量 **697** 个用例）：
+运行完整测试套件（零真实网络请求，全量 **699** 个用例）：
 
 ```bash
 npm test
@@ -361,6 +361,7 @@ npm test
 
 完整更新日志见 **[CHANGELOG.md](./CHANGELOG.md)**：
 
+- **0.4.4**（2026-11-28）：修复猫猫旅行 `travel/claim` 返回 HTTP 403 `no unclaimed travel` 时被误判为风控并永久冻结账号的问题（#10 / PR #11 by `@WW-shan`）；看板右上角主题按钮左侧新增 GitHub 项目主页快捷按钮。
 - **0.4.3**（2026-11-27）：修复 Magpie 宿主重启或其它插件自动更新时旧宿主退出误关共享守护进程导致看板长时间不可用的问题（#9）；新增 `/api/shutdown?pid=` 校验、启动 PID 对齐、跨版本平滑替换与宿主 30 秒看门狗自愈。
 - **0.4.2**（2026-11-27）：修复活动已结束/未开始返回 `HTTP 410 / code 12331` 时未提前中止仍继续上报与长时间轮询的问题（#8），看板同步标注「已结束」并禁用勾选；优化陈旧快照跳过提示文案并放宽 `finalizeJob` 收尾刷新预算与账号上限。
 - **0.4.1**（2026-11-23）：签到收益归位至「今日积分」（并读 `plugin-checkin.json` 与手签历史按账号取较大值去重，#7）、`checkin` 腿名展示、README 补充自动签到开关说明及账本读盘签名缓存。

@@ -1,9 +1,9 @@
 # magpie-codearts
 
-[magpie](https://github.com/yetone/magpie) 的华为云 CodeArts 插件，两个方向：
+[magpie](https://github.com/yetone/magpie) 的华为云 CodeArts 插件，把 CodeArts 接进 magpie 统一管起来，两件事：
 
-- **接入**：在 magpie 的 Agents 页打开 CodeArts 的接入，把 CodeArts CLI 驱动到 magpie 的模型上，随时切换。
-- **反代**：在 magpie 里使用 CodeArts 的模型（GLM、DeepSeek、OpenPangu、Kimi 等），登录方式与 CodeArts CLI 相同——浏览器打开 CodeArts 授权页，拿到临时 AK/SK 后自动续期，无需手动配置密钥。
+- **代理出模型**：登录一次（浏览器授权，与 CodeArts CLI 同一条链路），CodeArts 订阅里的模型——GLM、DeepSeek、OpenPangu、Kimi 等——就以 `codearts/<模型>` 出现在 magpie 的模型列表，并随网关的 OpenAI 兼容接口暴露出去，任何接网关的工具都能用；临时 AK/SK 到期自动续期，无需手动管密钥。
+- **管理 Agent**：CodeArts 作为受管 Agent 出现在 magpie 的 Agents 页——模型一键切换；资源库的指令、MCP 服务器、技能也能勾选下发给它。装完打开接入即可，CodeArts 自己的配置不被改写，重启后白名单自动恢复。
 
 ## 安装
 
