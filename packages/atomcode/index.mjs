@@ -197,6 +197,42 @@ export async function AtomCodePlugin(input = {}, options = {}) {
   };
 
   /**
+   * Clock and backoff knobs. `now` / `random` are functions only tests pass;
+   * plugins.json cannot, so a host always uses wall time and Math.random.
+   * The first wait sits past the host's 3–4s poll, then doubles to a 10 minute
+   * probe. Jitter is ±20%, and the cap is applied again after jitter.
+   */
+  const now = () => {
+    if (typeof options.now !== "function") return Date.now();
+    const value = Number(options.now());
+    return Number.isFinite(value) ? value : Date.now();
+  };
+  const randomUnit = () => {
+    if (typeof options.random !== "function") return Math.random();
+    const value = Number(options.random());
+    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : Math.random();
+  };
+  const refreshBackoffBaseMs = positiveInteger(
+    "refreshBackoffBaseMs",
+    options.refreshBackoffBaseMs,
+    8_000,
+    60 * 60_000,
+  );
+  const refreshBackoffCapMs = Math.max(
+    refreshBackoffBaseMs,
+    positiveInteger(
+      "refreshBackoffCapMs",
+      options.refreshBackoffCapMs,
+      10 * 60_000,
+      24 * 3600_000,
+    ),
+  );
+  const REFRESH_BACKOFF_JITTER = 0.2;
+
+  const tokenStale = (credentials) =>
+    credentials?.expires !== undefined && credentials.expires <= Date.now();
+
+  /**
    * The only origin requests may leave for.
    *
    * `origin` covers scheme + host + port, so an `http://` downgrade of the same
@@ -364,13 +400,33 @@ export async function AtomCodePlugin(input = {}, options = {}) {
    * request are not atomic, and a rotate-once upstream would reject a second
    * refresh with the old token. Results are addressable by both the old and the
    * new refresh token.
+   *
+   * A transient broker failure (5xx, 429, network) arms a per-account
+   * exponential backoff. The host polls `models` / `usage` / `refresh` every
+   * few seconds (plugins#1342); without this gate each poll POSTs
+   * `/oauth/refresh` and then learns the access token is a 401.
+   * A dead grant (4xx / invalid_grant) is not probed again until the
+   * credential that failed changes. The hold remembers that credential as
+   * `(refresh, access, expires)`, so a re-login that keeps the same refresh
+   * token but issues a new access token or expiry is probed at once.
+   * Success clears the hold immediately.
+   *
+   * `rejectedAccess` is the access token CodingPlan (or the gateway) refused
+   * with HTTP 401 while `expires` was still in the future. Repeat polls skip
+   * both the broker and CodingPlan until the wait elapses. A token CodingPlan
+   * still accepts is not marked, so a broker 502 during proactive refresh
+   * keeps serving that token.
    */
   const refreshInflight = new Map();
   const refreshResults = new Map();
+  const refreshHolds = new Map();
   const REFRESH_CACHE_TTL_MS = 24 * 3600_000;
+  // Permanent holds never expire on their own. Cap the map and drop the
+  // oldest entry so a long-lived process cannot keep one hold per account.
+  const MAX_REFRESH_HOLDS = 32;
 
   function rememberRefresh(oldToken, next) {
-    const at = Date.now();
+    const at = now();
     refreshResults.set(oldToken, { at, next });
     if (next.refresh && next.refresh !== oldToken) {
       refreshResults.set(next.refresh, { at, next });
@@ -380,12 +436,122 @@ export async function AtomCodePlugin(input = {}, options = {}) {
     }
   }
 
+  const refreshHoldKey = (credentials) =>
+    credentials?.uid ? `uid:${credentials.uid}` : `refresh:${credentials.refresh}`;
+
+  function clearRefreshHold(credentials) {
+    if (!credentials) return;
+    if (credentials.uid) refreshHolds.delete(`uid:${credentials.uid}`);
+    if (credentials.refresh) refreshHolds.delete(`refresh:${credentials.refresh}`);
+  }
+
+  const tokenUnexpired = (credentials) =>
+    Number.isFinite(credentials?.expires) && credentials.expires > Date.now();
+
+  function holdIdentityMatches(held, credentials) {
+    return (
+      !!held &&
+      held.refresh === credentials?.refresh &&
+      held.access === credentials?.access &&
+      held.expires === credentials?.expires
+    );
+  }
+
+  function writeHold(key, value) {
+    const next = { ...value, at: now() };
+    refreshHolds.delete(key);
+    refreshHolds.set(key, next);
+    while (refreshHolds.size > MAX_REFRESH_HOLDS) {
+      const oldest = refreshHolds.keys().next().value;
+      if (oldest === undefined || oldest === key) break;
+      refreshHolds.delete(oldest);
+    }
+    return next;
+  }
+
+  function refreshHold(credentials) {
+    const key = refreshHoldKey(credentials);
+    const held = refreshHolds.get(key);
+    if (!held) return undefined;
+    // A new access token or expiry is a different sign-in, even when the
+    // refresh token string is the one the broker chose to keep.
+    if (!holdIdentityMatches(held, credentials)) {
+      refreshHolds.delete(key);
+      return undefined;
+    }
+    return writeHold(key, held);
+  }
+
+  function refreshBackoffDelay(failures) {
+    const steps = Math.max(0, Math.min(failures, 20) - 1);
+    const exp = Math.min(refreshBackoffCapMs, refreshBackoffBaseMs * 2 ** steps);
+    const factor = 1 - REFRESH_BACKOFF_JITTER + randomUnit() * 2 * REFRESH_BACKOFF_JITTER;
+    return Math.min(refreshBackoffCapMs, Math.max(0, Math.round(exp * factor)));
+  }
+
+  function rememberRefreshFailure(credentials, error) {
+    const key = refreshHoldKey(credentials);
+    const prev = refreshHolds.get(key);
+    const permanent = error?.signIn === "expired";
+    const same = holdIdentityMatches(prev, credentials) && !prev.permanent;
+    const failures = permanent ? 1 : same ? prev.failures + 1 : 1;
+    // A new attempt starts clean. `rejectedAccess` is recorded only after
+    // this probe's access token is itself refused, so the probe can still
+    // reach CodingPlan once.
+    writeHold(key, {
+      refresh: credentials.refresh,
+      access: credentials.access,
+      expires: credentials.expires,
+      failures,
+      permanent,
+      until: permanent ? Number.POSITIVE_INFINITY : now() + refreshBackoffDelay(failures),
+    });
+  }
+
+  function noteRejectedAccess(credentials) {
+    if (!credentials?.access || !tokenUnexpired(credentials)) return;
+    const key = refreshHoldKey(credentials);
+    const prev = refreshHolds.get(key);
+    if (holdIdentityMatches(prev, credentials)) {
+      writeHold(key, { ...prev, rejectedAccess: credentials.access });
+      return;
+    }
+    writeHold(key, {
+      refresh: credentials.refresh,
+      access: credentials.access,
+      expires: credentials.expires,
+      rejectedAccess: credentials.access,
+      failures: 1,
+      permanent: false,
+      until: now() + refreshBackoffDelay(1),
+    });
+  }
+
+  /**
+   * True when this exact unexpired access token was already refused with
+   * HTTP 401 and the refresh wait is still in effect. Callers then skip the
+   * broker and CodingPlan. A token that has not been refused stays usable.
+   */
+  function rejectedAccessCooling(credentials) {
+    if (!tokenUnexpired(credentials)) return false;
+    const held = refreshHold(credentials);
+    if (!held || held.rejectedAccess !== credentials.access) return false;
+    return held.permanent || now() < held.until;
+  }
+
   async function refreshAccount(credentials, { deadline } = {}) {
     if (!credentials?.refresh) {
       throw markExpired();
     }
     const cached = refreshResults.get(credentials.refresh);
-    if (cached && Date.now() - cached.at < REFRESH_CACHE_TTL_MS) return cached.next;
+    if (cached && now() - cached.at < REFRESH_CACHE_TTL_MS) return cached.next;
+    const held = refreshHold(credentials);
+    if (held?.permanent) throw markExpired();
+    if (held && now() < held.until) {
+      const error = new Error(t.refreshCooling);
+      error.cooling = true;
+      throw error;
+    }
     const pending = refreshInflight.get(credentials.refresh);
     if (pending) return pending;
     const p = (async () => {
@@ -395,24 +561,30 @@ export async function AtomCodePlugin(input = {}, options = {}) {
         credentials.expires && credentials.expires > Date.now()
           ? Math.max(1, Math.round((credentials.expires - Date.now()) / 1000))
           : 0;
-      const next = await refreshTokens(
-        opts.platformBaseURL,
-        credentials.refresh,
-        {
-          clientVersion: opts.clientVersion,
-          fallbackExpiresIn: oldSpanSec > 0 ? oldSpanSec : undefined,
-          timeoutMs: Math.max(250, Math.min(15_000, remainingMs(deadline) ?? 15_000)),
-        },
-      );
-      const expiresInSec =
-        next.expiresIn > 0 ? next.expiresIn : oldSpanSec > 0 ? oldSpanSec : 7 * 24 * 3600;
-      const renewed = {
-        access: next.accessToken,
-        refresh: next.refreshToken ?? credentials.refresh,
-        expires: Date.now() + expiresInSec * 1000,
-      };
-      rememberRefresh(credentials.refresh, renewed);
-      return renewed;
+      try {
+        const next = await refreshTokens(
+          opts.platformBaseURL,
+          credentials.refresh,
+          {
+            clientVersion: opts.clientVersion,
+            fallbackExpiresIn: oldSpanSec > 0 ? oldSpanSec : undefined,
+            timeoutMs: Math.max(250, Math.min(15_000, remainingMs(deadline) ?? 15_000)),
+          },
+        );
+        const expiresInSec =
+          next.expiresIn > 0 ? next.expiresIn : oldSpanSec > 0 ? oldSpanSec : 7 * 24 * 3600;
+        const renewed = {
+          access: next.accessToken,
+          refresh: next.refreshToken ?? credentials.refresh,
+          expires: Date.now() + expiresInSec * 1000,
+        };
+        clearRefreshHold(credentials);
+        rememberRefresh(credentials.refresh, renewed);
+        return renewed;
+      } catch (error) {
+        rememberRefreshFailure(credentials, error);
+        throw error;
+      }
     })().finally(() => refreshInflight.delete(credentials.refresh));
     refreshInflight.set(credentials.refresh, p);
     return p;
@@ -532,11 +704,20 @@ export async function AtomCodePlugin(input = {}, options = {}) {
       next = await refreshAccount(credentials, { deadline });
     } catch (error) {
       if (error.signIn === "expired") throw markExpired();
-      log(
-        "warn",
-        `${PROVIDER}: ${fill(t.refreshFailed, { detail: redactText(error.message) })}`,
-      );
-      return { raw, credentials, renewed, refreshFailed: true };
+      if (!error.cooling) {
+        log(
+          "warn",
+          `${PROVIDER}: ${fill(t.refreshFailed, { detail: redactText(error.message) })}`,
+        );
+      }
+      return {
+        raw,
+        credentials,
+        renewed,
+        refreshFailed: true,
+        refreshSkipped: error.cooling === true,
+        refreshDetail: redactText(error.message),
+      };
     }
     const persisted = await persistRenewed(raw, credentials, next);
     raw = persisted.updated;
@@ -669,8 +850,10 @@ export async function AtomCodePlugin(input = {}, options = {}) {
         const declared = provider?.models ?? seedModels();
         let raw;
         let credentials;
+        let refreshFailed = false;
+        let refreshSkipped = false;
         try {
-          ({ raw, credentials } = await currentCredentials(auth));
+          ({ raw, credentials, refreshFailed, refreshSkipped } = await currentCredentials(auth));
         } catch (error) {
           if (error.signIn === "expired") throw error;
           log(
@@ -680,6 +863,22 @@ export async function AtomCodePlugin(input = {}, options = {}) {
           return fellBack(declared);
         }
         if (!credentials?.access) return fellBack(declared);
+        // A stale access token plus a broker that just failed (or is cooling
+        // down) is the plugins#1342 loop: CodingPlan answers 401, the host
+        // polls again, and the broker is hit every few seconds. The same loop
+        // happens when `expires` is still in the future but CodingPlan has
+        // already rejected that access token. Serve the fallback catalog
+        // until the backoff says a probe is due. A token CodingPlan accepts
+        // is not on this path and keeps its live catalog.
+        const quietCatalog = async () => {
+          const cached = await stateStore.cachedModels(credentials.uid);
+          if (cached.length) return fellBack(providerModels(cached));
+          return fellBack(declared);
+        };
+        if ((refreshFailed || refreshSkipped) && tokenStale(credentials)) {
+          return quietCatalog();
+        }
+        if (rejectedAccessCooling(credentials)) return quietCatalog();
         try {
           const loadCatalog = async (current) =>
             catalog.load(current, { clientVersion: await clientVersionNow() });
@@ -689,11 +888,22 @@ export async function AtomCodePlugin(input = {}, options = {}) {
           } catch (error) {
             if (error.signIn !== "expired" || !credentials.refresh) throw error;
             const retry = await currentCredentials(auth, { forceRefresh: true });
-            if (!retry.credentials?.access || retry.credentials.access === credentials.access) {
+            if (retry.credentials?.access && retry.credentials.access !== credentials.access) {
+              credentials = retry.credentials;
+              list = await loadCatalog(credentials);
+            } else if (
+              error.status === 401 &&
+              tokenUnexpired(credentials) &&
+              (retry.refreshFailed || retry.refreshSkipped)
+            ) {
+              // The broker could not replace this access token (502, or the
+              // wait is already armed). Remember it and answer quietly: the
+              // host polls every few seconds and must not see a thrown 401.
+              noteRejectedAccess(credentials);
+              return quietCatalog();
+            } else {
               throw error;
             }
-            credentials = retry.credentials;
-            list = await loadCatalog(credentials);
           }
           // 目录为空的合法场景之一是"权益还没发放"（官方注释同款）——先签到重领一次再取。
           if (
@@ -799,6 +1009,10 @@ export async function AtomCodePlugin(input = {}, options = {}) {
                       String(token.user.id),
                       "atomcode-browser",
                     );
+                    clearRefreshHold({
+                      uid: String(token.user.id),
+                      refresh: token.refreshToken,
+                    });
                     return {
                       type: "success",
                       source: "atomcode-browser",
@@ -858,6 +1072,7 @@ export async function AtomCodePlugin(input = {}, options = {}) {
                 try {
                   const auth = await readAuthFile(authFile);
                   void stateStore.recordLogin(auth.uid, "atomcode-cli");
+                  clearRefreshHold(auth);
                   return {
                     type: "success",
                     source: "atomcode-cli",
@@ -974,6 +1189,21 @@ export async function AtomCodePlugin(input = {}, options = {}) {
               return fetch(targetString, forwarded);
             }
 
+            // The discovery call already tried the broker. Later polls of a
+            // stale account, or of an unexpired access token CodingPlan or
+            // the gateway already rejected, must not keep signing requests
+            // that will 401, or keep asking the broker, until the backoff
+            // elapses. A token that has not been rejected still goes out.
+            if (
+              rejectedAccessCooling(credentials) ||
+              (state.refreshSkipped && tokenStale(credentials))
+            ) {
+              return new Response(JSON.stringify({ error: t.refreshCooling }), {
+                status: 503,
+                headers: { "content-type": "application/json" },
+              });
+            }
+
             if (!credentials.uid) throw markExpired();
 
             // UA、X-AtomCode-Ver、签名盐同源自这一个值
@@ -1070,6 +1300,12 @@ export async function AtomCodePlugin(input = {}, options = {}) {
                   credentials = retry.credentials;
                   response = await dispatch(credentials, normalized);
                   failure = await classifyGatewayResponse(response);
+                } else if (
+                  response.status === 401 &&
+                  tokenUnexpired(credentials) &&
+                  (retry.refreshFailed || retry.refreshSkipped)
+                ) {
+                  noteRejectedAccess(credentials);
                 }
               } catch (error) {
                 if (error.signIn === "expired") throw markExpired();
@@ -1110,7 +1346,8 @@ export async function AtomCodePlugin(input = {}, options = {}) {
           const hit = quotaCache.get(cacheKey);
           if (hit && Date.now() - hit.at < opts.quotaTtlMs) return hit.value;
 
-          ({ raw, credentials } = await currentCredentials(raw, { deadline }));
+          const state = await currentCredentials(raw, { deadline });
+          ({ raw, credentials } = state);
           user = userLabel(raw);
           cacheKey = credentials?.uid ?? credentials?.access ?? "no-account";
           const refreshedHit = quotaCache.get(cacheKey);
@@ -1123,6 +1360,28 @@ export async function AtomCodePlugin(input = {}, options = {}) {
             quotaCache.set(cacheKey, { at: Date.now() - opts.quotaTtlMs + 15_000, value });
             return value;
           }
+          // Not cached: the backoff inside currentCredentials is what spaces
+          // the next broker probe. A quota TTL here would hide that probe.
+          const keptQuota = async (errorText) => {
+            const stale = await stateStore.cachedQuota(credentials.uid);
+            return {
+              ...(stale ?? {}),
+              plan: stale?.plan ?? t.planFallback,
+              ...(user ? { user } : {}),
+              error: errorText,
+              signIn: "kept",
+              ...(stale ? { stale: true } : {}),
+              windows: stale?.windows ?? [],
+            };
+          };
+          if ((state.refreshFailed || state.refreshSkipped) && tokenStale(credentials)) {
+            return keptQuota(
+              state.refreshSkipped
+                ? t.refreshCooling
+                : fill(t.refreshFailed, { detail: state.refreshDetail ?? "" }),
+            );
+          }
+          if (rejectedAccessCooling(credentials)) return keptQuota(t.refreshCooling);
 
           const readStatus = async (current, wantedMs) =>
             fetchStatus(opts.codingPlanAPIURL, current.access, {
@@ -1140,13 +1399,25 @@ export async function AtomCodePlugin(input = {}, options = {}) {
               throw error;
             }
             const retry = await currentCredentials(raw, { forceRefresh: true, deadline });
-            if (!retry.credentials?.access || retry.credentials.access === credentials.access) {
+            if (retry.credentials?.access && retry.credentials.access !== credentials.access) {
+              ({ raw, credentials } = retry);
+              user = userLabel(raw);
+              cacheKey = credentials.uid ?? credentials.access;
+              status = await readStatus(credentials, 7_000);
+            } else if (
+              error.status === 401 &&
+              tokenUnexpired(credentials) &&
+              (retry.refreshFailed || retry.refreshSkipped)
+            ) {
+              noteRejectedAccess(credentials);
+              return keptQuota(
+                retry.refreshSkipped
+                  ? t.refreshCooling
+                  : fill(t.refreshFailed, { detail: retry.refreshDetail ?? "" }),
+              );
+            } else {
               throw error;
             }
-            ({ raw, credentials } = retry);
-            user = userLabel(raw);
-            cacheKey = credentials.uid ?? credentials.access;
-            status = await readStatus(credentials, 7_000);
           }
           // 签到语义：套餐缺失/到期 → 自动重领一次，成功后重取状态再映射。
           if (await ensurePlan(credentials, { status, deadline })) {
@@ -1214,6 +1485,17 @@ export async function AtomCodePlugin(input = {}, options = {}) {
         if (!credentials?.access) {
           return { outcome: "failed", message: t.noAccount };
         }
+        if ((state.refreshFailed || state.refreshSkipped) && tokenStale(credentials)) {
+          return {
+            outcome: "failed",
+            message: state.refreshSkipped
+              ? t.refreshCooling
+              : fill(t.refreshFailed, { detail: state.refreshDetail ?? "" }),
+          };
+        }
+        if (rejectedAccessCooling(credentials)) {
+          return { outcome: "failed", message: t.refreshCooling };
+        }
         // 状态先看一眼：套餐仍在有效期内就不打扰领取接口（claim-v2 幂等，
         // 但一次元数据请求换一个确定的 done 比一次网络往返更稳）。
         try {
@@ -1242,12 +1524,25 @@ export async function AtomCodePlugin(input = {}, options = {}) {
               forceRefresh: true,
               deadline,
             });
-            if (!retry.credentials?.access || retry.credentials.access === credentials.access) {
+            if (retry.credentials?.access && retry.credentials.access !== credentials.access) {
+              state = retry;
+              credentials = retry.credentials;
+              status = await readStatus();
+            } else if (
+              error.status === 401 &&
+              tokenUnexpired(credentials) &&
+              (retry.refreshFailed || retry.refreshSkipped)
+            ) {
+              noteRejectedAccess(credentials);
+              return {
+                outcome: "failed",
+                message: retry.refreshSkipped
+                  ? t.refreshCooling
+                  : fill(t.refreshFailed, { detail: retry.refreshDetail ?? "" }),
+              };
+            } else {
               throw error;
             }
-            state = retry;
-            credentials = retry.credentials;
-            status = await readStatus();
           }
           if (!planNeedsClaim(status)) {
             const plan = status?.codingplan_free ?? status?.plan ?? {};

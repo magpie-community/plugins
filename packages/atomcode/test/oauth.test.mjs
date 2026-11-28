@@ -96,6 +96,16 @@ test("refreshTokens marks only credential failures as expired", async () => {
     () => refreshTokens("https://acs.atomgit.com", "refresh", { fetchImpl }),
     (error) => error.status === 503 && error.signIn === undefined,
   );
+
+  for (const status of [422, 502]) {
+    const { fetchImpl: grantFetch } = sequenceFetch([
+      { status, body: JSON.stringify({ error: "invalid_grant" }) },
+    ]);
+    await assert.rejects(
+      () => refreshTokens("https://acs.atomgit.com", "refresh", { fetchImpl: grantFetch }),
+      (error) => error.status === status && error.signIn === "expired" && error.code === "invalid_grant",
+    );
+  }
 });
 
 test("OAuth responses are bounded before JSON parsing", async () => {

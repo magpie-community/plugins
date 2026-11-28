@@ -11,8 +11,10 @@
  *      token_type, expires_in, user{…}}` — requires a non-empty access token and
  *      `user.id` (the id feeds the request signature later).
  *   4. `refreshTokens` → POST /oauth/refresh `{refresh_token}` — same shape; the
- *      refresh token may or may not rotate, and a 400/401/403 means the browser
- *      sign-in is dead.
+ *      refresh token may or may not rotate. A 400/401/403, or an `invalid_grant`
+ *      / `invalid_token` body on any status, means the browser sign-in is dead.
+ *      Other 5xx and network failures are transient and left for the caller to
+ *      back off.
  *
  * Every call sends `User-Agent: atomcode/<version>`; the broker hands sessions
  * that die after ~10 minutes, so callers must not stall between steps.
@@ -30,6 +32,19 @@ import {
 
 /** Trailing slashes lie about URLs; trim once here. */
 const withBase = (base, path) => `${String(base).replace(/\/+$/, "")}/${path}`;
+
+/** OAuth refusals that will not succeed until the user signs in again. */
+const DEAD_GRANT = /^(invalid_grant|invalid_token|refresh_token_reused)$/i;
+
+function brokerErrorCode(text) {
+  try {
+    const parsed = JSON.parse(text);
+    const code = parsed?.error && typeof parsed.error === "object" ? parsed.error.code : parsed?.error;
+    return typeof code === "string" && code ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** `atomcode/5.2.3` — the UA every upstream endpoint asks for. */
 export const userAgentOf = (clientVersion) => `atomcode/${clientVersion}`;
@@ -77,6 +92,8 @@ async function call(
   if (!res.ok) {
     const error = new Error(`OAuth broker returned HTTP ${res.status}`);
     error.status = res.status;
+    const code = brokerErrorCode(text);
+    if (code) error.code = code;
     throw error;
   }
   try {
@@ -133,9 +150,10 @@ export async function tokenFor(base, state, opts = {}) {
 /**
  * Renew with the refresh token.
  *
- * A 400/401/403 (or an empty access token) means the sign-in is dead, which is
- * signalled by `signIn: "expired"` — the token may also not rotate, in which
- * case the caller keeps the old one.
+ * A 400/401/403, an `invalid_grant` / `invalid_token` body, or an empty access
+ * token means the sign-in is dead, which is signalled by `signIn: "expired"`.
+ * A 5xx or a network error is left unmarked so the caller can back off. The
+ * token may also not rotate, in which case the caller keeps the old one.
  *
  * @returns {Promise<{accessToken: string, refreshToken: string, expiresIn: number}>}
  */
@@ -149,9 +167,16 @@ export async function refreshTokens(base, refreshToken, opts = {}) {
   try {
     r = await call(base, "oauth/refresh", { method: "POST", body: { refresh_token: refreshToken }, ...opts });
   } catch (e) {
-    // 400/401/403 == 凭证不可用（Atom2Api 的判定同款）；其余错误原样上抛，
-    // 由调用方决定是否带着旧 token 继续发请求。
-    if (e.status === 400 || e.status === 401 || e.status === 403) e.signIn = "expired";
+    // 400/401/403，或正文里的 invalid_grant，表示凭证不可用（Atom2Api 的判定
+    // 同款）。5xx 和网络错误原样上抛，由调用方退避，不要当成重新登录。
+    if (
+      e.status === 400 ||
+      e.status === 401 ||
+      e.status === 403 ||
+      DEAD_GRANT.test(e.code ?? "")
+    ) {
+      e.signIn = "expired";
+    }
     throw e;
   }
   if (!r?.access_token) {
