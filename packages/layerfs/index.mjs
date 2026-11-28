@@ -139,7 +139,7 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
           "and secret-shaped files in the tree (.env*, private keys, .git internals) never enter the store — the sim backend skips them on import and reports how many. " +
           "Work in the returned path, then save progress with the checkpoint tool. " +
           "Only the returned path is persistent — work anywhere else, including the host's /tmp, is outside LayerFS management; " +
-          "the workspace also carries .tmp/ and .cache/ scratch directories (exec points TMPDIR and XDG_CACHE_HOME at them), which checkpoint and publish never capture.",
+          "the workspace also carries .tmp/ and .cache/ scratch directories (exec points TMPDIR and XDG_CACHE_HOME at them, and TEMP and TMP on Windows), which checkpoint and publish never capture.",
         args: {
           type: "object",
           properties: {
@@ -228,8 +228,9 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
           "DISABLED by default: the command runs with the plugin host's privileges, and the host serves these tools to remote callers holding a gateway key, so a shell is not something a model key should silently become. " +
           "It runs only when the user has opted in — the plugin's \"exec\" option set to true, or the exec switch in the host's environment. " +
           "A command that changes nothing commits nothing. A failing command's changes are still checkpointed (history can be rewound), and its exit code, stdout and stderr are returned. " +
-          "Only the workspace path is persistent: the command runs with TMPDIR and XDG_CACHE_HOME redirected into the workspace (.tmp/ and .cache/), " +
+          "Only the workspace path is persistent: the command runs with TMPDIR and XDG_CACHE_HOME redirected into the workspace (.tmp/ and .cache/), and on Windows TEMP and TMP as well, " +
           "workspace-local scratch that checkpoint and publish never capture, and files written to the host's real /tmp are likewise outside LayerFS management. " +
+          "The shell is /bin/sh on macOS and Linux and cmd.exe on Windows. " +
           "The timeout is capped at 55 seconds, the tools budget.",
         args: {
           type: "object",

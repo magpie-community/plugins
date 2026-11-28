@@ -36,7 +36,12 @@ Only the workspace path is persistent. Every workspace carries two
 scratch directories, `.tmp/` and `.cache/`, created at provision;
 `exec` runs commands with `TMPDIR` and `XDG_CACHE_HOME` redirected at
 them, so toolchains keep their temporary files and caches inside the
-workspace instead of the host's real `/tmp`. Both directories are
+workspace instead of the host's real `/tmp`. On Windows `TEMP` and `TMP`
+are redirected into `.tmp/` as well (a case-variant already in the
+environment, such as `Temp` or `Tmp`, is replaced), and the shell is
+`cmd.exe` (`ComSpec`) rather than `/bin/sh`. A timeout on Windows ends
+the process tree with `taskkill /T /F /PID`; macOS and Linux still kill
+the shell's process group. Both directories are
 workspace-local scratch: checkpoints and publishes never capture them,
 and they live and die with the workspace directory itself. Files a
 command writes to the host's real `/tmp` are likewise outside LayerFS
@@ -238,6 +243,19 @@ node tools/gen-trajectory.mjs   # regenerate the page's bundled sample trajector
 
 Zero runtime dependencies; the arguments are JSON Schema, like the other
 tools packages. MIT.
+
+## Changes in 0.10.4
+
+`exec` runs on Windows. It used to spawn `/bin/sh`, which is not there,
+so every command failed with `ENOENT` before it started (#1325). Windows
+now runs the command through `cmd.exe` (`ComSpec`, else `COMSPEC`) as
+`/d /s /c`, with the window hidden. `TEMP` and `TMP` are redirected into
+the workspace `.tmp/` along with `TMPDIR` and `XDG_CACHE_HOME`, and a
+case-variant of those names already in the environment is replaced
+rather than left pointing at the host temp directory. A timeout ends
+the process tree with `taskkill /T /F /PID`; if `taskkill` cannot start
+or exits non-zero, the shell is killed directly. macOS and Linux are
+unchanged: `/bin/sh -c` in its own process group.
 
 ## Changes in 0.10.3
 

@@ -34,10 +34,13 @@ const BINDING = ".layerfs.json"
 
 // Workspace-local scratch: two directories at the workspace root that
 // are never checkpointed and never published. provision creates them,
-// exec points TMPDIR and XDG_CACHE_HOME at them so toolchains keep
+// exec points the temp and cache variables at them so toolchains keep
 // their temporary files and caches inside the workspace instead of
-// the host's real /tmp, and every checkpoint scan skips both names —
-// their content lives and dies with the workspace directory itself.
+// the host's real temp directory, and every checkpoint scan skips both
+// names — their content lives and dies with the workspace directory
+// itself. POSIX reads TMPDIR and XDG_CACHE_HOME. Windows programs read
+// TEMP and TMP, and a copied environment may already hold those names
+// in another case (Temp, Tmp), which a child would still honor.
 const SCRATCH_DIRS = [".tmp", ".cache"]
 const scanSkip = () => new Set([BINDING, ...SCRATCH_DIRS])
 function ensureScratch(dir) {
@@ -282,48 +285,184 @@ function sameManifest(a, b) {
 
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n… [${s.length - n} more bytes]` : s)
 
+// ComSpec names the Windows shell. The process environment folds case,
+// but a plain object — a test, or a copy — may spell it ComSpec, COMSPEC,
+// or comspec. An empty string is unset, as in `ComSpec || COMSPEC`; any
+// other string is the shell the caller named.
+export function resolveComSpec(env = {}) {
+  const source = env && typeof env === "object" ? env : {}
+  for (const key of ["ComSpec", "COMSPEC"]) {
+    const value = source[key]
+    if (typeof value === "string" && value.length > 0) return value
+  }
+  for (const key of Object.keys(source)) {
+    if (key.toLowerCase() !== "comspec") continue
+    const value = source[key]
+    if (typeof value === "string" && value.length > 0) return value
+  }
+  return "cmd.exe"
+}
+
+// How exec spawns a shell. POSIX stays /bin/sh -c in its own process
+// group (detached): a timeout kills that group. Windows has no /bin/sh
+// (#1325). The shell there is ComSpec, run as `cmd.exe /d /s /c`, with
+// the window hidden and detached off — on Windows detached opens a new
+// console, and a negative-pid kill does not exist. Following Node and
+// Bun's shell-spawn convention, always wrap the command in outer quotes
+// with windowsVerbatimArguments so libuv/Bun never escapes quotes or
+// backslashes and `cmd /s` strips only our outer pair (preserving
+// leading whitespace, quoted executable paths, and inner quotes).
+export function shellInvocation(command, platform, env = {}) {
+  if (platform === "win32") {
+    return {
+      file: resolveComSpec(env),
+      args: ["/d", "/s", "/c", `"${command}"`],
+      detached: false,
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    }
+  }
+  return { file: "/bin/sh", args: ["-c", command], detached: true }
+}
+
+// The environment a command runs with. Scratch wins over the host, and
+// on Windows over every case-variant of the same name: spreading
+// process.env and then setting TEMP still leaves a pre-existing Temp
+// (or Tmp, or Xdg_Cache_Home) in the block, and Windows treats those as
+// the same variable. POSIX is case-sensitive, so only the two names
+// toolchains read there are replaced.
+export function childEnvironment(env, dir, platform) {
+  const source = env && typeof env === "object" ? env : {}
+  const tmp = join(dir, ".tmp")
+  const cache = join(dir, ".cache")
+  const overrides = platform === "win32"
+    ? { TMPDIR: tmp, TEMP: tmp, TMP: tmp, XDG_CACHE_HOME: cache }
+    : { TMPDIR: tmp, XDG_CACHE_HOME: cache }
+  if (platform !== "win32") return { ...source, ...overrides }
+  const folded = new Set(Object.keys(overrides).map((key) => key.toLowerCase()))
+  const out = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (folded.has(key.toLowerCase())) continue
+    out[key] = value
+  }
+  return Object.assign(out, overrides)
+}
+
+// End the shell and everything it started. POSIX signals the process
+// group (detached made the shell its leader). Windows has no such
+// group: taskkill /T /F ends the tree, and only if that cannot start
+// or exits non-zero does the shell itself get SIGKILL — killing it
+// first would orphan the children the timeout is supposed to stop.
+export function killShellTree(child, {
+  platform = process.platform,
+  spawnFn = spawn,
+  killFn = process.kill.bind(process),
+  killerTimeoutMs = 200,
+} = {}) {
+  const fallback = () => { try { child?.kill?.("SIGKILL") } catch { /* already gone */ } }
+  const pid = child?.pid
+  if (!Number.isInteger(pid) || pid <= 0) { fallback(); return }
+  if (platform === "win32") {
+    let killer = null
+    try {
+      killer = spawnFn("taskkill", ["/T", "/F", "/PID", String(pid)], {
+        windowsHide: true,
+        stdio: "ignore",
+      })
+    } catch { /* taskkill itself could not start */ }
+    if (!killer || typeof killer.on !== "function") { fallback(); return }
+    let killerDone = false
+    let childExited = false
+    let killerTimer = null
+    const stopTimer = () => { if (killerTimer) { clearTimeout(killerTimer); killerTimer = null } }
+    const finishKiller = (runFallback) => {
+      if (killerDone) return
+      killerDone = true
+      stopTimer()
+      if (runFallback && !childExited) fallback()
+    }
+    killer.on("error", () => finishKiller(true))
+    killer.on("exit", (code) => finishKiller(code !== 0))
+    child?.once?.("exit", () => { childExited = true })
+    if (killerTimeoutMs > 0) {
+      killerTimer = setTimeout(() => {
+        if (killerDone) return
+        try { killer.kill?.("SIGKILL") } catch { /* already gone */ }
+        finishKiller(true)
+      }, killerTimeoutMs)
+      killerTimer.unref?.()
+    }
+    killer.unref?.()
+    return
+  }
+  try { killFn(-pid, "SIGKILL") }
+  catch { fallback() }
+}
+
 // Run a shell command in dir, capturing bounded output. Resolves with
 // { code, stdout, stderr, timedOut }; never rejects on a non-zero exit —
 // the caller reports the code, as a shell would. The child inherits
-// the host environment except TMPDIR and XDG_CACHE_HOME, which point
-// at the workspace's scratch directories (created first, so workspaces
-// provisioned before they existed get them too): temporary files and
-// caches stay inside the workspace instead of leaking to the host /tmp.
+// the host environment except the scratch variables (see
+// childEnvironment), which point at the workspace's scratch directories
+// (created first, so workspaces provisioned before they existed get
+// them too): temporary files and caches stay inside the workspace
+// instead of leaking to the host temp directory.
 //
 // The process plumbing is deliberate (round-2 review, item 6): stdin
 // is closed, so a command that reads it gets EOF instead of waiting
-// out the timeout; the child leads its own process group (detached),
-// so a timeout kills the whole tree, not just /bin/sh; and the caller
+// out the timeout; a timeout kills the whole tree (the process group
+// on POSIX, taskkill /T on Windows), not just the shell; and the caller
 // resolves on 'exit' plus a short drain, not on 'close' — a background
 // child holding the stdout pipe open must not hold the call open.
-function runShell(command, dir, timeoutMs) {
+// platform, env, spawnFn, killFn, and killTreeFn are injection points
+// so the Windows branch can be tested on a POSIX host.
+export function runShell(command, dir, timeoutMs, deps = {}) {
+  const platform = deps.platform ?? process.platform
+  const baseEnv = deps.env ?? process.env
+  const spawnFn = deps.spawnFn ?? spawn
+  const killTree = deps.killTreeFn ?? ((proc) => killShellTree(proc, { platform, spawnFn, killFn: deps.killFn }))
   return new Promise((resolvePromise) => {
     ensureScratch(dir)
-    const child = spawn("/bin/sh", ["-c", command], {
+    const spec = shellInvocation(command, platform, baseEnv)
+    const child = spawnFn(spec.file, spec.args, {
       cwd: dir,
-      detached: true,
+      detached: spec.detached,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, TMPDIR: join(dir, ".tmp"), XDG_CACHE_HOME: join(dir, ".cache") },
+      env: childEnvironment(baseEnv, dir, platform),
+      ...(spec.windowsHide ? { windowsHide: true } : {}),
+      ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     })
     let out = "", err = "", timedOut = false, settled = false
-    let timer = null
+    let timer = null, drainTimer = null, backstopTimer = null
     const finish = (code) => {
       if (settled) return
       settled = true
-      if (timer) clearTimeout(timer)
+      if (timer) { clearTimeout(timer); timer = null }
+      if (drainTimer) { clearTimeout(drainTimer); drainTimer = null }
+      if (backstopTimer) { clearTimeout(backstopTimer); backstopTimer = null }
       resolvePromise({ code: code ?? -1, stdout: clip(out, 8192), stderr: clip(err, 8192), timedOut })
     }
     timer = setTimeout(() => {
+      timer = null
       timedOut = true
-      try { process.kill(-child.pid, "SIGKILL") } // the whole group
+      try { killTree(child) }
       catch { try { child.kill("SIGKILL") } catch { /* already gone */ } }
-      // 'exit' follows the group kill; this is only a backstop
-      setTimeout(() => finish(-1), 250).unref()
+      // 'exit' follows the tree kill; this is only a backstop
+      backstopTimer = setTimeout(() => {
+        try { child.kill?.("SIGKILL") } catch { /* already gone */ }
+        finish(-1)
+      }, 250)
+      backstopTimer.unref?.()
     }, timeoutMs)
     child.stdout.on("data", (d) => { if (out.length < 65536) out += d })
     child.stderr.on("data", (d) => { if (err.length < 65536) err += d })
-    child.on("error", (e) => { err += String(e); finish(-1) })
-    child.on("exit", (code) => { setTimeout(() => finish(code), 25).unref() })
+    child.on("error", (e) => { if (settled) return; err += String(e); finish(-1) })
+    child.on("exit", (code) => {
+      if (settled) return
+      if (timer) { clearTimeout(timer); timer = null }
+      drainTimer = setTimeout(() => finish(code), 25)
+      drainTimer.unref?.()
+    })
   })
 }
 
