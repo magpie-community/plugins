@@ -593,9 +593,11 @@ test("collapses SSE for a non-streaming client and preserves upstream HTTP error
     });
   const response = await send();
   assert.equal((await response.json()).choices[0].message.content, "hello");
-  state.status = 429;
+  // A 429 is retried now (the retry tests cover what surfaces from it); any
+  // other upstream error goes through as it came.
+  state.status = 500;
   const error = await send();
-  assert.equal(error.status, 429);
+  assert.equal(error.status, 500);
   assert.equal(error.headers.get("retry-after"), "30");
   assert.equal((await error.json()).error.message, "limited");
 });
@@ -647,24 +649,27 @@ test("retries a 429 that names no wait at all once and serves the answer", async
   assert.notEqual(tries[0].headers["x-opencode-session"], tries[1].headers["x-opencode-session"]);
 });
 
-test("retries a 429 naming a budget reset once with a fresh session id, then surfaces it", async (t) => {
+test("retries a 429 naming a budget reset three times with a fresh session id each, then surfaces it", { timeout: 20_000 }, async (t) => {
   const { plugin, state, origin } = await fixture(t);
   await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
   const loader = await plugin.auth.loader(publicAuth);
-  state.replies = [{ status: 429, retryAfter: "30" }, { status: 429, retryAfter: "30" }];
+  // The daily resets Zen named on 2026-11-23 (55426s) and 2026-11-26
+  // (23129s): past the five-second cap, so each try waits a breath, not the
+  // reset.
+  state.replies = Array.from({ length: 4 }, () => ({ status: 429, retryAfter: "23400" }));
   const error = await loader.fetch(`${origin}/v1/chat/completions`, {
     method: "POST",
     body: JSON.stringify({ model: "chat-free", messages: [{ role: "user", content: "hello" }] }),
   });
   assert.equal(error.status, 429);
-  assert.equal(error.headers.get("retry-after"), "30");
+  assert.equal(error.headers.get("retry-after"), "23400");
   assert.equal((await error.json()).error.message, "limited");
-  // Zen's allowance follows the session id, so even a budget's reset is
-  // worth one retry under a fresh one; a refusal that is account-wide
-  // answers 429 again and is surfaced as before.
+  // Zen's allowance follows the session id, so a refusal is retried under a
+  // fresh one; a refusal that is account-wide answers 429 every time and is
+  // surfaced as before.
   const tries = state.calls.filter((call) => call.url === "/v1/chat/completions");
-  assert.equal(tries.length, 2);
-  assert.notEqual(tries[0].headers["x-opencode-session"], tries[1].headers["x-opencode-session"]);
+  assert.equal(tries.length, 4);
+  assert.equal(new Set(tries.map((call) => call.headers["x-opencode-session"])).size, 4);
 });
 
 for (const [path, model, key] of [

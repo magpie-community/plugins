@@ -903,11 +903,22 @@ async function server(_input, options = {}) {
             let response = await send();
             // Zen's free allowance follows the session id: a conversation
             // whose id has spent it is refused however small the request,
-            // and a fresh id is served at once, so one rotation and one
-            // retry. An account-wide refusal simply answers 429 again.
-            if (response.status === 429) {
+            // and a fresh id is served at once. One refusal does not settle
+            // whether the next id is served — 2026-11-23: a replacement
+            // refused four seconds after the first was followed by one that
+            // answered — so each refusal is replaced and tried, up to three
+            // times. A refusal that is account-wide answers 429 every time,
+            // and the last one is the caller's to handle.
+            for (let tries = 0; response.status === 429 && tries < 3; tries++) {
               await response.body?.cancel();
+              console.error(
+                "[zen-free] 429, session:", session, "retry-after:", response.headers.get("retry-after"),
+              );
               const named = Number(response.headers.get("retry-after") ?? NaN);
+              // A short named wait is the upstream's own throttle notice and
+              // is honoured; the free tier's daily reset (55426s on
+              // 2026-11-23, 23129s on 2026-11-26) outlasts the caller, so a
+              // breath is waited and the fresh id tried anyway.
               const wait = Number.isFinite(named) && named > 0 && named <= 5 ? named * 1000 : 1500;
               await new Promise((rest) => setTimeout(rest, wait + Math.random() * 500));
               request.signal.throwIfAborted();
